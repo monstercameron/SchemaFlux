@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflow/internal/config"
+	"github.com/monstercameron/schemaflux/internal/config"
 )
 
 type testMetricSink struct {
@@ -27,7 +27,7 @@ func (s *testMetricSink) count() int {
 func TestRecordMetricAggregatesSnapshots(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)
-	t.Setenv("SCHEMAFLOW_METRICS", "")
+	t.Setenv("SCHEMAFLUX_METRICS", "")
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })
 	config.SetMetricsEnabled(true)
@@ -66,7 +66,7 @@ func TestRecordMetricAggregatesSnapshots(t *testing.T) {
 func TestRecordMetricValueSupportsDecimals(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)
-	t.Setenv("SCHEMAFLOW_METRICS", "")
+	t.Setenv("SCHEMAFLUX_METRICS", "")
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })
 	config.SetMetricsEnabled(true)
@@ -89,7 +89,7 @@ func TestRecordMetricValueSupportsDecimals(t *testing.T) {
 func TestRecordMetricDisabledSkipsStorage(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)
-	t.Setenv("SCHEMAFLOW_METRICS", "")
+	t.Setenv("SCHEMAFLUX_METRICS", "")
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })
 	config.SetMetricsEnabled(false)
@@ -104,7 +104,7 @@ func TestRecordMetricDisabledSkipsStorage(t *testing.T) {
 func TestRegisterMetricSinkReceivesEvents(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)
-	t.Setenv("SCHEMAFLOW_METRICS", "")
+	t.Setenv("SCHEMAFLUX_METRICS", "")
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })
 	config.SetMetricsEnabled(true)

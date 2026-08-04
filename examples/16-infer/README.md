@@ -17,7 +17,7 @@ This example takes incomplete person and product records and infers missing info
 ## How It Works
 
 ```go
-complete, err := schemaflow.Infer[Person](partialData, ops.NewInferOptions().
+complete, err := schemaflux.Infer[Person](partialData, ops.NewInferOptions().
     WithContext("Additional facts to guide inference"))
 ```
 
@@ -74,5 +74,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Infer API Reference](../../docs/reference/API.md#infer)

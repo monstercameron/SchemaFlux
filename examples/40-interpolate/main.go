@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -66,7 +66,7 @@ type SurveyResponse struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -99,7 +99,7 @@ func main() {
 			s.Timestamp[11:16], s.TempCelsius, s.Humidity, status)
 	}
 
-	sensorResult, err := schemaflow.Interpolate[SensorReading](sensorData, schemaflow.InterpolateOptions{
+	sensorResult, err := schemaflux.Interpolate[SensorReading](sensorData, schemaflux.InterpolateOptions{
 		Method:        "trend",
 		Intelligence:  types.Smart,
 		SequenceField: "timestamp",
@@ -147,7 +147,7 @@ func main() {
 		}
 	}
 
-	stockResult, err := schemaflow.Interpolate[DailyStockPrice](stockData, schemaflow.InterpolateOptions{
+	stockResult, err := schemaflux.Interpolate[DailyStockPrice](stockData, schemaflux.InterpolateOptions{
 		Method:        "pattern",
 		Intelligence:  types.Smart,
 		SequenceField: "date",
@@ -205,7 +205,7 @@ func main() {
 		}
 	}
 
-	surveyResult, err := schemaflow.Interpolate[SurveyResponse](surveyData, schemaflow.InterpolateOptions{
+	surveyResult, err := schemaflux.Interpolate[SurveyResponse](surveyData, schemaflux.InterpolateOptions{
 		Method:        "semantic",
 		Intelligence:  types.Smart,
 		SequenceField: "question_num",

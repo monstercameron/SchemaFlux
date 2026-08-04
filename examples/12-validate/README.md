@@ -127,5 +127,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Validate API Reference](../../docs/reference/API.md#validate)

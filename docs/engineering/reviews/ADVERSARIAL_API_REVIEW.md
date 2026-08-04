@@ -69,7 +69,7 @@ and the provider registry.
 `client.go:51-54`, `client.go:186-188`
 
 `NewClient("")` falls back to the `local` provider, which is the mock. `Init("")` takes the same path.
-A production deployment with an unset `SCHEMAFLOW_API_KEY` therefore does not fail: it returns
+A production deployment with an unset `SCHEMAFLUX_API_KEY` therefore does not fail: it returns
 `Mock response for: ...` which either parses into a zero-valued struct or produces a JSON parse error
 that reads like a model failure. The one honest error in the stack — `"no LLM provider configured"`
 (`internal/ops/llm_helper.go:47`) — is unreachable through the documented init path, because a provider
@@ -107,7 +107,7 @@ registered provider. The Anthropic provider defends itself against this (`intern
 rewrites any `gpt*` model to Sonnet), but the OpenAI-compatible path does not.
 
 So the README's own example, `client.WithProvider("deepseek")`, sends `model: "gpt-5.4"` to
-`api.deepseek.com` and 400s, unless the user also sets an undocumented `SCHEMAFLOW_MODEL`.
+`api.deepseek.com` and 400s, unless the user also sets an undocumented `SCHEMAFLUX_MODEL`.
 
 **Fix:** a per-provider default-model map keyed by intelligence tier, plus validation at provider
 construction rather than at first call.
@@ -167,7 +167,7 @@ not deliver.
 ordering happens to work; the reverse ordering does not:
 
 ```go
-client := schemaflow.NewClient(key).WithProvider("openai").WithTimeout(60 * time.Second) // timeout ignored
+client := schemaflux.NewClient(key).WithProvider("openai").WithTimeout(60 * time.Second) // timeout ignored
 ```
 
 No error, no warning. A fluent API where option order changes behavior is a trap.
@@ -182,7 +182,7 @@ Model, timeout, retries, and max tokens are read from `os.Getenv` on every call.
 `Model`, `MaxTokens`, or `Temperature` field. To change a model, a library consumer must mutate
 process environment variables.
 
-Worse, `SCHEMAFLOW_MODEL` (`config.go:135-137`) overrides everything, so `Smart()` / `Fast()` /
+Worse, `SCHEMAFLUX_MODEL` (`config.go:135-137`) overrides everything, so `Smart()` / `Fast()` /
 `Quick()` become silent no-ops when it is set — the tier abstraction disappears without a word.
 
 **Fix:** per-operation overrides on the options struct; env vars as the lowest-precedence fallback.
@@ -251,7 +251,7 @@ The doc comment says it "reads configuration from a .env file if path is provide
 returns `nil`, so the README's `if err := InitWithEnv(); err != nil { panic(err) }` is dead code —
 which is exactly how a missing key becomes I-01.
 
-It also calls `os.Setenv("SCHEMAFLOW_API_KEY", ...)` (`client.go:205`), mutating process-global state
+It also calls `os.Setenv("SCHEMAFLUX_API_KEY", ...)` (`client.go:205`), mutating process-global state
 from a library init, which leaks into child processes.
 
 ## I-14 — Unsynchronized globals `S3` `OPEN`
@@ -310,7 +310,7 @@ ignored. Consequences for `Choosing`, `Filtering`, `Sorting`, every text operati
 `Asking`, `Inferring`, `Completing`, `Suggesting`, `Diffing`, `Explaining`, `Decide`, and `Guard`:
 
 - Caller cancellation does nothing. An abandoned HTTP request keeps paying for tokens.
-- Caller deadlines do nothing; the global 30s `SCHEMAFLOW_TIMEOUT` applies instead.
+- Caller deadlines do nothing; the global 30s `SCHEMAFLUX_TIMEOUT` applies instead.
 - Context values are lost, including the request-tracking metadata this library itself puts there
   (`WithCorrelationID` / `WithRequestTrackingMetadata` cannot survive into these ops).
 
@@ -1037,11 +1037,11 @@ matching `Explanation` against `"Default selection (LLM unavailable)"`.
 
 ## P-02 — `Decide`'s first parameter is named `ctx` and is not a context `S1` `OPEN`
 
-`schemaflow.go:764-770`, `internal/ops/procedural.go:35`, `77-83`
+`schemaflux.go:764-770`, `internal/ops/procedural.go:35`, `77-83`
 
 ```go
 func Decide[T any](ctx any, decisions []Decision[T], opts ...OpOptions) (T, DecisionResult, error)
-// doc comment: result, decision, err := schemaflow.Decide(ctx, decisions)
+// doc comment: result, decision, err := schemaflux.Decide(ctx, decisions)
 ```
 
 `ctx` here is the *decision context* — arbitrary data formatted into the prompt with `%v`. In Go, a
@@ -1173,7 +1173,7 @@ if user.Intelligence != 0 { defaults.Intelligence = user.Intelligence }
 two most prominent modifiers in the README are indistinguishable from not calling them:
 
 ```go
-schemaflow.Negotiating[Deal](c).Strict().Smart().Run()
+schemaflux.Negotiating[Deal](c).Strict().Smart().Run()
 // runs in TransformMode on the Fast model — the operation's defaults
 ```
 
@@ -1239,7 +1239,7 @@ inconsistency that belongs to `internal/ops`.
 
 ## F-06 — Two complete public APIs, no deprecation markers `S2` `OPEN`
 
-`schemaflow.go` + `fluent.go` export 125 functions, 45 of them gerund-form builders and most of the
+`schemaflux.go` + `fluent.go` export 125 functions, 45 of them gerund-form builders and most of the
 rest their direct-call twins. The README says the direct API is "compatibility-only," but there is not
 a single `// Deprecated:` comment in the repo, so no linter, IDE, or `staticcheck` run will ever tell a
 user they are on the legacy path. Both spellings appear in package doc comments and examples.
@@ -1345,7 +1345,7 @@ name), thrown away in package init, so a name collision silently keeps whichever
 # Gaps — missing and weak capabilities
 
 The findings above are defects in what exists. This section is what a typed LLM operations library is
-expected to have and SchemaFlow does not. Each was verified absent, not assumed.
+expected to have and SchemaFlux does not. Each was verified absent, not assumed.
 
 ## Gap-01 — No streaming, anywhere `S2`
 
@@ -1461,7 +1461,7 @@ furthest ahead of the code. Today the control-flow surface is `Decide`, `Guard`,
 ## CF-01 — No repair loop on validation or parse failure `S1`
 
 The defining feature of typed LLM libraries is: parse fails → feed the error back to the model → retry
-→ succeed. SchemaFlow retries **transport** errors only. A malformed JSON body, a missing required
+→ succeed. SchemaFlux retries **transport** errors only. A malformed JSON body, a missing required
 field, or a category outside the allowed set is terminal (`internal/ops/core.go:188-207`,
 `analysis.go:188-196`). The retry machinery already exists in `CallLLM`; it is simply not wired to
 validation outcomes.
@@ -1744,14 +1744,14 @@ mistake **C-05** makes today, where a fallback silently multiplies spend by N).
 ```go
 type RequestOption func(*Config)
 
-client := schemaflow.New(provider,
-    option.Tier(schemaflow.Fast),
+client := schemaflux.New(provider,
+    option.Tier(schemaflux.Fast),
     option.Timeout(30*time.Second),
 )
 
-res, err := schemaflow.Extract[Person](ctx, client, input,
-    option.Mode(schemaflow.Strict),      // overrides client default for this call only
-    option.Tier(schemaflow.Smart),
+res, err := schemaflux.Extract[Person](ctx, client, input,
+    option.Mode(schemaflux.Strict),      // overrides client default for this call only
+    option.Tier(schemaflux.Smart),
     option.Model("gpt-5.4"),             // programmatic, not an env var
     option.MaxOutputTokens(8000),
     option.Steer("prefer explicit evidence over inference"),
@@ -1785,7 +1785,7 @@ every numeric option that currently cannot be set to zero (`TopN`, `MinConfidenc
 type Handler    func(context.Context, Request) (Response, error)
 type Middleware func(Handler) Handler
 
-client := schemaflow.New(provider, option.Use(
+client := schemaflux.New(provider, option.Use(
     mw.RateLimit(60),          // Gap-09
     mw.Retry(3, mw.Jitter),    // I-12: typed classification, jittered backoff
     mw.Cache(store),           // Gap-07
@@ -1871,12 +1871,12 @@ primitives instead of a control plane, and it replaces four one-off constructs (
 
 ```go
 // before — global provider, context ignored, options are prose, nothing verified
-best, err := schemaflow.Choosing(products).By("lowest total cost").Fast().Run()
+best, err := schemaflux.Choosing(products).By("lowest total cost").Fast().Run()
 
 // after — explicit client, context honored, membership enforced, cost reported
-res, err := schemaflow.Choose(ctx, client, products,
+res, err := schemaflux.Choose(ctx, client, products,
     option.By("lowest total cost"),
-    option.Tier(schemaflow.Fast),
+    option.Tier(schemaflux.Fast),
 )
 // res.Value is guaranteed to be one of `products`
 // res.Meta.Cost.TotalCost is real or explicitly marked unpriced
@@ -1886,7 +1886,7 @@ res, err := schemaflow.Choose(ctx, client, products,
 The fluent spelling survives as sugar over the same core, with one signature change:
 
 ```go
-res, err := schemaflow.Choosing(products).By("lowest total cost").Fast().Run(ctx)
+res, err := schemaflux.Choosing(products).By("lowest total cost").Fast().Run(ctx)
 ```
 
 `Run()` must take a context. There is no way to honor cancellation otherwise, and the builder is
@@ -1998,7 +1998,7 @@ Two to three weeks, family by family, in this order — highest defect density f
    become edge-triggered and optionally enforcing via `mw.Budget` (**I-11**).
 2. **Providers**: per-provider default-model map with construction-time validation (**I-03**);
    `mw.Fallback` for failover (**Gap-09**).
-3. **Testing**: ship `schemaflowtest` with an exported fake provider and a cassette recorder
+3. **Testing**: ship `schemafluxtest` with an exported fake provider and a cassette recorder
    (**Gap-06**). This is the largest adoption blocker in the document — without it nobody can run CI
    against code that uses this library.
 4. **Streaming** on the `Provider` interface (**Gap-01**), and prompt caching (**Gap-04**) now that
@@ -2037,7 +2037,7 @@ Decisions, not bugs. Each halves or doubles the maintenance surface, so make the
 - **Prompts as artifacts.** Name, version, and expose them for override, with golden tests
   (**Gap-13**). This is what makes a prompt edit a reviewable change instead of a silent behavior
   change for every downstream user.
-- **The design documents.** `workflowengineplan.md` and `SCHEMAFLOWDSLSPEC.md` describe a durable
+- **The design documents.** `workflowengineplan.md` and `SCHEMAFLUXDSLSPEC.md` describe a durable
   workflow engine that does not exist here, and Primitive 9 is a deliberate decision *not* to build
   it. Either scope them into the roadmap explicitly or move them out of `docs/engineering/plans/`, so
   no reader mistakes ambition for behavior.

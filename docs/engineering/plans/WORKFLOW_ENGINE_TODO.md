@@ -83,7 +83,7 @@
 - [x] Create service SLA monitoring
 - [x] Implement bulk operation support
 
-### SchemaFlow AI Tasks
+### SchemaFlux AI Tasks
 - [x] Create AITaskExecutor implementation
 - [x] Implement Extract task type
 - [x] Implement Transform task type

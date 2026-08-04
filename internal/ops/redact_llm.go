@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/telemetry"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/telemetry"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // RedactSpan represents a span of characters to redact

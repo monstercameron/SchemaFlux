@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/config"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // Test helper type

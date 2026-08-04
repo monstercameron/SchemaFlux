@@ -1,4 +1,4 @@
-// Package main demonstrates all SchemaFlow tool primitives.
+// Package main demonstrates all SchemaFlux tool primitives.
 // Run with: go run ./examples/tools/...
 package main
 
@@ -8,12 +8,12 @@ import (
 	"os"
 	stdstrings "strings"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func main() {
 	fmt.Println("╔══════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║           SchemaFlow Tool Primitives - Examples                  ║")
+	fmt.Println("║           SchemaFlux Tool Primitives - Examples                  ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 

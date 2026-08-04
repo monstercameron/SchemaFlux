@@ -11,8 +11,8 @@ package main
 import (
 	"fmt"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 func main() {
@@ -20,9 +20,9 @@ func main() {
 	fmt.Println("?? Suggest Example - AI-Powered Recommendations")
 	fmt.Println("=" + string(make([]byte, 60)))
 
-	// Initialize SchemaFlow
+	// Initialize SchemaFlux
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -43,8 +43,8 @@ func main() {
 	fmt.Printf("      Issues: %v\n", etlContext["issues"])
 	fmt.Printf("      Stack:  %v\n", etlContext["current_stack"])
 
-	suggestions1, err := schemaflow.Suggest[string](etlContext,
-		schemaflow.NewSuggestOptions().
+	suggestions1, err := schemaflux.Suggest[string](etlContext,
+		schemaflux.NewSuggestOptions().
 			WithTopN(5).
 			WithDomain("data-engineering"))
 
@@ -73,11 +73,11 @@ func main() {
 	fmt.Printf("      Operations:  %v\n", apiContext["operations"])
 	fmt.Printf("      Constraints: %v\n", apiContext["constraints"])
 
-	suggestions2, err := schemaflow.Suggest[string](apiContext,
-		schemaflow.NewSuggestOptions().
+	suggestions2, err := schemaflux.Suggest[string](apiContext,
+		schemaflux.NewSuggestOptions().
 			WithTopN(4).
 			WithDomain("api-design").
-			WithStrategy(schemaflow.SuggestPattern))
+			WithStrategy(schemaflux.SuggestPattern))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -105,8 +105,8 @@ func main() {
 	fmt.Printf("      Frequency: %s\n", errorContext["frequency"])
 	fmt.Printf("      Impact:    %s\n", errorContext["impact"])
 
-	suggestions3, err := schemaflow.Suggest[string](errorContext,
-		schemaflow.NewSuggestOptions().
+	suggestions3, err := schemaflux.Suggest[string](errorContext,
+		schemaflux.NewSuggestOptions().
 			WithTopN(3).
 			WithDomain("reliability"))
 
@@ -136,8 +136,8 @@ func main() {
 	fmt.Printf("      Issues:   %v\n", codeContext["issues"])
 	fmt.Printf("      Priority: %s\n", codeContext["priority"])
 
-	suggestions4, err := schemaflow.Suggest[string](codeContext,
-		schemaflow.NewSuggestOptions().
+	suggestions4, err := schemaflux.Suggest[string](codeContext,
+		schemaflux.NewSuggestOptions().
 			WithTopN(4).
 			WithDomain("code-quality"))
 

@@ -1,6 +1,6 @@
 package telemetry
 
-import "github.com/monstercameron/schemaflow/internal/types"
+import "github.com/monstercameron/schemaflux/internal/types"
 
 // RecordLLMMetrics records low-cardinality metrics for a completed LLM request.
 func RecordLLMMetrics(metadata *types.ResultMetadata) {

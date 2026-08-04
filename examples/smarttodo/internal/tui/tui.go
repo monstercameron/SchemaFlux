@@ -13,10 +13,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/processor"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/pkg/notifier"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/processor"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/pkg/notifier"
 )
 
 // View modes

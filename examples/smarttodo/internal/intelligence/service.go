@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 )
 
 type Service struct{}
@@ -107,11 +107,11 @@ func (s *Service) CaptureTodo(note string) (*models.SmartTodo, error) {
 		return nil, fmt.Errorf("note cannot be empty")
 	}
 
-	base, err := schemaflow.Extract[models.SmartTodo](
+	base, err := schemaflux.Extract[models.SmartTodo](
 		note,
-		schemaflow.NewExtractOptions().
-			WithMode(schemaflow.TransformMode).
-			WithIntelligence(schemaflow.Fast).
+		schemaflux.NewExtractOptions().
+			WithMode(schemaflux.TransformMode).
+			WithIntelligence(schemaflux.Fast).
 			WithSteering(`Extract a production-quality todo item.
 - Title must be actionable and under 60 characters.
 - Infer priority, category, effort, and location when reasonable.
@@ -124,7 +124,7 @@ func (s *Service) CaptureTodo(note string) (*models.SmartTodo, error) {
 		return &fallback, nil
 	}
 
-	normalized, err := schemaflow.Normalize(base, schemaflow.NewNormalizeOptions().
+	normalized, err := schemaflux.Normalize(base, schemaflux.NewNormalizeOptions().
 		WithCanonicalMappings(map[string]string{
 			"asap":      "high",
 			"immediate": "high",
@@ -134,39 +134,39 @@ func (s *Service) CaptureTodo(note string) (*models.SmartTodo, error) {
 			"home":      "home",
 		}).
 		WithFields([]string{"priority", "category", "location", "effort"}).
-		WithIntelligence(schemaflow.Fast))
+		WithIntelligence(schemaflux.Fast))
 	if err == nil {
 		base = normalized.Normalized
 	}
 
-	enriched, err := schemaflow.EnrichInPlace(base, schemaflow.NewEnrichOptions().
+	enriched, err := schemaflux.EnrichInPlace(base, schemaflux.NewEnrichOptions().
 		WithDerivationRules(map[string]string{
 			"context":  "add one concise tactical hint for executing this task",
 			"category": "fill when missing using the title and description",
 			"location": "fill when missing using the task context",
 		}).
 		WithAddOnly(true).
-		WithIntelligence(schemaflow.Fast))
+		WithIntelligence(schemaflux.Fast))
 	if err == nil {
 		base = enriched
 	}
 
-	validation, err := schemaflow.Validate(base, schemaflow.NewValidateOptions().
+	validation, err := schemaflux.Validate(base, schemaflux.NewValidateOptions().
 		WithRules("priority must be high, medium, or low; effort must be minimal, low, medium, high, or massive; title must be specific; context should be concise").
 		WithAutoCorrect(true).
-		WithIntelligence(schemaflow.Fast))
+		WithIntelligence(schemaflux.Fast))
 	if err == nil && validation.Corrected != nil {
 		base = *validation.Corrected
 	}
 
 	if len(base.Tasks) == 0 && looksComplex(note) {
-		parts, err := schemaflow.DecomposeToSlice[string, models.Task](
+		parts, err := schemaflux.DecomposeToSlice[string, models.Task](
 			note,
-			schemaflow.NewDecomposeOptions().
+			schemaflux.NewDecomposeOptions().
 				WithStrategy("sequential").
 				WithTargetParts(4).
 				WithIncludeDependencies(false).
-				WithIntelligence(schemaflow.Fast),
+				WithIntelligence(schemaflux.Fast),
 		)
 		if err == nil && len(parts) > 0 {
 			base.Tasks = parts
@@ -194,11 +194,11 @@ Instruction:
 %s
 
 Update the todo without dropping useful information.`, mustJSON(todo), instruction)
-	updated, err := schemaflow.Transform[string, models.SmartTodo](
+	updated, err := schemaflux.Transform[string, models.SmartTodo](
 		prompt,
-		schemaflow.NewTransformOptions().
-			WithIntelligence(schemaflow.Fast).
-			WithMode(schemaflow.TransformMode).
+		schemaflux.NewTransformOptions().
+			WithIntelligence(schemaflux.Fast).
+			WithMode(schemaflux.TransformMode).
 			WithSteering("Apply the instruction carefully. Preserve IDs, completed subtasks, and existing useful context unless the instruction overrides them."),
 	)
 	if err != nil {
@@ -216,17 +216,17 @@ Update the todo without dropping useful information.`, mustJSON(todo), instructi
 		updated.Tasks = todo.Tasks
 	}
 
-	normalized, err := schemaflow.Normalize(updated, schemaflow.NewNormalizeOptions().
+	normalized, err := schemaflux.Normalize(updated, schemaflux.NewNormalizeOptions().
 		WithFields([]string{"priority", "category", "location", "effort"}).
-		WithIntelligence(schemaflow.Fast))
+		WithIntelligence(schemaflux.Fast))
 	if err == nil {
 		updated = normalized.Normalized
 	}
 
-	validation, err := schemaflow.Validate(updated, schemaflow.NewValidateOptions().
+	validation, err := schemaflux.Validate(updated, schemaflux.NewValidateOptions().
 		WithRules("priority must be high, medium, or low; effort must be minimal, low, medium, high, or massive; title must remain actionable").
 		WithAutoCorrect(true).
-		WithIntelligence(schemaflow.Fast))
+		WithIntelligence(schemaflux.Fast))
 	if err == nil && validation.Corrected != nil {
 		updated = *validation.Corrected
 	}
@@ -250,14 +250,14 @@ func (s *Service) RecommendNext(todos []*models.SmartTodo) (*models.SmartTodo, e
 		return &copy, nil
 	}
 
-	ranked, err := schemaflow.Rank(
+	ranked, err := schemaflux.Rank(
 		openTodos,
-		schemaflow.NewRankOptions().
+		schemaflux.NewRankOptions().
 			WithQuery("best next task to work on now given urgency, deadline pressure, dependencies, effort, and momentum").
 			WithTopK(minInt(3, len(openTodos))).
 			WithRankingFactors([]string{"urgency", "deadline", "effort", "dependency pressure", "quick wins"}).
 			WithIncludeExplanation(true).
-			WithIntelligence(schemaflow.Smart),
+			WithIntelligence(schemaflux.Smart),
 	)
 	shortlist := openTodos
 	if err == nil && len(ranked.Items) > 0 {
@@ -268,13 +268,13 @@ func (s *Service) RecommendNext(todos []*models.SmartTodo) (*models.SmartTodo, e
 		}
 	}
 
-	best, err := schemaflow.Choose(shortlist, schemaflow.NewChooseOptions().WithCriteria([]string{
+	best, err := schemaflux.Choose(shortlist, schemaflux.NewChooseOptions().WithCriteria([]string{
 		"urgency",
 		"leverage",
 		"available energy fit",
 		"likelihood of completion",
 	}).
-		WithIntelligence(schemaflow.Smart))
+		WithIntelligence(schemaflux.Smart))
 	if err == nil {
 		return best, nil
 	}
@@ -293,11 +293,11 @@ func (s *Service) PrioritizeBoard(todos []*models.SmartTodo) ([]*models.SmartTod
 		return cloneTodos(todos), nil
 	}
 
-	sorted, err := schemaflow.Sort(
+	sorted, err := schemaflux.Sort(
 		openTodos,
-		schemaflow.NewSortOptions().
+		schemaflux.NewSortOptions().
 			WithCriteria("priority considering overdue work, today's deadlines, blocked tasks, effort, and momentum").
-			WithIntelligence(schemaflow.Smart).
+			WithIntelligence(schemaflux.Smart).
 			WithSteering("Return a total ordering of the open tasks from highest immediate value to lowest. Avoid ties."),
 	)
 	if err != nil {
@@ -320,11 +320,11 @@ func (s *Service) FilterBoard(todos []*models.SmartTodo, query string) ([]*model
 		return cloneTodos(todos), nil
 	}
 
-	filtered, err := schemaflow.Filter(
+	filtered, err := schemaflux.Filter(
 		todos,
-		schemaflow.NewFilterOptions().
+		schemaflux.NewFilterOptions().
 			WithCriteria(query).
-			WithIntelligence(schemaflow.Fast).
+			WithIntelligence(schemaflux.Fast).
 			WithSteering("Filter tasks semantically. Match timing, urgency, location, energy, and title cues."),
 	)
 	if err == nil {
@@ -350,19 +350,19 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 	snapshotJSON := mustJSON(snapshot)
 
 	summary := "Board is quiet."
-	if text, err := schemaflow.Summarize(snapshotJSON, func() schemaflow.SummarizeOptions {
-		opts := schemaflow.NewSummarizeOptions()
+	if text, err := schemaflux.Summarize(snapshotJSON, func() schemaflux.SummarizeOptions {
+		opts := schemaflux.NewSummarizeOptions()
 		opts.TargetLength = 5
 		opts.LengthUnit = "sentences"
 		opts.Style = "executive"
 		opts.FocusAreas = []string{"urgent work", "stale work", "quick wins"}
-		opts.CommonOptions = opts.CommonOptions.WithIntelligence(schemaflow.Fast)
+		opts.CommonOptions = opts.CommonOptions.WithIntelligence(schemaflux.Fast)
 		return opts
 	}()); err == nil {
 		summary = text
 	}
 
-	auditResult, auditErr := schemaflow.Audit(snapshot, schemaflow.AuditOptions{
+	auditResult, auditErr := schemaflux.Audit(snapshot, schemaflux.AuditOptions{
 		Policies: []string{
 			"High priority tasks should have either a clear deadline or a concrete next step",
 			"Tasks with many subtasks should not be missing context",
@@ -371,22 +371,22 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 		Categories:   []string{"quality", "consistency", "planning"},
 		Threshold:    0.45,
 		Deep:         true,
-		Mode:         schemaflow.TransformMode,
-		Intelligence: schemaflow.Smart,
+		Mode:         schemaflux.TransformMode,
+		Intelligence: schemaflux.Smart,
 	})
 
 	focus := FocusAnswer{}
-	focusResult, focusErr := schemaflow.Question[BoardSnapshot, FocusAnswer](snapshot, schemaflow.NewQuestionOptions("What are the top three focus areas, the biggest blocker, and the best quick wins?").WithIntelligence(schemaflow.Smart))
+	focusResult, focusErr := schemaflux.Question[BoardSnapshot, FocusAnswer](snapshot, schemaflux.NewQuestionOptions("What are the top three focus areas, the biggest blocker, and the best quick wins?").WithIntelligence(schemaflux.Smart))
 	if focusErr == nil {
 		focus = focusResult.Answer
 	}
 
 	forecast := BoardForecast{}
-	forecastResult, forecastErr := schemaflow.Predict[BoardForecast](snapshot, schemaflow.NewPredictOptions().
+	forecastResult, forecastErr := schemaflux.Predict[BoardForecast](snapshot, schemaflux.NewPredictOptions().
 		WithHorizon("next 3 working sessions").
 		WithFactors([]string{"open count", "overdue work", "subtask load", "priority mix"}).
 		WithIncludeScenarios(false).
-		WithIntelligence(schemaflow.Smart))
+		WithIntelligence(schemaflux.Smart))
 	if forecastErr == nil {
 		forecast = forecastResult.Prediction
 	}
@@ -401,13 +401,13 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 		Forecast:         forecast,
 	}
 
-	synthesized, synthErr := schemaflow.Synthesize[BoardReview](
+	synthesized, synthErr := schemaflux.Synthesize[BoardReview](
 		[]any{summary, auditResult, focus, forecast},
-		schemaflow.NewSynthesizeOptions().
+		schemaflux.NewSynthesizeOptions().
 			WithStrategy("integrate").
 			WithGenerateInsights(true).
 			WithCiteSources(false).
-			WithIntelligence(schemaflow.Smart).
+			WithIntelligence(schemaflux.Smart).
 			WithSteering("Create an operator-friendly board review with concise risks, focus areas, and actionable next moves."),
 	)
 	if synthErr == nil {
@@ -453,12 +453,12 @@ func (s *Service) PlanDay(todos []*models.SmartTodo, context string) (DayPlan, e
 	candidates := defaultContextCandidates(context)
 	matches := []ContextMatch{}
 
-	matchResult, err := schemaflow.SemanticMatch(snapshot.OpenTasks, candidates, schemaflow.NewMatchOptions().
+	matchResult, err := schemaflux.SemanticMatch(snapshot.OpenTasks, candidates, schemaflux.NewMatchOptions().
 		WithStrategy("best-fit").
 		WithThreshold(0.4).
 		WithMatchCriteria("Match each task to the most appropriate work mode or time block").
 		WithIncludeExplanations(true).
-		WithIntelligence(schemaflow.Fast))
+		WithIntelligence(schemaflux.Fast))
 	if err == nil {
 		for _, pair := range matchResult.Matches {
 			matches = append(matches, ContextMatch{
@@ -481,10 +481,10 @@ func (s *Service) PlanDay(todos []*models.SmartTodo, context string) (DayPlan, e
 		Matches:  matches,
 	}
 
-	projected, projectErr := schemaflow.Project[any, DayPlan](input, schemaflow.ProjectOptions{
+	projected, projectErr := schemaflux.Project[any, DayPlan](input, schemaflux.ProjectOptions{
 		InferMissing: true,
-		Mode:         schemaflow.TransformMode,
-		Intelligence: schemaflow.Smart,
+		Mode:         schemaflux.TransformMode,
+		Intelligence: schemaflux.Smart,
 		Steering:     "Project the board into a realistic one-day plan with 3-5 work blocks, quick wins, and a clear recommended start.",
 	})
 	if projectErr == nil {
@@ -666,7 +666,7 @@ func cloneTodos(todos []*models.SmartTodo) []*models.SmartTodo {
 	return cloned
 }
 
-func extractAuditRisks(result schemaflow.AuditResult[BoardSnapshot]) []string {
+func extractAuditRisks(result schemaflux.AuditResult[BoardSnapshot]) []string {
 	risks := make([]string, 0, len(result.Findings))
 	for _, finding := range result.Findings {
 		risks = append(risks, truncate(strings.TrimSpace(finding.Issue), 120))

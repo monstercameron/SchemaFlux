@@ -3,14 +3,14 @@ package utils
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflow/internal/config"
-	"github.com/monstercameron/schemaflow/telemetry"
+	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 func TestRecordMetricDelegatesToTelemetry(t *testing.T) {
 	telemetry.ResetMetrics()
 	t.Cleanup(telemetry.ResetMetrics)
-	t.Setenv("SCHEMAFLOW_METRICS", "")
+	t.Setenv("SCHEMAFLUX_METRICS", "")
 
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })

@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflow/internal/config"
-	"github.com/monstercameron/schemaflow/internal/logger"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // NegotiateOptions configures the Negotiate operation

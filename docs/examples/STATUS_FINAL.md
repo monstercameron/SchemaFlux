@@ -1,7 +1,7 @@
-# SchemaFlow Examples - Implementation Status
+# SchemaFlux Examples - Implementation Status
 
 ## Overview
-Complete set of examples demonstrating ALL SchemaFlow LLM operations with realistic use cases and output demonstrations.
+Complete set of examples demonstrating ALL SchemaFlux LLM operations with realistic use cases and output demonstrations.
 
 ## Implementation Status: ✅ COMPLETE (14/15 functional)
 

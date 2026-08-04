@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func TestExplainOptions(t *testing.T) {

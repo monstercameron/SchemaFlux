@@ -21,7 +21,7 @@ This example sorts:
 ## How It Works
 
 ```go
-sortedTasks, err := schemaflow.Sort(
+sortedTasks, err := schemaflux.Sort(
     tasks,
     ops.NewSortOptions().
         WithCriteria("Priority by urgency, impact, and effort"),
@@ -99,5 +99,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Sort API Reference](../../docs/reference/API.md#sort)

@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 	"go.opentelemetry.io/otel/trace"
 )
 

@@ -11,8 +11,8 @@ package main
 import (
 	"fmt"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 // UserProfile represents a user's profile data
@@ -32,9 +32,9 @@ func main() {
 	fmt.Println("?? Explain Example - Generate Human-Readable Explanations")
 	fmt.Println("=" + string(make([]byte, 60)))
 
-	// Initialize SchemaFlow with Fast intelligence (Cerebras)
+	// Initialize SchemaFlux with Fast intelligence (Cerebras)
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -58,13 +58,13 @@ func main() {
 	fmt.Println("1??  Technical Audience Explanation")
 	fmt.Println("-" + string(make([]byte, 60)))
 
-	techResult, err := schemaflow.Explain(userData,
-		schemaflow.NewExplainOptions().
+	techResult, err := schemaflux.Explain(userData,
+		schemaflux.NewExplainOptions().
 			WithAudience("technical").
 			WithDepth(2).
 			WithFormat("structured").
 			WithFocus("implementation").
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -84,14 +84,14 @@ func main() {
 	fmt.Println("2??  Executive Audience Explanation")
 	fmt.Println("-" + string(make([]byte, 60)))
 
-	execResult, err := schemaflow.Explain(userData,
-		schemaflow.NewExplainOptions().
+	execResult, err := schemaflux.Explain(userData,
+		schemaflux.NewExplainOptions().
 			WithAudience("executive").
 			WithDepth(1).
 			WithFormat("bullet-points").
 			WithFocus("benefits").
 			WithContext("Business intelligence and user analytics data").
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -111,13 +111,13 @@ func main() {
 	fmt.Println("3??  Beginner-Friendly Explanation")
 	fmt.Println("-" + string(make([]byte, 60)))
 
-	beginnerResult, err := schemaflow.Explain(userData,
-		schemaflow.NewExplainOptions().
+	beginnerResult, err := schemaflux.Explain(userData,
+		schemaflux.NewExplainOptions().
 			WithAudience("beginner").
 			WithDepth(1).
 			WithFormat("step-by-step").
 			WithFocus("overview").
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)

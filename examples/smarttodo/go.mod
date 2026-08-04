@@ -1,4 +1,4 @@
-module github.com/monstercameron/schemaflow/examples/smarttodo
+module github.com/monstercameron/schemaflux/examples/smarttodo
 
 go 1.24.0
 
@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/lipgloss v0.10.0
 	github.com/mattn/go-sqlite3 v1.14.22
-	github.com/monstercameron/schemaflow v0.0.0
+	github.com/monstercameron/schemaflux v0.0.0
 )
 
 require (
@@ -52,7 +52,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/monstercameron/schemaflow => ../../
+replace github.com/monstercameron/schemaflux => ../../
 
 replace github.com/charmbracelet/bubbletea => ./wasmdeps/bubbletea
 

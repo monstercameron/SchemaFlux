@@ -9,7 +9,7 @@ Completed in this review:
 - `go vet ./...` in the main module: pass
 - `go run ./examples/tools all`: pass
 - `go build ./...` in `examples/smarttodo`: pass
-- Numbered example smoke run with `SCHEMAFLOW_PROVIDER=local`: 26 passed, 19 failed
+- Numbered example smoke run with `SCHEMAFLUX_PROVIDER=local`: 26 passed, 19 failed
 - Live OpenAI smoke run after provider fixes: `Extract`, `Validate`, and `Rank` passed
 - Full live OpenAI smoke run via `cmd/live-llm-ops-smoke/main.go`: 65 / 65 exported LLM ops passed
 - Three-model live OpenAI matrix after remapping intelligence:

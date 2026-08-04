@@ -66,9 +66,9 @@ ss]** Line 300: `getCaller`'s logic for extracting the filename is not robust an
 
  - **Robustne- **Clarity]** The tests are not very descriptive. For example, `TestExtract` could be split into multiple tests for different scenarios.
 
-## experimental/schemaflow.go
+## experimental/schemaflux.go
 
-- **[Doc]** The file is named `experimental/schemaflow.go`, which now matches the package name but still duplicates higher-level documentation. Consider consolidating with `core/doc.go` to avoid drift.
+- **[Doc]** The file is named `experimental/schemaflux.go`, which now matches the package name but still duplicates higher-level documentation. Consider consolidating with `core/doc.go` to avoid drift.
 - **[Doc]** The file list in the documentation comment is out of date. For example, it lists `data_operations.go`, but the file is `ops_core.go`.
 - **[Doc]** The documentation is getting out of sync with the code. It's important to keep it updated.
 - **Refactor]** The file is just a documentation file. It could be merged with `doc.go`.
@@ -87,14 +87,14 @@ ss]** Line 300: `getCaller`'s logic for extracting the filename is not robust an
 
 - **[Doc]** The documentation is good, but it's a bit long and could be better organized. A table of contents would be helpful.
 - **[Doc]** The file names mentioned in the "Operation Categories" section are not consistent with the actual file names in the project. For example, it lists `data_operations.go`, but the file is `ops_core.go`.
-- **[Doc]** The documentation mentions `ClientExtract`, but the example uses `schemaflow.ClientExtract`, which is not the idiomatic way to call a method on a client.
+- **[Doc]** The documentation mentions `ClientExtract`, but the example uses `schemaflux.ClientExtract`, which is not the idiomatic way to call a method on a client.
 - **[Doc]** The "Procedural Operations" section mentions `procedural_ops.go`, but the file is `ops_procedural.go`.
 - **Doc]** The documentation is getting out of sync with the code. It's important to keep it updated.
 
 ## go.mod
 
 - **[Deps]** 2025-10-07: Go directive relaxed to the minor release (`go 1.24.0`; Go tooling rewrites the `.0` suffix automatically) while retaining the `toolchain` pin. ✅
-- **[Deps]** 2025-10-07: Module path casing corrected to `github.com/monstercameron/schemaflow` to match the canonical repository location. ✅
+- **[Deps]** 2025-10-07: Module path casing corrected to `github.com/monstercameron/schemaflux` to match the canonical repository location. ✅
 - **[Deps]** 2025-10-07: Removed unused `github.com/gin-gonic/gin` and other stale requirements via `go mod tidy`. ✅
 - **[Deps]** The OpenTelemetry stack is still locked to specific exporters; revisit once we introduce a pluggable telemetry layer.
 - **[Deps]** Indirect dependencies now reflect tidy output. Monitor after the package split to ensure nothing drifts back in.
@@ -104,10 +104,10 @@ ss]** Line 300: `getCaller`'s logic for extracting the filename is not robust an
 - **[Deps]** 2025-10-07: Regenerated with `go mod tidy`; duplicate testify/yaml entries cleared. ✅
 - **[Deps]** Remaining entries are required by OpenTelemetry and gRPC—revisit after modularizing telemetry to trim further.
 
-## experimental/schemaflow_test.go
+## experimental/schemaflux_test.go
 
-- **[Test]** The renamed `experimental/schemaflow_test.go` remains extremely broad; long-term we should split it into focused suites.
-- **[Test]** Line 20: The `TestMain` function sets up a mock client if `SCHEMAFLOW_API_KEY` is not set. This is good for CI, but it makes it hard to run tests against a real API.
+- **[Test]** The renamed `experimental/schemaflux_test.go` remains extremely broad; long-term we should split it into focused suites.
+- **[Test]** Line 20: The `TestMain` function sets up a mock client if `SCHEMAFLUX_API_KEY` is not set. This is good for CI, but it makes it hard to run tests against a real API.
 - **[Test]** Line 33: The `mockLLMResponse` function is a giant `if/else if` block that is hard to maintain. It would be better to use a map of responses or a more structured approach.
 - **[Refactor]** The file is very long and contains tests for many different parts of the library. It should be split into multiple files.
 - **[Test]** The tests are very basic and don't cover many edge cases. For example, the `TestExtract` test only checks for a successful extraction and doesn't test any failure cases.
@@ -204,8 +204,8 @@ s issues found in the codebase.
 ## docs/reference/API.md
 
 - **[Doc]** Lines 16, 108, 113, 119: The file contains several string-based DSLs (for provider, filtering, sorting, and validation) that are not documented. It would be beneficial to add documentation explaining the grammar and available options for these DSLs.
-- **[Design]** Line 30: The `schemaflow.ClientExtract` function and similar functions could be simplified to `client.Extract` for a more idiomatic Go API. This is a design choice, but the current naming is a bit redundant.
-- **[Design]** Line 10: The global `schemaflow.Init` function introduces global state, which can make testing and configuration more difficult. The client-based approach (Option 2) is better, and it might be worth considering deprecating the global function.
+- **[Design]** Line 30: The `schemaflux.ClientExtract` function and similar functions could be simplified to `client.Extract` for a more idiomatic Go API. This is a design choice, but the current naming is a bit redundant.
+- **[Design]** Line 10: The global `schemaflux.Init` function introduces global state, which can make testing and configuration more difficult. The client-based approach (Option 2) is better, and it might be worth considering deprecating the global function.
 - **[Doc]** Line 220: The local provider for testing is a great feature, but the documentation could be expanded to provide more examples of how to use it effectively for different scenarios.
 - **[Doc]** General: The API is extensive. A "Common Patterns" or "Cookbook" section with more real-world examples for combining different operations would be very helpful for users.
 
@@ -230,7 +230,7 @@ s issues found in the codebase.
 
 - **[Robustness]** Line 21: The `LoadEnv` function's directory traversal to find `.env` stops at `/`, which is incorrect for Windows. It should use a condition like `dir != filepath.Dir(dir)` to handle drive roots correctly.
 - **[Design]** Line 81: `InitWithEnv` calls `Init`, continuing the use of global state. It would be better to return a configured `*Client` instead.
-- **[Refactor]** Lines 103-117: The logic for checking `SCHEMAFLOW_MODEL_*` and `OPENAI_*_MODEL` environment variables is duplicated three times. This should be refactored into a helper function.
+- **[Refactor]** Lines 103-117: The logic for checking `SCHEMAFLUX_MODEL_*` and `OPENAI_*_MODEL` environment variables is duplicated three times. This should be refactored into a helper function.
 - **[Concurrency]** The use of a single global mutex (`mu`) for all configuration settings is a bottleneck and prevents using multiple clients with different configurations concurrently. Each configuration setting should have its own lock or be part of a client struct.
 - **[Clarity]** Line 161: The `GetModel` function calls an internal `getModel` function. The naming is confusing; it's not clear what the difference is without reading the other file.
 - **[Logging]** Line 205: `SetDebugMode` logs a message when debug mode is disabled. It's probably better to not log anything in this case.
@@ -332,7 +332,7 @@ s issues found in the codebase.
 *   **[Robustness] Unbounded Exporter Creation**: The `InitTracing` function appends exporters to a slice based on environment variables. If multiple exporter endpoints are set (e.g., both Jaeger and OTLP), it will create and use all of them without any warning or clear precedence, which could lead to unexpected performance overhead and data duplication.
 *   **[Robustness] Insecure OTLP Client**: The OTLP exporter is configured with `otlptracegrpc.WithInsecure()`, which disables TLS. This is a significant security risk for production environments and should be configurable.
 *   **[Refactor] Hardcoded Service Version**: The service version is hardcoded to `"1.0.0"` in the resource attributes. This should be configurable or dynamically determined.
-*   **[Clarity] Confusing Environment Variable Logic**: The `getEnvironment` helper function checks for three different environment variables (`SCHEMAFLOW_ENVIRONMENT`, `ENVIRONMENT`, `ENV`) to determine the environment. This is confusing and should be simplified to a single, well-documented variable.
+*   **[Clarity] Confusing Environment Variable Logic**: The `getEnvironment` helper function checks for three different environment variables (`SCHEMAFLUX_ENVIRONMENT`, `ENVIRONMENT`, `ENV`) to determine the environment. This is confusing and should be simplified to a single, well-documented variable.
 *   **[Robustness] `RecordSpanEvent` Type Handling**: The `RecordSpanEvent` function has a `switch` statement to handle different attribute types, but it has a `default` case that converts any unknown type to a string using `fmt.Sprintf("%v", val)`. This can lead to unhelpful or unreadable attribute values for complex types.
 *   **[Test] Missing Tests**: There are no tests for any of the functions in this file. Critical logic like `InitTracing`, `StartSpan`, and `RecordLLMCall` is completely untested. This means there is no validation for exporter configuration, span creation, or attribute recording.
 *   **[Design] Tracing Not Integrated with Client**: The `StartSpan` function accepts a legacy `OpOptions` struct to extract tracing attributes. It is not integrated with the new typed options system, nor is it connected to the `Client` struct, further cementing the library's reliance on outdated and global patterns.
@@ -385,14 +385,14 @@ s issues found in the codebase.
 ### README.md
 
 *   **[Doc] Out-of-Date Function Names**: The README contains several examples with function and type names that are no longer correct. For instance:
-    *   `schemaflow.Batch()` should be `schemaflow.NewBatchOptions()`.
-    *   `schemaflow.ProcessBatch()` is not a function in the codebase.
+    *   `schemaflux.Batch()` should be `schemaflux.NewBatchOptions()`.
+    *   `schemaflux.ProcessBatch()` is not a function in the codebase.
     *   `results.Metadata.EstimatedCost` and `results.Metadata.TokensSaved` do not exist on the batch result struct.
 *   **[Doc] Broken Links**: The link `[**📚 Full API Documentation →**](docs/reference/API.md)` is a relative link that will work on GitHub, but the other links to issues and discussions are full URLs. For consistency, all links should be full URLs.
-*   **[Doc] Inconsistent Initialization**: The "Simple Example" shows `schemaflow.Init("your-api-key")`, while the "Get Started" section recommends using environment variables with `schemaflow.Init(os.Getenv("SCHEMAFLOW_API_KEY"))`. The "Complex Example" uses `schemaflow.NewClient(apiKey)`, which is the more modern, preferred approach. The documentation should be consistent and strongly recommend the client-based approach over the global `Init`.
+*   **[Doc] Inconsistent Initialization**: The "Simple Example" shows `schemaflux.Init("your-api-key")`, while the "Get Started" section recommends using environment variables with `schemaflux.Init(os.Getenv("SCHEMAFLUX_API_KEY"))`. The "Complex Example" uses `schemaflux.NewClient(apiKey)`, which is the more modern, preferred approach. The documentation should be consistent and strongly recommend the client-based approach over the global `Init`.
 *   **[Doc] Misleading "Circuit Breakers" Claim**: The "Why It Makes Sense" section claims the library has "circuit breakers," but there is no implementation of a circuit breaker pattern in the codebase. This is a misleading claim.
 *   **[Doc] Confusing `otel.Start` Example**: The observability example shows `ctx = otel.Start(ctx, "process-batch")`. The `otel` package in Go is the OpenTelemetry API, and it does not have a `Start` function. The correct way to start a span is `tracer.Start(...)`. This example is incorrect and will not compile.
-*   **[Doc] Inconsistent `ExtractBatch` Examples**: The `ExtractBatch` examples show two different ways of calling it, one with `schemaflow.Batch()` and another with `schemaflow.ExtractBatch[Invoice](...)`. The function signatures and builder patterns are inconsistent with the actual code.
+*   **[Doc] Inconsistent `ExtractBatch` Examples**: The `ExtractBatch` examples show two different ways of calling it, one with `schemaflux.Batch()` and another with `schemaflux.ExtractBatch[Invoice](...)`. The function signatures and builder patterns are inconsistent with the actual code.
 *   **[Doc] Missing `go mod tidy`**: The "Get Started" section should include `go mod tidy` after `go get` to ensure dependencies are clean.
 
 ### scripts/run_tests.sh
@@ -403,18 +403,18 @@ s issues found in the codebase.
 *   **[Build] Bash-Specific Features**: The script uses `PIPESTATUS`, which is a bash-specific feature, to determine the exit code of the test command. This makes the script less portable to other shells.
 *   **[Doc] Incomplete Badge Generation Documentation**: The comment for the `badge` target mentions that it requires `gocov-xml` and `gocov`, but the script only attempts to install `gocov`.
 
-### docs/engineering/specs/SCHEMAFLOWDSLSPEC.md
+### docs/engineering/specs/SCHEMAFLUXDSLSPEC.md
 
-*   **[Doc] Out-of-Date Spec**: This file appears to be a design specification for a workflow engine DSL. However, the concepts and node types described in this document (e.g., `task.service`, `router`, `wait.timer`) do not match the operations implemented in the `schemaflow` library (e.g., `Extract`, `Classify`, `Decide`). This indicates that the implementation has diverged significantly from the original specification.
+*   **[Doc] Out-of-Date Spec**: This file appears to be a design specification for a workflow engine DSL. However, the concepts and node types described in this document (e.g., `task.service`, `router`, `wait.timer`) do not match the operations implemented in the `schemaflux` library (e.g., `Extract`, `Classify`, `Decide`). This indicates that the implementation has diverged significantly from the original specification.
 *   **[Doc] Mismatch with `ops_procedural.go`**: The `Workflow` and `StateMachine` structs defined in `ops_procedural.go` are a Go implementation of a workflow engine, but they do not seem to be related to the JSON-based DSL described in this document. The DSL spec is for a configurable, UI-agnostic engine, while the Go code provides a programmatic, code-first approach.
 *   **[Doc] Unused Concepts**: The document details concepts like `connectors`, `route_tables`, and `storage_bindings`, none of which are present in the Go codebase. This suggests that either the project is incomplete or the direction has changed.
-*   **[Doc] Inconsistent Naming**: The file is named `SCHEMAFLOWDSLSPEC.md`, but the content refers to a "Workflow DSL v1". The relationship between this DSL and the `SchemaFlow` library is unclear.
+*   **[Doc] Inconsistent Naming**: The file is named `SCHEMAFLUXDSLSPEC.md`, but the content refers to a "Workflow DSL v1". The relationship between this DSL and the `SchemaFlux` library is unclear.
 *   **[Doc] Broken `code.inline` Example**: The `code.inline` node example for Go provides a function signature `func Main(inputJSON []byte, paramsJSON []byte) ([]byte, error)`, but the implementation details are missing. The comment `(Engine compiles/execs safely under the hood; you just supply the text.)` implies a complex runtime that does not appear to exist in the current codebase.
 
 ### `docs/engineering/specs/WORKFLOW_ENGINE_EXTERNAL_INTERFACES.md`
 
 - **[Design] Aspirational, Not Implemented:** This document describes a comprehensive, robust, and feature-rich architecture for integrating external services. It includes concepts like a `Service Connector Framework`, gRPC/REST adapters, circuit breakers, retry policies, a service registry, and detailed observability. **None of this is implemented in the current codebase.** The existing code in `ops_pipeline.go` and `ops_procedural.go` is a primitive and flawed prototype that bears no resemblance to this specification.
-- **[Design] Conflicting Specifications:** The JSON-based Workflow DSL shown in this document (e.g., `"type": "external_task"`) is inconsistent with the YAML-based DSL described in `SCHEMAFLOWDSLSPEC.md` (e.g., `action: "http"`). This indicates a lack of a single, coherent design vision for the project. The project has multiple, conflicting design documents.
+- **[Design] Conflicting Specifications:** The JSON-based Workflow DSL shown in this document (e.g., `"type": "external_task"`) is inconsistent with the YAML-based DSL described in `SCHEMAFLUXDSLSPEC.md` (e.g., `action: "http"`). This indicates a lack of a single, coherent design vision for the project. The project has multiple, conflicting design documents.
 - **[Doc] Misleading Code Examples:** The document contains numerous Go code snippets (`GRPCConnector`, `BatchAccumulator`, `AuthManager`, `MockService`, etc.) that are presented as implementation patterns. This code **does not exist** in the repository. It is purely illustrative of a system that has not been built, which is highly misleading to anyone trying to understand the current state of the project.
 - **[Doc] Unimplemented Features:** The document is a list of unimplemented features. Key missing components include:
     - Service Connector/Registry (`hr-workday`, `payment-stripe`).
@@ -429,13 +429,13 @@ s issues found in the codebase.
 
 - **[Design] Aspirational, Not Implemented:** This document is an extremely detailed, "world-class" design for a workflow engine. It is a theoretical blueprint and is even more disconnected from the actual codebase than the other markdown files. It describes a sophisticated, event-sourced, ACID-compliant, and scalable system. **None of the described architecture, features, or APIs are implemented.**
 - **[Doc] Purely Theoretical:** The document explicitly states "No code is included" and serves as a design document. It covers concepts like a Canonical Workflow Event (CWE), a detailed persistence model, an execution engine, inter-workflow communication, and security protocols that are entirely absent from the Go files.
-- **[Design] Contradicts Other Specs:** This plan introduces its own concepts and terminology (e.g., CWE, `AdvanceRun` function, JSON DSL) that are different from what is described in `SCHEMAFLOWDSLSPEC.md` and `docs/engineering/specs/WORKFLOW_ENGINE_EXTERNAL_INTERFACES.md`. This further highlights the lack of a single, coherent vision for the project. The project has at least three different, conflicting high-level designs.
-- **[Conclusion]** This document is a design document for a potential future product, not a description of the existing `schemaflow` library. It is valuable as a long-term vision but is completely misleading as a guide to the current code. The primary issue is that it outlines a system that is orders of magnitude more complex and robust than what has been built.
+- **[Design] Contradicts Other Specs:** This plan introduces its own concepts and terminology (e.g., CWE, `AdvanceRun` function, JSON DSL) that are different from what is described in `SCHEMAFLUXDSLSPEC.md` and `docs/engineering/specs/WORKFLOW_ENGINE_EXTERNAL_INTERFACES.md`. This further highlights the lack of a single, coherent vision for the project. The project has at least three different, conflicting high-level designs.
+- **[Conclusion]** This document is a design document for a potential future product, not a description of the existing `schemaflux` library. It is valuable as a long-term vision but is completely misleading as a guide to the current code. The primary issue is that it outlines a system that is orders of magnitude more complex and robust than what has been built.
 
 ### `WORKFLOW_ENGINE_TODO.md`
 
 - **[CRITICAL] Falsified Progress:** This document is a TODO list where the vast majority of tasks, from foundational setup to advanced features, are marked as complete (`[x]`). This is grossly inaccurate and misleading. Based on the review of the actual codebase, **less than 5%** of the features listed here are implemented, and those that exist are primitive, buggy, and do not follow the described architecture.
-- **[Doc] Aspirational, Not Reality:** The TODO list corresponds to the "world-class" engine designed in `docs/engineering/plans/workflowengineplan.md`, not the actual `schemaflow` library. It includes hundreds of specific, granular tasks (e.g., "Create event partitioning by tenant and time," "Implement circuit breaker for external services," "Add BYOK support") that have no corresponding code in the repository.
+- **[Doc] Aspirational, Not Reality:** The TODO list corresponds to the "world-class" engine designed in `docs/engineering/plans/workflowengineplan.md`, not the actual `schemaflux` library. It includes hundreds of specific, granular tasks (e.g., "Create event partitioning by tenant and time," "Implement circuit breaker for external services," "Add BYOK support") that have no corresponding code in the repository.
 - **[Conclusion]** This document is the most problematic of all the markdown files. It creates a completely false impression of a mature, feature-complete, and robust system. In reality, the project is in a very early, experimental, and unstable state. The discrepancy between this TODO list and the codebase is a major red flag for the project's status and integrity.
 
 

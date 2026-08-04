@@ -2,7 +2,7 @@
 
 package notifier
 
-import "github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+import "github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 
 type Notifier struct {
 	enabled bool

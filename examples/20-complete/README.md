@@ -1,6 +1,6 @@
 # Complete Operation Example
 
-This example demonstrates the SchemaFlow Complete operation, which provides intelligent text completion using LLM capabilities.
+This example demonstrates the SchemaFlux Complete operation, which provides intelligent text completion using LLM capabilities.
 
 ## Overview
 
@@ -35,7 +35,7 @@ go run main.go
 The example shows various completion scenarios with different configurations:
 
 ```
-=== SchemaFlow Complete Operation Examples ===
+=== SchemaFlux Complete Operation Examples ===
 
 1. Basic Text Completion:
    Input: "The weather today is"

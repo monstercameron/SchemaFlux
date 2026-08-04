@@ -1,7 +1,7 @@
-# SchemaFlow Examples Plan
+# SchemaFlux Examples Plan
 
 ## Goal
-Create simple, focused examples that demonstrate **ALL** SchemaFlow LLM operations.
+Create simple, focused examples that demonstrate **ALL** SchemaFlux LLM operations.
 Each example should be:
 - **Self-contained** - runs independently
 - **Simple** - < 100 lines of code
@@ -245,20 +245,20 @@ import (
     "fmt"
     "log"
     
-    "github.com/monstercameron/schemaflow"
+    "github.com/monstercameron/schemaflux"
 )
 
 func main() {
-    // 1. Initialize SchemaFlow
-    if err := schemaflow.InitWithEnv(); err != nil {
+    // 1. Initialize SchemaFlux
+    if err := schemaflux.InitWithEnv(); err != nil {
         log.Fatal(err)
     }
     
     // 2. Prepare input data
     // ...
     
-    // 3. Call ONE SchemaFlow operation
-    result, err := schemaflow.OperationName(input, opts)
+    // 3. Call ONE SchemaFlux operation
+    result, err := schemaflux.OperationName(input, opts)
     if err != nil {
         log.Fatal(err)
     }

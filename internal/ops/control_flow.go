@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func Match(input any, cases ...types.Case) {

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/llm"
-	"github.com/monstercameron/schemaflow/internal/telemetry"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/telemetry"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // CompleteResult contains the completion result and metadata

@@ -1,21 +1,21 @@
-# SchemaFlow Refactoring Plan
+# SchemaFlux Refactoring Plan
 
 ## Goal
-Transform `SchemaFlow` into a standard, idiomatic, and "go gettable" library with a pristine Developer Experience (DX). The primary goal is to allow users to import a single package (`github.com/monstercameron/schemaflow`) to access all functionality, while hiding implementation details in `internal/`.
+Transform `SchemaFlux` into a standard, idiomatic, and "go gettable" library with a pristine Developer Experience (DX). The primary goal is to allow users to import a single package (`github.com/monstercameron/schemaflux`) to access all functionality, while hiding implementation details in `internal/`.
 
 ## Current State Analysis
-- **Root**: Contains `schemaflow.go` (facade), `go.mod`.
+- **Root**: Contains `schemaflux.go` (facade), `go.mod`.
 - **Core (`/core`)**: Public package containing low-level types, config, and provider logic.
 - **Ops (`/ops`)**: Public package containing operation implementations.
 - **Issues**:
     - Split between `core` and `ops` exposes internal logic.
-    - Users might be confused whether to import `core` or `schemaflow`.
+    - Users might be confused whether to import `core` or `schemaflux`.
     - Potential for circular dependencies if not careful.
-    - "Facade" pattern in `schemaflow.go` is good but implementation details are currently exposed in public subpackages.
+    - "Facade" pattern in `schemaflux.go` is good but implementation details are currently exposed in public subpackages.
 
 ## Proposed Architecture
 
-### 1. Root Package (`github.com/monstercameron/schemaflow`)
+### 1. Root Package (`github.com/monstercameron/schemaflux`)
 The single entry point for the library.
 - **`client.go`**: Defines `Client` struct and factory methods (`NewClient`, `Init`).
 - **`types.go`**: Defines public types (`Mode`, `Speed`, `OpOptions`) via type aliases to internal types where possible, or definitions.
@@ -48,7 +48,7 @@ Hidden implementation details.
 
 ### Phase 3: Construct Root API
 1.  **Client**: Create `client.go` in root. The `Client` struct will hold the configuration and the `internal/llm.Provider`.
-2.  **API Functions**: In `schemaflow.go` (or `api.go`), implement `Extract`, `Transform`, etc.
+2.  **API Functions**: In `schemaflux.go` (or `api.go`), implement `Extract`, `Transform`, etc.
     - These functions will convert root `OpOptions` to `internal` options.
     - They will call `internal/ops` functions, passing the `Client`'s internal provider.
 
@@ -62,7 +62,7 @@ Hidden implementation details.
 3.  Update `examples/` to use the new single-import structure.
 
 ## Benefits
-- **Clean Import**: `import "github.com/monstercameron/schemaflow"` is all that's needed.
+- **Clean Import**: `import "github.com/monstercameron/schemaflux"` is all that's needed.
 - **Encapsulation**: Implementation details can change without breaking the public API.
 - **Maintainability**: Clear separation between public surface and internal logic.
 - **Safety**: Prevents users from accidentally depending on internal helper functions.

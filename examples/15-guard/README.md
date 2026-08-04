@@ -167,5 +167,5 @@ Common guard check patterns:
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Guard API Reference](../../docs/reference/API.md#guard)

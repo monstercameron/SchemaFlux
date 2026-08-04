@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 )
 
 const panelChromeWidth = 6

@@ -24,7 +24,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Product represents a product to compare
@@ -63,9 +63,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -118,15 +118,15 @@ func main() {
 	fmt.Println("   Features:", productB.Features)
 
 	// Compare the products using the new typed Compare
-	compareOpts := schemaflow.NewCompareOptions().
+	compareOpts := schemaflux.NewCompareOptions().
 		WithComparisonAspects([]string{"camera", "battery", "display", "performance", "value"}).
 		WithFocusOn("both")
 	compareOpts.Depth = 7
-	compareOpts.OpOptions.Intelligence = schemaflow.Fast
+	compareOpts.OpOptions.Intelligence = schemaflux.Fast
 
-	result, err := schemaflow.Compare[Product](productA, productB, compareOpts)
+	result, err := schemaflux.Compare[Product](productA, productB, compareOpts)
 	if err != nil {
-		schemaflow.GetLogger().Error("Comparison failed", "error", err)
+		schemaflux.GetLogger().Error("Comparison failed", "error", err)
 		return
 	}
 

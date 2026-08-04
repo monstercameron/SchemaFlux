@@ -1,19 +1,19 @@
-# SchemaFlow
+# SchemaFlux
 
-SchemaFlow is a Go library for typed LLM operations.
+SchemaFlux is a Go library for typed LLM operations.
 
 It gives you a single public API built around fluent request builders so application code stays readable while retries, structured output contracts, logging, metrics, and cost tracking stay centralized.
 
 ## Install
 
 ```bash
-go get github.com/monstercameron/schemaflow
+go get github.com/monstercameron/schemaflux
 ```
 
 Set an API key for your provider. OpenAI is the default.
 
 ```bash
-export SCHEMAFLOW_API_KEY=your-api-key
+export SCHEMAFLUX_API_KEY=your-api-key
 ```
 
 ## Quick Start
@@ -24,7 +24,7 @@ package main
 import (
     "fmt"
 
-    schemaflow "github.com/monstercameron/schemaflow"
+    schemaflux "github.com/monstercameron/schemaflux"
 )
 
 type Person struct {
@@ -33,11 +33,11 @@ type Person struct {
 }
 
 func main() {
-    if err := schemaflow.InitWithEnv(); err != nil {
+    if err := schemaflux.InitWithEnv(); err != nil {
         panic(err)
     }
 
-    person, err := schemaflow.Extracting[Person]("John is 30 years old").
+    person, err := schemaflux.Extracting[Person]("John is 30 years old").
         Strict().
         Run()
     if err != nil {
@@ -53,18 +53,18 @@ func main() {
 The public API is the fluent builder stack at the root package.
 
 ```go
-person, err := schemaflow.Extracting[Person](rawText).
+person, err := schemaflux.Extracting[Person](rawText).
     Strict().
     Smart().
     Steer("Prefer explicit evidence over guesses").
     Run()
 
-best, err := schemaflow.Choosing(products).
+best, err := schemaflux.Choosing(products).
     By("lowest total cost", "best battery life").
     Fast().
     Run()
 
-summary, err := schemaflow.Summarizing(longText).
+summary, err := schemaflux.Summarizing(longText).
     MaxLength(120).
     Run()
 ```
@@ -155,7 +155,7 @@ type Invoice struct {
     Total  float64 `json:"total"`
 }
 
-invoice, err := schemaflow.Extracting[Invoice](rawEmail).
+invoice, err := schemaflux.Extracting[Invoice](rawEmail).
     Strict().
     Fast().
     Run()
@@ -174,7 +174,7 @@ type CRMContact struct {
     Email    string `json:"email"`
 }
 
-contact, err := schemaflow.Transforming[Lead, CRMContact](lead).
+contact, err := schemaflux.Transforming[Lead, CRMContact](lead).
     Strict().
     Steer("Preserve exact identifiers and emails").
     Run()
@@ -188,7 +188,7 @@ type ReleaseNote struct {
     Bullets []string `json:"bullets"`
 }
 
-note, err := schemaflow.Generating[ReleaseNote]("Write release notes for version 2.3").
+note, err := schemaflux.Generating[ReleaseNote]("Write release notes for version 2.3").
     Creative().
     Smart().
     Run()
@@ -197,11 +197,11 @@ note, err := schemaflow.Generating[ReleaseNote]("Write release notes for version
 ### Filter and sort collections
 
 ```go
-urgent, err := schemaflow.Filtering(tasks).
+urgent, err := schemaflux.Filtering(tasks).
     By("high priority tasks due today").
     Run()
 
-ordered, err := schemaflow.Sorting(urgent).
+ordered, err := schemaflux.Sorting(urgent).
     By("most urgent operational risk first").
     Smart().
     Run()
@@ -210,11 +210,11 @@ ordered, err := schemaflow.Sorting(urgent).
 ### Summarize and rewrite text
 
 ```go
-summary, err := schemaflow.Summarizing(article).
+summary, err := schemaflux.Summarizing(article).
     MaxLength(160).
     Run()
 
-rewrite, err := schemaflow.Rewriting(summary).
+rewrite, err := schemaflux.Rewriting(summary).
     Tone("executive").
     Run()
 ```
@@ -222,7 +222,7 @@ rewrite, err := schemaflow.Rewriting(summary).
 ### Validate structured data
 
 ```go
-result, err := schemaflow.Validating(customer).
+result, err := schemaflux.Validating(customer).
     Rules("email must be valid, country must be ISO alpha-2, age must be at least 18").
     Run()
 
@@ -237,14 +237,14 @@ if !result.Valid {
 ### Ask typed questions over context
 
 ```go
-answer, err := schemaflow.Asking[string, string](report, "What changed from last quarter?").
+answer, err := schemaflux.Asking[string, string](report, "What changed from last quarter?").
     Strict().
     Run()
 ```
 
 ## Reliability
 
-SchemaFlow treats the shared LLM path as infrastructure.
+SchemaFlux treats the shared LLM path as infrastructure.
 
 Built in:
 - automatic request IDs when missing
@@ -255,14 +255,14 @@ Built in:
 - structured error and request logging
 
 Retry-related environment variables:
-- `SCHEMAFLOW_LLM_MAX_RETRIES`
-- `SCHEMAFLOW_LLM_RETRY_BACKOFF`
-- `SCHEMAFLOW_TIMEOUT`
+- `SCHEMAFLUX_LLM_MAX_RETRIES`
+- `SCHEMAFLUX_LLM_RETRY_BACKOFF`
+- `SCHEMAFLUX_TIMEOUT`
 
 Client tuning:
 
 ```go
-client := schemaflow.NewClient(apiKey).
+client := schemaflux.NewClient(apiKey).
     WithRetries(3).
     WithRetryBackoff(500 * time.Millisecond).
     WithTimeout(30 * time.Second).
@@ -271,36 +271,36 @@ client := schemaflow.NewClient(apiKey).
 
 ## Logging
 
-SchemaFlow uses structured logging backed by `slog`.
+SchemaFlux uses structured logging backed by `slog`.
 
 Environment variables:
-- `SCHEMAFLOW_LOG_LEVEL=debug|info|warn|error`
-- `SCHEMAFLOW_LOG_FORMAT=text|json`
-- `SCHEMAFLOW_LOG_FILE=/path/to/schemaflow.log`
-- `SCHEMAFLOW_LOG_BUFFER=1000`
-- `SCHEMAFLOW_LOG_SOURCE=true`
-- `SCHEMAFLOW_LOG_DISABLE_STDERR=true`
-- `SCHEMAFLOW_LOG_DISABLE_CAPTURE=true`
+- `SCHEMAFLUX_LOG_LEVEL=debug|info|warn|error`
+- `SCHEMAFLUX_LOG_FORMAT=text|json`
+- `SCHEMAFLUX_LOG_FILE=/path/to/schemaflux.log`
+- `SCHEMAFLUX_LOG_BUFFER=1000`
+- `SCHEMAFLUX_LOG_SOURCE=true`
+- `SCHEMAFLUX_LOG_DISABLE_STDERR=true`
+- `SCHEMAFLUX_LOG_DISABLE_CAPTURE=true`
 
 Programmatic configuration:
 
 ```go
-schemaflow.ConfigureLogging(schemaflow.LoggerConfig{
-    Level:      schemaflow.LogDebug,
+schemaflux.ConfigureLogging(schemaflux.LoggerConfig{
+    Level:      schemaflux.LogDebug,
     Format:     "json",
-    FilePath:   "schemaflow.log",
+    FilePath:   "schemaflux.log",
     BufferSize: 2000,
     Capture:    true,
 })
 
-entries := schemaflow.GetLogEntries()
+entries := schemaflux.GetLogEntries()
 fmt.Println("captured logs:", len(entries))
-schemaflow.ResetLogEntries()
+schemaflux.ResetLogEntries()
 ```
 
 ## Metrics And Cost Tracking
 
-SchemaFlow records:
+SchemaFlux records:
 - request counts
 - request durations
 - prompt, completion, cached, reasoning, and total tokens when available
@@ -313,7 +313,7 @@ import (
     "fmt"
     "time"
 
-    "github.com/monstercameron/schemaflow/pricing"
+    "github.com/monstercameron/schemaflux/pricing"
 )
 
 summary := pricing.GetCostSummary(time.Now().Add(-1*time.Hour), map[string]string{
@@ -350,7 +350,7 @@ Built-in providers:
 - `local`
 
 ```go
-client := schemaflow.NewClient(apiKey)
+client := schemaflux.NewClient(apiKey)
 
 client.WithProvider("openai")
 client.WithProvider("anthropic")
@@ -368,13 +368,13 @@ Provider notes:
 Custom provider registration:
 
 ```go
-schemaflow.RegisterProviderFactory("myvendor", func(cfg schemaflow.ProviderConfig) (schemaflow.Provider, error) {
+schemaflux.RegisterProviderFactory("myvendor", func(cfg schemaflux.ProviderConfig) (schemaflux.Provider, error) {
     cfg.BaseURL = "https://vendor.example.com/v1"
-    return schemaflow.NewOpenAICompatibleProvider("myvendor", cfg)
+    return schemaflux.NewOpenAICompatibleProvider("myvendor", cfg)
 })
 
-client := schemaflow.NewClient("").
-    WithProviderConfig("myvendor", schemaflow.ProviderConfig{
+client := schemaflux.NewClient("").
+    WithProviderConfig("myvendor", schemaflux.ProviderConfig{
         APIKey: "vendor-key",
     })
 ```
@@ -385,24 +385,24 @@ Default OpenAI intelligence mapping:
 - `Quick -> gpt-5-nano`
 
 Overrides:
-- `SCHEMAFLOW_MODEL`
-- `SCHEMAFLOW_MODEL_SMART`
-- `SCHEMAFLOW_MODEL_FAST`
-- `SCHEMAFLOW_MODEL_QUICK`
+- `SCHEMAFLUX_MODEL`
+- `SCHEMAFLUX_MODEL_SMART`
+- `SCHEMAFLUX_MODEL_FAST`
+- `SCHEMAFLUX_MODEL_QUICK`
 
 ## Environment
 
 Common environment variables:
-- `SCHEMAFLOW_API_KEY`
+- `SCHEMAFLUX_API_KEY`
 - `OPENAI_API_KEY`
-- `SCHEMAFLOW_PROVIDER`
-- `SCHEMAFLOW_TIMEOUT`
-- `SCHEMAFLOW_MODEL`
-- `SCHEMAFLOW_MODEL_SMART`
-- `SCHEMAFLOW_MODEL_FAST`
-- `SCHEMAFLOW_MODEL_QUICK`
+- `SCHEMAFLUX_PROVIDER`
+- `SCHEMAFLUX_TIMEOUT`
+- `SCHEMAFLUX_MODEL`
+- `SCHEMAFLUX_MODEL_SMART`
+- `SCHEMAFLUX_MODEL_FAST`
+- `SCHEMAFLUX_MODEL_QUICK`
 
-If `SCHEMAFLOW_API_KEY` is unset and `OPENAI_API_KEY` is present, SchemaFlow will use `OPENAI_API_KEY`.
+If `SCHEMAFLUX_API_KEY` is unset and `OPENAI_API_KEY` is present, SchemaFlux will use `OPENAI_API_KEY`.
 
 ## Design Notes
 

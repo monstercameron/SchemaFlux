@@ -115,5 +115,5 @@ The operation supports various strategies:
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Merge API Reference](../../docs/reference/API.md#merge)

@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 )
 
 // Notifier handles system notifications
@@ -34,7 +34,7 @@ func (n *Notifier) Notify(title, message string) error {
 	if n.isMacOS {
 		// Use macOS Notification Center with osascript
 		// This will show in Notification Center and respect Do Not Disturb
-		script := fmt.Sprintf(`display notification "%s" with title "SchemaFlow CommandDeck" subtitle "%s" sound name "Glass"`, message, title)
+		script := fmt.Sprintf(`display notification "%s" with title "SchemaFlux CommandDeck" subtitle "%s" sound name "Glass"`, message, title)
 		return exec.Command("osascript", "-e", script).Run()
 	}
 
@@ -52,7 +52,7 @@ func (n *Notifier) NotifyWithAction(title, message, action string) error {
 	// Use terminal-notifier if available for action buttons
 	if _, err := exec.LookPath("terminal-notifier"); err == nil {
 		return exec.Command("terminal-notifier",
-			"-title", "SchemaFlow CommandDeck",
+			"-title", "SchemaFlux CommandDeck",
 			"-subtitle", title,
 			"-message", message,
 			"-sound", "default",
@@ -105,8 +105,8 @@ func (n *Notifier) NotifyOverdue(todos []*models.SmartTodo) error {
 // UpdateTerminalTitle updates the terminal window title
 func UpdateTerminalTitle(pendingCount int) {
 	if pendingCount > 0 {
-		fmt.Printf("\033]0;SchemaFlow CommandDeck - %d pending tasks\007", pendingCount)
+		fmt.Printf("\033]0;SchemaFlux CommandDeck - %d pending tasks\007", pendingCount)
 	} else {
-		fmt.Printf("\033]0;SchemaFlow CommandDeck - All done! 🎉\007")
+		fmt.Printf("\033]0;SchemaFlux CommandDeck - All done! 🎉\007")
 	}
 }

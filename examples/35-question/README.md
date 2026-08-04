@@ -13,13 +13,13 @@ This example demonstrates the `Question` operation, which allows you to ask natu
 
 ```go
 // Simple string answer
-result, err := schemaflow.Question[MyData, string](data, 
-    schemaflow.NewQuestionOptions("What is the main finding?"))
+result, err := schemaflux.Question[MyData, string](data, 
+    schemaflux.NewQuestionOptions("What is the main finding?"))
 fmt.Println(result.Answer, result.Confidence)
 
 // Boolean answer
-result, err := schemaflow.Question[MyData, bool](data,
-    schemaflow.NewQuestionOptions("Is the data valid?"))
+result, err := schemaflux.Question[MyData, bool](data,
+    schemaflux.NewQuestionOptions("Is the data valid?"))
 if result.Answer {
     fmt.Println("Data is valid")
 }
@@ -30,12 +30,12 @@ type Findings struct {
     Summary    string `json:"summary"`
     ActionItem string `json:"action_item"`
 }
-result, err := schemaflow.Question[Report, Findings](report,
-    schemaflow.NewQuestionOptions("What are the key findings?"))
+result, err := schemaflux.Question[Report, Findings](report,
+    schemaflux.NewQuestionOptions("What are the key findings?"))
 fmt.Println(result.Answer.TopItem)
 
 // Legacy interface for quick string answers
-answer, err := schemaflow.QuestionLegacy(data, "What is the answer?")
+answer, err := schemaflux.QuestionLegacy(data, "What is the answer?")
 ```
 
 ## Options
@@ -50,7 +50,7 @@ answer, err := schemaflow.QuestionLegacy(data, "What is the answer?")
 ## Running the Example
 
 ```bash
-export SCHEMAFLOW_API_KEY=your-api-key
+export SCHEMAFLUX_API_KEY=your-api-key
 cd examples/35-question
 go run main.go
 ```

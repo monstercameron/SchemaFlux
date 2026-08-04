@@ -95,5 +95,5 @@ gaps. Despite these issues, AI is expected to reduce healthcare costs by
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Summarize API Reference](../../docs/reference/API.md#summarize)

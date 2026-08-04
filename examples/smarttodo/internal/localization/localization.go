@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Localization handles dynamic translation of UI strings
@@ -33,7 +33,7 @@ func InitLocalization() {
 
 	// Log the detected locale
 	if locale != "en" && locale != "" {
-		schemaflow.GetLogger().Info("Detected system locale - UI will be translated", "locale", locale)
+		schemaflux.GetLogger().Info("Detected system locale - UI will be translated", "locale", locale)
 	}
 }
 
@@ -93,7 +93,7 @@ func T(key string, args ...interface{}) string {
 	}
 	l10n.cacheMutex.RUnlock()
 
-	// Translate using schemaflow
+	// Translate using schemaflux
 	translated := l10n.translateString(key)
 
 	// Cache the translation
@@ -107,7 +107,7 @@ func T(key string, args ...interface{}) string {
 	return translated
 }
 
-// translateString performs the actual translation using schemaflow
+// translateString performs the actual translation using schemaflux
 func (l *Localization) translateString(text string) string {
 	// Build translation prompt
 	prompt := fmt.Sprintf(`Translate the following UI text from English to %s.
@@ -117,16 +117,16 @@ Only return the translated text, nothing else.
 
 Text to translate: "%s"`, l.getLanguageName(), text)
 
-	// Use schemaflow Generate for translation
+	// Use schemaflux Generate for translation
 	type TranslationResult struct {
 		Translation string `json:"translation" jsonschema:"description=The translated text"`
 	}
 
-	result, err := schemaflow.Generate[TranslationResult](
+	result, err := schemaflux.Generate[TranslationResult](
 		prompt,
-		schemaflow.NewGenerateOptions().
-			WithIntelligence(schemaflow.Fast).
-			WithMode(schemaflow.TransformMode),
+		schemaflux.NewGenerateOptions().
+			WithIntelligence(schemaflux.Fast).
+			WithMode(schemaflux.TransformMode),
 	)
 
 	if err != nil {
@@ -254,11 +254,11 @@ Texts to translate:
 		Translations []string `json:"translations" jsonschema:"description=List of translated texts in order"`
 	}
 
-	result, err := schemaflow.Generate[BatchTranslationResult](
+	result, err := schemaflux.Generate[BatchTranslationResult](
 		prompt,
-		schemaflow.NewGenerateOptions().
-			WithIntelligence(schemaflow.Fast).
-			WithMode(schemaflow.TransformMode),
+		schemaflux.NewGenerateOptions().
+			WithIntelligence(schemaflux.Fast).
+			WithMode(schemaflux.TransformMode),
 	)
 
 	if err != nil {

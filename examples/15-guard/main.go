@@ -14,8 +14,8 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 // UserMessage represents incoming user content to check
@@ -36,9 +36,9 @@ type GuardResult struct {
 
 func main() {
 
-	// Initialize SchemaFlow with Fast intelligence (Cerebras)
+	// Initialize SchemaFlux with Fast intelligence (Cerebras)
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -142,8 +142,8 @@ Content: %s
 Evaluate the message against ALL policies. Be fair - angry customers are allowed to express frustration. Only flag actual policy violations.`, policiesText, msg.Channel, msg.Content)
 
 	// Use Extract to get structured GuardResult from LLM
-	result, err := schemaflow.Extract[GuardResult](prompt, schemaflow.NewExtractOptions().
-		WithIntelligence(schemaflow.Fast))
+	result, err := schemaflux.Extract[GuardResult](prompt, schemaflux.NewExtractOptions().
+		WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		return GuardResult{}, fmt.Errorf("LLM extraction failed: %v", err)

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -110,7 +110,7 @@ type CandidateProfile struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -134,7 +134,7 @@ func main() {
 		SupportTickets: 2,
 	}
 
-	custResult, err := schemaflow.Derive[CustomerActivity, CustomerLTVFeatures](customer, schemaflow.DeriveOptions{
+	custResult, err := schemaflux.Derive[CustomerActivity, CustomerLTVFeatures](customer, schemaflux.DeriveOptions{
 		Intelligence: types.Smart,
 		Steering:     "Use today's date as 2024-12-05. Churn risk: low/medium/high based on days since order and frequency. Segments: VIP (>$5k spend), Regular, At-Risk.",
 	})
@@ -174,7 +174,7 @@ func main() {
 		HasPool:   true,
 	}
 
-	propResult, err := schemaflow.Derive[PropertyListing, PropertyFeatures](property, schemaflow.DeriveOptions{
+	propResult, err := schemaflux.Derive[PropertyListing, PropertyFeatures](property, schemaflux.DeriveOptions{
 		Intelligence: types.Smart,
 		Steering:     "Property class: Starter/Mid-Range/Luxury. Price tier: Budget/Moderate/Premium/Ultra-Premium. Investment score 0-1 based on price/sqft ratio, age, and amenities.",
 	})
@@ -214,7 +214,7 @@ func main() {
 		Industry:   "Technology",
 	}
 
-	resumeResult, err := schemaflow.Derive[ResumeBasic, CandidateProfile](resume, schemaflow.DeriveOptions{
+	resumeResult, err := schemaflux.Derive[ResumeBasic, CandidateProfile](resume, schemaflux.DeriveOptions{
 		Intelligence: types.Smart,
 		Steering:     "Seniority: Junior/Mid/Senior/Staff/Principal/Director. Technical depth: Generalist/Specialist/Deep-Specialist. Salary range should reflect Bay Area tech market for role level.",
 	})

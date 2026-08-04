@@ -20,7 +20,7 @@ This example selects:
 ## How It Works
 
 ```go
-chosen, err := schemaflow.Choose(
+chosen, err := schemaflux.Choose(
     products,
     ops.NewChooseOptions().
         WithCriteria("I need something portable for coding...").
@@ -97,5 +97,5 @@ portable for coding and note-taking. My budget is around $500-600.
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Choose API Reference](../../docs/reference/API.md#choose)

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func loadEnv() {
@@ -28,7 +28,7 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
-	schemaflow.InitWithEnv()
+	schemaflux.InitWithEnv()
 
 	fmt.Println("=== NegotiateAdversarial Example ===")
 	fmt.Println("Two-party adversarial negotiation: Ours vs Theirs with leverage")
@@ -52,11 +52,11 @@ func runSalaryNegotiation() {
 		Bonus      int `json:"bonus"`
 	}
 
-	ctx := schemaflow.AdversarialContext[SalaryTerms]{
-		Ours: schemaflow.AdversarialPosition[SalaryTerms]{
+	ctx := schemaflux.AdversarialContext[SalaryTerms]{
+		Ours: schemaflux.AdversarialPosition[SalaryTerms]{
 			Position: SalaryTerms{BaseSalary: 160000, RemoteDays: 5, Bonus: 20000},
 		},
-		Theirs: schemaflow.AdversarialPosition[SalaryTerms]{
+		Theirs: schemaflux.AdversarialPosition[SalaryTerms]{
 			Position: SalaryTerms{BaseSalary: 130000, RemoteDays: 2, Bonus: 5000},
 		},
 		OurLeverage: "strong",
@@ -71,7 +71,7 @@ func runSalaryNegotiation() {
 	fmt.Println("}")
 	fmt.Println("OPTIONS: Steering: \"They definitely don't want RTO but salary might be moveable\"")
 
-	result, err := schemaflow.NegotiateAdversarial[SalaryTerms](ctx, schemaflow.AdversarialOptions{
+	result, err := schemaflux.NegotiateAdversarial[SalaryTerms](ctx, schemaflux.AdversarialOptions{
 		Intelligence: types.Smart,
 		Steering:     "They definitely don't want RTO so hold firm on remote days. Salary is more flexible for them.",
 	})
@@ -108,11 +108,11 @@ func runVendorContract() {
 		Terms    int     `json:"payment_days"`
 	}
 
-	ctx := schemaflow.AdversarialContext[ContractTerms]{
-		Ours: schemaflow.AdversarialPosition[ContractTerms]{
+	ctx := schemaflux.AdversarialContext[ContractTerms]{
+		Ours: schemaflux.AdversarialPosition[ContractTerms]{
 			Position: ContractTerms{Price: 45, Quantity: 500, Terms: 60},
 		},
-		Theirs: schemaflow.AdversarialPosition[ContractTerms]{
+		Theirs: schemaflux.AdversarialPosition[ContractTerms]{
 			Position: ContractTerms{Price: 65, Quantity: 1000, Terms: 30},
 		},
 		OurLeverage: "strong",
@@ -127,7 +127,7 @@ func runVendorContract() {
 	fmt.Println("}")
 	fmt.Println("OPTIONS: Steering: \"Seller is desperate to close Q4, price is negotiable\"")
 
-	result, err := schemaflow.NegotiateAdversarial[ContractTerms](ctx, schemaflow.AdversarialOptions{
+	result, err := schemaflux.NegotiateAdversarial[ContractTerms](ctx, schemaflux.AdversarialOptions{
 		Intelligence: types.Smart,
 		Steering:     "Seller is desperate to close before Q4 ends. Price is very negotiable. Quantity less so.",
 	})
@@ -165,11 +165,11 @@ func runAcquisition() {
 	}
 
 	// Note: Target has leverage due to competing bidders
-	ctx := schemaflow.AdversarialContext[AcquisitionTerms]{
-		Ours: schemaflow.AdversarialPosition[AcquisitionTerms]{
+	ctx := schemaflux.AdversarialContext[AcquisitionTerms]{
+		Ours: schemaflux.AdversarialPosition[AcquisitionTerms]{
 			Position: AcquisitionTerms{Valuation: 80, Earnout: 30, Retention: 24},
 		},
-		Theirs: schemaflow.AdversarialPosition[AcquisitionTerms]{
+		Theirs: schemaflux.AdversarialPosition[AcquisitionTerms]{
 			Position: AcquisitionTerms{Valuation: 120, Earnout: 10, Retention: 6},
 		},
 		OurLeverage:  "weak",
@@ -184,7 +184,7 @@ func runAcquisition() {
 	fmt.Printf("  OurLeverage: %q, Relationship: %q,\n", ctx.OurLeverage, ctx.Relationship)
 	fmt.Println("}")
 
-	result, err := schemaflow.NegotiateAdversarial[AcquisitionTerms](ctx, schemaflow.AdversarialOptions{
+	result, err := schemaflux.NegotiateAdversarial[AcquisitionTerms](ctx, schemaflux.AdversarialOptions{
 		Intelligence: types.Smart,
 		Steering:     "Target has 3 competing bidders, so they have the power.",
 	})

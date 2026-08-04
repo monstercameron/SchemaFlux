@@ -18,7 +18,7 @@ This example takes a raw email (plain text) and extracts structured fields:
 ## How It Works
 
 ```go
-email, err := schemaflow.Extract[Email](rawEmail, ops.NewExtractOptions())
+email, err := schemaflux.Extract[Email](rawEmail, ops.NewExtractOptions())
 ```
 
 The LLM intelligently:
@@ -68,5 +68,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Extract API Reference](../../docs/reference/API.md#extract)

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -75,7 +75,7 @@ type PatientRecord struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -99,7 +99,7 @@ func main() {
 		Country:    "united states of america",
 	}
 
-	addrResult, err := schemaflow.Conform[ShippingAddress](rawAddress, "USPS", schemaflow.ConformOptions{
+	addrResult, err := schemaflux.Conform[ShippingAddress](rawAddress, "USPS", schemaflux.ConformOptions{
 		Strict:       true,
 		Intelligence: types.Smart,
 		Steering:     "Apply full USPS Publication 28 standards: uppercase, abbreviated directionals (N, S, E, W), abbreviated suffixes (ST, AVE, BLVD), state abbreviations, and standard country code USA.",
@@ -144,7 +144,7 @@ func main() {
 		Reference:     "invoice payment #INV-2024-0089",
 	}
 
-	finResult, err := schemaflow.Conform[FinancialTransaction](legacyTxn, "ISO 20022", schemaflow.ConformOptions{
+	finResult, err := schemaflux.Conform[FinancialTransaction](legacyTxn, "ISO 20022", schemaflux.ConformOptions{
 		Intelligence: types.Smart,
 		Steering:     "Apply ISO 20022 PAIN/PACS standards: ISO 4217 currency codes (USD not dollars), ISO 8601 timestamps in UTC, IBAN without spaces uppercase, structured reference max 35 chars.",
 	})
@@ -190,7 +190,7 @@ func main() {
 		DiagnosisAt: "Jan 10, 2024",
 	}
 
-	fhirResult, err := schemaflow.Conform[PatientRecord](patientData, "HL7 FHIR R4", schemaflow.ConformOptions{
+	fhirResult, err := schemaflux.Conform[PatientRecord](patientData, "HL7 FHIR R4", schemaflux.ConformOptions{
 		Intelligence: types.Smart,
 		Steering:     "Apply FHIR R4 standards: ISO 8601 dates, E.164 phone (+1...), FHIR gender codes (male/female/other/unknown), SSN should be masked to last 4 only (XXX-XX-####), ICD-10 diagnosis code format.",
 	})

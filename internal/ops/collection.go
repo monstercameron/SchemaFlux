@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflow/internal/config"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // Choose selects the best option from a list with specialized options.

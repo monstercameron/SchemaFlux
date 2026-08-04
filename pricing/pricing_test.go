@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func resetPricingTestState(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func TestStartSpan(t *testing.T) {
@@ -93,20 +93,20 @@ func TestGetSpanID(t *testing.T) {
 }
 
 func TestTracingEnvEnabled(t *testing.T) {
-	t.Setenv("SCHEMAFLOW_ENABLE_TRACING", "")
-	t.Setenv("SCHEMAFLOW_TRACE", "")
+	t.Setenv("SCHEMAFLUX_ENABLE_TRACING", "")
+	t.Setenv("SCHEMAFLUX_TRACE", "")
 	if tracingEnvEnabled() {
 		t.Fatal("expected tracing to be disabled when env vars are unset")
 	}
 
-	t.Setenv("SCHEMAFLOW_TRACE", "true")
+	t.Setenv("SCHEMAFLUX_TRACE", "true")
 	if !tracingEnvEnabled() {
-		t.Fatal("expected SCHEMAFLOW_TRACE=true to enable tracing")
+		t.Fatal("expected SCHEMAFLUX_TRACE=true to enable tracing")
 	}
 
-	t.Setenv("SCHEMAFLOW_TRACE", "")
-	t.Setenv("SCHEMAFLOW_ENABLE_TRACING", "1")
+	t.Setenv("SCHEMAFLUX_TRACE", "")
+	t.Setenv("SCHEMAFLUX_ENABLE_TRACING", "1")
 	if !tracingEnvEnabled() {
-		t.Fatal("expected SCHEMAFLOW_ENABLE_TRACING=1 to enable tracing")
+		t.Fatal("expected SCHEMAFLUX_ENABLE_TRACING=1 to enable tracing")
 	}
 }

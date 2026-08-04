@@ -31,7 +31,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // UserRegistration represents user registration data
@@ -71,9 +71,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -138,7 +138,7 @@ Validation Rules:
 `
 
 	// Create validation options with the new typed API
-	opts := schemaflow.NewValidateOptions().
+	opts := schemaflux.NewValidateOptions().
 		WithRules(validationRules).
 		WithAutoCorrect(false).
 		WithIncludeExplanations(true)
@@ -153,9 +153,9 @@ Validation Rules:
 		fmt.Printf("   Country: %s\n", tc.data.Country)
 
 		// Validate using the new typed API
-		result, err := schemaflow.Validate[UserRegistration](tc.data, opts)
+		result, err := schemaflux.Validate[UserRegistration](tc.data, opts)
 		if err != nil {
-			schemaflow.GetLogger().Error("Validation error", "error", err)
+			schemaflux.GetLogger().Error("Validation error", "error", err)
 			continue
 		}
 

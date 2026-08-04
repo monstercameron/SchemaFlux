@@ -32,7 +32,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // CustomerRecord represents customer information from different sources
@@ -74,9 +74,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -134,9 +134,9 @@ Merge Strategy:
 	fmt.Println("\n🔄 Merging records...")
 
 	// Merge records
-	merged, err := schemaflow.Merge(records, strategy)
+	merged, err := schemaflux.Merge(records, strategy)
 	if err != nil {
-		schemaflow.GetLogger().Error("Failed to merge records", "error", err)
+		schemaflux.GetLogger().Error("Failed to merge records", "error", err)
 		return
 	}
 

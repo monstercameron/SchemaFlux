@@ -20,7 +20,7 @@ This example generates:
 ## How It Works
 
 ```go
-batch, err := schemaflow.Generate[TestUserBatch](
+batch, err := schemaflux.Generate[TestUserBatch](
     "Generate 5 realistic test users...",
     ops.NewGenerateOptions(),
 )
@@ -94,5 +94,5 @@ Generate 5 realistic test users for a social media application...
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Generate API Reference](../../docs/reference/API.md#generate)

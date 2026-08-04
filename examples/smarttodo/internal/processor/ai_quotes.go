@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/monstercameron/schemaflow"
+	"github.com/monstercameron/schemaflux"
 )
 
 // GenerateAIQuote generates a motivational quote using AI
@@ -65,11 +65,11 @@ The quote should be:
 
 Format: Just the quote text, no attribution or quotation marks.`, theme, figure)
 
-	quote, err := schemaflow.Generate[string](
+	quote, err := schemaflux.Generate[string](
 		prompt,
-		schemaflow.NewGenerateOptions().
-			WithIntelligence(schemaflow.Fast).
-			WithMode(schemaflow.Creative),
+		schemaflux.NewGenerateOptions().
+			WithIntelligence(schemaflux.Fast).
+			WithMode(schemaflux.Creative),
 	)
 
 	if err != nil {

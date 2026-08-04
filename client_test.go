@@ -1,12 +1,12 @@
-package schemaflow
+package schemaflux
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/llm"
-	"github.com/monstercameron/schemaflow/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/requesttracking"
 )
 
 type stubProvider struct {

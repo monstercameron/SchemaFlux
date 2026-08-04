@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/intelligence"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/intelligence"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 )
 
 type Shell struct {
@@ -40,7 +40,7 @@ func NewShell() *Shell {
 
 func (s *Shell) BootMessage() string {
 	return strings.TrimSpace(strings.Join([]string{
-		"SchemaFlow CommandDeck",
+		"SchemaFlux CommandDeck",
 		"Type /help for commands.",
 		"",
 		"Connect your API key, then capture work in plain language.",
@@ -52,7 +52,7 @@ func (s *Shell) Connect(apiKey, context string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("api key is required")
 	}
-	schemaflow.Init(trimmed)
+	schemaflux.Init(trimmed)
 	s.state.Context = strings.TrimSpace(context)
 
 	var out []string

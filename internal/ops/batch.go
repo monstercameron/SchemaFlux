@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/llm"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // BatchMode defines how batch operations are processed

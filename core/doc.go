@@ -1,7 +1,7 @@
 /*
-Package schemaflow provides type-safe, production-ready LLM operations for Go applications.
+Package schemaflux provides type-safe, production-ready LLM operations for Go applications.
 
-SchemaFlow simplifies working with Large Language Models by providing strongly-typed operations
+SchemaFlux simplifies working with Large Language Models by providing strongly-typed operations
 that handle the complexity of prompt engineering, response parsing, and error handling.
 
 # Features
@@ -15,16 +15,16 @@ that handle the complexity of prompt engineering, response parsing, and error ha
 
 # Installation
 
-	go get github.com/monstercameron/schemaflow
+	go get github.com/monstercameron/schemaflux
 
 # Quick Start
 
 Initialize the library with your API key:
 
-	import "github.com/monstercameron/schemaflow"
+	import "github.com/monstercameron/schemaflux"
 
 	func main() {
-	    schemaflow.Init("your-api-key")
+	    schemaflux.Init("your-api-key")
 
 	    // Extract structured data
 	    type Person struct {
@@ -32,18 +32,18 @@ Initialize the library with your API key:
 	        Age  int    `json:"age"`
 	    }
 
-	    person, err := schemaflow.Extract[Person]("John Doe, 30 years old")
+	    person, err := schemaflux.Extract[Person]("John Doe, 30 years old")
 	}
 
 # Client-Based Usage
 
 For multiple configurations or providers:
 
-	client := schemaflow.NewClient("api-key").
+	client := schemaflux.NewClient("api-key").
 	    WithTimeout(30 * time.Second).
 	    WithProvider("anthropic")
 
-	person, err := schemaflow.ClientExtract[Person](client, input)
+	person, err := schemaflux.ClientExtract[Person](client, input)
 
 # Operation Categories
 
@@ -99,24 +99,24 @@ Procedural Operations (procedural_ops.go):
 Process multiple items efficiently:
 
 	// Parallel processing for speed
-	batch := schemaflow.Batch().
-	    WithMode(schemaflow.ParallelMode).
+	batch := schemaflux.Batch().
+	    WithMode(schemaflux.ParallelMode).
 	    WithConcurrency(10)
 
-	results := schemaflow.ExtractBatch[Person](batch, inputs)
+	results := schemaflux.ExtractBatch[Person](batch, inputs)
 
 	// Merged processing for cost savings
-	batch := schemaflow.Batch().
-	    WithMode(schemaflow.MergedMode).
+	batch := schemaflux.Batch().
+	    WithMode(schemaflux.MergedMode).
 	    WithBatchSize(50)
 
-	results := schemaflow.ExtractBatch[Invoice](batch, invoices)
+	results := schemaflux.ExtractBatch[Invoice](batch, invoices)
 
 # Pipelines
 
 Chain operations together:
 
-	pipeline := schemaflow.NewPipeline("process").
+	pipeline := schemaflux.NewPipeline("process").
 	    Add("extract", extractOp).
 	    Add("validate", validateOp).
 	    Add("transform", transformOp)
@@ -128,26 +128,26 @@ Chain operations together:
 Switch between different LLM providers:
 
 	// OpenAI (default)
-	client := schemaflow.NewClient(apiKey)
+	client := schemaflux.NewClient(apiKey)
 
 	// Anthropic
-	client := schemaflow.NewClient(apiKey).WithProvider("anthropic")
+	client := schemaflux.NewClient(apiKey).WithProvider("anthropic")
 
 	// Local/Mock for testing
-	testClient := schemaflow.NewClient("").WithProvider("local")
+	testClient := schemaflux.NewClient("").WithProvider("local")
 
 # Configuration
 
 Configure via environment variables:
 
-	SCHEMAFLOW_API_KEY=your-api-key
-	SCHEMAFLOW_PROVIDER=openai
-	SCHEMAFLOW_TIMEOUT=30s
-	SCHEMAFLOW_DEBUG=true
+	SCHEMAFLUX_API_KEY=your-api-key
+	SCHEMAFLUX_PROVIDER=openai
+	SCHEMAFLUX_TIMEOUT=30s
+	SCHEMAFLUX_DEBUG=true
 
 Or programmatically:
 
-	client := schemaflow.NewClient(apiKey).
+	client := schemaflux.NewClient(apiKey).
 	    WithTimeout(60 * time.Second).
 	    WithDebug(true)
 
@@ -155,7 +155,7 @@ Or programmatically:
 
 All operations return errors that should be checked:
 
-	result, err := schemaflow.Extract[Data](input)
+	result, err := schemaflux.Extract[Data](input)
 	if err != nil {
 	    // Handle error
 	    log.Printf("Extraction failed: %v", err)
@@ -175,11 +175,11 @@ Different modes for different needs:
 
 Use the local provider for testing:
 
-	testClient := schemaflow.NewClient("").WithProvider("local")
+	testClient := schemaflux.NewClient("").WithProvider("local")
 
 	// Configure custom responses
-	provider := schemaflow.NewLocalProvider(schemaflow.ProviderConfig{})
-	provider.WithHandler(func(ctx context.Context, req schemaflow.CompletionRequest) (string, error) {
+	provider := schemaflux.NewLocalProvider(schemaflux.ProviderConfig{})
+	provider.WithHandler(func(ctx context.Context, req schemaflux.CompletionRequest) (string, error) {
 	    return "test response", nil
 	})
 
@@ -209,8 +209,8 @@ All operations are thread-safe. Clients can be shared across goroutines.
 
 # Links
 
-Documentation: https://github.com/monstercameron/schemaflow
-Issues: https://github.com/monstercameron/schemaflow/issues
-Examples: https://github.com/monstercameron/schemaflow/examples
+Documentation: https://github.com/monstercameron/schemaflux
+Issues: https://github.com/monstercameron/schemaflux/issues
+Examples: https://github.com/monstercameron/schemaflux/examples
 */
 package core

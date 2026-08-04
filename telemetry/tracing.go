@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/logger"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -50,7 +50,7 @@ func InitTracing(serviceName string) error {
 	tracingEnabled = true
 
 	// Parse sample rate
-	if rate := os.Getenv("SCHEMAFLOW_TRACE_SAMPLE_RATE"); rate != "" {
+	if rate := os.Getenv("SCHEMAFLUX_TRACE_SAMPLE_RATE"); rate != "" {
 		var r float64
 		if _, err := fmt.Sscanf(rate, "%f", &r); err == nil && r >= 0 && r <= 1 {
 			traceSampleRate = r
@@ -64,7 +64,7 @@ func InitTracing(serviceName string) error {
 			semconv.SchemaURL,
 			semconv.ServiceName(serviceName),
 			semconv.ServiceVersion("1.0.0"),
-			attribute.String("library", "schemaflow"),
+			attribute.String("library", "schemaflux"),
 			attribute.String("environment", getEnvironment()),
 		),
 	)
@@ -76,7 +76,7 @@ func InitTracing(serviceName string) error {
 	var exporters []sdktrace.SpanExporter
 
 	// Stdout exporter (for debugging)
-	if stdout := os.Getenv("SCHEMAFLOW_EXPORT_TRACES_STDOUT"); stdout == "true" || stdout == "1" {
+	if stdout := os.Getenv("SCHEMAFLUX_EXPORT_TRACES_STDOUT"); stdout == "true" || stdout == "1" {
 		stdoutExporter, err := stdouttrace.New(
 			stdouttrace.WithPrettyPrint(),
 		)
@@ -89,7 +89,7 @@ func InitTracing(serviceName string) error {
 	}
 
 	// Jaeger exporter
-	if endpoint := os.Getenv("SCHEMAFLOW_JAEGER_ENDPOINT"); endpoint != "" {
+	if endpoint := os.Getenv("SCHEMAFLUX_JAEGER_ENDPOINT"); endpoint != "" {
 		jaegerExporter, err := jaeger.New(
 			jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(endpoint)),
 		)
@@ -102,7 +102,7 @@ func InitTracing(serviceName string) error {
 	}
 
 	// OTLP exporter
-	if endpoint := os.Getenv("SCHEMAFLOW_OTLP_ENDPOINT"); endpoint != "" {
+	if endpoint := os.Getenv("SCHEMAFLUX_OTLP_ENDPOINT"); endpoint != "" {
 		ctx := context.Background()
 		client := otlptracegrpc.NewClient(
 			otlptracegrpc.WithEndpoint(endpoint),
@@ -142,7 +142,7 @@ func InitTracing(serviceName string) error {
 	))
 
 	// Create tracer
-	tracer = otel.Tracer("github.com/monstercameron/schemaflow")
+	tracer = otel.Tracer("github.com/monstercameron/schemaflux")
 
 	logger.GetLogger().Info("Tracing initialized",
 		"serviceName", serviceName,
@@ -169,29 +169,29 @@ func StartSpan(ctx context.Context, operation string, opts types.OpOptions) (con
 	}
 
 	// Start span with operation name
-	ctx, span := tracer.Start(ctx, fmt.Sprintf("schemaflow.%s", operation),
+	ctx, span := tracer.Start(ctx, fmt.Sprintf("schemaflux.%s", operation),
 		trace.WithSpanKind(trace.SpanKindClient),
 	)
 
 	// Add standard attributes
 	span.SetAttributes(
-		attribute.String("schemaflow.operation", operation),
-		attribute.String("schemaflow.mode", opts.Mode.String()),
-		attribute.String("schemaflow.intelligence", opts.Intelligence.String()),
-		attribute.Float64("schemaflow.threshold", opts.Threshold),
+		attribute.String("schemaflux.operation", operation),
+		attribute.String("schemaflux.mode", opts.Mode.String()),
+		attribute.String("schemaflux.intelligence", opts.Intelligence.String()),
+		attribute.Float64("schemaflux.threshold", opts.Threshold),
 	)
 
 	// Add request ID if present
 	if opts.RequestID != "" {
-		span.SetAttributes(attribute.String("schemaflow.request_id", opts.RequestID))
+		span.SetAttributes(attribute.String("schemaflux.request_id", opts.RequestID))
 	}
 	if opts.CorrelationID != "" {
-		span.SetAttributes(attribute.String("schemaflow.correlation_id", opts.CorrelationID))
+		span.SetAttributes(attribute.String("schemaflux.correlation_id", opts.CorrelationID))
 	}
 
 	// Add steering if present
 	if opts.Steering != "" {
-		span.SetAttributes(attribute.String("schemaflow.steering", truncateString(opts.Steering, 200)))
+		span.SetAttributes(attribute.String("schemaflux.steering", truncateString(opts.Steering, 200)))
 	}
 
 	return ctx, span
@@ -334,7 +334,7 @@ func GetSpanID(ctx context.Context) string {
 // Helper functions
 
 func getEnvironment() string {
-	if env := os.Getenv("SCHEMAFLOW_ENVIRONMENT"); env != "" {
+	if env := os.Getenv("SCHEMAFLUX_ENVIRONMENT"); env != "" {
 		return env
 	}
 	if env := os.Getenv("ENVIRONMENT"); env != "" {
@@ -354,7 +354,7 @@ func truncateString(s string, maxLen int) string {
 }
 
 func tracingEnvEnabled() bool {
-	for _, key := range []string{"SCHEMAFLOW_ENABLE_TRACING", "SCHEMAFLOW_TRACE"} {
+	for _, key := range []string{"SCHEMAFLUX_ENABLE_TRACING", "SCHEMAFLUX_TRACE"} {
 		switch os.Getenv(key) {
 		case "true", "1":
 			return true

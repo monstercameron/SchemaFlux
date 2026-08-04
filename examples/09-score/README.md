@@ -134,5 +134,5 @@ func CalculateTotal(prices []float64) float64 {
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Score API Reference](../../docs/reference/API.md#score)

@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // CodeSnippet represents a code submission
@@ -64,9 +64,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -137,7 +137,7 @@ func CalculateTotal(prices []float64) float64 {
 	// Score each snippet with full results
 	type ScoredSnippet struct {
 		Snippet CodeSnippet
-		Result  schemaflow.ScoreResult
+		Result  schemaflux.ScoreResult
 	}
 	var scored []ScoredSnippet
 
@@ -148,15 +148,15 @@ func CalculateTotal(prices []float64) float64 {
 		fmt.Println("---")
 
 		// Score the code using the new generic signature
-		scoreOpts := schemaflow.NewScoreOptions().
+		scoreOpts := schemaflux.NewScoreOptions().
 			WithScaleMin(1).
 			WithScaleMax(10).
 			WithCriteria(criteria)
-		scoreOpts.OpOptions.Intelligence = schemaflow.Fast
+		scoreOpts.OpOptions.Intelligence = schemaflux.Fast
 
-		result, err := schemaflow.Score[string](snippet.Code, scoreOpts)
+		result, err := schemaflux.Score[string](snippet.Code, scoreOpts)
 		if err != nil {
-			schemaflow.GetLogger().Error("Failed to score snippet", "snippetID", snippet.ID, "error", err)
+			schemaflux.GetLogger().Error("Failed to score snippet", "snippetID", snippet.ID, "error", err)
 			continue
 		}
 

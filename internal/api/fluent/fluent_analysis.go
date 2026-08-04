@@ -1,6 +1,6 @@
 package fluent
 
-import "github.com/monstercameron/schemaflow/internal/types"
+import "github.com/monstercameron/schemaflux/internal/types"
 
 // ClassifyRequest is a fluent builder for Classify.
 type ClassifyRequest[T any, C any] struct {

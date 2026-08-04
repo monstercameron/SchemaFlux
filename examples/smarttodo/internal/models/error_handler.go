@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // ErrorSeverity defines the severity of errors
@@ -65,7 +65,7 @@ func HandleError(err error, context string) error {
 	}
 
 	// Log the error
-	schemaflow.GetLogger().Error("Error in operation", "context", context, "error", err)
+	schemaflux.GetLogger().Error("Error in operation", "context", context, "error", err)
 
 	// Check for specific error types and provide recovery strategies
 	switch {
@@ -106,7 +106,7 @@ func HandleError(err error, context string) error {
 func RecoverFromPanic(context string) error {
 	if r := recover(); r != nil {
 		_ = fmt.Errorf("panic recovered: %v", r)
-		schemaflow.GetLogger().Error("PANIC recovered", "context", context, "panic", r, "stack", string(debug.Stack()))
+		schemaflux.GetLogger().Error("PANIC recovered", "context", context, "panic", r, "stack", string(debug.Stack()))
 		return NewAppError(
 			fmt.Sprintf("Unexpected error: %v", r),
 			ErrorCritical,
@@ -127,7 +127,7 @@ func RetryWithBackoff(operation func() error, maxAttempts int, context string) e
 		} else {
 			lastErr = err
 			if attempt < maxAttempts {
-				schemaflow.GetLogger().Warn("Retry attempt failed", "attempt", attempt, "maxAttempts", maxAttempts, "context", context, "error", err, "backoff", backoff)
+				schemaflux.GetLogger().Warn("Retry attempt failed", "attempt", attempt, "maxAttempts", maxAttempts, "context", context, "error", err, "backoff", backoff)
 				time.Sleep(backoff)
 				backoff *= 2
 				if backoff > 30*time.Second {
@@ -147,7 +147,7 @@ func RetryWithBackoff(operation func() error, maxAttempts int, context string) e
 func SafeExecute(fn func() error, context string) error {
 	defer func() {
 		if err := RecoverFromPanic(context); err != nil {
-			schemaflow.GetLogger().Error("Recovered from panic in operation", "context", context, "error", err)
+			schemaflux.GetLogger().Error("Recovered from panic in operation", "context", context, "error", err)
 		}
 	}()
 	return fn()

@@ -114,5 +114,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Decide API Reference](../../docs/reference/API.md#decide)

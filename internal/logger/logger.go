@@ -1,8 +1,8 @@
 package logger
 
 import (
-	"github.com/monstercameron/schemaflow/internal/config"
-	telemetry "github.com/monstercameron/schemaflow/internal/telemetry"
+	"github.com/monstercameron/schemaflux/internal/config"
+	telemetry "github.com/monstercameron/schemaflux/internal/telemetry"
 )
 
 type (

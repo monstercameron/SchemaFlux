@@ -81,12 +81,12 @@ type historyHandler struct {
 
 // DefaultLoggerConfig returns logger configuration from environment variables.
 func DefaultLoggerConfig() LoggerConfig {
-	level := parseLogLevel(os.Getenv("SCHEMAFLOW_LOG_LEVEL"))
-	if level == InfoLevel && envEnabled("SCHEMAFLOW_DEBUG") {
+	level := parseLogLevel(os.Getenv("SCHEMAFLUX_LOG_LEVEL"))
+	if level == InfoLevel && envEnabled("SCHEMAFLUX_DEBUG") {
 		level = DebugLevel
 	}
 
-	format := strings.ToLower(strings.TrimSpace(os.Getenv("SCHEMAFLOW_LOG_FORMAT")))
+	format := strings.ToLower(strings.TrimSpace(os.Getenv("SCHEMAFLUX_LOG_FORMAT")))
 	if format == "" {
 		format = "text"
 	}
@@ -95,7 +95,7 @@ func DefaultLoggerConfig() LoggerConfig {
 	}
 
 	bufferSize := 1000
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLOW_LOG_BUFFER")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_LOG_BUFFER")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 			bufferSize = parsed
 		}
@@ -104,11 +104,11 @@ func DefaultLoggerConfig() LoggerConfig {
 	return LoggerConfig{
 		Level:         level,
 		Format:        format,
-		FilePath:      strings.TrimSpace(os.Getenv("SCHEMAFLOW_LOG_FILE")),
-		Capture:       !envEnabled("SCHEMAFLOW_LOG_DISABLE_CAPTURE"),
+		FilePath:      strings.TrimSpace(os.Getenv("SCHEMAFLUX_LOG_FILE")),
+		Capture:       !envEnabled("SCHEMAFLUX_LOG_DISABLE_CAPTURE"),
 		BufferSize:    bufferSize,
-		AddSource:     envEnabled("SCHEMAFLOW_LOG_SOURCE"),
-		DisableStderr: envEnabled("SCHEMAFLOW_LOG_DISABLE_STDERR"),
+		AddSource:     envEnabled("SCHEMAFLUX_LOG_SOURCE"),
+		DisableStderr: envEnabled("SCHEMAFLUX_LOG_DISABLE_STDERR"),
 	}
 }
 

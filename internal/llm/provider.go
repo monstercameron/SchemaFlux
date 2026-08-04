@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -949,21 +949,21 @@ func init() {
 
 // getModelRates returns the input and output cost per token for a given model
 // It checks environment variables first, then falls back to provider defaults.
-// Environment variables format: SCHEMAFLOW_COST_INPUT_<MODEL> and SCHEMAFLOW_COST_OUTPUT_<MODEL>
+// Environment variables format: SCHEMAFLUX_COST_INPUT_<MODEL> and SCHEMAFLUX_COST_OUTPUT_<MODEL>
 // where <MODEL> is the sanitized model name (uppercase, dots/dashes replaced with underscores).
 // The value should be the cost per 1,000,000 (1M) tokens.
 func getModelRates(provider, model string) (float64, float64) {
 	// Check for intelligence level overrides first if the model matches a known level env var
 	// Note: This is tricky because we don't know the intelligence level here, only the model name.
-	// However, if the user set SCHEMAFLOW_MODEL_SMART="gpt-4", they might also set SCHEMAFLOW_COST_INPUT_SMART.
+	// However, if the user set SCHEMAFLUX_MODEL_SMART="gpt-4", they might also set SCHEMAFLUX_COST_INPUT_SMART.
 	// But the request was "map the models and cost/token at the levels in the env vars".
-	// This implies we should check SCHEMAFLOW_COST_INPUT_SMART if the current model IS the smart model.
+	// This implies we should check SCHEMAFLUX_COST_INPUT_SMART if the current model IS the smart model.
 	// Since we don't have the level context here easily without circular dependency or API change,
 	// we will stick to model-based lookup which is robust.
-	// If the user sets SCHEMAFLOW_MODEL_SMART="my-model", they can set SCHEMAFLOW_COST_INPUT_MY_MODEL.
+	// If the user sets SCHEMAFLUX_MODEL_SMART="my-model", they can set SCHEMAFLUX_COST_INPUT_MY_MODEL.
 
 	// Wait, the user specifically asked: "map the models and cost/token at the levels in the env vars"
-	// This could mean: SCHEMAFLOW_COST_INPUT_SMART=30.0
+	// This could mean: SCHEMAFLUX_COST_INPUT_SMART=30.0
 	// If we can't know if "model" is "Smart", we can't apply "Smart" pricing.
 	// But wait, the caller of EstimateCost knows the model, but not necessarily the level used to select it.
 	// Let's support looking up by the exact model name first (as implemented),
@@ -973,14 +973,14 @@ func getModelRates(provider, model string) (float64, float64) {
 	// However, if the user wants to say "Smart level costs X", and they mapped Smart -> GPT-4,
 	// they probably want to set cost for GPT-4.
 	// BUT, if they want to abstract it:
-	// SCHEMAFLOW_MODEL_SMART=gpt-4
-	// SCHEMAFLOW_COST_INPUT_SMART=30.0
+	// SCHEMAFLUX_MODEL_SMART=gpt-4
+	// SCHEMAFLUX_COST_INPUT_SMART=30.0
 
-	// To support this, we'd need to know if 'model' == os.Getenv("SCHEMAFLOW_MODEL_SMART").
+	// To support this, we'd need to know if 'model' == os.Getenv("SCHEMAFLUX_MODEL_SMART").
 
-	smartModel := os.Getenv("SCHEMAFLOW_MODEL_SMART")
-	fastModel := os.Getenv("SCHEMAFLOW_MODEL_FAST")
-	quickModel := os.Getenv("SCHEMAFLOW_MODEL_QUICK")
+	smartModel := os.Getenv("SCHEMAFLUX_MODEL_SMART")
+	fastModel := os.Getenv("SCHEMAFLUX_MODEL_FAST")
+	quickModel := os.Getenv("SCHEMAFLUX_MODEL_QUICK")
 
 	var levelSuffix string
 	if model == smartModel && smartModel != "" {
@@ -992,8 +992,8 @@ func getModelRates(provider, model string) (float64, float64) {
 	}
 
 	if levelSuffix != "" {
-		inputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLOW_COST_INPUT_%s", levelSuffix))
-		outputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLOW_COST_OUTPUT_%s", levelSuffix))
+		inputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_INPUT_%s", levelSuffix))
+		outputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_OUTPUT_%s", levelSuffix))
 
 		if inputEnv != "" && outputEnv != "" {
 			inputVal, err1 := strconv.ParseFloat(inputEnv, 64)
@@ -1006,8 +1006,8 @@ func getModelRates(provider, model string) (float64, float64) {
 
 	sanitizedModel := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(model, "-", "_"), ".", "_"))
 
-	inputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLOW_COST_INPUT_%s", sanitizedModel))
-	outputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLOW_COST_OUTPUT_%s", sanitizedModel))
+	inputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_INPUT_%s", sanitizedModel))
+	outputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_OUTPUT_%s", sanitizedModel))
 
 	var inputRate, outputRate float64
 	var inputFound, outputFound bool

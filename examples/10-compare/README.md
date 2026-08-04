@@ -62,5 +62,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Compare API Reference](../../docs/reference/API.md#compare)

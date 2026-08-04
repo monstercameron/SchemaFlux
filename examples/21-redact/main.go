@@ -11,8 +11,8 @@ package main
 import (
 	"fmt"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 func main() {
@@ -20,9 +20,9 @@ func main() {
 	fmt.Println("?? RedactLLM Example - AI-Powered Sensitive Data Masking")
 	fmt.Println("=" + string(make([]byte, 60)))
 
-	// Initialize SchemaFlow
+	// Initialize SchemaFlux
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -33,11 +33,11 @@ func main() {
 	text1 := "Contact John Smith at john.smith@company.com or call 555-123-4567 for support."
 	fmt.Printf("   Input:  %q\n", text1)
 
-	result1, err := schemaflow.RedactLLM(text1,
-		schemaflow.NewRedactLLMOptions().
+	result1, err := schemaflux.RedactLLM(text1,
+		schemaflux.NewRedactLLMOptions().
 			WithCategories([]string{"all"}).
 			WithMaskChar('*').
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -56,13 +56,13 @@ func main() {
 	text2 := "My email is alice.johnson@example.org and SSN is 123-45-6789."
 	fmt.Printf("   Input:  %q\n", text2)
 
-	result2, err := schemaflow.RedactLLM(text2,
-		schemaflow.NewRedactLLMOptions().
+	result2, err := schemaflux.RedactLLM(text2,
+		schemaflux.NewRedactLLMOptions().
 			WithCategories([]string{"email", "ssn"}).
 			WithMaskChar('*').
 			WithShowFirst(2).
 			WithShowLast(2).
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -81,11 +81,11 @@ func main() {
 	text3 := "Credit card: 4532-1234-5678-9012, expires 12/25."
 	fmt.Printf("   Input:  %q\n", text3)
 
-	result3, err := schemaflow.RedactLLM(text3,
-		schemaflow.NewRedactLLMOptions().
+	result3, err := schemaflux.RedactLLM(text3,
+		schemaflux.NewRedactLLMOptions().
 			WithCategories([]string{"credit_card"}).
 			WithMaskChar('|').
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -104,12 +104,12 @@ func main() {
 	text4 := "Set API_KEY=sk-abc123xyz789secret and DB_PASSWORD=MyS3cretP@ss!"
 	fmt.Printf("   Input:  %q\n", text4)
 
-	result4, err := schemaflow.RedactLLM(text4,
-		schemaflow.NewRedactLLMOptions().
+	result4, err := schemaflux.RedactLLM(text4,
+		schemaflux.NewRedactLLMOptions().
 			WithCategories([]string{"api_key", "password"}).
 			WithMaskChar('#').
 			WithShowFirst(3). // Show "sk-" prefix
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -134,11 +134,11 @@ SSN: 987-65-4321`
 
 	fmt.Printf("   Input:\n%s\n\n", text5)
 
-	result5, err := schemaflow.RedactLLM(text5,
-		schemaflow.NewRedactLLMOptions().
+	result5, err := schemaflux.RedactLLM(text5,
+		schemaflux.NewRedactLLMOptions().
 			WithCategories([]string{"all"}).
 			WithMaskChar('X').
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -155,11 +155,11 @@ SSN: 987-65-4321`
 	text6 := "Contacts: admin@company.com, support@help.org, John Smith (555-1234)"
 	fmt.Printf("   Input:  %q\n", text6)
 
-	result6, err := schemaflow.RedactLLM(text6,
-		schemaflow.NewRedactLLMOptions().
+	result6, err := schemaflux.RedactLLM(text6,
+		schemaflux.NewRedactLLMOptions().
 			WithCategories([]string{"email"}). // Only emails, ignore phone
 			WithMaskChar('*').
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)

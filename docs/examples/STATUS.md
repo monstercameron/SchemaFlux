@@ -1,4 +1,4 @@
-# SchemaFlow Examples - Implementation Status
+# SchemaFlux Examples - Implementation Status
 
 ## ✅ Completed Examples (6/15)
 

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/config"
-	"github.com/monstercameron/schemaflow/internal/logger"
-	"github.com/monstercameron/schemaflow/internal/types"
-	"github.com/monstercameron/schemaflow/telemetry"
+	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 // Extract converts unstructured data into strongly-typed Go structs using LLM interpretation.

@@ -1,8 +1,8 @@
-package schemaflow
+package schemaflux
 
 import (
-	builder "github.com/monstercameron/schemaflow/internal/api/fluent"
-	"github.com/monstercameron/schemaflow/internal/ops"
+	builder "github.com/monstercameron/schemaflux/internal/api/fluent"
+	"github.com/monstercameron/schemaflux/internal/ops"
 )
 
 type CommonOptions = ops.CommonOptions

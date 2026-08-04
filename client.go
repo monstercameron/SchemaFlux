@@ -1,4 +1,4 @@
-package schemaflow
+package schemaflux
 
 import (
 	"context"
@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/llm"
-	"github.com/monstercameron/schemaflow/internal/ops"
-	"github.com/monstercameron/schemaflow/internal/requesttracking"
-	"github.com/monstercameron/schemaflow/internal/telemetry"
+	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/ops"
+	"github.com/monstercameron/schemaflux/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/internal/telemetry"
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// Client represents a configured schemaflow client instance.
+// Client represents a configured schemaflux client instance.
 type Client struct {
 	openaiClient *openai.Client // Legacy OpenAI client
 	apiKey       string
@@ -151,30 +151,30 @@ var (
 	mu            sync.RWMutex
 )
 
-// Init initializes the schemaflow library with the provided API key.
+// Init initializes the schemaflux library with the provided API key.
 func Init(key string) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	apiKey := key
 	if apiKey == "" {
-		apiKey = os.Getenv("SCHEMAFLOW_API_KEY")
+		apiKey = os.Getenv("SCHEMAFLUX_API_KEY")
 	}
 
 	provider := "openai"
-	if p := os.Getenv("SCHEMAFLOW_PROVIDER"); p != "" {
+	if p := os.Getenv("SCHEMAFLUX_PROVIDER"); p != "" {
 		provider = p
 	}
 
 	timeout := 30 * time.Second
-	if t := os.Getenv("SCHEMAFLOW_TIMEOUT"); t != "" {
+	if t := os.Getenv("SCHEMAFLUX_TIMEOUT"); t != "" {
 		if d, err := time.ParseDuration(t); err == nil {
 			timeout = d
 		}
 	}
 
 	debugMode := false
-	if d := os.Getenv("SCHEMAFLOW_DEBUG"); d == "true" || d == "1" {
+	if d := os.Getenv("SCHEMAFLUX_DEBUG"); d == "true" || d == "1" {
 		debugMode = true
 	}
 
@@ -193,16 +193,16 @@ func GetDefaultClient() *Client {
 	return defaultClient
 }
 
-// InitWithEnv initializes SchemaFlow from environment variables.
+// InitWithEnv initializes SchemaFlux from environment variables.
 // It reads configuration from a .env file if path is provided.
 func InitWithEnv(paths ...string) error {
 	// Load .env file if path provided (optional)
 	// For now, just use environment variables directly
-	apiKey := os.Getenv("SCHEMAFLOW_API_KEY")
+	apiKey := os.Getenv("SCHEMAFLUX_API_KEY")
 	if apiKey == "" {
 		if openAIKey := os.Getenv("OPENAI_API_KEY"); openAIKey != "" {
 			apiKey = openAIKey
-			_ = os.Setenv("SCHEMAFLOW_API_KEY", openAIKey)
+			_ = os.Setenv("SCHEMAFLUX_API_KEY", openAIKey)
 		}
 	}
 
@@ -210,7 +210,7 @@ func InitWithEnv(paths ...string) error {
 	return nil
 }
 
-// GetLogger returns the default logger for the schemaflow package.
+// GetLogger returns the default logger for the schemaflux package.
 func GetLogger() *telemetry.Logger {
 	if defaultClient != nil {
 		return defaultClient.logger
@@ -337,7 +337,7 @@ func resolveProviderAPIKey(providerName, fallback string) string {
 	if fallback != "" {
 		return fallback
 	}
-	if value := os.Getenv("SCHEMAFLOW_API_KEY"); value != "" {
+	if value := os.Getenv("SCHEMAFLUX_API_KEY"); value != "" {
 		return value
 	}
 	return ""
@@ -355,40 +355,40 @@ func resolveProviderBaseURL(providerName string) string {
 func providerAPIKeyEnvVars(providerName string) []string {
 	switch normalizeProviderName(providerName) {
 	case "openai":
-		return []string{"SCHEMAFLOW_OPENAI_API_KEY", "OPENAI_API_KEY"}
+		return []string{"SCHEMAFLUX_OPENAI_API_KEY", "OPENAI_API_KEY"}
 	case "anthropic":
-		return []string{"SCHEMAFLOW_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"}
+		return []string{"SCHEMAFLUX_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"}
 	case "openrouter":
-		return []string{"SCHEMAFLOW_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"}
+		return []string{"SCHEMAFLUX_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"}
 	case "cerebras":
-		return []string{"SCHEMAFLOW_CEREBRAS_API_KEY", "CEREBRAS_API_KEY"}
+		return []string{"SCHEMAFLUX_CEREBRAS_API_KEY", "CEREBRAS_API_KEY"}
 	case "deepseek":
-		return []string{"SCHEMAFLOW_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"}
+		return []string{"SCHEMAFLUX_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"}
 	case "qwen":
-		return []string{"SCHEMAFLOW_QWEN_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY"}
+		return []string{"SCHEMAFLUX_QWEN_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY"}
 	case "zai":
-		return []string{"SCHEMAFLOW_ZAI_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"}
+		return []string{"SCHEMAFLUX_ZAI_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"}
 	default:
-		return []string{"SCHEMAFLOW_API_KEY"}
+		return []string{"SCHEMAFLUX_API_KEY"}
 	}
 }
 
 func providerBaseURLEnvVars(providerName string) []string {
 	switch normalizeProviderName(providerName) {
 	case "openai":
-		return []string{"SCHEMAFLOW_OPENAI_BASE_URL", "OPENAI_BASE_URL"}
+		return []string{"SCHEMAFLUX_OPENAI_BASE_URL", "OPENAI_BASE_URL"}
 	case "anthropic":
-		return []string{"SCHEMAFLOW_ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"}
+		return []string{"SCHEMAFLUX_ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"}
 	case "openrouter":
-		return []string{"SCHEMAFLOW_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"}
+		return []string{"SCHEMAFLUX_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"}
 	case "cerebras":
-		return []string{"SCHEMAFLOW_CEREBRAS_BASE_URL", "CEREBRAS_BASE_URL"}
+		return []string{"SCHEMAFLUX_CEREBRAS_BASE_URL", "CEREBRAS_BASE_URL"}
 	case "deepseek":
-		return []string{"SCHEMAFLOW_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL"}
+		return []string{"SCHEMAFLUX_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL"}
 	case "qwen":
-		return []string{"SCHEMAFLOW_QWEN_BASE_URL", "QWEN_BASE_URL", "DASHSCOPE_BASE_URL"}
+		return []string{"SCHEMAFLUX_QWEN_BASE_URL", "QWEN_BASE_URL", "DASHSCOPE_BASE_URL"}
 	case "zai":
-		return []string{"SCHEMAFLOW_ZAI_BASE_URL", "ZAI_BASE_URL", "GLM_BASE_URL"}
+		return []string{"SCHEMAFLUX_ZAI_BASE_URL", "ZAI_BASE_URL", "GLM_BASE_URL"}
 	default:
 		return nil
 	}

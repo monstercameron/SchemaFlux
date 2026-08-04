@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -73,7 +73,7 @@ type EmployeeRecord struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -117,7 +117,7 @@ func main() {
 		},
 	}
 
-	custResult, err := schemaflow.Resolve[CustomerRecord](customerSources, schemaflow.ResolveOptions{
+	custResult, err := schemaflux.Resolve[CustomerRecord](customerSources, schemaflux.ResolveOptions{
 		Strategy:     "most-complete",
 		Intelligence: types.Smart,
 		Steering:     "Prefer more recent LastContact dates. Ignore Marketing source (source 2) for address since it's outdated. Active status trumps inactive.",
@@ -174,7 +174,7 @@ func main() {
 		},
 	}
 
-	prodResult, err := schemaflow.Resolve[ProductData](productSources, schemaflow.ResolveOptions{
+	prodResult, err := schemaflux.Resolve[ProductData](productSources, schemaflux.ResolveOptions{
 		Strategy:     "most-complete",
 		Intelligence: types.Smart,
 		FieldPriorities: map[string]int{
@@ -234,7 +234,7 @@ func main() {
 		},
 	}
 
-	empResult, err := schemaflow.Resolve[EmployeeRecord](employeeSources, schemaflow.ResolveOptions{
+	empResult, err := schemaflux.Resolve[EmployeeRecord](employeeSources, schemaflux.ResolveOptions{
 		Strategy:            "authoritative",
 		AuthoritativeSource: 1, // Payroll is most up-to-date
 		Intelligence:        types.Smart,

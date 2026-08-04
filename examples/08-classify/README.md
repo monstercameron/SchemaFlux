@@ -115,5 +115,5 @@ Review #5 by Rachel P. 😞
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Classify API Reference](../../docs/reference/API.md#classify)

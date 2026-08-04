@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func runFileExamples(ctx context.Context) {
@@ -15,7 +15,7 @@ func runFileExamples(ctx context.Context) {
 	fmt.Println(strings.Repeat("=", 60))
 
 	// Create a temp directory for examples
-	tempDir := filepath.Join(os.TempDir(), "schemaflow_examples")
+	tempDir := filepath.Join(os.TempDir(), "schemaflux_examples")
 	os.MkdirAll(tempDir, 0755)
 	defer os.RemoveAll(tempDir)
 
@@ -23,7 +23,7 @@ func runFileExamples(ctx context.Context) {
 	testFile := filepath.Join(tempDir, "test.txt")
 	result, err := tools.Execute(ctx, "write_file", map[string]any{
 		"path":    testFile,
-		"content": "Hello, SchemaFlow!\nThis is a test file.\nWith multiple lines.",
+		"content": "Hello, SchemaFlux!\nThis is a test file.\nWith multiple lines.",
 	})
 	printResult("Write File", result, err)
 
@@ -118,9 +118,9 @@ func runFileExamples(ctx context.Context) {
 	result, err = tools.Execute(ctx, "search_files", map[string]any{
 		"path":    tempDir,
 		"pattern": "*.*",
-		"content": "SchemaFlow",
+		"content": "SchemaFlux",
 	})
-	printResult("Search Files (containing 'SchemaFlow')", result, err)
+	printResult("Search Files (containing 'SchemaFlux')", result, err)
 
 	// Example 12: Create nested directories and list recursively
 	nestedDir := filepath.Join(tempDir, "subdir", "nested")

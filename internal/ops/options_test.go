@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflow/internal/requesttracking"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func TestCommonOptions(t *testing.T) {

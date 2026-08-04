@@ -6,10 +6,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/intelligence"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/intelligence"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 )
 
 // TodoProcessor handles AI-powered todo processing
@@ -62,11 +62,11 @@ func (tp *TodoProcessor) FixTaskGrammar(taskText string) (string, error) {
 	tp.LastCost = 0.0001 // Minimal cost for fast model
 	tp.TotalCost += tp.LastCost
 
-	fixed, err := schemaflow.Transform[string, string](
+	fixed, err := schemaflux.Transform[string, string](
 		taskText,
-		schemaflow.NewTransformOptions().
-			WithIntelligence(schemaflow.Fast).
-			WithMode(schemaflow.TransformMode).
+		schemaflux.NewTransformOptions().
+			WithIntelligence(schemaflux.Fast).
+			WithMode(schemaflux.TransformMode).
 			WithSteering("Fix any grammatical errors and improve clarity. Keep it concise."),
 	)
 

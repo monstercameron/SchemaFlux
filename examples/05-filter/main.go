@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // SupportTicket represents a customer support ticket
@@ -67,9 +67,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -140,14 +140,14 @@ func main() {
 - Service outages or payment failures
 Exclude routine requests and feature requests.`
 
-	filterOpts := schemaflow.NewFilterOptions().WithCriteria(criteria)
-	filterOpts.OpOptions.Intelligence = schemaflow.Fast
+	filterOpts := schemaflux.NewFilterOptions().WithCriteria(criteria)
+	filterOpts.OpOptions.Intelligence = schemaflux.Fast
 	filterOpts.OpOptions.Steering = "Focus on business impact and urgency"
 
-	urgentTickets, err := schemaflow.Filter(tickets, filterOpts)
+	urgentTickets, err := schemaflux.Filter(tickets, filterOpts)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Filtering failed", "error", err)
+		schemaflux.GetLogger().Error("Filtering failed", "error", err)
 		os.Exit(1)
 	}
 

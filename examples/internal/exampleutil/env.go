@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Bootstrap initializes examples from the process environment and an optional nearby .env file.
@@ -13,13 +13,13 @@ import (
 func Bootstrap() error {
 	loadNearestEnv()
 	normalizeAPIKeyEnv()
-	return schemaflow.InitWithEnv()
+	return schemaflux.InitWithEnv()
 }
 
 func normalizeAPIKeyEnv() {
-	if os.Getenv("SCHEMAFLOW_API_KEY") == "" {
+	if os.Getenv("SCHEMAFLUX_API_KEY") == "" {
 		if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-			_ = os.Setenv("SCHEMAFLOW_API_KEY", key)
+			_ = os.Setenv("SCHEMAFLUX_API_KEY", key)
 		}
 	}
 }

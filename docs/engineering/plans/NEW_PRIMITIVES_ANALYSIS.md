@@ -1,4 +1,4 @@
-# SchemaFlow LLM Operations - Analysis & New Primitives Proposal
+# SchemaFlux LLM Operations - Analysis & New Primitives Proposal
 
 ## Current Operations Inventory
 
@@ -556,7 +556,7 @@ This should be implemented ASAP as it's already documented and has examples.
 **Proposed New**: 32 new primitives
 **Total Vision**: ~67 comprehensive LLM operations
 
-This would make SchemaFlow the **most complete LLM operation library** available, covering:
+This would make SchemaFlux the **most complete LLM operation library** available, covering:
 - ✅ Data extraction & transformation
 - ✅ Analysis & classification  
 - ✅ Text manipulation

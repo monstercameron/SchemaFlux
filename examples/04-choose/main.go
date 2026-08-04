@@ -23,7 +23,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Product represents a product in the catalog
@@ -64,9 +64,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -119,18 +119,18 @@ func main() {
 	}
 
 	// Choose the best product for the customer
-	chooseOpts := schemaflow.NewChooseOptions().WithCriteria([]string{
+	chooseOpts := schemaflux.NewChooseOptions().WithCriteria([]string{
 		"Budget: Maximum $600",
 		"Must be portable (laptop)",
 		"For coding and note-taking",
 	})
-	chooseOpts.OpOptions.Intelligence = schemaflow.Fast
+	chooseOpts.OpOptions.Intelligence = schemaflux.Fast
 	chooseOpts.OpOptions.Steering = "Select the product that is under $600 budget AND is a laptop. BudgetBook at $499.99 is the ONLY option within budget."
 
-	chosen, err := schemaflow.Choose(products, chooseOpts)
+	chosen, err := schemaflux.Choose(products, chooseOpts)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Selection failed", "error", err)
+		schemaflux.GetLogger().Error("Selection failed", "error", err)
 		os.Exit(1)
 	}
 

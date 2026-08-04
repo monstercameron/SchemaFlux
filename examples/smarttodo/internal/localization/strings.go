@@ -5,7 +5,7 @@ package localization
 
 const (
 	// Application name
-	AppName = "SchemaFlow CommandDeck"
+	AppName = "SchemaFlux CommandDeck"
 
 	// Headers
 	HeaderTakingBreak   = "Taking a Break"
@@ -14,10 +14,10 @@ const (
 	HeaderAISuggestion  = "AI Suggestion"
 	HeaderNewTask       = "New Task"
 	HeaderEditTask      = "Edit Task"
-	HeaderQuitConfirm   = "Quit SchemaFlow CommandDeck?"
+	HeaderQuitConfirm   = "Quit SchemaFlux CommandDeck?"
 	HeaderSubtasks      = "Subtasks"
 	HeaderTaskDetails   = "Task Details"
-	HeaderSetup         = "SchemaFlow CommandDeck Setup"
+	HeaderSetup         = "SchemaFlux CommandDeck Setup"
 	HeaderDailySchedule = "Daily Schedule"
 
 	// Welcome/Setup

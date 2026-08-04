@@ -27,7 +27,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Resume represents structured resume data (input type)
@@ -77,9 +77,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -111,15 +111,15 @@ func main() {
 	fmt.Printf("  Skills: %v\n", resume.Skills)
 
 	// Transform: Resume → Professional Markdown CV
-	cv, err := schemaflow.Transform[Resume, MarkdownCV](
+	cv, err := schemaflux.Transform[Resume, MarkdownCV](
 		resume,
-		schemaflow.NewTransformOptions().
-			WithIntelligence(schemaflow.Fast).
+		schemaflux.NewTransformOptions().
+			WithIntelligence(schemaflux.Fast).
 			WithSteering("Create a professional, well-formatted CV in markdown. Use headers, bullet points, and emphasis. Make it visually appealing."),
 	)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Transformation failed", "error", err)
+		schemaflux.GetLogger().Error("Transformation failed", "error", err)
 		os.Exit(1)
 	}
 

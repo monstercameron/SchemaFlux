@@ -1,4 +1,4 @@
-# SchemaFlow Redact Operation Examples
+# SchemaFlux Redact Operation Examples
 
 The Redact operation provides intelligent data masking capabilities for removing or obscuring sensitive information from text and structured data.
 

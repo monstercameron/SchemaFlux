@@ -1,27 +1,27 @@
-// Package schemaflow provides the main API for SchemaFlow operations.
-// This is the single entry point for all SchemaFlow functionality.
+// Package schemaflux provides the main API for SchemaFlux operations.
+// This is the single entry point for all SchemaFlux functionality.
 //
 // Example usage:
 //
-//	import "github.com/monstercameron/schemaflow"
+//	import "github.com/monstercameron/schemaflux"
 //
 //	// Initialize from environment
-//	if err := schemaflow.InitWithEnv(); err != nil {
+//	if err := schemaflux.InitWithEnv(); err != nil {
 //	    panic(err)
 //	}
 //
 //	// Extract structured data from unstructured input
-//	person, err := schemaflow.Extract[Person](jsonInput, schemaflow.NewExtractOptions())
-package schemaflow
+//	person, err := schemaflux.Extract[Person](jsonInput, schemaflux.NewExtractOptions())
+package schemaflux
 
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflow/internal/llm"
-	"github.com/monstercameron/schemaflow/internal/ops"
-	"github.com/monstercameron/schemaflow/internal/requesttracking"
-	telemetry "github.com/monstercameron/schemaflow/internal/telemetry"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/ops"
+	"github.com/monstercameron/schemaflux/internal/requesttracking"
+	telemetry "github.com/monstercameron/schemaflux/internal/telemetry"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // Re-export types for public API
@@ -367,7 +367,7 @@ var (
 //	    Name string `json:"name"`
 //	    Age  int    `json:"age"`
 //	}
-//	person, err := schemaflow.Extract[Person](jsonInput, schemaflow.NewExtractOptions())
+//	person, err := schemaflux.Extract[Person](jsonInput, schemaflux.NewExtractOptions())
 func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	return ops.Extract[T](input, opts)
 }
@@ -376,7 +376,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Transform[InputType, OutputType](input, schemaflow.NewTransformOptions())
+//	result, err := schemaflux.Transform[InputType, OutputType](input, schemaflux.NewTransformOptions())
 func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 	return ops.Transform[T, U](input, opts)
 }
@@ -385,7 +385,7 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 //
 // Example:
 //
-//	story, err := schemaflow.Generate[Story]("Write a short story about...", schemaflow.NewGenerateOptions())
+//	story, err := schemaflux.Generate[Story]("Write a short story about...", schemaflux.NewGenerateOptions())
 func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 	return ops.Generate[T](prompt, opts)
 }
@@ -394,7 +394,7 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 //
 // Example:
 //
-//	best, err := schemaflow.Choose(options, schemaflow.NewChooseOptions().WithCriteria("most relevant"))
+//	best, err := schemaflux.Choose(options, schemaflux.NewChooseOptions().WithCriteria("most relevant"))
 func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 	return ops.Choose(options, opts)
 }
@@ -403,7 +403,7 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 //
 // Example:
 //
-//	filtered, err := schemaflow.Filter(items, schemaflow.NewFilterOptions().WithCondition("completed tasks"))
+//	filtered, err := schemaflux.Filter(items, schemaflux.NewFilterOptions().WithCondition("completed tasks"))
 func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	return ops.Filter(items, opts)
 }
@@ -412,7 +412,7 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 //
 // Example:
 //
-//	sorted, err := schemaflow.Sort(items, schemaflow.NewSortOptions().WithCriteria("by priority"))
+//	sorted, err := schemaflux.Sort(items, schemaflux.NewSortOptions().WithCriteria("by priority"))
 func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 	return ops.Sort(items, opts)
 }
@@ -424,8 +424,8 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Classify[string, string]("Great product!",
-//	    schemaflow.NewClassifyOptions().WithCategories([]string{"positive", "negative", "neutral"}))
+//	result, err := schemaflux.Classify[string, string]("Great product!",
+//	    schemaflux.NewClassifyOptions().WithCategories([]string{"positive", "negative", "neutral"}))
 //	fmt.Printf("Category: %s (%.0f%% confidence)\n", result.Category, result.Confidence*100)
 func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
 	return ops.Classify[T, C](input, opts)
@@ -437,8 +437,8 @@ func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], e
 //
 // Example:
 //
-//	result, err := schemaflow.Score[Essay](essay,
-//	    schemaflow.NewScoreOptions().WithCriteria([]string{"clarity", "grammar"}))
+//	result, err := schemaflux.Score[Essay](essay,
+//	    schemaflux.NewScoreOptions().WithCriteria([]string{"clarity", "grammar"}))
 //	fmt.Printf("Score: %.1f/10\n", result.Value)
 func Score[T any](input T, opts ScoreOptions) (ScoreResult, error) {
 	return ops.Score(input, opts)
@@ -450,7 +450,7 @@ func Score[T any](input T, opts ScoreOptions) (ScoreResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Compare[Product](product1, product2, schemaflow.NewCompareOptions())
+//	result, err := schemaflux.Compare[Product](product1, product2, schemaflux.NewCompareOptions())
 //	fmt.Printf("Similarity: %.0f%%\n", result.SimilarityScore*100)
 func Compare[T any](itemA, itemB T, opts CompareOptions) (CompareResult[T], error) {
 	return ops.Compare(itemA, itemB, opts)
@@ -462,8 +462,8 @@ func Compare[T any](itemA, itemB T, opts CompareOptions) (CompareResult[T], erro
 //
 // Example:
 //
-//	result, err := schemaflow.Similar[string]("AI is great", "Artificial intelligence is wonderful",
-//	    schemaflow.NewSimilarOptions())
+//	result, err := schemaflux.Similar[string]("AI is great", "Artificial intelligence is wonderful",
+//	    schemaflux.NewSimilarOptions())
 //	fmt.Printf("Similar: %v (score: %.0f%%)\n", result.IsSimilar, result.Score*100)
 func Similar[T any](itemA, itemB T, opts SimilarOptions) (SimilarResult, error) {
 	return ops.Similar(itemA, itemB, opts)
@@ -473,7 +473,7 @@ func Similar[T any](itemA, itemB T, opts SimilarOptions) (SimilarResult, error) 
 //
 // Example:
 //
-//	complete, err := schemaflow.Infer(partialData, schemaflow.NewInferOptions())
+//	complete, err := schemaflux.Infer(partialData, schemaflux.NewInferOptions())
 func Infer[T any](partialData T, opts InferOptions) (T, error) {
 	return ops.Infer(partialData, opts)
 }
@@ -482,7 +482,7 @@ func Infer[T any](partialData T, opts InferOptions) (T, error) {
 //
 // Example:
 //
-//	diff, err := schemaflow.Diff(oldData, newData, schemaflow.NewDiffOptions())
+//	diff, err := schemaflux.Diff(oldData, newData, schemaflux.NewDiffOptions())
 func Diff[T any](oldData, newData T, opts DiffOptions) (DiffResult, error) {
 	return ops.Diff(oldData, newData, opts)
 }
@@ -491,7 +491,7 @@ func Diff[T any](oldData, newData T, opts DiffOptions) (DiffResult, error) {
 //
 // Example:
 //
-//	explanation, err := schemaflow.Explain(complexData, schemaflow.NewExplainOptions())
+//	explanation, err := schemaflux.Explain(complexData, schemaflux.NewExplainOptions())
 func Explain(data any, opts ExplainOptions) (ExplainResult, error) {
 	return ops.Explain(data, opts)
 }
@@ -500,7 +500,7 @@ func Explain(data any, opts ExplainOptions) (ExplainResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Parse[Person](rawInput, schemaflow.NewParseOptions())
+//	result, err := schemaflux.Parse[Person](rawInput, schemaflux.NewParseOptions())
 func Parse[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 	return ops.Parse[T](input, opts)
 }
@@ -509,7 +509,7 @@ func Parse[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 //
 // Example:
 //
-//	summary, err := schemaflow.Summarize(longText, schemaflow.NewSummarizeOptions().WithMaxLength(100))
+//	summary, err := schemaflux.Summarize(longText, schemaflux.NewSummarizeOptions().WithMaxLength(100))
 func Summarize(input string, opts SummarizeOptions) (string, error) {
 	return ops.Summarize(input, opts)
 }
@@ -519,7 +519,7 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.SummarizeWithMetadata(longText, schemaflow.NewSummarizeOptions())
+//	result, err := schemaflux.SummarizeWithMetadata(longText, schemaflux.NewSummarizeOptions())
 //	fmt.Printf("Summary: %s\nKey points: %v\nCompression: %.0f%%\n",
 //	    result.Text, result.KeyPoints, result.CompressionRatio*100)
 func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult, error) {
@@ -530,7 +530,7 @@ func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult
 //
 // Example:
 //
-//	rewritten, err := schemaflow.Rewrite(text, schemaflow.NewRewriteOptions().WithStyle("formal"))
+//	rewritten, err := schemaflux.Rewrite(text, schemaflux.NewRewriteOptions().WithStyle("formal"))
 func Rewrite(input string, opts RewriteOptions) (string, error) {
 	return ops.Rewrite(input, opts)
 }
@@ -540,7 +540,7 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.RewriteWithMetadata(text, schemaflow.NewRewriteOptions().WithTargetTone("professional"))
+//	result, err := schemaflux.RewriteWithMetadata(text, schemaflux.NewRewriteOptions().WithTargetTone("professional"))
 //	fmt.Printf("Rewritten: %s\nChanges: %v\nTone: %s\n",
 //	    result.Text, result.ChangesMade, result.ToneAchieved)
 func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, error) {
@@ -551,7 +551,7 @@ func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, erro
 //
 // Example:
 //
-//	translated, err := schemaflow.Translate(text, schemaflow.NewTranslateOptions().WithTargetLanguage("Spanish"))
+//	translated, err := schemaflux.Translate(text, schemaflux.NewTranslateOptions().WithTargetLanguage("Spanish"))
 func Translate(input string, opts TranslateOptions) (string, error) {
 	return ops.Translate(input, opts)
 }
@@ -561,7 +561,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.TranslateWithMetadata(text, schemaflow.NewTranslateOptions().WithTargetLanguage("French"))
+//	result, err := schemaflux.TranslateWithMetadata(text, schemaflux.NewTranslateOptions().WithTargetLanguage("French"))
 //	fmt.Printf("Translation: %s\nDetected language: %s\nConfidence: %.0f%%\n",
 //	    result.Text, result.SourceLanguageDetected, result.Confidence*100)
 func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult, error) {
@@ -572,7 +572,7 @@ func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult
 //
 // Example:
 //
-//	expanded, err := schemaflow.Expand(briefText, schemaflow.NewExpandOptions().WithTargetLength(500))
+//	expanded, err := schemaflux.Expand(briefText, schemaflux.NewExpandOptions().WithTargetLength(500))
 func Expand(input string, opts ExpandOptions) (string, error) {
 	return ops.Expand(input, opts)
 }
@@ -582,7 +582,7 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.ExpandWithMetadata(briefText, schemaflow.NewExpandOptions())
+//	result, err := schemaflux.ExpandWithMetadata(briefText, schemaflux.NewExpandOptions())
 //	fmt.Printf("Expanded: %s\nExpansion ratio: %.1fx\nAdded: %v\n",
 //	    result.Text, result.ExpansionRatio, result.AddedContent)
 func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) {
@@ -593,7 +593,7 @@ func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) 
 //
 // Example:
 //
-//	suggestions, err := schemaflow.Suggest[Suggestion](context, schemaflow.NewSuggestOptions().WithCount(5))
+//	suggestions, err := schemaflux.Suggest[Suggestion](context, schemaflux.NewSuggestOptions().WithCount(5))
 func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 	return ops.Suggest[T](input, opts)
 }
@@ -602,7 +602,7 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 //
 // Example:
 //
-//	redacted, err := schemaflow.Redact(sensitiveData, schemaflow.NewRedactOptions().WithPatterns([]string{"SSN", "email"}))
+//	redacted, err := schemaflux.Redact(sensitiveData, schemaflux.NewRedactOptions().WithPatterns([]string{"SSN", "email"}))
 func Redact[T any](input T, opts RedactOptions) (T, error) {
 	return ops.Redact(input, opts)
 }
@@ -622,8 +622,8 @@ var NewRedactLLMOptions = ops.NewRedactLLMOptions
 //
 // Example:
 //
-//	result, err := schemaflow.RedactLLM("Contact john@email.com for support",
-//	    schemaflow.NewRedactLLMOptions().
+//	result, err := schemaflux.RedactLLM("Contact john@email.com for support",
+//	    schemaflux.NewRedactLLMOptions().
 //	        WithCategories([]string{"email", "phone"}).
 //	        WithMaskChar('*').
 //	        WithShowFirst(2).
@@ -656,7 +656,7 @@ type CompleteFieldOptions = ops.CompleteFieldOptions
 //
 // Example:
 //
-//	result, err := schemaflow.Complete(partialText, schemaflow.NewCompleteOptions())
+//	result, err := schemaflux.Complete(partialText, schemaflux.NewCompleteOptions())
 func Complete(partialText string, opts CompleteOptions) (CompleteResult, error) {
 	return ops.Complete(context.Background(), nil, partialText, opts)
 }
@@ -671,7 +671,7 @@ func Complete(partialText string, opts CompleteOptions) (CompleteResult, error) 
 //	    Body  string `json:"body"`
 //	}
 //	post := BlogPost{Title: "AI in Healthcare", Body: "Artificial intelligence is transforming"}
-//	result, err := schemaflow.CompleteField[BlogPost](post, schemaflow.NewCompleteFieldOptions("Body"))
+//	result, err := schemaflux.CompleteField[BlogPost](post, schemaflux.NewCompleteFieldOptions("Body"))
 //	// result.Data.Body now contains the completed text
 func CompleteField[T any](data T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
 	return ops.CompleteField[T](context.Background(), nil, data, opts)
@@ -681,7 +681,7 @@ func CompleteField[T any](data T, opts CompleteFieldOptions) (CompleteFieldResul
 //
 // Example:
 //
-//	result, err := schemaflow.Validate[Person](person, schemaflow.NewValidateOptions().
+//	result, err := schemaflux.Validate[Person](person, schemaflux.NewValidateOptions().
 //	    WithRules("age must be 18-100, email must be valid"))
 //	if !result.Valid {
 //	    for _, err := range result.Errors {
@@ -696,7 +696,7 @@ func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 //
 // Example:
 //
-//	result, err := schemaflow.ValidateLegacy(person, "age must be 18-100")
+//	result, err := schemaflux.ValidateLegacy(person, "age must be 18-100")
 func ValidateLegacy[T any](data T, rules string, opts ...OpOptions) (ValidationResult, error) {
 	return ops.ValidateLegacy(data, rules, opts...)
 }
@@ -705,7 +705,7 @@ func ValidateLegacy[T any](data T, rules string, opts ...OpOptions) (ValidationR
 //
 // Example:
 //
-//	result, err := schemaflow.Question[Report, string](report, schemaflow.NewQuestionOptions("What is the main finding?"))
+//	result, err := schemaflux.Question[Report, string](report, schemaflux.NewQuestionOptions("What is the main finding?"))
 //	fmt.Println(result.Answer, "confidence:", result.Confidence)
 func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], error) {
 	return ops.Question[T, A](data, opts)
@@ -715,7 +715,7 @@ func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], er
 //
 // Example:
 //
-//	answer, err := schemaflow.QuestionLegacy(report, "What are the top 3 risks?")
+//	answer, err := schemaflux.QuestionLegacy(report, "What are the top 3 risks?")
 func QuestionLegacy(data any, question string, opts ...OpOptions) (string, error) {
 	return ops.QuestionLegacy(data, question, opts...)
 }
@@ -724,7 +724,7 @@ func QuestionLegacy(data any, question string, opts ...OpOptions) (string, error
 //
 // Example:
 //
-//	merged, err := schemaflow.Merge(sources, "first-wins")
+//	merged, err := schemaflux.Merge(sources, "first-wins")
 func Merge[T any](sources []T, strategy string, opts ...OpOptions) (T, error) {
 	return ops.Merge(sources, strategy, opts...)
 }
@@ -734,7 +734,7 @@ func Merge[T any](sources []T, strategy string, opts ...OpOptions) (T, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.MergeWithMetadata(sources, "prefer-newest")
+//	result, err := schemaflux.MergeWithMetadata(sources, "prefer-newest")
 //	fmt.Printf("Merged: %+v\nConflicts: %d\nConfidence: %.0f%%\n",
 //	    result.Merged, len(result.Conflicts), result.Confidence*100)
 func MergeWithMetadata[T any](sources []T, strategy string, opts ...OpOptions) (MergeResult[T], error) {
@@ -745,7 +745,7 @@ func MergeWithMetadata[T any](sources []T, strategy string, opts ...OpOptions) (
 //
 // Example:
 //
-//	formatted, err := schemaflow.Format(data, "markdown table")
+//	formatted, err := schemaflux.Format(data, "markdown table")
 func Format(data any, template string, opts ...OpOptions) (string, error) {
 	return ops.Format(data, template, opts...)
 }
@@ -755,7 +755,7 @@ func Format(data any, template string, opts ...OpOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.FormatWithMetadata(data, "professional bio in third person")
+//	result, err := schemaflux.FormatWithMetadata(data, "professional bio in third person")
 //	fmt.Printf("Formatted: %s\nFormat applied: %s\n", result.Text, result.FormatApplied)
 func FormatWithMetadata(data any, template string, opts ...OpOptions) (FormatResult, error) {
 	return ops.FormatWithMetadata(data, template, opts...)
@@ -765,7 +765,7 @@ func FormatWithMetadata(data any, template string, opts ...OpOptions) (FormatRes
 //
 // Example:
 //
-//	result, decision, err := schemaflow.Decide(ctx, decisions)
+//	result, decision, err := schemaflux.Decide(ctx, decisions)
 func Decide[T any](ctx any, decisions []Decision[T], opts ...OpOptions) (T, DecisionResult, error) {
 	return ops.Decide(ctx, decisions, opts...)
 }
@@ -774,7 +774,7 @@ func Decide[T any](ctx any, decisions []Decision[T], opts ...OpOptions) (T, Deci
 //
 // Example:
 //
-//	result := schemaflow.Guard(state, check1, check2)
+//	result := schemaflux.Guard(state, check1, check2)
 func Guard[T any](state T, checks ...func(T) (bool, string)) GuardResult {
 	return ops.Guard(state, checks...)
 }
@@ -785,7 +785,7 @@ func Guard[T any](state T, checks ...func(T) (bool, string)) GuardResult {
 //
 // Example:
 //
-//	result, err := schemaflow.Annotate(document, schemaflow.NewAnnotateOptions().WithTypes([]string{"entities", "sentiment"}))
+//	result, err := schemaflux.Annotate(document, schemaflux.NewAnnotateOptions().WithTypes([]string{"entities", "sentiment"}))
 func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 	return ops.Annotate(input, opts)
 }
@@ -794,7 +794,7 @@ func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Cluster(documents, schemaflow.NewClusterOptions().WithMaxClusters(5))
+//	result, err := schemaflux.Cluster(documents, schemaflux.NewClusterOptions().WithMaxClusters(5))
 func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 	return ops.Cluster(items, opts)
 }
@@ -803,7 +803,7 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Rank(documents, schemaflow.NewRankOptions().WithQuery("machine learning"))
+//	result, err := schemaflux.Rank(documents, schemaflux.NewRankOptions().WithQuery("machine learning"))
 func Rank[T any](items []T, opts RankOptions) (RankResult[T], error) {
 	return ops.Rank(items, opts)
 }
@@ -812,7 +812,7 @@ func Rank[T any](items []T, opts RankOptions) (RankResult[T], error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Compress(document, schemaflow.NewCompressOptions().WithRatio(0.3))
+//	result, err := schemaflux.Compress(document, schemaflux.NewCompressOptions().WithRatio(0.3))
 func Compress[T any](input T, opts CompressOptions) (CompressResult[T], error) {
 	return ops.Compress(input, opts)
 }
@@ -821,7 +821,7 @@ func Compress[T any](input T, opts CompressOptions) (CompressResult[T], error) {
 //
 // Example:
 //
-//	compressed, err := schemaflow.CompressText("long text here...", schemaflow.NewCompressOptions().WithRatio(0.5))
+//	compressed, err := schemaflux.CompressText("long text here...", schemaflux.NewCompressOptions().WithRatio(0.5))
 func CompressText(input string, opts CompressOptions) (string, error) {
 	return ops.CompressText(input, opts)
 }
@@ -830,7 +830,7 @@ func CompressText(input string, opts CompressOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Decompose(complexTask, schemaflow.NewDecomposeOptions().WithMode("hierarchical"))
+//	result, err := schemaflux.Decompose(complexTask, schemaflux.NewDecomposeOptions().WithMode("hierarchical"))
 func Decompose[T any](input T, opts DecomposeOptions) (DecomposeResult[T], error) {
 	return ops.Decompose(input, opts)
 }
@@ -839,7 +839,7 @@ func Decompose[T any](input T, opts DecomposeOptions) (DecomposeResult[T], error
 //
 // Example:
 //
-//	parts, err := schemaflow.DecomposeToSlice[Task, SubTask](complexTask, schemaflow.NewDecomposeOptions())
+//	parts, err := schemaflux.DecomposeToSlice[Task, SubTask](complexTask, schemaflux.NewDecomposeOptions())
 func DecomposeToSlice[T any, U any](input T, opts DecomposeOptions) ([]U, error) {
 	return ops.DecomposeToSlice[T, U](input, opts)
 }
@@ -848,7 +848,7 @@ func DecomposeToSlice[T any, U any](input T, opts DecomposeOptions) ([]U, error)
 //
 // Example:
 //
-//	result, err := schemaflow.Enrich[Person, EnrichedPerson](person, schemaflow.NewEnrichOptions().WithFields([]string{"age_bracket", "generation"}))
+//	result, err := schemaflux.Enrich[Person, EnrichedPerson](person, schemaflux.NewEnrichOptions().WithFields([]string{"age_bracket", "generation"}))
 func Enrich[T any, U any](input T, opts EnrichOptions) (EnrichResult[U], error) {
 	return ops.Enrich[T, U](input, opts)
 }
@@ -857,7 +857,7 @@ func Enrich[T any, U any](input T, opts EnrichOptions) (EnrichResult[U], error) 
 //
 // Example:
 //
-//	enriched, err := schemaflow.EnrichInPlace(person, schemaflow.NewEnrichOptions())
+//	enriched, err := schemaflux.EnrichInPlace(person, schemaflux.NewEnrichOptions())
 func EnrichInPlace[T any](input T, opts EnrichOptions) (T, error) {
 	return ops.EnrichInPlace(input, opts)
 }
@@ -866,7 +866,7 @@ func EnrichInPlace[T any](input T, opts EnrichOptions) (T, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Normalize(data, schemaflow.NewNormalizeOptions().WithRules([]string{"dates", "phone_numbers"}))
+//	result, err := schemaflux.Normalize(data, schemaflux.NewNormalizeOptions().WithRules([]string{"dates", "phone_numbers"}))
 func Normalize[T any](input T, opts NormalizeOptions) (NormalizeResult[T], error) {
 	return ops.Normalize(input, opts)
 }
@@ -875,7 +875,7 @@ func Normalize[T any](input T, opts NormalizeOptions) (NormalizeResult[T], error
 //
 // Example:
 //
-//	normalized, err := schemaflow.NormalizeText("messy text...", schemaflow.NewNormalizeOptions())
+//	normalized, err := schemaflux.NormalizeText("messy text...", schemaflux.NewNormalizeOptions())
 func NormalizeText(input string, opts NormalizeOptions) (string, error) {
 	return ops.NormalizeText(input, opts)
 }
@@ -884,7 +884,7 @@ func NormalizeText(input string, opts NormalizeOptions) (string, error) {
 //
 // Example:
 //
-//	results, err := schemaflow.NormalizeBatch(items, schemaflow.NewNormalizeOptions())
+//	results, err := schemaflux.NormalizeBatch(items, schemaflux.NewNormalizeOptions())
 func NormalizeBatch[T any](items []T, opts NormalizeOptions) ([]NormalizeResult[T], error) {
 	return ops.NormalizeBatch(items, opts)
 }
@@ -894,7 +894,7 @@ func NormalizeBatch[T any](items []T, opts NormalizeOptions) ([]NormalizeResult[
 //
 // Example:
 //
-//	result, err := schemaflow.SemanticMatch(resumes, jobs, schemaflow.NewMatchOptions().WithThreshold(0.7))
+//	result, err := schemaflux.SemanticMatch(resumes, jobs, schemaflux.NewMatchOptions().WithThreshold(0.7))
 func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (MatchResult[S, T], error) {
 	return ops.SemanticMatch(sources, targets, opts)
 }
@@ -903,7 +903,7 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 //
 // Example:
 //
-//	matches, err := schemaflow.MatchOne(resume, jobs, schemaflow.NewMatchOptions())
+//	matches, err := schemaflux.MatchOne(resume, jobs, schemaflux.NewMatchOptions())
 func MatchOne[S any, T any](source S, targets []T, opts MatchOptions) ([]MatchPair[S, T], error) {
 	return ops.MatchOne(source, targets, opts)
 }
@@ -912,7 +912,7 @@ func MatchOne[S any, T any](source S, targets []T, opts MatchOptions) ([]MatchPa
 //
 // Example:
 //
-//	result, err := schemaflow.Critique(essay, schemaflow.NewCritiqueOptions().WithAspects([]string{"clarity", "argument_strength"}))
+//	result, err := schemaflux.Critique(essay, schemaflux.NewCritiqueOptions().WithAspects([]string{"clarity", "argument_strength"}))
 func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 	return ops.Critique(input, opts)
 }
@@ -921,7 +921,7 @@ func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Synthesize[Summary](articles, schemaflow.NewSynthesizeOptions().WithPerspective("balanced"))
+//	result, err := schemaflux.Synthesize[Summary](articles, schemaflux.NewSynthesizeOptions().WithPerspective("balanced"))
 func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[T], error) {
 	return ops.Synthesize[T](sources, opts)
 }
@@ -930,7 +930,7 @@ func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[
 //
 // Example:
 //
-//	result, err := schemaflow.Predict[Forecast](salesData, schemaflow.NewPredictOptions().WithHorizon("next_quarter"))
+//	result, err := schemaflux.Predict[Forecast](salesData, schemaflux.NewPredictOptions().WithHorizon("next_quarter"))
 func Predict[T any](historicalData any, opts PredictOptions) (PredictResult[T], error) {
 	return ops.Predict[T](historicalData, opts)
 }
@@ -939,7 +939,7 @@ func Predict[T any](historicalData any, opts PredictOptions) (PredictResult[T], 
 //
 // Example:
 //
-//	result, err := schemaflow.Verify("The Earth is flat.", schemaflow.NewVerifyOptions().WithMode("factual"))
+//	result, err := schemaflux.Verify("The Earth is flat.", schemaflux.NewVerifyOptions().WithMode("factual"))
 func Verify(input string, opts VerifyOptions) (VerifyResult, error) {
 	return ops.Verify(input, opts)
 }
@@ -948,7 +948,7 @@ func Verify(input string, opts VerifyOptions) (VerifyResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.VerifyClaim("GDP grew 5%", schemaflow.NewVerifyOptions())
+//	result, err := schemaflux.VerifyClaim("GDP grew 5%", schemaflux.NewVerifyOptions())
 func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 	return ops.VerifyClaim(claim, opts)
 }
@@ -961,8 +961,8 @@ func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Negotiate[Schedule](constraints)
-//	result, err := schemaflow.Negotiate[Schedule](constraints, schemaflow.NegotiateOptions{
+//	result, err := schemaflux.Negotiate[Schedule](constraints)
+//	result, err := schemaflux.Negotiate[Schedule](constraints, schemaflux.NegotiateOptions{
 //	    Strategy: "balanced",
 //	})
 func Negotiate[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T], error) {
@@ -998,12 +998,12 @@ type AdversarialOptions = ops.AdversarialOptions
 //	    BaseSalary int `json:"base_salary"`
 //	    RemoteDays int `json:"remote_days"`
 //	}
-//	ctx := schemaflow.AdversarialContext[SalaryTerms]{
-//	    Ours:        schemaflow.AdversarialPosition[SalaryTerms]{Position: SalaryTerms{BaseSalary: 160000, RemoteDays: 5}},
-//	    Theirs:      schemaflow.AdversarialPosition[SalaryTerms]{Position: SalaryTerms{BaseSalary: 130000, RemoteDays: 2}},
+//	ctx := schemaflux.AdversarialContext[SalaryTerms]{
+//	    Ours:        schemaflux.AdversarialPosition[SalaryTerms]{Position: SalaryTerms{BaseSalary: 160000, RemoteDays: 5}},
+//	    Theirs:      schemaflux.AdversarialPosition[SalaryTerms]{Position: SalaryTerms{BaseSalary: 130000, RemoteDays: 2}},
 //	    OurLeverage: "strong",
 //	}
-//	result, err := schemaflow.NegotiateAdversarial[SalaryTerms](ctx)
+//	result, err := schemaflux.NegotiateAdversarial[SalaryTerms](ctx)
 //	// result.Deal has the final terms
 //	// result.TermMovements shows who moved on each term
 //	// result.WhoConcededMore indicates "they" since we had strong leverage
@@ -1017,8 +1017,8 @@ func NegotiateAdversarial[T any](context AdversarialContext[T], opts ...Adversar
 //
 // Example:
 //
-//	result, err := schemaflow.Resolve(conflictingSources)
-//	result, err := schemaflow.Resolve(conflictingSources, schemaflow.ResolveOptions{
+//	result, err := schemaflux.Resolve(conflictingSources)
+//	result, err := schemaflux.Resolve(conflictingSources, schemaflux.ResolveOptions{
 //	    Strategy: "most-complete",
 //	})
 func Resolve[T any](sources []T, opts ...ResolveOptions) (ResolveResult[T], error) {
@@ -1032,8 +1032,8 @@ func Resolve[T any](sources []T, opts ...ResolveOptions) (ResolveResult[T], erro
 //
 // Example:
 //
-//	result, err := schemaflow.Derive[Person, EnrichedPerson](person)
-//	result, err := schemaflow.Derive[Person, EnrichedPerson](person, schemaflow.DeriveOptions{
+//	result, err := schemaflux.Derive[Person, EnrichedPerson](person)
+//	result, err := schemaflux.Derive[Person, EnrichedPerson](person, schemaflux.DeriveOptions{
 //	    TargetFields: []string{"age_category", "generation"},
 //	})
 func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], error) {
@@ -1046,8 +1046,8 @@ func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], erro
 //
 // Example:
 //
-//	result, err := schemaflow.Conform(address, "USPS")
-//	result, err := schemaflow.Conform(phoneData, "E164", schemaflow.ConformOptions{
+//	result, err := schemaflux.Conform(address, "USPS")
+//	result, err := schemaflux.Conform(phoneData, "E164", schemaflux.ConformOptions{
 //	    Strict: true,
 //	})
 func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformResult[T], error) {
@@ -1060,8 +1060,8 @@ func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformRe
 //
 // Example:
 //
-//	result, err := schemaflow.Interpolate(timeSeriesData)
-//	result, err := schemaflow.Interpolate(sparseRecords, schemaflow.InterpolateOptions{
+//	result, err := schemaflux.Interpolate(timeSeriesData)
+//	result, err := schemaflux.Interpolate(sparseRecords, schemaflux.InterpolateOptions{
 //	    Method: "contextual",
 //	})
 func Interpolate[T any](items []T, opts ...InterpolateOptions) (InterpolateResult[T], error) {
@@ -1074,8 +1074,8 @@ func Interpolate[T any](items []T, opts ...InterpolateOptions) (InterpolateResul
 //
 // Example:
 //
-//	result, err := schemaflow.Arbitrate(candidates)
-//	result, err := schemaflow.Arbitrate(candidates, schemaflow.ArbitrateOptions{
+//	result, err := schemaflux.Arbitrate(candidates)
+//	result, err := schemaflux.Arbitrate(candidates, schemaflux.ArbitrateOptions{
 //	    Rules: []string{"must have 3+ years experience", "prefer local candidates"},
 //	})
 func Arbitrate[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResult[T], error) {
@@ -1089,8 +1089,8 @@ func Arbitrate[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResult[T]
 //
 // Example:
 //
-//	result, err := schemaflow.Project[Order, OrderSummary](order)
-//	result, err := schemaflow.Project[UserProfile, PublicProfile](profile, schemaflow.ProjectOptions{
+//	result, err := schemaflux.Project[Order, OrderSummary](order)
+//	result, err := schemaflux.Project[UserProfile, PublicProfile](profile, schemaflux.ProjectOptions{
 //	    Mappings: map[string]string{"full_name": "display_name"},
 //	    Exclude:  []string{"password_hash", "ssn"},
 //	})
@@ -1104,8 +1104,8 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 //
 // Example:
 //
-//	result, err := schemaflow.Audit(customerRecord)
-//	result, err := schemaflow.Audit(financialData, schemaflow.AuditOptions{
+//	result, err := schemaflux.Audit(customerRecord)
+//	result, err := schemaflux.Audit(financialData, schemaflux.AuditOptions{
 //	    Policies:   []string{"PII must be encrypted", "Amounts must balance"},
 //	    Categories: []string{"security", "compliance"},
 //	})
@@ -1119,8 +1119,8 @@ func Audit[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
 //
 // Example:
 //
-//	result, err := schemaflow.Assemble[UserProfile]([]any{basicInfo, addressData, preferences})
-//	result, err := schemaflow.Assemble[Document](parts, schemaflow.ComposeOptions{
+//	result, err := schemaflux.Assemble[UserProfile]([]any{basicInfo, addressData, preferences})
+//	result, err := schemaflux.Assemble[Document](parts, schemaflux.ComposeOptions{
 //	    MergeStrategy: "smart",
 //	    FillGaps:      true,
 //	})
@@ -1135,11 +1135,11 @@ func Assemble[T any](parts []any, opts ...ComposeOptions) (ComposeResult[T], err
 //
 // Example:
 //
-//	result, err := schemaflow.Pivot[[]SalesRow, []SalesPivot](sales, schemaflow.PivotOptions{
+//	result, err := schemaflux.Pivot[[]SalesRow, []SalesPivot](sales, schemaflux.PivotOptions{
 //	    PivotOn:   []string{"Month"},
 //	    Aggregate: "sum",
 //	})
-//	result, err := schemaflow.Pivot[Nested, Flat](data, schemaflow.PivotOptions{
+//	result, err := schemaflux.Pivot[Nested, Flat](data, schemaflux.PivotOptions{
 //	    Flatten: true,
 //	})
 func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) {

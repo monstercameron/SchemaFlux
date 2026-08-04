@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func runDatabaseExamples(ctx context.Context) {
@@ -16,7 +16,7 @@ func runDatabaseExamples(ctx context.Context) {
 
 	// Create a temp database file
 	tempDir := os.TempDir()
-	dbPath := filepath.Join(tempDir, "schemaflow_example.db")
+	dbPath := filepath.Join(tempDir, "schemaflux_example.db")
 	defer os.Remove(dbPath)
 
 	// Example 1: Create a table

@@ -1,6 +1,6 @@
-# SchemaFlow Tool Primitives Examples
+# SchemaFlux Tool Primitives Examples
 
-This directory contains comprehensive examples for all 86+ tool primitives available in SchemaFlow.
+This directory contains comprehensive examples for all 86+ tool primitives available in SchemaFlux.
 
 ## Quick Start
 
@@ -166,7 +166,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/monstercameron/schemaflow/internal/tools"
+    "github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func main() {

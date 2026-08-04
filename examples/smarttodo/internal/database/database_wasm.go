@@ -11,7 +11,7 @@ import (
 	"syscall/js"
 	"time"
 
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
 )
 
 const browserDBStorageKey = "smarttodo:browser-db"

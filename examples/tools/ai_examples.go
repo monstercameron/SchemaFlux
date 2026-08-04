@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func runAIExamples(ctx context.Context) {
@@ -17,7 +17,7 @@ func runAIExamples(ctx context.Context) {
 
 	// Example 1: Embed - Generate text embeddings
 	result, err := tools.Execute(ctx, "embed", map[string]any{
-		"text":  "SchemaFlow is a type-safe LLM operations library for Go",
+		"text":  "SchemaFlux is a type-safe LLM operations library for Go",
 		"model": "text-embedding-3-small",
 	})
 	printResult("Embed: Generate text embedding (stub)", result, err)
@@ -91,12 +91,12 @@ func runAIExamples(ctx context.Context) {
 	// Platform-appropriate echo command
 	if runtime.GOOS == "windows" {
 		result, err = tools.Execute(ctx, "shell", map[string]any{
-			"command": "echo Hello from SchemaFlow!",
+			"command": "echo Hello from SchemaFlux!",
 			"timeout": 5.0,
 		})
 	} else {
 		result, err = tools.Execute(ctx, "shell", map[string]any{
-			"command": "echo 'Hello from SchemaFlow!'",
+			"command": "echo 'Hello from SchemaFlux!'",
 			"timeout": 5.0,
 		})
 	}
@@ -174,7 +174,7 @@ func runAIExamples(ctx context.Context) {
 
 	// Example 12: Text-to-Speech
 	result, err = tools.Execute(ctx, "tts", map[string]any{
-		"text":   "Welcome to SchemaFlow, a type-safe LLM operations library.",
+		"text":   "Welcome to SchemaFlux, a type-safe LLM operations library.",
 		"voice":  "alloy",
 		"output": "welcome.mp3",
 		"format": "mp3",
@@ -230,8 +230,8 @@ func runAIExamples(ctx context.Context) {
 	// Example 18: Email
 	result, err = tools.Execute(ctx, "email", map[string]any{
 		"to":      "user@example.com",
-		"subject": "Welcome to SchemaFlow",
-		"body":    "Thank you for using SchemaFlow!",
+		"subject": "Welcome to SchemaFlux",
+		"body":    "Thank you for using SchemaFlux!",
 		"html":    false,
 	})
 	printResult("Email: Send email (stub)", result, err)
@@ -255,7 +255,7 @@ func runAIExamples(ctx context.Context) {
 	result, err = tools.Execute(ctx, "slack", map[string]any{
 		"channel":    "#general",
 		"message":    "Build completed successfully! :rocket:",
-		"username":   "SchemaFlow Bot",
+		"username":   "SchemaFlux Bot",
 		"icon_emoji": ":robot_face:",
 	})
 	printResult("Slack: Send message (stub)", result, err)

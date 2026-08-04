@@ -10,31 +10,31 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/localization"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/models"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/tui"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/localization"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/tui"
 )
 
 func main() {
-	os.Setenv("SCHEMAFLOW_DEBUG", "false")
+	os.Setenv("SCHEMAFLUX_DEBUG", "false")
 	loadNearestEnv()
 
 	needsAPIKey := false
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		apiKey = os.Getenv("SCHEMAFLOW_API_KEY")
+		apiKey = os.Getenv("SCHEMAFLUX_API_KEY")
 	}
 	if apiKey == "" {
 		needsAPIKey = true
-		schemaflow.Init("")
-	} else if err := schemaflow.InitWithEnv(); err != nil {
+		schemaflux.Init("")
+	} else if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		fmt.Println("Please ensure your .env file contains:")
 		fmt.Println("  OPENAI_API_KEY=your-api-key")
 		fmt.Println("Or set the environment variable:")
-		fmt.Println("  export SCHEMAFLOW_API_KEY='your-api-key'")
+		fmt.Println("  export SCHEMAFLUX_API_KEY='your-api-key'")
 		os.Exit(1)
 	}
 
@@ -50,7 +50,7 @@ func main() {
 	if dbPath == "" {
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {
-			schemaflow.GetLogger().Error("Failed to get home directory", "error", homeErr)
+			schemaflux.GetLogger().Error("Failed to get home directory", "error", homeErr)
 			os.Exit(1)
 		}
 		dbPath = filepath.Join(home, ".smarttodo.db")
@@ -58,7 +58,7 @@ func main() {
 
 	db, err := database.NewDatabase(dbPath)
 	if err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize database", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
@@ -77,7 +77,7 @@ func main() {
 
 	go func() {
 		sig := <-sigChan
-		schemaflow.GetLogger().Info("Received signal, initiating graceful shutdown", "signal", sig)
+		schemaflux.GetLogger().Info("Received signal, initiating graceful shutdown", "signal", sig)
 		p.Send(models.StartClosingMsg{})
 		go func() {
 			time.Sleep(3 * time.Second)
@@ -86,14 +86,14 @@ func main() {
 	}()
 
 	if _, err := p.Run(); err != nil {
-		schemaflow.GetLogger().Error("Error running program", "error", err)
+		schemaflux.GetLogger().Error("Error running program", "error", err)
 		if db != nil {
 			db.Close()
 		}
 		os.Exit(1)
 	}
 
-	schemaflow.GetLogger().Info("SchemaFlow CommandDeck closed successfully")
+	schemaflux.GetLogger().Info("SchemaFlux CommandDeck closed successfully")
 }
 
 func loadNearestEnv() {

@@ -21,7 +21,7 @@ This example filters:
 ## How It Works
 
 ```go
-urgentTickets, err := schemaflow.Filter(
+urgentTickets, err := schemaflux.Filter(
     tickets,
     ops.NewFilterOptions().
         WithCriteria([]string{
@@ -100,5 +100,5 @@ All Tickets:
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Filter API Reference](../../docs/reference/API.md#filter)

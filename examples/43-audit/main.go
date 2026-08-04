@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -80,7 +80,7 @@ type QuarterlyFinancials struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -107,7 +107,7 @@ func main() {
 		StorageType:    "plain_text", // VIOLATION: Not encrypted!
 	}
 
-	pciResult, err := schemaflow.Audit[PaymentRecord](paymentRecord, schemaflow.AuditOptions{
+	pciResult, err := schemaflux.Audit[PaymentRecord](paymentRecord, schemaflux.AuditOptions{
 		Policies: []string{
 			"Full card number (PAN) must not be stored unmasked - only last 4 digits allowed",
 			"CVV/CVC must never be stored after authorization",
@@ -155,7 +155,7 @@ func main() {
 		AccessLog:      "", // VIOLATION: No access log!
 	}
 
-	gdprResult, err := schemaflow.Audit[UserProfile](userProfile, schemaflow.AuditOptions{
+	gdprResult, err := schemaflux.Audit[UserProfile](userProfile, schemaflux.AuditOptions{
 		Policies: []string{
 			"Explicit consent must be obtained for personal data processing",
 			"Consent date must be recorded",
@@ -206,7 +206,7 @@ func main() {
 		CashFlow:    2800000,
 	}
 
-	finResult, err := schemaflow.Audit[QuarterlyFinancials](financials, schemaflow.AuditOptions{
+	finResult, err := schemaflux.Audit[QuarterlyFinancials](financials, schemaflux.AuditOptions{
 		Policies: []string{
 			"Gross Profit must equal Revenue minus COGS",
 			"Net Income before tax must equal Gross Profit minus Operating Expenses",

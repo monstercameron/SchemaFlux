@@ -24,7 +24,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // SupportTicket represents a customer support ticket
@@ -63,9 +63,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -110,14 +110,14 @@ func main() {
 			ticketB := tickets[j]
 
 			// Use Similar to check semantic similarity
-			opts := schemaflow.NewSimilarOptions().
+			opts := schemaflux.NewSimilarOptions().
 				WithSimilarityThreshold(0.7).
 				WithAspects([]string{"problem description", "underlying issue", "user intent"})
-			opts.OpOptions.Intelligence = schemaflow.Fast
+			opts.OpOptions.Intelligence = schemaflux.Fast
 
-			result, err := schemaflow.Similar[SupportTicket](ticketA, ticketB, opts)
+			result, err := schemaflux.Similar[SupportTicket](ticketA, ticketB, opts)
 			if err != nil {
-				schemaflow.GetLogger().Warn("Similarity check failed",
+				schemaflux.GetLogger().Warn("Similarity check failed",
 					"ticketA", ticketA.ID, "ticketB", ticketB.ID, "error", err)
 				continue
 			}

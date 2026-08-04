@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func runHTTPExamples(ctx context.Context) {
@@ -22,7 +22,7 @@ func runHTTPExamples(ctx context.Context) {
 	// Example 2: GET with headers
 	result, err = tools.Execute(ctx, "fetch", map[string]any{
 		"url":     "https://httpbin.org/headers",
-		"headers": `{"X-Custom-Header": "SchemaFlow"}`,
+		"headers": `{"X-Custom-Header": "SchemaFlux"}`,
 		"timeout": 10.0,
 	})
 	printResult("Fetch: GET with custom headers", result, err)
@@ -30,7 +30,7 @@ func runHTTPExamples(ctx context.Context) {
 	// Example 3: POST request with JSON body
 	result, err = tools.Execute(ctx, "post", map[string]any{
 		"url":          "https://httpbin.org/post",
-		"body":         `{"name": "SchemaFlow", "version": "1.0"}`,
+		"body":         `{"name": "SchemaFlux", "version": "1.0"}`,
 		"content_type": "application/json",
 		"timeout":      10.0,
 	})
@@ -53,21 +53,21 @@ func runHTTPExamples(ctx context.Context) {
 	// Example 6: Build URL with query parameters
 	result, err = tools.Execute(ctx, "build_url", map[string]any{
 		"base":   "https://api.example.com/search",
-		"params": `{"q": "schemaflow", "page": "1", "limit": "10"}`,
+		"params": `{"q": "schemaflux", "page": "1", "limit": "10"}`,
 	})
 	printResult("Build URL", result, err)
 
 	// Example 7: Webhook (to echo service)
 	result, err = tools.Execute(ctx, "webhook", map[string]any{
 		"url":     "https://httpbin.org/post",
-		"payload": `{"event": "test", "data": {"message": "Hello from SchemaFlow"}}`,
+		"payload": `{"event": "test", "data": {"message": "Hello from SchemaFlux"}}`,
 		"method":  "POST",
 	})
 	printResult("Webhook", result, err)
 
 	// Example 8: Web search (stub)
 	result, err = tools.Execute(ctx, "web_search", map[string]any{
-		"query": "SchemaFlow Go library",
+		"query": "SchemaFlux Go library",
 		"num":   5.0,
 	})
 	printResult("Web Search (stub)", result, err)

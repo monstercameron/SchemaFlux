@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func runTemplateExamples(ctx context.Context) {
@@ -91,7 +91,7 @@ This is **bold** and this is *italic*.
 - Item 2
 - Item 3
 
-Check out [SchemaFlow](https://github.com/schemaflow)!`,
+Check out [SchemaFlux](https://github.com/schemaflux)!`,
 		"format": "html",
 	})
 	printResult("Markdown: Convert to HTML", result, err)

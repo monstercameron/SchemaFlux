@@ -1,4 +1,4 @@
-module github.com/monstercameron/schemaflow
+module github.com/monstercameron/schemaflux
 
 go 1.24.0
 

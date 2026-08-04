@@ -15,7 +15,7 @@ This example transforms:
 ## How It Works
 
 ```go
-cv, err := schemaflow.Transform[Resume, MarkdownCV](
+cv, err := schemaflux.Transform[Resume, MarkdownCV](
     resume,
     ops.NewTransformOptions().WithSteering("Create professional CV..."),
 )
@@ -77,5 +77,5 @@ go run main.go
 
 ## Learn More
 
-- [SchemaFlow Documentation](../../README.md)
+- [SchemaFlux Documentation](../../README.md)
 - [Transform API Reference](../../docs/reference/API.md#transform)

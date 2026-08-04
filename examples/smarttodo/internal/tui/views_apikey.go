@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflow"
+	"github.com/monstercameron/schemaflux"
 )
 
 func (m Model) apiKeyViewRender() string {
@@ -47,18 +47,18 @@ func validateAPIKey(apiKey string) error {
 	}
 
 	previousOpenAI := os.Getenv("OPENAI_API_KEY")
-	previousSchemaFlow := os.Getenv("SCHEMAFLOW_API_KEY")
+	previousSchemaFlux := os.Getenv("SCHEMAFLUX_API_KEY")
 
 	_ = os.Setenv("OPENAI_API_KEY", apiKey)
-	_ = os.Setenv("SCHEMAFLOW_API_KEY", apiKey)
-	schemaflow.Init(apiKey)
+	_ = os.Setenv("SCHEMAFLUX_API_KEY", apiKey)
+	schemaflux.Init(apiKey)
 
-	_, err := schemaflow.Generating[string]("Reply with ok.").Fast().Run()
+	_, err := schemaflux.Generating[string]("Reply with ok.").Fast().Run()
 	if err != nil {
 		_ = os.Setenv("OPENAI_API_KEY", previousOpenAI)
-		_ = os.Setenv("SCHEMAFLOW_API_KEY", previousSchemaFlow)
-		if previousSchemaFlow != "" {
-			schemaflow.Init(previousSchemaFlow)
+		_ = os.Setenv("SCHEMAFLUX_API_KEY", previousSchemaFlux)
+		if previousSchemaFlux != "" {
+			schemaflux.Init(previousSchemaFlux)
 		}
 		return fmt.Errorf("invalid API key: %w", err)
 	}
@@ -74,22 +74,22 @@ func saveAPIKey(apiKey string) error {
 	}
 
 	updatedOpenAI := false
-	updatedSchemaFlow := false
+	updatedSchemaFlux := false
 	for i, line := range existingLines {
 		switch {
 		case strings.HasPrefix(line, "OPENAI_API_KEY="):
 			existingLines[i] = fmt.Sprintf("OPENAI_API_KEY=%s", apiKey)
 			updatedOpenAI = true
-		case strings.HasPrefix(line, "SCHEMAFLOW_API_KEY="):
-			existingLines[i] = fmt.Sprintf("SCHEMAFLOW_API_KEY=%s", apiKey)
-			updatedSchemaFlow = true
+		case strings.HasPrefix(line, "SCHEMAFLUX_API_KEY="):
+			existingLines[i] = fmt.Sprintf("SCHEMAFLUX_API_KEY=%s", apiKey)
+			updatedSchemaFlux = true
 		}
 	}
 	if !updatedOpenAI {
 		existingLines = append(existingLines, fmt.Sprintf("OPENAI_API_KEY=%s", apiKey))
 	}
-	if !updatedSchemaFlow {
-		existingLines = append(existingLines, fmt.Sprintf("SCHEMAFLOW_API_KEY=%s", apiKey))
+	if !updatedSchemaFlux {
+		existingLines = append(existingLines, fmt.Sprintf("SCHEMAFLUX_API_KEY=%s", apiKey))
 	}
 
 	newContent := strings.TrimSpace(strings.Join(existingLines, "\n")) + "\n"
@@ -98,6 +98,6 @@ func saveAPIKey(apiKey string) error {
 	}
 
 	_ = os.Setenv("OPENAI_API_KEY", apiKey)
-	_ = os.Setenv("SCHEMAFLOW_API_KEY", apiKey)
+	_ = os.Setenv("SCHEMAFLUX_API_KEY", apiKey)
 	return nil
 }

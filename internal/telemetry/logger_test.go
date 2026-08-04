@@ -74,7 +74,7 @@ func TestLoggerRespectsBufferLimit(t *testing.T) {
 
 func TestLoggerWritesToFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "schemaflow.log")
+	path := filepath.Join(dir, "schemaflux.log")
 
 	log := NewLoggerWithConfig(LoggerConfig{
 		Level:         InfoLevel,
@@ -98,11 +98,11 @@ func TestLoggerWritesToFile(t *testing.T) {
 }
 
 func TestDefaultLoggerConfigReadsEnvironment(t *testing.T) {
-	t.Setenv("SCHEMAFLOW_LOG_LEVEL", "debug")
-	t.Setenv("SCHEMAFLOW_LOG_FORMAT", "json")
-	t.Setenv("SCHEMAFLOW_LOG_BUFFER", "25")
-	t.Setenv("SCHEMAFLOW_LOG_SOURCE", "true")
-	t.Setenv("SCHEMAFLOW_LOG_DISABLE_STDERR", "1")
+	t.Setenv("SCHEMAFLUX_LOG_LEVEL", "debug")
+	t.Setenv("SCHEMAFLUX_LOG_FORMAT", "json")
+	t.Setenv("SCHEMAFLUX_LOG_BUFFER", "25")
+	t.Setenv("SCHEMAFLUX_LOG_SOURCE", "true")
+	t.Setenv("SCHEMAFLUX_LOG_DISABLE_STDERR", "1")
 
 	cfg := DefaultLoggerConfig()
 	if cfg.Level != DebugLevel {

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 var (
@@ -24,7 +24,7 @@ func Init(key string) {
 
 	apiKey = key
 	if apiKey == "" {
-		apiKey = os.Getenv("SCHEMAFLOW_API_KEY")
+		apiKey = os.Getenv("SCHEMAFLUX_API_KEY")
 	}
 }
 
@@ -35,12 +35,12 @@ func GetAPIKey() string {
 	if apiKey != "" {
 		return apiKey
 	}
-	return os.Getenv("SCHEMAFLOW_API_KEY")
+	return os.Getenv("SCHEMAFLUX_API_KEY")
 }
 
 // GetTimeout returns the default timeout for operations
 func GetTimeout() time.Duration {
-	if timeoutStr := os.Getenv("SCHEMAFLOW_TIMEOUT"); timeoutStr != "" {
+	if timeoutStr := os.Getenv("SCHEMAFLUX_TIMEOUT"); timeoutStr != "" {
 		if duration, err := time.ParseDuration(timeoutStr); err == nil {
 			return duration
 		}
@@ -50,7 +50,7 @@ func GetTimeout() time.Duration {
 
 // GetLLMMaxRetries returns the retry budget for LLM calls.
 func GetLLMMaxRetries() int {
-	if raw := os.Getenv("SCHEMAFLOW_LLM_MAX_RETRIES"); raw != "" {
+	if raw := os.Getenv("SCHEMAFLUX_LLM_MAX_RETRIES"); raw != "" {
 		if retries, err := strconv.Atoi(raw); err == nil && retries >= 0 {
 			return retries
 		}
@@ -60,7 +60,7 @@ func GetLLMMaxRetries() int {
 
 // GetLLMRetryBackoff returns the base backoff for LLM retries.
 func GetLLMRetryBackoff() time.Duration {
-	if raw := os.Getenv("SCHEMAFLOW_LLM_RETRY_BACKOFF"); raw != "" {
+	if raw := os.Getenv("SCHEMAFLUX_LLM_RETRY_BACKOFF"); raw != "" {
 		if delay, err := time.ParseDuration(raw); err == nil && delay > 0 {
 			return delay
 		}
@@ -75,7 +75,7 @@ func GetDebugMode() bool {
 	if debugMode {
 		return true
 	}
-	return os.Getenv("SCHEMAFLOW_DEBUG") == "true"
+	return os.Getenv("SCHEMAFLUX_DEBUG") == "true"
 }
 
 // SetDebugMode sets the debug mode
@@ -92,7 +92,7 @@ func GetTraceEnabled() bool {
 	if traceEnabled {
 		return true
 	}
-	return envEnabled("SCHEMAFLOW_TRACE") || envEnabled("SCHEMAFLOW_ENABLE_TRACING")
+	return envEnabled("SCHEMAFLUX_TRACE") || envEnabled("SCHEMAFLUX_ENABLE_TRACING")
 }
 
 // SetTraceEnabled sets tracing mode
@@ -109,7 +109,7 @@ func IsMetricsEnabled() bool {
 	if metricsEnabled {
 		return true
 	}
-	return os.Getenv("SCHEMAFLOW_METRICS") == "true"
+	return os.Getenv("SCHEMAFLUX_METRICS") == "true"
 }
 
 // SetMetricsEnabled sets whether metrics collection is enabled
@@ -132,7 +132,7 @@ func envEnabled(keys ...string) bool {
 // GetModel returns the appropriate model based on intelligence level
 func GetModel(intelligence types.Speed, provider string) string {
 	// Check for global model override via environment variable
-	if envModel := os.Getenv("SCHEMAFLOW_MODEL"); envModel != "" {
+	if envModel := os.Getenv("SCHEMAFLUX_MODEL"); envModel != "" {
 		return envModel
 	}
 
@@ -140,11 +140,11 @@ func GetModel(intelligence types.Speed, provider string) string {
 	var envLevelModel string
 	switch intelligence {
 	case types.Smart:
-		envLevelModel = os.Getenv("SCHEMAFLOW_MODEL_SMART")
+		envLevelModel = os.Getenv("SCHEMAFLUX_MODEL_SMART")
 	case types.Fast:
-		envLevelModel = os.Getenv("SCHEMAFLOW_MODEL_FAST")
+		envLevelModel = os.Getenv("SCHEMAFLUX_MODEL_FAST")
 	case types.Quick:
-		envLevelModel = os.Getenv("SCHEMAFLOW_MODEL_QUICK")
+		envLevelModel = os.Getenv("SCHEMAFLUX_MODEL_QUICK")
 	}
 
 	if envLevelModel != "" {

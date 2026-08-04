@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Task represents a work task
@@ -67,9 +67,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -125,14 +125,14 @@ func main() {
 	}
 
 	// Sort tasks by priority (urgency + impact + effort)
-	sortOpts := schemaflow.NewSortOptions().WithCriteria("Priority by: 1) Urgency (deadline), 2) Business impact, 3) Effort (quick wins first)")
-	sortOpts.OpOptions.Intelligence = schemaflow.Fast
+	sortOpts := schemaflux.NewSortOptions().WithCriteria("Priority by: 1) Urgency (deadline), 2) Business impact, 3) Effort (quick wins first)")
+	sortOpts.OpOptions.Intelligence = schemaflux.Fast
 	sortOpts.OpOptions.Steering = "Consider deadline urgency, business impact, and effort. Quick high-impact tasks should be prioritized."
 
-	sortedTasks, err := schemaflow.Sort(tasks, sortOpts)
+	sortedTasks, err := schemaflux.Sort(tasks, sortOpts)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Sorting failed", "error", err)
+		schemaflux.GetLogger().Error("Sorting failed", "error", err)
 		os.Exit(1)
 	}
 

@@ -11,8 +11,8 @@ package main
 import (
 	"fmt"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 // BlogPost represents a blog post with partial content
@@ -37,9 +37,9 @@ func main() {
 	fmt.Println("??  Complete Example - Finish Partial Text with LLM")
 	fmt.Println("=" + string(make([]byte, 60)))
 
-	// Initialize SchemaFlow with Fast intelligence (Cerebras)
+	// Initialize SchemaFlux with Fast intelligence (Cerebras)
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -50,10 +50,10 @@ func main() {
 	partial1 := "The benefits of using type-safe LLM operations include"
 	fmt.Printf("   Input: %q\n", partial1)
 
-	result1, err := schemaflow.Complete(partial1,
-		schemaflow.NewCompleteOptions().
+	result1, err := schemaflux.Complete(partial1,
+		schemaflux.NewCompleteOptions().
 			WithMaxLength(100).
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -72,11 +72,11 @@ func main() {
 	partial2 := "func validateEmail(email string) bool {\n    // Check if email is valid\n    "
 	fmt.Printf("   Input:\n   %s\n", partial2)
 
-	result2, err := schemaflow.Complete(partial2,
-		schemaflow.NewCompleteOptions().
+	result2, err := schemaflux.Complete(partial2,
+		schemaflux.NewCompleteOptions().
 			WithMaxLength(150).
 			WithTemperature(0.3). // Lower temp for code
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -100,11 +100,11 @@ func main() {
 	fmt.Printf("   Context: %v\n", context3)
 	fmt.Printf("   Input: %q\n", partial3)
 
-	result3, err := schemaflow.Complete(partial3,
-		schemaflow.NewCompleteOptions().
+	result3, err := schemaflux.Complete(partial3,
+		schemaflux.NewCompleteOptions().
 			WithContext(context3).
 			WithMaxLength(150).
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -122,11 +122,11 @@ func main() {
 	partial4 := "The old lighthouse keeper had a secret that nobody in the village knew about. Every night at midnight, he would"
 	fmt.Printf("   Input: %q\n", partial4)
 
-	result4, err := schemaflow.Complete(partial4,
-		schemaflow.NewCompleteOptions().
+	result4, err := schemaflux.Complete(partial4,
+		schemaflux.NewCompleteOptions().
 			WithMaxLength(100).
 			WithTemperature(1.0). // Higher temp for creativity
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -163,10 +163,10 @@ func main() {
 	fmt.Printf("      Tags:     %v\n", blogPost.Tags)
 	fmt.Printf("      Body:     %q\n", blogPost.Body)
 
-	result5, err := schemaflow.CompleteField(blogPost,
-		schemaflow.NewCompleteFieldOptions("Body").
+	result5, err := schemaflux.CompleteField(blogPost,
+		schemaflux.NewCompleteFieldOptions("Body").
 			WithMaxLength(200).
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
@@ -197,11 +197,11 @@ func main() {
 	fmt.Printf("      Category:    %s\n", product.Category)
 	fmt.Printf("      Description: %q\n", product.Description)
 
-	result6, err := schemaflow.CompleteField(product,
-		schemaflow.NewCompleteFieldOptions("Description").
+	result6, err := schemaflux.CompleteField(product,
+		schemaflux.NewCompleteFieldOptions("Description").
 			WithMaxLength(150).
 			WithTemperature(0.5). // Moderate creativity for product copy
-			WithIntelligence(schemaflow.Fast))
+			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)

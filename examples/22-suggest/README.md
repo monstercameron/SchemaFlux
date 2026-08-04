@@ -1,4 +1,4 @@
-# SchemaFlow Suggest Operation Example
+# SchemaFlux Suggest Operation Example
 
 This example demonstrates the **Suggest** operation, which generates context-aware suggestions to optimize workflows, solve problems, and guide decision-making using LLM intelligence.
 
@@ -154,7 +154,7 @@ The Suggest operation gracefully handles:
 
 ## Integration
 
-The Suggest operation integrates seamlessly with other SchemaFlow operations:
+The Suggest operation integrates seamlessly with other SchemaFlux operations:
 
 ```go
 // Use suggestions to guide transformations
@@ -165,4 +165,4 @@ for _, step := range suggestions {
 }
 ```
 
-This operation transforms SchemaFlow from a **data processing toolkit** into a **decision intelligence platform** that actively guides users toward optimal outcomes.
+This operation transforms SchemaFlux from a **data processing toolkit** into a **decision intelligence platform** that actively guides users toward optimal outcomes.

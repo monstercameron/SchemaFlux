@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -76,7 +76,7 @@ type InsuranceClaim struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -131,7 +131,7 @@ func main() {
 		"Minimum order quantity must be 1500 or less",
 	}
 
-	vendorResult, err := schemaflow.Arbitrate[VendorProposal](vendors, schemaflow.ArbitrateOptions{
+	vendorResult, err := schemaflux.Arbitrate[VendorProposal](vendors, schemaflux.ArbitrateOptions{
 		Rules:           vendorRules,
 		Weights:         []float64{0.25, 0.20, 0.25, 0.15, 0.15},
 		RequireAllRules: false,
@@ -185,7 +185,7 @@ func main() {
 		"Must have Enterprise support tier",
 	}
 
-	cloudResult, err := schemaflow.Arbitrate[CloudQuote](cloudQuotes, schemaflow.ArbitrateOptions{
+	cloudResult, err := schemaflux.Arbitrate[CloudQuote](cloudQuotes, schemaflux.ArbitrateOptions{
 		Rules:           cloudRules,
 		RequireAllRules: true, // Healthcare company - HIPAA is mandatory
 		Intelligence:    types.Smart,
@@ -249,7 +249,7 @@ func main() {
 		"Must have third-party documentation",
 	}
 
-	claimResult, err := schemaflow.Arbitrate[InsuranceClaim](claims, schemaflow.ArbitrateOptions{
+	claimResult, err := schemaflux.Arbitrate[InsuranceClaim](claims, schemaflux.ArbitrateOptions{
 		Rules:           claimRules,
 		RequireAllRules: true,
 		Intelligence:    types.Smart,

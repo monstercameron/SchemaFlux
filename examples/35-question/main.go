@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	"github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/ops"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/ops"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func loadEnv() {
@@ -29,7 +29,7 @@ func loadEnv() {
 
 func main() {
 	loadEnv()
-	schemaflow.InitWithEnv()
+	schemaflux.InitWithEnv()
 
 	fmt.Println("=== Question Example ===")
 	fmt.Println("Answers questions about data with typed responses")

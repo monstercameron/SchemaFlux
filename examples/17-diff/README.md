@@ -34,7 +34,7 @@ go run main.go
 Make sure you have a `.env` file with your OpenAI API key:
 
 ```env
-SCHEMAFLOW_API_KEY=your_openai_api_key_here
+SCHEMAFLUX_API_KEY=your_openai_api_key_here
 ```
 
 ## Example Output

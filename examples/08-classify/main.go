@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Review represents a customer review
@@ -71,9 +71,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -126,13 +126,13 @@ func main() {
 	}
 
 	for _, review := range reviews {
-		classifyOpts := schemaflow.NewClassifyOptions().WithCategories(categories)
-		classifyOpts.OpOptions.Intelligence = schemaflow.Fast
+		classifyOpts := schemaflux.NewClassifyOptions().WithCategories(categories)
+		classifyOpts.OpOptions.Intelligence = schemaflux.Fast
 
 		// Use the new generic Classify with typed result
-		result, err := schemaflow.Classify[string, string](review.Text, classifyOpts)
+		result, err := schemaflux.Classify[string, string](review.Text, classifyOpts)
 		if err != nil {
-			schemaflow.GetLogger().Warn("Failed to classify review", "review_id", review.ID, "error", err)
+			schemaflux.GetLogger().Warn("Failed to classify review", "review_id", review.ID, "error", err)
 			continue
 		}
 

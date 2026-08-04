@@ -544,8 +544,8 @@ func TestProviderCostEstimation(t *testing.T) {
 
 	t.Run("CostOverride", func(t *testing.T) {
 		// Override cost for a specific model
-		t.Setenv("SCHEMAFLOW_COST_INPUT_TEST_MODEL", "100.0")  // $100/1M
-		t.Setenv("SCHEMAFLOW_COST_OUTPUT_TEST_MODEL", "200.0") // $200/1M
+		t.Setenv("SCHEMAFLUX_COST_INPUT_TEST_MODEL", "100.0")  // $100/1M
+		t.Setenv("SCHEMAFLUX_COST_OUTPUT_TEST_MODEL", "200.0") // $200/1M
 
 		provider, _ := NewOpenAIProvider(ProviderConfig{APIKey: "test"})
 
@@ -570,10 +570,10 @@ func TestProviderCostEstimation(t *testing.T) {
 
 	t.Run("LevelCostOverride", func(t *testing.T) {
 		// Map a model to a level
-		t.Setenv("SCHEMAFLOW_MODEL_SMART", "level-model")
+		t.Setenv("SCHEMAFLUX_MODEL_SMART", "level-model")
 		// Set cost for that level
-		t.Setenv("SCHEMAFLOW_COST_INPUT_SMART", "50.0")   // $50/1M
-		t.Setenv("SCHEMAFLOW_COST_OUTPUT_SMART", "100.0") // $100/1M
+		t.Setenv("SCHEMAFLUX_COST_INPUT_SMART", "50.0")   // $50/1M
+		t.Setenv("SCHEMAFLUX_COST_OUTPUT_SMART", "100.0") // $100/1M
 
 		provider, _ := NewOpenAIProvider(ProviderConfig{APIKey: "test"})
 

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -124,7 +124,7 @@ type ModernEmployee struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -155,7 +155,7 @@ func main() {
 		InternalNotes: "Expedited by manager - VIP customer",
 	}
 
-	orderResult, err := schemaflow.Project[InternalOrder, PublicOrderResponse](internalOrder, schemaflow.ProjectOptions{
+	orderResult, err := schemaflux.Project[InternalOrder, PublicOrderResponse](internalOrder, schemaflux.ProjectOptions{
 		Mappings: map[string]string{
 			"order_id":   "order_number",
 			"item_count": "item_count",
@@ -204,7 +204,7 @@ func main() {
 		AuthCode:     "AUTH789",
 	}
 
-	analyticsResult, err := schemaflow.Project[DBTransaction, AnalyticsEvent](dbTxn, schemaflow.ProjectOptions{
+	analyticsResult, err := schemaflux.Project[DBTransaction, AnalyticsEvent](dbTxn, schemaflux.ProjectOptions{
 		Mappings: map[string]string{
 			"txn_id": "event_id",
 		},
@@ -253,7 +253,7 @@ func main() {
 		CostCenter: "CC-4500",
 	}
 
-	modernResult, err := schemaflow.Project[LegacyEmployee, ModernEmployee](legacyEmp, schemaflow.ProjectOptions{
+	modernResult, err := schemaflux.Project[LegacyEmployee, ModernEmployee](legacyEmp, schemaflux.ProjectOptions{
 		Mappings: map[string]string{
 			"emp_no":     "employee_id",
 			"hire_date":  "start_date",

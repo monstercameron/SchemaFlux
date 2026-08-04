@@ -5,17 +5,17 @@ package main
 
 import (
 	"fmt"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
-	"github.com/monstercameron/schemaflow/internal/ops"
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
+	"github.com/monstercameron/schemaflux/internal/ops"
+	"github.com/monstercameron/schemaflux/internal/types"
 	"log"
 )
 
 func main() {
 
-	// Initialize SchemaFlow
+	// Initialize SchemaFlux
 	if err := exampleutil.Bootstrap(); err != nil {
-		log.Fatalf("Failed to initialize SchemaFlow: %v", err)
+		log.Fatalf("Failed to initialize SchemaFlux: %v", err)
 	}
 
 	// Sample text for annotation (Named Entity Recognition)

@@ -12,8 +12,8 @@ package main
 import (
 	"fmt"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 // SupportTicket represents a customer support ticket
@@ -35,9 +35,9 @@ type Department struct {
 
 func main() {
 
-	// Initialize SchemaFlow with Fast intelligence (Cerebras)
+	// Initialize SchemaFlux with Fast intelligence (Cerebras)
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
 
@@ -45,7 +45,7 @@ func main() {
 	fmt.Println("=" + string(make([]byte, 60)))
 
 	// Available departments
-	departments := []schemaflow.Decision[Department]{
+	departments := []schemaflux.Decision[Department]{
 		{
 			Value: Department{
 				Name:        "Technical Support",
@@ -120,9 +120,9 @@ func main() {
 		fmt.Println("   ?? Routing ticket...")
 
 		// Use Decide to route the ticket
-		chosen, result, err := schemaflow.Decide(ticket, departments)
+		chosen, result, err := schemaflux.Decide(ticket, departments)
 		if err != nil {
-			schemaflow.GetLogger().Error("Routing error", "error", err)
+			schemaflux.GetLogger().Error("Routing error", "error", err)
 			continue
 		}
 

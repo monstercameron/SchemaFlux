@@ -1,23 +1,23 @@
-# SchemaFlow API Reference
+# SchemaFlux API Reference
 
 ## Canonical Import
 
 ```bash
-go get github.com/monstercameron/schemaflow
+go get github.com/monstercameron/schemaflux
 ```
 
 ```go
-import schemaflow "github.com/monstercameron/schemaflow"
+import schemaflux "github.com/monstercameron/schemaflux"
 ```
 
 ## API Shape
 
-SchemaFlow's primary public API is the fluent request-builder stack.
+SchemaFlux's primary public API is the fluent request-builder stack.
 
 Every builder follows the same pattern:
 
 ```go
-result, err := schemaflow.<Builder>(...).
+result, err := schemaflux.<Builder>(...).
     Steer("...").
     Strict().
     Smart().
@@ -117,7 +117,7 @@ type Person struct {
     Age  int    `json:"age"`
 }
 
-person, err := schemaflow.Extracting[Person](raw).
+person, err := schemaflux.Extracting[Person](raw).
     Strict().
     Smart().
     Steer("Prefer explicit evidence over guesses").
@@ -127,7 +127,7 @@ person, err := schemaflow.Extracting[Person](raw).
 ### Validation
 
 ```go
-result, err := schemaflow.Validating(person).
+result, err := schemaflux.Validating(person).
     Rules("email must be valid; age must be between 18 and 100").
     Strict().
     Run()
@@ -136,7 +136,7 @@ result, err := schemaflow.Validating(person).
 ### Ranking
 
 ```go
-ranked, err := schemaflow.Ranking(products).
+ranked, err := schemaflux.Ranking(products).
     By("best battery life for frequent travelers").
     Fast().
     Run()
@@ -145,7 +145,7 @@ ranked, err := schemaflow.Ranking(products).
 ### Matching
 
 ```go
-matches, err := schemaflow.Matching(leads, accounts).
+matches, err := schemaflux.Matching(leads, accounts).
     By("same company despite name variations").
     Smart().
     Run()
@@ -154,7 +154,7 @@ matches, err := schemaflow.Matching(leads, accounts).
 ### Projection
 
 ```go
-projected, err := schemaflow.Projecting[InternalUser, PublicProfile](user).
+projected, err := schemaflux.Projecting[InternalUser, PublicProfile](user).
     Exclude("password_hash", "ssn").
     Steer("combine first and last name into display_name").
     Run()
@@ -190,7 +190,7 @@ The fluent API works with the same provider stack:
 Example:
 
 ```go
-client := schemaflow.NewClient(apiKey).
+client := schemaflux.NewClient(apiKey).
     WithProvider("deepseek").
     WithRetries(3)
 ```

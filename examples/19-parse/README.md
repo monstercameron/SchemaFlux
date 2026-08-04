@@ -1,6 +1,6 @@
 # Parse Operation Example
 
-This example demonstrates the SchemaFlow Parse operation, which intelligently parses data from various formats into strongly-typed Go structs.
+This example demonstrates the SchemaFlux Parse operation, which intelligently parses data from various formats into strongly-typed Go structs.
 
 ## Overview
 
@@ -29,7 +29,7 @@ go run main.go
 The example will parse various data formats and display the results:
 
 ```
-=== SchemaFlow Parse Operation Examples ===
+=== SchemaFlux Parse Operation Examples ===
 
 1. Parsing Standard JSON:
    Result: {Name:Alice Age:28 Job:Engineer} (Format: json)

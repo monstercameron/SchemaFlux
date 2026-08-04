@@ -2,7 +2,7 @@ package tui
 
 import (
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflow/examples/smarttodo/internal/localization"
+	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/localization"
 )
 
 func (m Model) quitConfirmViewRender() string {

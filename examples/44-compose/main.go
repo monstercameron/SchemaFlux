@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -88,7 +88,7 @@ type ProductCatalog struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -136,7 +136,7 @@ func main() {
 
 	custParts := []any{crmData, ordersData, supportData, analyticsData}
 
-	custResult, err := schemaflow.Assemble[Customer360](custParts, schemaflow.ComposeOptions{
+	custResult, err := schemaflux.Assemble[Customer360](custParts, schemaflux.ComposeOptions{
 		MergeStrategy: "smart",
 		Intelligence:  types.Smart,
 		Steering:      "Combine all tags from different sources. Use CRM as primary for contact info.",
@@ -196,7 +196,7 @@ func main() {
 
 	investParts := []any{marketData, analystReport, financials}
 
-	investResult, err := schemaflow.Assemble[InvestmentReport](investParts, schemaflow.ComposeOptions{
+	investResult, err := schemaflux.Assemble[InvestmentReport](investParts, schemaflux.ComposeOptions{
 		MergeStrategy: "smart",
 		Intelligence:  types.Smart,
 		Steering:      "Market data is real-time and most current for price. Analyst report for qualitative assessment.",
@@ -253,7 +253,7 @@ func main() {
 
 	productParts := []any{pimData, inventoryData, procurementData}
 
-	productResult, err := schemaflow.Assemble[ProductCatalog](productParts, schemaflow.ComposeOptions{
+	productResult, err := schemaflux.Assemble[ProductCatalog](productParts, schemaflux.ComposeOptions{
 		MergeStrategy: "smart",
 		FillGaps:      true, // Calculate margin if not provided
 		Intelligence:  types.Smart,

@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"time"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 // Person represents a person with some fields that might be missing
@@ -33,13 +33,13 @@ type Product struct {
 
 func main() {
 
-	// Initialize SchemaFlow with Fast intelligence (Cerebras)
-	fmt.Println("?? Initializing SchemaFlow...")
+	// Initialize SchemaFlux with Fast intelligence (Cerebras)
+	fmt.Println("?? Initializing SchemaFlux...")
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
-	fmt.Println("? SchemaFlow initialized successfully")
+	fmt.Println("? SchemaFlux initialized successfully")
 
 	fmt.Println("?? Smart Data Inference Example")
 	fmt.Println("=" + string(make([]byte, 50)))
@@ -63,15 +63,15 @@ func main() {
 	fmt.Println("\n?? Starting person inference...")
 
 	// Set timeout context on the options
-	opts := schemaflow.NewInferOptions().
+	opts := schemaflux.NewInferOptions().
 		WithContext("Tech professional working in San Francisco").
-		WithIntelligence(schemaflow.Fast)
+		WithIntelligence(schemaflux.Fast)
 	opts.OpOptions.Context = ctx
 
-	completePerson, err := schemaflow.Infer[Person](partialPerson, opts)
+	completePerson, err := schemaflux.Infer[Person](partialPerson, opts)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Person inference failed", "error", err)
+		schemaflux.GetLogger().Error("Person inference failed", "error", err)
 		return
 	}
 	fmt.Println("? Person inference completed")
@@ -96,15 +96,15 @@ func main() {
 	fmt.Println("\n?? Starting product inference...")
 
 	// Set timeout context on the options
-	productOpts := schemaflow.NewInferOptions().
+	productOpts := schemaflux.NewInferOptions().
 		WithContext("Latest Apple smartphone released in 2023 with premium pricing").
-		WithIntelligence(schemaflow.Fast)
+		WithIntelligence(schemaflux.Fast)
 	productOpts.OpOptions.Context = ctx
 
-	completeProduct, err := schemaflow.Infer[Product](partialProduct, productOpts)
+	completeProduct, err := schemaflux.Infer[Product](partialProduct, productOpts)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Product inference failed", "error", err)
+		schemaflux.GetLogger().Error("Product inference failed", "error", err)
 		return
 	}
 	fmt.Println("? Product inference completed")

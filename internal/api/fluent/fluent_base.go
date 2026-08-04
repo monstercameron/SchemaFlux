@@ -3,7 +3,7 @@ package fluent
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflow/internal/types"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 type commonRequest[Self any, Opt any] struct {

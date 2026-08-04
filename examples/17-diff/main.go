@@ -10,8 +10,8 @@ package main
 import (
 	"fmt"
 
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
 )
 
 func main() {
@@ -19,13 +19,13 @@ func main() {
 	fmt.Println("?? Intelligent Difference Detection Example")
 	fmt.Println("=")
 
-	// Initialize SchemaFlow with Fast intelligence (Cerebras)
-	fmt.Println("?? Initializing SchemaFlow...")
+	// Initialize SchemaFlux with Fast intelligence (Cerebras)
+	fmt.Println("?? Initializing SchemaFlux...")
 	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
-	fmt.Println("? SchemaFlow initialized successfully")
+	fmt.Println("? SchemaFlux initialized successfully")
 	fmt.Println()
 
 	// Example 1: Customer Record Changes
@@ -59,10 +59,10 @@ func main() {
 	fmt.Printf("?? New Customer:\n  %+v\n\n", newCustomer)
 
 	fmt.Println("?? Analyzing differences...")
-	result, err := schemaflow.Diff(oldCustomer, newCustomer,
-		schemaflow.NewDiffOptions().WithContext("Customer management system"))
+	result, err := schemaflux.Diff(oldCustomer, newCustomer,
+		schemaflux.NewDiffOptions().WithContext("Customer management system"))
 	if err != nil {
-		schemaflow.GetLogger().Error("Diff failed", "error", err)
+		schemaflux.GetLogger().Error("Diff failed", "error", err)
 		return
 	}
 
@@ -113,10 +113,10 @@ func main() {
 	fmt.Printf("?? New Product:\n  %+v\n\n", newProduct)
 
 	fmt.Println("?? Analyzing differences...")
-	productResult, err := schemaflow.Diff(oldProduct, newProduct,
-		schemaflow.NewDiffOptions().WithContext("E-commerce product catalog"))
+	productResult, err := schemaflux.Diff(oldProduct, newProduct,
+		schemaflux.NewDiffOptions().WithContext("E-commerce product catalog"))
 	if err != nil {
-		schemaflow.GetLogger().Error("Diff failed", "error", err)
+		schemaflux.GetLogger().Error("Diff failed", "error", err)
 		return
 	}
 
@@ -162,12 +162,12 @@ func main() {
 	fmt.Printf("??  New Config:\n  %+v\n\n", newConfig)
 
 	fmt.Println("?? Analyzing differences (ignoring timestamps)...")
-	configResult, err := schemaflow.Diff(oldConfig, newConfig,
-		schemaflow.NewDiffOptions().
+	configResult, err := schemaflux.Diff(oldConfig, newConfig,
+		schemaflux.NewDiffOptions().
 			WithContext("Service configuration management").
 			WithIgnoreFields([]string{"LastUpdated"}))
 	if err != nil {
-		schemaflow.GetLogger().Error("Diff failed", "error", err)
+		schemaflux.GetLogger().Error("Diff failed", "error", err)
 		return
 	}
 

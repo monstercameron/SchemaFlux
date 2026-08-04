@@ -1,4 +1,4 @@
-package schemaflow
+package schemaflux
 
 import (
 	"context"

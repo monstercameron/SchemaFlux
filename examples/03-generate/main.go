@@ -33,7 +33,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // TestUserSpec defines the specification for generating test users (input type)
@@ -97,9 +97,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -124,10 +124,10 @@ func main() {
 	fmt.Println(string(specJSON))
 
 	// Generate structured test data using typed spec and options
-	result, err := schemaflow.Generate[GeneratedUsers](
+	result, err := schemaflux.Generate[GeneratedUsers](
 		"Generate realistic test users based on the provided specification",
-		schemaflow.NewGenerateOptions().
-			WithIntelligence(schemaflow.Fast).
+		schemaflux.NewGenerateOptions().
+			WithIntelligence(schemaflux.Fast).
 			WithSeedData(spec).
 			WithConstraints(map[string]interface{}{
 				"count":          5,
@@ -140,7 +140,7 @@ func main() {
 	)
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Generation failed", "error", err)
+		schemaflux.GetLogger().Error("Generation failed", "error", err)
 		os.Exit(1)
 	}
 

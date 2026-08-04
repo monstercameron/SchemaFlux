@@ -54,8 +54,8 @@ var (
 type contextKey string
 
 const (
-	requestIDKey     contextKey = "schemaflow_request_id"
-	correlationIDKey contextKey = "schemaflow_correlation_id"
+	requestIDKey     contextKey = "schemaflux_request_id"
+	correlationIDKey contextKey = "schemaflux_correlation_id"
 )
 
 func DefaultConfig() Config {
@@ -67,19 +67,19 @@ func DefaultConfig() Config {
 		CorrelationIDHeader:   "X-Correlation-ID",
 	}
 
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLOW_REQUEST_TRACKING")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_REQUEST_TRACKING")); raw != "" {
 		cfg.Enabled = envEnabled(raw)
 	}
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLOW_REQUEST_ID_STRATEGY")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_REQUEST_ID_STRATEGY")); raw != "" {
 		cfg.RequestIDStrategy = IDStrategy(strings.ToLower(raw))
 	}
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLOW_CORRELATION_ID_STRATEGY")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_CORRELATION_ID_STRATEGY")); raw != "" {
 		cfg.CorrelationIDStrategy = CorrelationStrategy(strings.ToLower(raw))
 	}
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLOW_REQUEST_ID_HEADER")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_REQUEST_ID_HEADER")); raw != "" {
 		cfg.RequestIDHeader = raw
 	}
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLOW_CORRELATION_ID_HEADER")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_CORRELATION_ID_HEADER")); raw != "" {
 		cfg.CorrelationIDHeader = raw
 	}
 

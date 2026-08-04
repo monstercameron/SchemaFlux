@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/monstercameron/schemaflow/internal/tools"
+	"github.com/monstercameron/schemaflux/internal/tools"
 )
 
 func runDataExamples(ctx context.Context) {
@@ -68,7 +68,7 @@ Charlie,35,Chicago`
 	result, err = tools.Execute(ctx, "json", map[string]any{
 		"action": "format",
 		"object": map[string]any{
-			"name":  "SchemaFlow",
+			"name":  "SchemaFlux",
 			"type":  "library",
 			"tools": 80,
 		},

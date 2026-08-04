@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflow/internal/config"
-	"github.com/monstercameron/schemaflow/internal/llm"
-	"github.com/monstercameron/schemaflow/internal/requesttracking"
-	"github.com/monstercameron/schemaflow/internal/types"
-	"github.com/monstercameron/schemaflow/pricing"
-	"github.com/monstercameron/schemaflow/telemetry"
+	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/pricing"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 type captureProvider struct {
@@ -176,7 +176,7 @@ func TestCallLLMTracksTokensAndCosts(t *testing.T) {
 		CorrelationIDStrategy: requesttracking.CorrelationStrategyInherit,
 	})
 	t.Cleanup(func() { requesttracking.Configure(requesttracking.DefaultConfig()) })
-	t.Setenv("SCHEMAFLOW_METRICS", "")
+	t.Setenv("SCHEMAFLUX_METRICS", "")
 	originalMetrics := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(originalMetrics) })
 	config.SetMetricsEnabled(true)

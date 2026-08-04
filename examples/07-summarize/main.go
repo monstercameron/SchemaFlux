@@ -23,7 +23,7 @@ import (
 	"os"
 	"strings"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // loadEnv loads environment variables from a .env file
@@ -54,9 +54,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -106,15 +106,15 @@ socioeconomic status.
 	fmt.Println("\n🔹 Example 1: Simple Summary (string → string)")
 	fmt.Println("-" + string(make([]byte, 40)))
 
-	summaryOpts := schemaflow.NewSummarizeOptions()
+	summaryOpts := schemaflux.NewSummarizeOptions()
 	summaryOpts.TargetLength = 3 // 3 sentences
 	summaryOpts.LengthUnit = "sentences"
-	summaryOpts.OpOptions.Intelligence = schemaflow.Fast
+	summaryOpts.OpOptions.Intelligence = schemaflux.Fast
 	summaryOpts.OpOptions.Steering = "Create a concise summary capturing key points: AI in diagnostics, drug discovery, patient care, and challenges."
 
-	summary, err := schemaflow.Summarize(article, summaryOpts)
+	summary, err := schemaflux.Summarize(article, summaryOpts)
 	if err != nil {
-		schemaflow.GetLogger().Error("Summarization failed", "error", err)
+		schemaflux.GetLogger().Error("Summarization failed", "error", err)
 		os.Exit(1)
 	}
 
@@ -127,14 +127,14 @@ socioeconomic status.
 	fmt.Println("\n🔹 Example 2: Summary with Metadata (WithMetadata API)")
 	fmt.Println("-" + string(make([]byte, 40)))
 
-	metadataOpts := schemaflow.NewSummarizeOptions()
+	metadataOpts := schemaflux.NewSummarizeOptions()
 	metadataOpts.TargetLength = 3
 	metadataOpts.LengthUnit = "sentences"
-	metadataOpts.OpOptions.Intelligence = schemaflow.Fast
+	metadataOpts.OpOptions.Intelligence = schemaflux.Fast
 
-	result, err := schemaflow.SummarizeWithMetadata(article, metadataOpts)
+	result, err := schemaflux.SummarizeWithMetadata(article, metadataOpts)
 	if err != nil {
-		schemaflow.GetLogger().Error("SummarizeWithMetadata failed", "error", err)
+		schemaflux.GetLogger().Error("SummarizeWithMetadata failed", "error", err)
 		os.Exit(1)
 	}
 

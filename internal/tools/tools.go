@@ -1,4 +1,4 @@
-// Package tools provides LLM tool primitives for SchemaFlow.
+// Package tools provides LLM tool primitives for SchemaFlux.
 // Tools are callable functions that LLMs can use to interact with external systems,
 // perform calculations, and access data sources.
 package tools

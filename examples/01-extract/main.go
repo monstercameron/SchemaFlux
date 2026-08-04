@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	schemaflow "github.com/monstercameron/schemaflow"
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
 // Email represents a structured email extracted from unstructured text
@@ -75,9 +75,9 @@ func main() {
 		fmt.Printf("Warning: Could not load .env file: %v\n", err)
 	}
 
-	// Initialize SchemaFlow (reads from environment variables)
-	if err := schemaflow.InitWithEnv(); err != nil {
-		schemaflow.GetLogger().Error("Failed to initialize SchemaFlow", "error", err)
+	// Initialize SchemaFlux (reads from environment variables)
+	if err := schemaflux.InitWithEnv(); err != nil {
+		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		os.Exit(1)
 	}
 
@@ -106,12 +106,12 @@ Sent: December 15, 2024
 	fmt.Println(rawEmail)
 
 	// Extract structured email from unstructured text
-	email, err := schemaflow.Extract[Email](rawEmail, schemaflow.NewExtractOptions().
-		WithIntelligence(schemaflow.Fast).
+	email, err := schemaflux.Extract[Email](rawEmail, schemaflux.NewExtractOptions().
+		WithIntelligence(schemaflux.Fast).
 		WithSteering("Extract all email fields including metadata and categorize by tags"))
 
 	if err != nil {
-		schemaflow.GetLogger().Error("Extraction failed", "error", err)
+		schemaflux.GetLogger().Error("Extraction failed", "error", err)
 		os.Exit(1)
 	}
 

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/joho/godotenv"
-	schemaflow "github.com/monstercameron/schemaflow"
-	"github.com/monstercameron/schemaflow/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // loadEnv loads environment variables from .env files
@@ -110,7 +110,7 @@ type RespondentSurvey struct {
 func main() {
 	loadEnv()
 
-	if err := schemaflow.InitWithEnv(); err != nil {
+	if err := schemaflux.InitWithEnv(); err != nil {
 		fmt.Printf("Init failed: %v\n", err)
 		return
 	}
@@ -144,7 +144,7 @@ func main() {
 	}
 	fmt.Println("  ... (5 more rows)")
 
-	salesResult, err := schemaflow.Pivot[[]SalesRecord, []RepQuarterly](salesData, schemaflow.PivotOptions{
+	salesResult, err := schemaflux.Pivot[[]SalesRecord, []RepQuarterly](salesData, schemaflux.PivotOptions{
 		PivotOn:      []string{"Month"},
 		GroupBy:      []string{"Rep"},
 		Aggregate:    "sum",
@@ -192,7 +192,7 @@ func main() {
 	fmt.Println("    payment:  { method, amount, status }")
 	fmt.Println("  }")
 
-	flatResult, err := schemaflow.Pivot[NestedOrder, FlatOrder](nestedOrder, schemaflow.PivotOptions{
+	flatResult, err := schemaflux.Pivot[NestedOrder, FlatOrder](nestedOrder, schemaflux.PivotOptions{
 		Flatten:      true,
 		Intelligence: types.Smart,
 		Steering:     "Flatten all nested objects. Use prefixes like customer_, ship_, payment_.",
@@ -245,7 +245,7 @@ func main() {
 	}
 	fmt.Println("  ... (4 more rows)")
 
-	surveyResult, err := schemaflow.Pivot[[]SurveyResponse, []RespondentSurvey](surveyData, schemaflow.PivotOptions{
+	surveyResult, err := schemaflux.Pivot[[]SurveyResponse, []RespondentSurvey](surveyData, schemaflux.PivotOptions{
 		PivotOn:      []string{"Question"},
 		GroupBy:      []string{"RespondentID"},
 		Aggregate:    "first",
