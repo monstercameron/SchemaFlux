@@ -62,8 +62,16 @@ func callLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.Op
 func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPrompt string, opts types.OpOptions) (string, error) {
 	log := logger.GetLogger()
 
-	// Determine model
+	// Determine model. An empty result means the provider has no mapping and is
+	// not OpenAI, so there is no defensible default: sending an OpenAI model ID
+	// to another provider produces a 400 that reads as the caller's mistake.
 	model := config.GetModel(opts.Intelligence, provider.Name())
+	if model == "" {
+		return "", fmt.Errorf(
+			"no default model for provider %q; set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK. Providers with a built-in mapping: %s",
+			provider.Name(), strings.Join(config.KnownProviders(), ", "))
+	}
+
 	maxTokens := config.GetMaxTokens(opts.Intelligence)
 	temperature := config.GetTemperature(opts.Mode)
 	effectiveSystemPrompt := applySteering(systemPrompt, opts.Steering)

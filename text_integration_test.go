@@ -34,7 +34,12 @@ func (p *scriptedProvider) Complete(_ context.Context, req schemaflux.Completion
 	}, nil
 }
 
-func (p *scriptedProvider) Name() string                                      { return "scripted" }
+// Name reports "local", the name the library reserves for an in-process test
+// double. It is not cosmetic: a provider whose name has no model mapping
+// resolves to no model at all and every call errors, which is FL-001 working as
+// intended. A test double that invents a provider name would be asserting
+// against a configuration no caller should ship.
+func (p *scriptedProvider) Name() string                                      { return "local" }
 func (p *scriptedProvider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
 func (p *scriptedProvider) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
 
@@ -118,8 +123,11 @@ func TestIntegrationRequestCarriesPromptAndModel(t *testing.T) {
 	if req.Model == "" {
 		t.Error("no model was selected")
 	}
-	if !strings.HasPrefix(req.Model, "gpt-5.6-") {
-		t.Errorf("Model = %q, want a gpt-5.6 default", req.Model)
+	// The model must belong to the provider that was asked for. Asserting a
+	// gpt-5.6 prefix here was asserting the bug FL-001 fixed: every provider
+	// used to receive OpenAI model IDs regardless of which provider it was.
+	if req.Model != "local-mock" {
+		t.Errorf("Model = %q, want the local provider's own model", req.Model)
 	}
 }
 

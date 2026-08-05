@@ -33,9 +33,19 @@ func (p *scriptedRetryProvider) Name() string                               { re
 func (p *scriptedRetryProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
 func (p *scriptedRetryProvider) RetryPolicy() (int, time.Duration)          { return p.maxRetries, p.backoff }
 
+// A provider with a name the library does not know has no default model, which
+// is the point of I-03's fix. A real caller in that position sets the model
+// explicitly; so does the test.
+func withExplicitModel(t *testing.T) {
+	t.Helper()
+	t.Setenv("SCHEMAFLUX_MODEL", "test-model")
+}
+
 // The retry budget is the caller's to set, and each setting has to be honoured
 // exactly: a budget of N means at most N+1 attempts, and zero means one.
 func TestRetryBudgetIsHonouredExactly(t *testing.T) {
+	withExplicitModel(t)
+
 	cases := []struct {
 		name        string
 		budget      int
@@ -79,6 +89,8 @@ func TestRetryBudgetIsHonouredExactly(t *testing.T) {
 // Retrying a failure that cannot change is waste: it spends the caller's
 // latency budget to receive the same answer.
 func TestDeterministicFailuresAreNotRetriedAcrossKinds(t *testing.T) {
+	withExplicitModel(t)
+
 	cases := []struct {
 		name      string
 		err       error
@@ -113,6 +125,8 @@ func TestDeterministicFailuresAreNotRetriedAcrossKinds(t *testing.T) {
 
 // A cancelled context stops the loop rather than spending the whole budget.
 func TestRetryLoopStopsOnCancellation(t *testing.T) {
+	withExplicitModel(t)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	provider := &cancellingProvider{cancel: cancel, maxRetries: 5, backoff: 50 * time.Millisecond}
@@ -150,6 +164,8 @@ func (p *cancellingProvider) RetryPolicy() (int, time.Duration)          { retur
 // The error the caller sees must name the last failure, not just the fact that
 // retries ran out.
 func TestExhaustedRetriesReportTheUnderlyingFailure(t *testing.T) {
+	withExplicitModel(t)
+
 	provider := &scriptedRetryProvider{
 		failures:   99,
 		err:        errors.New("upstream said 503"),
@@ -168,6 +184,8 @@ func TestExhaustedRetriesReportTheUnderlyingFailure(t *testing.T) {
 
 // A success on the final attempt is still a success.
 func TestSuccessOnTheLastAttempt(t *testing.T) {
+	withExplicitModel(t)
+
 	provider := &scriptedRetryProvider{
 		failures:   3,
 		err:        errors.New("rate limit exceeded"),

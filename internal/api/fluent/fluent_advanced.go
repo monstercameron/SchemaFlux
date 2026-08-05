@@ -82,6 +82,10 @@ func newAdversarialNegotiationRequest[T any](ctx AdversarialContext[T], opts Adv
 				current.Steering = steering
 				return current
 			},
+			setMode: func(current AdversarialOptions, mode Mode) AdversarialOptions {
+				current.Mode = mode
+				return current
+			},
 			setIntelligence: func(current AdversarialOptions, level Speed) AdversarialOptions {
 				current.Intelligence = level
 				return current

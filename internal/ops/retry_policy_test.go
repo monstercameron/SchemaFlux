@@ -31,6 +31,8 @@ func (p *countingProvider) RetryPolicy() (int, time.Duration)          { return 
 // substituted the global default of three -- so retries could not be disabled,
 // and a caller who asked for none waited out two backoffs anyway.
 func TestRetriesCanBeDisabled(t *testing.T) {
+	withExplicitModel(t)
+
 	provider := &countingProvider{maxRetries: 0, backoff: time.Millisecond}
 
 	_, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{})
@@ -44,6 +46,8 @@ func TestRetriesCanBeDisabled(t *testing.T) {
 
 // A configured retry budget is still honoured: attempts are retries + 1.
 func TestConfiguredRetryBudgetIsHonoured(t *testing.T) {
+	withExplicitModel(t)
+
 	for _, retries := range []int{1, 2, 3, 5} {
 		provider := &countingProvider{maxRetries: retries, backoff: time.Millisecond}
 
@@ -60,6 +64,8 @@ func TestConfiguredRetryBudgetIsHonoured(t *testing.T) {
 
 // A negative budget means "not configured" and falls back to the global default.
 func TestNegativeRetryBudgetUsesTheGlobalDefault(t *testing.T) {
+	withExplicitModel(t)
+
 	provider := &countingProvider{maxRetries: -1, backoff: time.Millisecond}
 
 	if _, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{}); err == nil {
@@ -73,6 +79,8 @@ func TestNegativeRetryBudgetUsesTheGlobalDefault(t *testing.T) {
 // Retries must stop the moment the caller cancels, rather than sleeping out the
 // remaining backoff.
 func TestRetriesStopOnCancellation(t *testing.T) {
+	withExplicitModel(t)
+
 	provider := &countingProvider{maxRetries: 5, backoff: time.Hour}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -89,6 +97,8 @@ func TestRetriesStopOnCancellation(t *testing.T) {
 
 // A deterministic failure is not retried at all, whatever the budget.
 func TestDeterministicFailuresAreNotRetried(t *testing.T) {
+	withExplicitModel(t)
+
 	provider := &deterministicFailureProvider{maxRetries: 5}
 
 	if _, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{}); err == nil {
@@ -116,6 +126,8 @@ func (p *deterministicFailureProvider) RetryPolicy() (int, time.Duration) {
 
 // Non-retryable API errors stop immediately too.
 func TestNonRetryableErrorsStopImmediately(t *testing.T) {
+	withExplicitModel(t)
+
 	for _, message := range []string{
 		"invalid api key",
 		"unauthorized",

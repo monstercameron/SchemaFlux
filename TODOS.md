@@ -291,7 +291,7 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   provider/model pair returns an error.
 - [ ] **P-016** — The Anthropic provider hardcodes `max_tokens: 1024` before conditionally
   overriding it (`provider.go:383`, `394-396`) and never sends `cache_control`. Wire the real
-  ceiling and add prompt-cache breakpoints. Depends on **CA-003**.
+  ceiling and add prompt-cache breakpoints. Depends on **CA-003**. Addresses **Gap-10**.
   *Verify:* recorded request asserts the configured ceiling and a breakpoint on the last
   stable block.
 
@@ -528,7 +528,7 @@ tests.
 - [ ] **OP-505** — Remove or replace jumble redaction. `JumbleSeed` defaults to zero, so the
   RNG is seeded with `len(input)` — a value readable from the output — and `jumbleBasic` is a
   Fisher–Yates shuffle of the same runes, making the transform an **invertible** permutation.
-  Closes **T-11**.
+  Closes **T-11**. Addresses **Gap-14**.
   *Verify:* a test asserting the output is not a permutation of the input.
 - [ ] **OP-506** — `JumbleSmart` is documented as preserving vowel/consonant structure and
   calls `jumbleBasic` (`redact.go:535-539`). Implement or delete. Closes **T-12**.
@@ -625,7 +625,7 @@ tests.
   iteration order, so `SchemaHints` (`core.go:73`), `FieldRules` (`core.go:80`,
   `extended.go:232`), `Mappings` (`project.go:171`), and `CategoryDescriptions`
   (`analysis.go:95`) produce different prompt bytes on every call — defeating any prefix cache
-  and making runs irreproducible.
+  and making runs irreproducible. Addresses **Gap-04**.
   *Verify:* **TI-005** passes.
 - [ ] **CA-002** — Split `Prompt` into `Stable` and `Volatile` segments; move steering and all
   option-derived clauses out of the system prompt and into the user message. `applySteering`
@@ -652,7 +652,7 @@ tests.
 - [ ] **ST-001** — Add streaming to the `Provider` interface and implement it for the
   Responses API. Closes **Gap-01**.
 - [ ] **ST-002** — Expose streaming on text operations, with the non-streaming path
-  implemented in terms of it.
+  implemented in terms of it. Addresses **Gap-01**.
 - [ ] **ST-003** — Remove the hardcoded output ceilings (4000/2000/1000 by tier,
   `config.go:206-218`) in favor of a per-call option, and make truncation return
   `ErrTruncated` rather than surfacing as a parse error. Closes **I-09**.
@@ -690,7 +690,7 @@ results, `Escalate` needs a failure signal that is not "the model said something
 - [ ] **CF-007** — `flux.Fallback(a, b)`.
 - [ ] **CF-008** — Retire or reimplement `Decide`, `Guard`, `Match`, and `Pipeline` on the
   combinators. `Guard` currently issues an unannounced LLM call with a hardcoded 2-second
-  timeout and no options (`procedural.go:143-180`). Closes **P-03**, **P-10**.
+  timeout and no options (`procedural.go:143-180`). Closes **P-03**, **P-10**. Addresses **CF-09**.
 - [ ] **CF-009** — Bounded-concurrency primitive used by OP-106, OP-304, and CF-004. Today
   only `batch.go:136` and `pipeline.go:232` start goroutines. Closes **Gap-08**.
 
@@ -840,6 +840,52 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
 
 ### Added during the work
+
+- [x] **TR-001** — Trace every finding in the adversarial review to the task that addresses it.
+  The review is the input to this list, and that relationship is only worth anything if it is
+  checkable: a finding with no task is a defect nobody scheduled. `.audit/traceability.py`
+  parses both files and fails on an untraced finding. First run: **118 findings, 21 untraced,
+  5 of them S1.** Most were scheduled but uncited — the citations are added. Six were genuinely
+  unscheduled and are filed below.
+  *Verify:* `python .audit/traceability.py` exits non-zero on an untraced finding.
+- [x] **FL-001** — **I-03** is live: `GetModel` special-cased three providers and let everything
+  else fall through to the OpenAI tier defaults, so `WithProvider("deepseek")` — the README's own
+  example — sent `gpt-5.6-luna` to api.deepseek.com. Replaced with a per-provider model map
+  (`internal/config/provider_models.go`) covering openrouter, cerebras, anthropic, deepseek, groq,
+  mistral, and local. An unmapped provider now resolves to nothing and `CallLLM` errors naming the
+  variable to set, rather than sending somebody else's model ID.
+  *Verify:* `internal/config/provider_models_test.go` — no provider receives another provider's
+  model across all three tiers, unmapped providers resolve to nothing, overrides rescue them.
+- [x] **FL-002** — **F-02** is live: `directRequest` guards every setter with
+  `if r.setX == nil { return r.lift(r.opts) }`, so a builder that forgets one gets a method that
+  compiles, chains, and does nothing. `newAdversarialNegotiationRequest` wired five setters and not
+  `setMode` — and `AdversarialOptions` had no `Mode` field at all, so `.Strict()` could never have
+  worked. Field added, setter wired, and `internal/api/fluent/wiring_test.go` fails any builder
+  that leaves a declared setter unwired. Found while there: the same merge tested
+  `opts[0].Intelligence != 0`, which is **F-01** again — `Smart` is zero — and dropped `RequestID`
+  and `CorrelationID` entirely.
+  *Verify:* the wiring check was confirmed to FAIL with `setMode` removed.
+- [ ] **FL-003** — **F-03**: eleven fluent entrypoints start from a zero-value options struct
+  rather than the `NewXOptions()` constructor the direct API uses, so the two public APIs disagree
+  on defaults and which one a caller gets depends on the spelling they chose. Route every
+  entrypoint through the constructor.
+  *Verify:* a test that constructs each operation both ways and asserts the resolved options are
+  equal.
+- [ ] **FL-004** — **F-04**: `Steer` assigns rather than appends, so two `.Steer(...)` calls
+  silently drop the first, and the op then joins the caller's steering with its own generated
+  clauses using `". "`, producing a run-on in which the library can contradict the caller.
+  Accumulate steering, and keep the caller's text in its own block.
+  *Verify:* two `.Steer` calls both reach the prompt; the caller's text is separable from the
+  library's.
+- [ ] **FL-005** — **F-05**: `commonRequest`, `opRequest`, and `directRequest` implement the same
+  eleven methods three times, because the options structs behind them are inconsistent. Collapse to
+  one base once **M06** has made the options structs uniform. Depends on M06.
+- [ ] **FL-006** — **F-07**: builders validate nothing until `Run()`, so a mis-built request is
+  discovered after the call is set up. Add `Validate()` to the builder bases and call it from
+  `Run()` before any provider work.
+  *Verify:* a builder with empty criteria reports the error without a provider being contacted.
+- [ ] **FL-007** — **CF-09**: composition is linear and untyped. Fold into the **M08** combinator
+  work rather than patching the current shape. Depends on CF-008.
 
 - [ ] **P-014** — Split `Smart` and `Fast` across the gpt-5.6 family, or record that they should
   not be split. The P-013 benchmark did not discriminate: all three models were 4/4 correct on

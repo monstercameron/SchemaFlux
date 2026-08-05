@@ -434,7 +434,12 @@ type AdversarialOptions struct {
 	Strategy string
 
 	// Common options
-	Steering      string
+	Steering string
+
+	// Mode is the reasoning approach. It was absent, so the fluent builder's
+	// .Strict(), .TransformMode(), and .Creative() compiled, chained, and
+	// changed nothing -- there was nowhere for the value to go (F-02).
+	Mode          types.Mode
 	Intelligence  types.Speed
 	Context       gocontext.Context
 	RequestID     string
@@ -472,23 +477,28 @@ func NegotiateAdversarial[T any](context AdversarialContext[T], opts ...Adversar
 
 	var result AdversarialResult[T]
 
-	// Apply defaults
+	// Apply defaults. Mode and Intelligence are taken verbatim when the caller
+	// supplied options at all, because their zero values -- Strict and Smart --
+	// are real choices. Testing `!= 0` to decide whether to copy them, as this
+	// did, makes those two settings unrepresentable through the merge (F-01),
+	// and RequestID and CorrelationID were not copied at all.
 	opt := AdversarialOptions{
 		Strategy:     "balanced",
+		Mode:         types.TransformMode,
 		Intelligence: types.Fast,
 	}
 	if len(opts) > 0 {
-		if opts[0].Strategy != "" {
-			opt.Strategy = opts[0].Strategy
+		user := opts[0]
+		opt.Mode = user.Mode
+		opt.Intelligence = user.Intelligence
+		opt.Steering = user.Steering
+		opt.RequestID = user.RequestID
+		opt.CorrelationID = user.CorrelationID
+		if user.Strategy != "" {
+			opt.Strategy = user.Strategy
 		}
-		if opts[0].Steering != "" {
-			opt.Steering = opts[0].Steering
-		}
-		if opts[0].Intelligence != 0 {
-			opt.Intelligence = opts[0].Intelligence
-		}
-		if opts[0].Context != nil {
-			opt.Context = opts[0].Context
+		if user.Context != nil {
+			opt.Context = user.Context
 		}
 	}
 
@@ -556,7 +566,7 @@ Rules:
 
 	// Build OpOptions for LLM call
 	opOpts := types.OpOptions{
-		Mode:          types.TransformMode,
+		Mode:          opt.Mode,
 		Intelligence:  opt.Intelligence,
 		Context:       ctx,
 		RequestID:     opt.RequestID,

@@ -151,52 +151,22 @@ func GetModel(intelligence types.Speed, provider string) string {
 		return envLevelModel
 	}
 
-	// Check global provider
-	if provider == "openrouter" {
-		switch intelligence {
-		case types.Smart:
-			return "openai/gpt-4o"
-		case types.Fast:
-			return "openai/gpt-4o-mini"
-		case types.Quick:
-			return "openai/gpt-4o-mini"
-		default:
-			return "openai/gpt-4o-mini"
+	if models, known := providerModels[normaliseProviderName(provider)]; known {
+		if model := models[intelligence]; model != "" {
+			return model
 		}
+		return models[types.Fast]
 	}
 
-	if provider == "cerebras" {
-		switch intelligence {
-		case types.Smart:
-			return "llama-3.3-70b"
-		case types.Fast:
-			return "llama3.1-8b"
-		case types.Quick:
-			return "llama3.1-8b"
-		default:
-			return "llama3.1-8b"
-		}
+	// An unmapped provider gets nothing rather than an OpenAI model ID. Sending
+	// "gpt-5.6-luna" to api.deepseek.com produces a 400 that reads as the
+	// caller's fault; the README's own `WithProvider("deepseek")` example did
+	// exactly that. The empty string is fail-closed: CallLLM turns it into an
+	// error naming the variable to set.
+	if !isOpenAIProvider(provider) {
+		return ""
 	}
 
-	if provider == "anthropic" {
-		switch intelligence {
-		case types.Smart:
-			return "claude-3-5-sonnet-20240620"
-		case types.Fast:
-			return "claude-3-haiku-20240307"
-		case types.Quick:
-			return "claude-3-haiku-20240307"
-		default:
-			return "claude-3-haiku-20240307"
-		}
-	}
-
-	// The gpt-5.6 family is luna, sol, and terra (confirmed against
-	// GET /v1/models). Which one belongs on which tier is a question about
-	// measured capability, latency, and price, and that evidence does not
-	// exist yet -- see TODOS.md P-013. Guessing an ordering from the names
-	// would silently put the wrong model behind Smart or Quick, so every tier
-	// resolves to luna until the matrix is run.
 	switch intelligence {
 	case types.Smart:
 		return ModelDefaultSmart
