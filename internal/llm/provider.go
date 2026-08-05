@@ -73,6 +73,11 @@ type ProviderConfig struct {
 	RetryBackoff time.Duration
 	Debug        bool
 	ExtraHeaders map[string]string
+
+	// Store asks the provider to retain the response server-side. It defaults
+	// to false: the zero value is the private one, so a caller who never
+	// thinks about this gets retention off rather than on.
+	Store bool
 }
 
 // ProviderFactory creates a provider from configuration.
@@ -142,6 +147,12 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		"model":        req.Model,
 		"input":        input,
 		"instructions": req.SystemPrompt,
+		// The Responses API retains responses server-side unless told
+		// otherwise. That is a surprising default for a library whose whole
+		// job is running arbitrary user records -- invoices, tickets, medical
+		// notes -- through a model: the caller opted into an extraction, not
+		// into retention. Off by default; Store(true) is opt-in.
+		"store": provider.config.Store,
 	}
 
 	if req.Temperature > 0 && supportsTemperature(req.Model) {
@@ -174,10 +185,12 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		}
 	}
 	if supportsReasoningControls(req.Model) {
-		requestBody["reasoning"] = map[string]string{
-			"effort": reasoningEffort(req.Model),
+		// An empty effort means "this family's accepted values are unknown".
+		// Sending the block anyway would fail the whole request, so omit it.
+		if effort := reasoningEffort(req.Model); effort != "" {
+			requestBody["reasoning"] = map[string]string{"effort": effort}
+			textConfig["verbosity"] = "low"
 		}
-		textConfig["verbosity"] = "low"
 	}
 	if len(textConfig) > 0 {
 		requestBody["text"] = textConfig
@@ -328,8 +341,20 @@ func (provider *OpenAIProvider) EstimateCost(req CompletionRequest) float64 {
 	return promptCost + completionCost
 }
 
+// The capability predicates below are measured, not inferred from the model
+// name. The evidence is .audit/live/capabilities.py (one parameter at a time
+// against each 5.6 model) and .audit/live/bench3.py (whether sending the
+// reasoning block costs accuracy). Both are re-runnable.
+//
+// This matters more than a normal default would, because these parameters are
+// not negotiated: an unaccepted one fails the WHOLE request with a 400, so a
+// wrong guess is not a degraded call, it is no call at all.
+
 func supportsTemperature(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
+	// Measured: all three 5.6 models reject `temperature` outright, including
+	// a temperature of zero -- "Unsupported parameter: 'temperature' is not
+	// supported with this model."
 	if strings.HasPrefix(model, "gpt-5") {
 		return false
 	}
@@ -338,22 +363,52 @@ func supportsTemperature(model string) bool {
 
 func supportsReasoningControls(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
-	// The accepted reasoning-effort values for the gpt-5.6 family are not yet
-	// verified (TODOS.md P-013). Sending an unrecognised enum fails the whole
-	// request, while omitting the block is always valid, so omit until the
-	// live capability matrix confirms what this family accepts.
+
+	// The 5.6 family accepts a reasoning block, so this is not about what the
+	// API allows. It is about what the answer is worth afterwards.
+	//
+	// Measured on a proration with a distractor figure, four runs per arm:
+	//
+	//	                 omitted        effort=none      effort=low
+	//	luna             4/4  2304ms    0/4  3682ms      4/4  2339ms
+	//	sol              4/4  6808ms    0/4  2959ms      4/4  3375ms
+	//	terra            4/4  2174ms    4/4  1884ms      4/4  2232ms
+	//
+	// `effort: none` takes luna and sol from four correct to none correct --
+	// answers of 650 and 2600 against a correct 500. `effort: low` matches the
+	// omitted case on accuracy and beats it on latency nowhere that matters.
+	// So the block buys nothing and can cost everything: omit it, and let the
+	// server's own default stand.
 	if strings.HasPrefix(model, "gpt-5.6") {
 		return false
 	}
 	return strings.HasPrefix(model, "gpt-5")
 }
 
+// reasoningEffort returns an effort value the model accepts, or "" to omit the
+// block entirely.
+//
+// It used to return "minimal" for everything that was not gpt-5.4. The 5.6
+// family rejects "minimal" -- accepted values are none/low/medium/high/xhigh/
+// max -- so the pair of functions was one flag away from 400ing every request,
+// and supportsReasoningControls returning false was the only thing hiding it.
+// Returning "" for a family whose accepted values are not known keeps the
+// failure mode at "no reasoning control" rather than "no requests".
 func reasoningEffort(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(model, "gpt-5.4") {
+	switch {
+	case strings.HasPrefix(model, "gpt-5.6"):
+		// Accepted, but measured to be harmful at "none" and neutral at "low";
+		// see supportsReasoningControls. Named here so that flipping that
+		// predicate produces a valid request rather than a 400.
+		return "low"
+	case strings.HasPrefix(model, "gpt-5.4"):
 		return "none"
+	case strings.HasPrefix(model, "gpt-5"):
+		return "minimal"
+	default:
+		return ""
 	}
-	return "minimal"
 }
 
 func normalizeProviderName(name string) string {

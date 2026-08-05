@@ -446,6 +446,9 @@ func (client *Client) providerConfig(providerName string, override llm.ProviderC
 	if len(override.ExtraHeaders) > 0 {
 		cfg.ExtraHeaders = cloneStringMap(override.ExtraHeaders)
 	}
+	if override.Store {
+		cfg.Store = true
+	}
 
 	return cfg
 }

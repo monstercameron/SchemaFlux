@@ -250,10 +250,12 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   redact the body by default. Feeds **Gap-12** and **X-03**.
   *Verify:* `errors.As` recovers the status code; the default `Error()` string contains no
   request payload.
-- [ ] **P-008** — Set `store: false` by default. The Responses API retains responses
+- [x] **P-008** — Set `store: false` by default. The Responses API retains responses
   server-side unless told otherwise, which is a surprising default for a library that
   processes arbitrary user records. Expose `option.Store(true)` for callers who want it.
-  *Verify:* request body asserts `"store": false` unless explicitly overridden.
+  *Verify:* request body asserts `"store": false` unless explicitly overridden. **Done** —
+  `TestStoreIsFalseByDefault` / `TestStoreCanBeTurnedOn`; `store: false` accepted live by all
+  three 5.6 models.
 - [ ] **P-009** — Send `prompt_cache_key` derived from `(op, T, tier)` so repeat requests
   route to a server holding the prefix. Depends on **CA-002**.
   *Verify:* recorded request contains a stable key across two identical calls and a different
@@ -265,7 +267,7 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   TODO rather than picking arbitrarily.
   *Verify:* `GetModel` returns 5.6 IDs for the OpenAI provider; pricing table has an entry for
   each (**PR-002**).
-- [ ] **P-011** — Revisit `supportsTemperature()` and `supportsReasoningControls()`
+- [x] **P-011** — Revisit `supportsTemperature()` and `supportsReasoningControls()`
   (`provider.go:122`, `136-141`) for the 5.6 family. Both currently pattern-match on model
   name prefixes and will silently misclassify the new IDs.
   *Verify:* unit test per model ID asserts the expected capability flags; **P-013** confirms
@@ -273,12 +275,14 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
 - [ ] **P-012** `[LIVE]` — Live smoke: one `/v1/responses` call per 5.6 model, asserting
   HTTP 200, non-empty message text, and populated usage including reasoning tokens.
   Blocked on **B-01**.
-- [ ] **P-013** `[LIVE]` — Capability matrix across `luna` / `sol` / `terra`: strict
+- [x] **P-013** `[LIVE]` — Capability matrix across `luna` / `sol` / `terra`: strict
   `json_schema` support, temperature acceptance, reasoning-effort acceptance, cached-token
   reporting, and observed latency and cost per model. This is the evidence **P-010** and
   **P-011** need. Record the results in the task, not from memory. Blocked on **B-01**.
 - [ ] **P-014** — Record the responses from P-012 and P-013 as cassettes (**TI-003**) so the
-  golden tests above run in CI without credits, forever.
+  golden tests above run in CI without credits, forever. P-013's *findings* are now pinned as
+  unit tests (`internal/llm/capabilities_test.go`), so a regression in the predicates is caught
+  without credits; what remains is replaying real response *bodies*.
 
 ## Other providers
 
@@ -860,6 +864,9 @@ commit and the test that proves it.
 | **CB-02** | `f745d66` | **New.** Cerebras rejects `format`, `pattern`, `minItems`/`maxItems`, `minLength`/`maxLength`, `minimum`/`maximum` outright rather than ignoring them. `GenerateJSONSchema` annotates `time.Time` with `format: date-time`, so the first extraction with a timestamp field would have failed the *whole* request with a 400 that named a keyword the caller never wrote. The transport strips them into a copy — never in place, since the caller's schema is reused across providers and a Cerebras call must not quietly strip annotations from the next OpenAI one. These are annotations on top of a type, never the type itself. `TestLiveCerebrasHandlesATimestampField` confirms the stripped schema round-trips a timestamp. |
 | **CB-03** | `f745d66` | **New, and the one with teeth.** A 429 was reported as a plain formatted error, so the `Retry-After` that came with it was discarded and the retry loop fell back to a backoff that doubles from 500ms and **stops at five seconds**. Against a provider that limits *per minute* — Cerebras' free tier is 5 req/min and answers `Retry-After: 53` — every attempt by construction landed inside the same closed window, so the retry budget bought nothing but latency before failing anyway. `llm.RateLimitError` carries the server's wait (both RFC forms, bounded at two minutes, caller's deadline still wins) and `nextRetryDelay` prefers it. Also fixed a latent bug the typed check exposed: `isRetryableLLMError` matches the *whole message including the vendor's body*, so a 429 whose body mentions `invalid_request_error` was classified permanent. Rate limits are now retryable by type. Applies to the OpenAI Responses path too. |
 | **CB-04** | `f745d66` | **New.** `providerModels["cerebras"]` mapped to `llama-3.3-70b`/`llama3.1-8b` — written from a docs page, never called. Now `gemma-4-31b` at all three tiers, and the choice is stated rather than assumed: there is no cheaper Cerebras sibling whose accuracy loss buys anything, so mapping `Quick` to a smaller model would be inventing a trade-off no benchmark has shown. Priced at $0.99/$1.49 per 1M, because an unpriced model reports **zero cost** and a secondary provider whose whole appeal is a cheaper number has to produce a real one. `.env`'s bare `CEREBRAS` spelling is accepted for the same reason bare `OPENAI` is. **Verified live:** all three tiers callable, cost accounting moves. |
+| **P-013/P-011/P-008** | `PENDING` | **The capability matrix, measured.** `supportsTemperature` and `supportsReasoningControls` pattern-matched on model-name prefixes — guesses about a family that did not exist when the rule was written — and these parameters are not negotiated: an unaccepted one fails the *whole* request with a 400, so a wrong guess is not a degraded call, it is no call at all. `.audit/live/capabilities.py` probes each parameter against each model one at a time. Findings: **temperature is rejected by all three**, including zero (the existing rule was right, now for a reason); **`json_object` is rejected unless the input contains the word "json"** (the library's padding is correct, now verified); **`json_schema` strict works on all three**; **`prompt_cache_key` and `store: false` are accepted**; and **prompt caching reports 2419/2422 cached input tokens on an identical second call**. The landmine: `reasoning.effort: "minimal"` — what `reasoningEffort()` returned for everything that was not gpt-5.4 — is **rejected by the entire 5.6 family** (accepted: none/low/medium/high/xhigh/max). `supportsReasoningControls` returning false was the only thing standing between that function and a 400 on every request. `reasoningEffort` now returns a value each family accepts, or `""` to omit, and the caller honours `""`. |
+| **P-011 (evidence)** | `PENDING` | **Whether to send the reasoning block at all, measured rather than assumed.** `.audit/live/bench3.py`, four runs per arm on a proration with a distractor: `omitted` 4/4 on all three models; **`effort: none` 0/4 on luna and 0/4 on sol** — answers of 650, 600, 2600 against a correct 500 — while terra survives at 4/4; `effort: low` 4/4 everywhere but faster than omitting nowhere that matters. So the block buys nothing and can cost everything, and omitting it for the 5.6 family is the right default *because it was measured*, not because the accepted values were unknown. The comment in `provider.go` now carries the table. |
+| **P-008** | `PENDING` | **`store: false` by default.** The Responses API retains responses server-side unless told otherwise. For a library whose job is running arbitrary user records — invoices, tickets, notes — through a model, that is a surprising thing to leave on: the caller opted into an extraction, not into retention. The zero value of `ProviderConfig.Store` is the private one, so a caller who never thinks about it gets retention off. `Store(true)` is opt-in and plumbed through `WithProviderConfig`. Accepted live by all three models. |
 | **B-01/B-04** | `9474687` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
 | **P-012** | `9474687` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
