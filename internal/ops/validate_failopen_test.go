@@ -92,3 +92,123 @@ func stubLLM(response string) func() {
 	})
 	return func() { customLLMCaller = previous }
 }
+
+// Validity must be derived from the issues, not taken from the model's own
+// claim. A response asserting "valid": true alongside a populated errors array
+// used to be reported as valid whenever FailOn was unset.
+func TestValidateDerivesValidityFromIssues(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"claims_valid_but_has_errors", `{"valid":true,"errors":[{"field":"age","severity":"error","message":"too low"}]}`, false},
+		{"claims_invalid_but_no_issues", `{"valid":false}`, true},
+		{"clean", `{"valid":true}`, true},
+		{"errors_only", `{"valid":false,"errors":[{"field":"a","severity":"error","message":"x"}]}`, false},
+		{"warnings_do_not_fail_by_default", `{"valid":true,"warnings":[{"field":"a","severity":"warning","message":"x"}]}`, true},
+		{"info_does_not_fail_by_default", `{"valid":true,"info":[{"severity":"info","message":"x"}]}`, true},
+		{"multiple_errors", `{"valid":true,"errors":[{"message":"a"},{"message":"b"},{"message":"c"}]}`, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubLLM(tc.body)
+			defer restore()
+
+			result, err := Validate(record{}, NewValidateOptions().WithRules("any"))
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if result.Valid != tc.want {
+				t.Errorf("Valid = %v, want %v (issues: %d errors, %d warnings, %d info)",
+					result.Valid, tc.want, len(result.Errors), len(result.Warnings), len(result.Info))
+			}
+		})
+	}
+}
+
+// A stricter FailOn escalates warnings and info into failures.
+func TestValidateFailOnSeverities(t *testing.T) {
+	const body = `{"valid":true,"warnings":[{"message":"w"}],"info":[{"message":"i"}]}`
+
+	for _, tc := range []struct {
+		failOn string
+		want   bool
+	}{
+		{"error", true},
+		{"warning", false},
+		{"info", false},
+	} {
+		t.Run(tc.failOn, func(t *testing.T) {
+			restore := stubLLM(body)
+			defer restore()
+
+			opts := NewValidateOptions().WithRules("any")
+			opts.FailOn = tc.failOn
+
+			result, err := Validate(record{}, opts)
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if result.Valid != tc.want {
+				t.Errorf("FailOn=%s: Valid = %v, want %v", tc.failOn, result.Valid, tc.want)
+			}
+		})
+	}
+}
+
+// An unrecognised FailOn is a configuration error, not a silent pass-through.
+func TestValidateRejectsUnknownFailOn(t *testing.T) {
+	restore := stubLLM(`{"valid":true}`)
+	defer restore()
+
+	opts := NewValidateOptions().WithRules("any")
+	opts.FailOn = "catastrophic"
+
+	if _, err := Validate(record{}, opts); err == nil {
+		t.Fatal("an unknown FailOn severity must be reported")
+	}
+}
+
+// A correction that does not fit the target type must be reported. Swallowing
+// it left Corrected nil, which reads as "the model offered no correction".
+func TestValidateReportsUnusableCorrection(t *testing.T) {
+	restore := stubLLM(`{"valid":false,"errors":[{"message":"bad"}],"corrected":{"age":"not-a-number"}}`)
+	defer restore()
+
+	if _, err := Validate(record{}, NewValidateOptions().WithRules("any")); err == nil {
+		t.Fatal("a correction that does not match the target type must be reported")
+	}
+}
+
+// A usable correction is returned.
+func TestValidateReturnsUsableCorrection(t *testing.T) {
+	restore := stubLLM(`{"valid":false,"errors":[{"message":"bad"}],"corrected":{"email":"fixed@example.com","age":21}}`)
+	defer restore()
+
+	result, err := Validate(record{}, NewValidateOptions().WithRules("any"))
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if result.Corrected == nil {
+		t.Fatal("expected a correction")
+	}
+	if result.Corrected.Age != 21 {
+		t.Errorf("Corrected.Age = %d, want 21", result.Corrected.Age)
+	}
+}
+
+// An explicit null correction is simply absent, not an error.
+func TestValidateNullCorrectionIsNotAnError(t *testing.T) {
+	restore := stubLLM(`{"valid":true,"corrected":null}`)
+	defer restore()
+
+	result, err := Validate(record{}, NewValidateOptions().WithRules("any"))
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if result.Corrected != nil {
+		t.Error("a null correction must leave Corrected nil")
+	}
+}

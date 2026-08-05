@@ -329,22 +329,37 @@ Against these rules:
 	result.Confidence = llmResult.Confidence
 	result.Summary = llmResult.Summary
 
-	// Parse corrected data if present
+	// Parse corrected data if present. A correction that does not fit T is
+	// reported: swallowing the error left Corrected nil, which is
+	// indistinguishable from "the model offered no correction", so a caller
+	// waiting on AutoCorrect saw nothing and had no idea why.
 	if len(llmResult.Corrected) > 0 && string(llmResult.Corrected) != "null" {
 		var corrected T
-		if err := json.Unmarshal(llmResult.Corrected, &corrected); err == nil {
-			result.Corrected = &corrected
+		if err := json.Unmarshal(llmResult.Corrected, &corrected); err != nil {
+			log.Error("Validate: the correction did not match the target type", "error", err)
+			return result, fmt.Errorf("validate: the model's correction did not match the target type: %w", err)
 		}
+		result.Corrected = &corrected
 	}
 
-	// Determine validity based on failOn threshold
-	switch opts.FailOn {
+	// Validity is derived from the issues, always. It previously came from the
+	// model's own `valid` field unless FailOn was set, which gave one documented
+	// field two different meanings depending on an option -- and let a response
+	// claiming `"valid": true` alongside a populated errors array be reported as
+	// valid.
+	failOn := opts.FailOn
+	if failOn == "" {
+		failOn = "error"
+	}
+	switch failOn {
 	case "error":
 		result.Valid = len(result.Errors) == 0
 	case "warning":
 		result.Valid = len(result.Errors) == 0 && len(result.Warnings) == 0
 	case "info":
 		result.Valid = len(result.Errors) == 0 && len(result.Warnings) == 0 && len(result.Info) == 0
+	default:
+		return result, fmt.Errorf("validate: unknown FailOn severity %q, want error, warning, or info", opts.FailOn)
 	}
 
 	log.Debug("Validate operation succeeded", "valid", result.Valid, "errorCount", len(result.Errors), "warningCount", len(result.Warnings))

@@ -141,3 +141,63 @@ func Example_validateFailsClosed() {
 	// error is nil: false
 	// valid: false
 }
+
+// Validity derivation must hold at the public boundary too: a response claiming
+// valid alongside errors is not a pass.
+func TestIntegrationValidateDerivesValidityFromIssues(t *testing.T) {
+	withScriptedProvider(t, `{"valid":true,"errors":[{"field":"age","severity":"error","message":"below 18"}]}`, nil)
+
+	result, err := schemaflux.Validate(customer{Age: 3}, schemaflux.NewValidateOptions().WithRules("age >= 18"))
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if result.Valid {
+		t.Fatal("a response with errors must not validate, whatever it claims")
+	}
+}
+
+// AutoCorrect surfaces a correction, and reports one that does not fit.
+func TestIntegrationValidateCorrections(t *testing.T) {
+	t.Run("usable", func(t *testing.T) {
+		withScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad age"}],"corrected":{"email":"a@b.com","country":"US","age":21}}`, nil)
+		result, err := schemaflux.Validate(customer{Age: 3}, schemaflux.NewValidateOptions().WithRules("age >= 18"))
+		if err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		if result.Corrected == nil || result.Corrected.Age != 21 {
+			t.Fatalf("expected a usable correction, got %+v", result.Corrected)
+		}
+	})
+
+	t.Run("unusable_is_reported", func(t *testing.T) {
+		withScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad"}],"corrected":{"age":"twenty-one"}}`, nil)
+		if _, err := schemaflux.Validate(customer{}, schemaflux.NewValidateOptions().WithRules("any")); err == nil {
+			t.Fatal("a correction that does not fit the type must be reported")
+		}
+	})
+}
+
+// Example_validateAutoCorrect shows the correction path, which is the reason to
+// reach for AutoCorrect at all.
+func Example_validateAutoCorrect() {
+	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
+		body: `{"valid":false,"errors":[{"field":"country","severity":"error","message":"must be ISO alpha-2"}],"corrected":{"email":"ada@example.com","country":"GB","age":36}}`,
+	})
+
+	result, err := schemaflux.Validate(
+		customer{Email: "ada@example.com", Country: "Great Britain", Age: 36},
+		schemaflux.NewValidateOptions().WithRules("country must be ISO alpha-2").WithAutoCorrect(true))
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	fmt.Println("valid:", result.Valid)
+	if result.Corrected != nil {
+		fmt.Println("corrected country:", result.Corrected.Country)
+	}
+
+	// Output:
+	// valid: false
+	// corrected country: GB
+}

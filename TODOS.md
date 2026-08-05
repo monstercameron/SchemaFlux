@@ -76,10 +76,10 @@ regardless of what happens to the rest of the plan.
   `TranslateWithMetadata`, and `ExpandWithMetadata` — four sites, four `0.7` literals, all
   using `json.Unmarshal` directly rather than the shared fence-stripping `ParseJSON`, so a
   fenced body always took the fallback path.
-- [ ] **F-003** — `Validate.AutoCorrect` silently drops a correction that fails to unmarshal
+- [x] **F-003** — `Validate.AutoCorrect` silently drops a correction that fails to unmarshal
   (`extended.go:336-341`, `if err == nil` with no else). Return or log the error. Closes **A-06**.
   *Verify:* test with a `corrected` payload that does not match `T` asserts a non-nil error.
-- [ ] **F-004** — `Validate.Valid` has two sources of truth: the model's assertion, or a
+- [x] **F-004** — `Validate.Valid` has two sources of truth: the model's assertion, or a
   recount from issue lists when `FailOn` is set (`extended.go:328`, `343-351`). Always derive
   it from the issues. Closes **A-07**.
   *Verify:* test where the model claims `valid: true` alongside a non-empty `errors` array
@@ -797,13 +797,16 @@ commit and the test that proves it.
 | **P-011** | `bfebb11` | Reasoning controls omitted for `gpt-5.6*`; `TestGPT56OmitsUnverifiedReasoningControls`. **Partial** — confirm against the live API in P-013. |
 | **PR-001** | `0c867e3` | `CostInfo.Priced` / `PricingSource`; `getDefaultPricing` deleted. `pricing/unpriced_test.go` covers unknown models, the Anthropic substitution, exact matches, and snapshot resolution. |
 | **PR-007** | `0c867e3` | See below — found while testing PR-001. |
-| **F-001** | *pending* | `Validate` returns an error on parse failure; `internal/ops/validate_failopen_test.go` covers four negative phrasings plus the well-formed success and failure paths. |
+| **F-001** | `ea1730d` | `Validate` returns an error on parse failure; `internal/ops/validate_failopen_test.go` covers four negative phrasings plus the well-formed success and failure paths. |
 
 | **F-012** | `2c917e6` | `Init` returns an error when no credential resolves and the provider is not `local`; `client_env_test.go`. |
 | **F-013** | `2c917e6` | Subsumed by B-03 — `InitWithEnv` can now fail. |
 | **F-014** | `2c917e6` | `os.Setenv` removed from `InitWithEnv`. |
 | **B-02** | `2c917e6` | `OPENAI` added to the OpenAI key chain after the two canonical names, rather than editing the operator's credential file. |
 | **B-03** | `2c917e6` | `godotenv` promoted to a direct dependency; named paths load, `./.env` is the default, a missing named path errors, and the process environment wins over the file. |
+| **F-002** | `0915455` | All four `*WithMetadata` fallbacks replaced with `ParseJSON` plus an error return; `internal/ops/text_failopen_test.go` covers 40 cases across the four operations. |
+| **F-003** | `0300ff2` | An unusable `corrected` payload is now reported instead of dropped; `TestValidateReportsUnusableCorrection`, `TestValidateReturnsUsableCorrection`, `TestValidateNullCorrectionIsNotAnError`, and `TestIntegrationValidateCorrections` at the public boundary. |
+| **F-004** | `0300ff2` | `Valid` is always derived from the issue lists, `FailOn` defaults to `error`, and an unknown severity is an error; `TestValidateDerivesValidityFromIssues` (7 cases), `TestValidateFailOnSeverities` (3), `TestValidateRejectsUnknownFailOn`, `TestIntegrationValidateDerivesValidityFromIssues`, and `Example_validateAutoCorrect`. |
 
 ### Added during the work
 
