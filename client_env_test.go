@@ -94,3 +94,97 @@ func TestProcessEnvironmentWinsOverEnvFile(t *testing.T) {
 		t.Errorf("the .env file overrode an explicit export: got %q", got)
 	}
 }
+
+// The credential resolution chain must be honoured in order, and any one of the
+// accepted spellings must work on its own.
+func TestCredentialResolutionOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		set  map[string]string
+	}{
+		{"schemaflux_generic", map[string]string{"SCHEMAFLUX_API_KEY": "k"}},
+		{"schemaflux_openai", map[string]string{"SCHEMAFLUX_OPENAI_API_KEY": "k"}},
+		{"openai_api_key", map[string]string{"OPENAI_API_KEY": "k"}},
+		{"bare_openai", map[string]string{"OPENAI": "k"}},
+		{"provider_specific_wins", map[string]string{
+			"SCHEMAFLUX_OPENAI_API_KEY": "specific",
+			"OPENAI":                    "generic",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearCredentialEnv(t)
+			for name, value := range tc.set {
+				t.Setenv(name, value)
+			}
+			if err := Init(""); err != nil {
+				t.Fatalf("a resolvable credential must initialise: %v", err)
+			}
+			if GetDefaultClient() == nil {
+				t.Fatal("expected a client")
+			}
+		})
+	}
+}
+
+// An explicit key argument beats the environment entirely.
+func TestExplicitKeyArgumentWins(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("SCHEMAFLUX_API_KEY", "from-env")
+
+	if err := Init("from-argument"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if GetDefaultClient() == nil {
+		t.Fatal("expected a client")
+	}
+}
+
+// Initialising twice must not leave a stale client behind.
+func TestReinitialisationReplacesTheClient(t *testing.T) {
+	clearCredentialEnv(t)
+	t.Setenv("SCHEMAFLUX_API_KEY", "first")
+	if err := Init(""); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	first := GetDefaultClient()
+
+	if err := Init("second"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if GetDefaultClient() == first {
+		t.Error("a second Init must replace the client")
+	}
+}
+
+// Loading several .env files applies them in order without error.
+func TestInitWithEnvAcceptsSeveralFiles(t *testing.T) {
+	clearCredentialEnv(t)
+
+	if err := InitWithEnv("testdata/sample.env", "testdata/sample.env"); err != nil {
+		t.Fatalf("loading the same file twice must be harmless: %v", err)
+	}
+}
+
+// A directory is not a .env file and must be reported rather than ignored.
+func TestInitWithEnvRejectsADirectory(t *testing.T) {
+	clearCredentialEnv(t)
+
+	if err := InitWithEnv("testdata"); err == nil {
+		t.Fatal("a directory must not be accepted as a .env file")
+	}
+}
+
+// The timeout in the fixture must actually be applied, proving the file is read
+// for more than the credential alone.
+func TestInitWithEnvAppliesNonCredentialValues(t *testing.T) {
+	clearCredentialEnv(t)
+
+	if err := InitWithEnv("testdata/sample.env"); err != nil {
+		t.Fatalf("InitWithEnv: %v", err)
+	}
+	if got := os.Getenv("SCHEMAFLUX_TIMEOUT"); got != "12s" {
+		t.Errorf("SCHEMAFLUX_TIMEOUT = %q, want the fixture value 12s", got)
+	}
+}

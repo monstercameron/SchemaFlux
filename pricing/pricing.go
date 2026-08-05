@@ -457,11 +457,16 @@ func MatchesFilters(record CostRecord, filters map[string]string) bool {
 // Helper functions
 
 func lookupPricingModel(model string) (PricingModel, bool) {
+	// Normalise before the exact lookup, not after. Every key in the table is
+	// lower case, so a caller passing "GPT-4" or a value with stray whitespace
+	// used to miss the exact match, fall through the prefix ladder, and be
+	// reported unpriced -- an accidental gap in the one signal that is supposed
+	// to mean "we genuinely do not know this model's rate".
+	model = strings.TrimSpace(strings.ToLower(model))
+
 	if pricing, exists := pricingModels[model]; exists {
 		return pricing, true
 	}
-
-	model = strings.TrimSpace(strings.ToLower(model))
 
 	// Prefix matching exists to price dated snapshots (gpt-5-2025-08-07) at
 	// their base model's rates. It must not reach across model versions:

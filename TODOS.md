@@ -875,6 +875,12 @@ commit and the test that proves it.
   *Verify:* `internal/ops/retry_policy_test.go` — disabled, four configured budgets,
   negative-as-default, cancellation, deterministic failures, and four non-retryable messages.
 
+- [x] **PR-008** — `lookupPricingModel` normalised case and whitespace *after* the exact map
+  lookup, so `"GPT-4"` or a value with stray spaces missed the table, fell through the prefix
+  ladder, and was reported unpriced. An accidental gap in the one signal that is meant to mean
+  "we genuinely do not know this rate". Normalisation now happens first.
+  *Verify:* `TestModelLookupToleratesCaseAndWhitespace`.
+
 ### Standard of done
 
 Raised mid-session, and applied from **F-002** onward. Every closed task carries:
@@ -889,7 +895,7 @@ Raised mid-session, and applied from **F-002** onward. Every closed task carries
 Tasks closed before this bar was set (F-001, F-012–F-014, P-00x, PR-001) have unit coverage
 and, where the boundary mattered, integration coverage; they do not all have examples.
 
-- [ ] **TEST-001** — Backfill the raised bar onto the tasks closed before it: examples for
+- [x] **TEST-001** — Backfill the raised bar onto the tasks closed before it: examples for
   the LLM-backed operations touched by F-001 (`Validate`) and integration coverage for the
   provider fixes P-001 through P-004, which are currently unit-level only.
 

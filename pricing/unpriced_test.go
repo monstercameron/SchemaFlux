@@ -111,3 +111,96 @@ func TestVersionBumpIsNotTreatedAsSnapshot(t *testing.T) {
 		t.Error("a model is a snapshot of itself")
 	}
 }
+
+// A priced model's arithmetic must be checkable by hand, not merely non-zero.
+func TestPricedCostArithmeticIsCorrect(t *testing.T) {
+	model, ok := pricingModels["gpt-4"]
+	if !ok {
+		t.Skip("gpt-4 not in the table")
+	}
+
+	use := &types.TokenUsage{PromptTokens: 1000, CompletionTokens: 2000, TotalTokens: 3000}
+	cost := CalculateCost(use, "gpt-4", "openai")
+
+	wantPrompt := 1000 * model.PricePerPromptToken / 1000.0
+	wantCompletion := 2000 * model.PricePerCompletionToken / 1000.0
+
+	if cost.PromptCost != wantPrompt {
+		t.Errorf("PromptCost = %v, want %v", cost.PromptCost, wantPrompt)
+	}
+	if cost.CompletionCost != wantCompletion {
+		t.Errorf("CompletionCost = %v, want %v", cost.CompletionCost, wantCompletion)
+	}
+	if cost.TotalCost != wantPrompt+wantCompletion {
+		t.Errorf("TotalCost = %v, want the sum %v", cost.TotalCost, wantPrompt+wantCompletion)
+	}
+}
+
+// Zero usage is free, and must still be reported as priced so the caller can
+// tell "nothing was used" from "we do not know the rate".
+func TestZeroUsageOnPricedModelIsFreeButPriced(t *testing.T) {
+	cost := CalculateCost(&types.TokenUsage{}, "gpt-4", "openai")
+	if !cost.Priced {
+		t.Error("a known model must report Priced even at zero usage")
+	}
+	if cost.TotalCost != 0 {
+		t.Errorf("TotalCost = %v, want 0", cost.TotalCost)
+	}
+}
+
+// Nil usage must not panic.
+func TestNilUsageIsHandled(t *testing.T) {
+	if cost := CalculateCost(nil, "gpt-4", "openai"); cost != nil {
+		t.Errorf("nil usage should produce a nil cost, got %+v", cost)
+	}
+}
+
+// Every provider the library ships must resolve predictably: either priced with
+// a named source, or explicitly unpriced. Never a confident zero.
+func TestEveryProviderResolvesPredictably(t *testing.T) {
+	for _, provider := range []string{
+		"openai", "anthropic", "openrouter", "cerebras",
+		"deepseek", "qwen", "zai", "local",
+	} {
+		cost := CalculateCost(usage(), "some-unknown-model-for-"+provider, provider)
+		if cost.Priced {
+			t.Errorf("%s: an unknown model must not be priced", provider)
+		}
+		if cost.TotalCost != 0 {
+			t.Errorf("%s: unpriced model reported cost %v", provider, cost.TotalCost)
+		}
+		if cost.PricingSource != "" {
+			t.Errorf("%s: unpriced model named a source %q", provider, cost.PricingSource)
+		}
+	}
+}
+
+// Cached and reasoning tokens must be priced when the model publishes a rate,
+// and must never silently inflate a total when it does not.
+func TestCachedAndReasoningTokensArePricedOnlyWhenRatesExist(t *testing.T) {
+	use := &types.TokenUsage{
+		PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000,
+		CachedTokens: 500, ReasoningTokens: 250,
+	}
+	cost := CalculateCost(use, "gpt-4", "openai")
+
+	model := pricingModels["gpt-4"]
+	if model.PriceCachedToken > 0 && cost.CachedCost == 0 {
+		t.Error("a published cached rate must produce a cached cost")
+	}
+	if model.PriceCachedToken == 0 && cost.CachedCost != 0 {
+		t.Error("no published cached rate must produce no cached cost")
+	}
+	if model.PriceReasoningToken == 0 && cost.ReasoningCost != 0 {
+		t.Error("no published reasoning rate must produce no reasoning cost")
+	}
+}
+
+// Case and whitespace must not change whether a model is recognised.
+func TestModelLookupToleratesCaseAndWhitespace(t *testing.T) {
+	for _, spelling := range []string{"gpt-4", "GPT-4", "  gpt-4  ", "Gpt-4"} {
+		if cost := CalculateCost(usage(), spelling, "openai"); !cost.Priced {
+			t.Errorf("%q was not recognised as gpt-4", spelling)
+		}
+	}
+}
