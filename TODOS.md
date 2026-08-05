@@ -845,7 +845,7 @@ commit and the test that proves it.
   *Verify:* the same table runs in well under 100ms with retries disabled, and unchanged with
   them enabled.
 
-- [ ] **F-032** — **14 options structs embed both `CommonOptions` and `types.OpOptions`, and
+- [x] **F-032** — **14 options structs embed both `CommonOptions` and `types.OpOptions`, and
   `toOpOptions()` returns only the `CommonOptions` half.** Everything set on the embedded
   `OpOptions` — `RequestID`, `CorrelationID`, `Context`, `Threshold` — is silently discarded.
   Affects `Extract`, `Transform`, `Generate`, `Summarize`, `Rewrite`, `Translate`, `Expand`,

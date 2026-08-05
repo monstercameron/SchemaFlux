@@ -1,6 +1,7 @@
 package schemaflux_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -179,4 +180,39 @@ func Example_extractFromReasoningModel() {
 
 	// Output:
 	// Ada Lovelace, 36
+}
+
+// The end-to-end proof of F-032: a RequestID set on the embedded OpOptions --
+// not the CommonOptions side -- must reach the provider and produce a cost
+// record. Before the fix the field was dropped in toOpOptions() and no record
+// was written, which is how the bug was found.
+func TestIntegrationEmbeddedOpOptionsReachTheProvider(t *testing.T) {
+	responsesAPI(t, message(`{"name":"Ada","age":36}`))
+
+	const requestID = "embedded-side-request-id"
+	opts := schemaflux.NewExtractOptions()
+	opts.OpOptions.RequestID = requestID
+
+	if _, err := schemaflux.Extract[person]("Ada is 36.", opts); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if _, ok := pricing.GetRequestCost(requestID); !ok {
+		t.Fatal("no cost record for the embedded-side request ID; the option was discarded")
+	}
+}
+
+// A context set on the embedded side must be able to cancel the call. A dropped
+// context is a cancellation that never arrives.
+func TestIntegrationEmbeddedContextCancels(t *testing.T) {
+	responsesAPI(t, message(`{"name":"Ada","age":36}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	opts := schemaflux.NewExtractOptions()
+	opts.OpOptions.Context = ctx
+
+	if _, err := schemaflux.Extract[person]("Ada is 36.", opts); err == nil {
+		t.Fatal("a cancelled context on the embedded side must abort the call")
+	}
 }

@@ -253,8 +253,62 @@ func (e ExtractOptions) WithIntelligence(intelligence types.Speed) ExtractOption
 	return e
 }
 
+// mergeEmbeddedOpOptions reconciles the two option structs that fourteen
+// operation option types embed at once.
+//
+// Those types embed both CommonOptions and types.OpOptions, and the conversion
+// used to return only the CommonOptions half -- so a RequestID, CorrelationID,
+// or Context set on the OpOptions side was silently discarded, and the caller
+// had no way to tell. Values set on either side now reach the provider, with
+// CommonOptions winning on conflict because it is the documented surface and
+// the one the fluent builders write to.
+//
+// Mode and Intelligence are deliberately taken from CommonOptions
+// unconditionally rather than merged: Strict is Mode(0) and Smart is Speed(0),
+// so "unset" and "explicitly Strict/Smart" are indistinguishable and no merge
+// rule can be correct until TODOS.md A-005 renumbers them. Taking CommonOptions
+// preserves today's behaviour rather than guessing.
+func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) types.OpOptions {
+	merged := embedded
+
+	if common.Steering != "" {
+		merged.Steering = common.Steering
+	}
+	if common.Threshold != 0 {
+		merged.Threshold = common.Threshold
+	}
+	merged.Mode = common.Mode
+	merged.Intelligence = common.Intelligence
+
+	requestID := common.RequestID
+	if requestID == "" {
+		requestID = embedded.RequestID
+	}
+	correlationID := common.CorrelationID
+	if correlationID == "" {
+		correlationID = embedded.CorrelationID
+	}
+
+	// Read the raw field, not GetContext(): that accessor substitutes
+	// context.Background() when unset, so it is never nil and the embedded
+	// context could never win.
+	baseContext := common.Context
+	if baseContext == nil {
+		baseContext = embedded.Context
+	}
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+
+	ctx, tracking := requesttracking.Ensure(baseContext, requestID, correlationID)
+	merged.Context = ctx
+	merged.RequestID = tracking.RequestID
+	merged.CorrelationID = tracking.CorrelationID
+	return merged
+}
+
 func (e ExtractOptions) toOpOptions() types.OpOptions {
-	return e.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(e.CommonOptions, e.OpOptions)
 }
 
 // TransformOptions configures the Transform operation
@@ -324,7 +378,7 @@ func (t TransformOptions) WithIntelligence(intelligence types.Speed) TransformOp
 }
 
 func (t TransformOptions) toOpOptions() types.OpOptions {
-	return t.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(t.CommonOptions, t.OpOptions)
 }
 
 // NewTransformOptions creates TransformOptions with defaults
@@ -460,7 +514,7 @@ func (g GenerateOptions) WithIntelligence(intelligence types.Speed) GenerateOpti
 }
 
 func (g GenerateOptions) toOpOptions() types.OpOptions {
-	return g.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(g.CommonOptions, g.OpOptions)
 }
 
 // ========================================
@@ -535,7 +589,7 @@ func (s SummarizeOptions) WithMode(mode types.Mode) SummarizeOptions {
 }
 
 func (s SummarizeOptions) toOpOptions() types.OpOptions {
-	return s.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
 }
 
 // RewriteOptions configures the Rewrite operation
@@ -598,7 +652,7 @@ func (r RewriteOptions) WithMode(mode types.Mode) RewriteOptions {
 }
 
 func (r RewriteOptions) toOpOptions() types.OpOptions {
-	return r.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(r.CommonOptions, r.OpOptions)
 }
 
 // TranslateOptions configures the Translate operation
@@ -668,7 +722,7 @@ func (t TranslateOptions) WithMode(mode types.Mode) TranslateOptions {
 }
 
 func (t TranslateOptions) toOpOptions() types.OpOptions {
-	return t.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(t.CommonOptions, t.OpOptions)
 }
 
 // ExpandOptions configures the Expand operation
@@ -729,7 +783,7 @@ func (e ExpandOptions) WithMode(mode types.Mode) ExpandOptions {
 }
 
 func (e ExpandOptions) toOpOptions() types.OpOptions {
-	return e.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(e.CommonOptions, e.OpOptions)
 }
 
 // ========================================
@@ -820,7 +874,7 @@ func (c ClassifyOptions) WithMode(mode types.Mode) ClassifyOptions {
 }
 
 func (c ClassifyOptions) toOpOptions() types.OpOptions {
-	return c.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
 }
 
 // ScoreOptions configures the Score operation
@@ -910,7 +964,7 @@ func (s ScoreOptions) WithMode(mode types.Mode) ScoreOptions {
 }
 
 func (s ScoreOptions) toOpOptions() types.OpOptions {
-	return s.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
 }
 
 // CompareOptions configures the Compare operation
@@ -992,7 +1046,7 @@ func (c CompareOptions) WithMode(mode types.Mode) CompareOptions {
 }
 
 func (c CompareOptions) toOpOptions() types.OpOptions {
-	return c.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
 }
 
 // ========================================
@@ -1103,7 +1157,7 @@ func (c ChooseOptions) WithRequestID(requestID string) ChooseOptions {
 }
 
 func (c ChooseOptions) toOpOptions() types.OpOptions {
-	return c.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
 }
 
 // FilterOptions configures the Filter operation
@@ -1209,7 +1263,7 @@ func (f FilterOptions) WithRequestID(requestID string) FilterOptions {
 }
 
 func (f FilterOptions) toOpOptions() types.OpOptions {
-	return f.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(f.CommonOptions, f.OpOptions)
 }
 
 // SortOptions configures the Sort operation
@@ -1318,7 +1372,7 @@ func (s SortOptions) WithRequestID(requestID string) SortOptions {
 }
 
 func (s SortOptions) toOpOptions() types.OpOptions {
-	return s.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
 }
 
 // ========================================
@@ -1393,7 +1447,7 @@ func (b BatchOptions) Validate() error {
 }
 
 func (b BatchOptions) toOpOptions() types.OpOptions {
-	return b.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(b.CommonOptions, b.OpOptions)
 }
 
 // ========================================
