@@ -215,17 +215,17 @@ func CalculateCost(usage *types.TokenUsage, model string, provider string) *type
 		return nil
 	}
 
-	// Look up pricing model
+	// Look up pricing for this exact model. There is deliberately no fallback to
+	// another model's rates: the previous behaviour priced every unrecognised
+	// Anthropic model at claude-3-haiku, understating an Opus call by roughly
+	// 60x while presenting the result as a precise USD figure.
 	pricing, exists := lookupPricingModel(model)
 	if !exists {
-		// Try to find a default pricing for the provider
-		pricing = getDefaultPricing(provider)
-		if pricing.Model == "" {
-			logger.GetLogger().Warn("No pricing information available", "model", model, "provider", provider)
-			return &types.CostInfo{
-				Currency:  "USD",
-				TotalCost: 0,
-			}
+		logger.GetLogger().Warn("No pricing information available; cost reported as unpriced",
+			"model", model, "provider", provider)
+		return &types.CostInfo{
+			Currency: "USD",
+			Priced:   false,
 		}
 	}
 
@@ -252,6 +252,8 @@ func CalculateCost(usage *types.TokenUsage, model string, provider string) *type
 		Currency:                pricing.Currency,
 		PricePerPromptToken:     pricing.PricePerPromptToken,
 		PricePerCompletionToken: pricing.PricePerCompletionToken,
+		Priced:                  true,
+		PricingSource:           pricing.Model,
 	}
 }
 
@@ -454,37 +456,36 @@ func MatchesFilters(record CostRecord, filters map[string]string) bool {
 
 // Helper functions
 
-func getDefaultPricing(provider string) PricingModel {
-	switch provider {
-	case "anthropic":
-		return pricingModels["claude-3-haiku"]
-	default:
-		return PricingModel{Currency: "USD"}
-	}
-}
-
 func lookupPricingModel(model string) (PricingModel, bool) {
 	if pricing, exists := pricingModels[model]; exists {
 		return pricing, true
 	}
 
 	model = strings.TrimSpace(strings.ToLower(model))
-	switch {
-	case strings.HasPrefix(model, "gpt-5.4"):
-		pricing, ok := pricingModels["gpt-5.4"]
-		return pricing, ok
-	case strings.HasPrefix(model, "gpt-5-mini"):
-		pricing, ok := pricingModels["gpt-5-mini"]
-		return pricing, ok
-	case strings.HasPrefix(model, "gpt-5-nano"):
-		pricing, ok := pricingModels["gpt-5-nano"]
-		return pricing, ok
-	case strings.HasPrefix(model, "gpt-5"):
-		pricing, ok := pricingModels["gpt-5"]
-		return pricing, ok
+
+	// Prefix matching exists to price dated snapshots (gpt-5-2025-08-07) at
+	// their base model's rates. It must not reach across model versions:
+	// "gpt-5.6-luna" starts with "gpt-5" but is a different model with
+	// different rates, and pricing it from the gpt-5 entry is the same
+	// substitution error as pricing every Anthropic model as Haiku.
+	for _, base := range []string{"gpt-5.4", "gpt-5-mini", "gpt-5-nano", "gpt-5"} {
+		if isSnapshotOf(model, base) {
+			pricing, ok := pricingModels[base]
+			return pricing, ok
+		}
 	}
 
 	return PricingModel{}, false
+}
+
+// isSnapshotOf reports whether model is base itself or a dated snapshot of it.
+// A suffix beginning with "." denotes a different version, not a snapshot.
+func isSnapshotOf(model, base string) bool {
+	if !strings.HasPrefix(model, base) {
+		return false
+	}
+	suffix := model[len(base):]
+	return suffix == "" || strings.HasPrefix(suffix, "-")
 }
 
 func updateCostTotal(key string, amount float64) {

@@ -132,6 +132,18 @@ type CostInfo struct {
 	PricePerPromptToken     float64 `json:"price_per_prompt_token"`
 	PricePerCompletionToken float64 `json:"price_per_completion_token"`
 
+	// Priced reports whether a price for this exact model was found. When it is
+	// false the cost fields are zero because nothing is known, not because the
+	// call was free -- the two are indistinguishable without this flag, and
+	// treating an unpriced call as $0.00 understates spend silently.
+	Priced bool `json:"priced"`
+
+	// PricingSource names the pricing entry the figures came from. It equals the
+	// model when priced exactly. A cost is never computed from a different
+	// model's rates: substituting one produces a confident, precisely wrong
+	// number, which is worse than reporting nothing.
+	PricingSource string `json:"pricing_source,omitempty"`
+
 	// Cost tracking metadata
 	BillingPeriod  string `json:"billing_period,omitempty"`
 	OrganizationID string `json:"organization_id,omitempty"`
