@@ -2,11 +2,13 @@ package schemaflux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
@@ -152,7 +154,16 @@ var (
 )
 
 // Init initializes the schemaflux library with the provided API key.
-func Init(key string) {
+//
+// It returns an error when no credential can be resolved and the configured
+// provider needs one. Falling through to the mock provider in that case would
+// return text such as "Mock response for: ..." from every operation, which
+// parses into zero-valued structs and is indistinguishable from a working
+// deployment until someone reads the output.
+//
+// Adding the error return is source-compatible: Go permits discarding the
+// result of a function call, so existing `Init(key)` statements still compile.
+func Init(key string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -178,14 +189,28 @@ func Init(key string) {
 		debugMode = true
 	}
 
-	if apiKey != "" {
-		defaultClient = NewClient(apiKey).
-			WithTimeout(timeout).
-			WithProvider(provider).
-			WithDebug(debugMode)
-	} else {
-		defaultClient = NewClient("")
+	if apiKey == "" {
+		apiKey = resolveProviderAPIKey(provider, "")
 	}
+
+	if apiKey == "" {
+		// The mock provider is a legitimate choice, but only when it was asked
+		// for. Selecting it because a credential is missing turns a
+		// configuration error into plausible-looking fake output.
+		if normalizeProviderName(provider) != "local" {
+			return fmt.Errorf(
+				"schemaflux: no API key for provider %q; set SCHEMAFLUX_API_KEY or a provider-specific key, or set SCHEMAFLUX_PROVIDER=local to use the mock provider deliberately",
+				provider)
+		}
+		defaultClient = NewClient("")
+		return nil
+	}
+
+	defaultClient = NewClient(apiKey).
+		WithTimeout(timeout).
+		WithProvider(provider).
+		WithDebug(debugMode)
+	return nil
 }
 
 // GetDefaultClient returns the default client
@@ -193,22 +218,31 @@ func GetDefaultClient() *Client {
 	return defaultClient
 }
 
-// InitWithEnv initializes SchemaFlux from environment variables.
-// It reads configuration from a .env file if path is provided.
+// InitWithEnv initializes SchemaFlux from environment variables, first loading
+// any named .env files. With no arguments it loads ./.env when present.
+//
+// Values already set in the process environment win: a .env file supplies
+// defaults, it does not override an explicit export. A named path that does not
+// exist is an error; the default ./.env is optional.
 func InitWithEnv(paths ...string) error {
-	// Load .env file if path provided (optional)
-	// For now, just use environment variables directly
-	apiKey := os.Getenv("SCHEMAFLUX_API_KEY")
-	if apiKey == "" {
-		if openAIKey := os.Getenv("OPENAI_API_KEY"); openAIKey != "" {
-			apiKey = openAIKey
-			_ = os.Setenv("SCHEMAFLUX_API_KEY", openAIKey)
+	if len(paths) == 0 {
+		if _, err := os.Stat(defaultEnvFile); err == nil {
+			if err := godotenv.Load(defaultEnvFile); err != nil {
+				return fmt.Errorf("schemaflux: loading %s: %w", defaultEnvFile, err)
+			}
+		}
+	} else {
+		for _, path := range paths {
+			if err := godotenv.Load(path); err != nil {
+				return fmt.Errorf("schemaflux: loading %s: %w", path, err)
+			}
 		}
 	}
 
-	Init(apiKey)
-	return nil
+	return Init("")
 }
+
+const defaultEnvFile = ".env"
 
 // GetLogger returns the default logger for the schemaflux package.
 func GetLogger() *telemetry.Logger {
@@ -355,7 +389,9 @@ func resolveProviderBaseURL(providerName string) string {
 func providerAPIKeyEnvVars(providerName string) []string {
 	switch normalizeProviderName(providerName) {
 	case "openai":
-		return []string{"SCHEMAFLUX_OPENAI_API_KEY", "OPENAI_API_KEY"}
+		// "OPENAI" is accepted last: it is a common .env spelling, and rejecting
+		// it means a file that plainly contains the key still resolves to nothing.
+		return []string{"SCHEMAFLUX_OPENAI_API_KEY", "OPENAI_API_KEY", "OPENAI"}
 	case "anthropic":
 		return []string{"SCHEMAFLUX_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"}
 	case "openrouter":
