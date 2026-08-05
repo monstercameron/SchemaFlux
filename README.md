@@ -274,6 +274,43 @@ normal event, not an anomaly. The fields renamed by this rule are
 `ModelConfidence`, `ModelTrustScore`, `ModelOverallConfidence`, and
 `ModelOverallScore`.
 
+## Testing code that uses SchemaFlux
+
+`schemafluxtest` ships a fake provider, so your tests need no API key, no
+network, and no money.
+
+```go
+import "github.com/monstercameron/schemaflux/schemafluxtest"
+
+func TestRouting(t *testing.T) {
+    provider := schemafluxtest.New().
+        Reply(`{"queue":"billing","priority":"high"}`)
+    defer schemafluxtest.Install(t, provider)()
+
+    result, err := schemaflux.Extract[Triage](ticket, schemaflux.NewExtractOptions())
+    // ... assert on result ...
+
+    // And on what your code actually sent:
+    if !strings.Contains(provider.LastRequest().UserPrompt, "charged twice") {
+        t.Error("the ticket text did not reach the model")
+    }
+}
+```
+
+The cases worth testing are the ones that cost money to reproduce:
+
+- `Fail(err)` — the provider is unreachable
+- `FailThen(2, err, body)` — it fails twice, then works
+- `Reply(a, b, c)` — a different answer per call; the last repeats
+- `Slow(30 * time.Second)` — for timeouts and cancellation; the wait is cancellable
+- `WithUsage(...)` — for cost accounting
+- `Requests()`, `LastRequest()`, `CallCount()` — what your code sent
+
+`Install` calls `t.Setenv`, which makes Go fail any test that also calls
+`t.Parallel`. That is deliberate: SchemaFlux resolves its provider through a
+package global, so two parallel tests with different providers would silently
+share one. Failing loudly beats a flake nobody can reproduce.
+
 ## Reliability
 
 SchemaFlux treats the shared LLM path as infrastructure.

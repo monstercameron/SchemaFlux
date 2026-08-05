@@ -257,6 +257,35 @@ func Init(key string) error {
 	return nil
 }
 
+// SetDefaultClient replaces the default client, or clears it when given nil.
+//
+// It exists so a test double can be installed and removed: schemafluxtest.Install
+// needs to put the previous client back, and without this the only way to
+// restore state after a test was to re-run Init and hope the environment still
+// held whatever it held before.
+//
+// Setting the provider on a client also sets the package-level provider the
+// operations read, which is why this is a global rather than a handle — see
+// TODOS.md TI-002.
+func SetDefaultClient(client *Client) {
+	mu.Lock()
+	defer mu.Unlock()
+	defaultClient = client
+
+	if client == nil {
+		ops.SetDefaultProvider(nil)
+		return
+	}
+
+	client.mu.RLock()
+	provider := client.provider
+	client.mu.RUnlock()
+
+	if provider != nil {
+		ops.SetDefaultProvider(provider)
+	}
+}
+
 // GetDefaultClient returns the default client, or nil if the library has not
 // been initialised.
 func GetDefaultClient() *Client {

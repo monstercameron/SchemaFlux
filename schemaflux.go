@@ -59,6 +59,17 @@ type (
 	// CompletionResponse is the low-level provider response shape.
 	CompletionResponse = llm.CompletionResponse
 
+	// TokenUsage is the token accounting a provider reports. It was not
+	// exported, so a caller implementing Provider — or a test asserting on
+	// cost — could not name the type they were required to return.
+	TokenUsage = types.TokenUsage
+
+	// CostInfo is the computed cost of a request.
+	CostInfo = types.CostInfo
+
+	// ResultMetadata carries the per-request accounting an operation produced.
+	ResultMetadata = types.ResultMetadata
+
 	// RequestTrackingConfig configures request/correlation tracking.
 	RequestTrackingConfig = requesttracking.Config
 
