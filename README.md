@@ -98,20 +98,27 @@ Builder conventions:
 - `Expanding(input)`
 - `Completing(input)`
 - `CompletingField[T](input, fieldName)`
-- `Redacting[T](input)` — **not production ready**, see below
-- `LLMRedacting(input)` — **not production ready**, see below
+- `Redacting[T](input)` — see the note below on what it detects
+- `LLMRedacting(input)` — see the note below
 
-> **The redaction operations are not production ready.** Do not use them to
-> remove sensitive data from anything that leaves your control. Field matching
-> is a substring test, so `password_reset_url` is redacted and `taxpayer_id` is
-> not; the built-in patterns miss the formats they name; `RedactWithResult`
-> reports an empty map whatever it did; jumble redaction is a reversible
-> permutation; and `RedactLLM` applies model-reported character offsets without
-> checking them. The details are T-07 through T-13 in
-> `docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md`, and the fixes are
-> scheduled in `TODOS.md` under M05. They are usable for reducing incidental
-> visibility in logs and demos, where a missed value is an annoyance rather than
-> a breach.
+> **What redaction detects.** Field names are matched as whole names, not
+> substrings, so `FirstName` and `APIKey` are redacted while `Filename`,
+> `Username`, `Keywords`, `FirstSeen`, and `CardCount` are not. Card numbers are
+> validated with Luhn rather than recognised by shape, so an unformatted PAN is
+> caught and a 16-digit order number is not. `RedactWithResult` reports the
+> fields and values it replaced.
+>
+> **It is a pattern matcher, not a classifier.** It finds what its categories
+> describe and nothing else: a person's name inside a free-text note is not
+> detected, and a bare nine-digit number is deliberately not treated as an SSN
+> because it is indistinguishable from an order ID. Tag the fields you know with
+> `redact:"..."`; the patterns are a safety net under that, not a substitute
+> for it.
+>
+> **Jumbling is obfuscation, not anonymization.** `RedactJumble` and
+> `RedactScramble` permute characters, which preserves length, alphabet, and
+> frequency. Use them for demo data that has to look realistic, not where
+> re-identification matters.
 
 ### Analysis and validation
 - `Classifying[T, C](input)`

@@ -252,6 +252,9 @@ func TestRedact_Map(t *testing.T) {
 	if resultMap["password"] != "***" {
 		t.Errorf("Expected password masked, got %v", resultMap["password"])
 	}
+	// "name" is a sensitive key, so its value is redacted by key name. It used
+	// to be caught only by the two-capitalised-words pattern, which also
+	// redacted "New York" and "Total Revenue" and has been removed.
 	if resultMap["name"] != "***" {
 		t.Errorf("Expected name masked, got %v", resultMap["name"])
 	}
@@ -328,9 +331,14 @@ func TestRedactWithResult(t *testing.T) {
 		t.Errorf("Expected redacted text 'Contact ***', got %v", redacted)
 	}
 
-	// Result is currently empty but should be populated in full implementation
-	if result.Count != 0 {
-		t.Errorf("Expected count 0, got %d", result.Count)
+	// This used to assert Count == 0, which was asserting T-09: the function
+	// whose purpose is to report what it redacted returned an empty map with a
+	// nil error, and an audit read that as "nothing was redacted".
+	if result.Count == 0 {
+		t.Error("RedactWithResult reported nothing after redacting an email address")
+	}
+	if len(result.Redacted["PII"]) == 0 {
+		t.Errorf("the PII category is empty: %+v", result.Redacted)
 	}
 }
 

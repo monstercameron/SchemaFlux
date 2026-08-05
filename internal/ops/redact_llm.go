@@ -112,14 +112,26 @@ type llmSpanResponse struct {
 
 // RedactLLM uses an LLM to identify and redact sensitive data.
 //
-// # NOT PRODUCTION READY
+// # What it guarantees about the offsets
 //
-// It applies the character offsets the model reports without validating them
-// against the text, so a single off-by-one shifts every subsequent span and the
-// result silently redacts the wrong characters (T-13). "Character-level
-// precision" describes the interface, not the guarantee. See Redact in this
-// package for the rest, docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md for
-// the detail, and TODOS.md M05 for the fixes.
+// The model reports character offsets, and they used to be applied verbatim:
+// a single off-by-one shifted every subsequent span, so the result redacted the
+// wrong characters and left the sensitive ones in place — which is worse than
+// not redacting, because it looks done.
+//
+// A span that is negative, inverted, past the end of the text, or overlapping
+// another is now refused and the call returns an error. Spans arriving out of
+// order are sorted rather than mis-spliced, and the slicing is by character so
+// multi-byte text survives it.
+//
+// What is still not checked is whether a span contains what the model says it
+// contains: a span labelled "ssn" over an order number is applied. That is
+// TODOS.md OP-507.
+//
+// # It is a model call
+//
+// Detection is only as good as the model's, and it is not deterministic. Where
+// you know the shape of your data, tag the fields and use Redact.
 func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactLLMResult, error) {
 	logger := telemetry.GetLogger()
 	logger.Debug("Starting LLM redact operation", "requestID", opts.RequestID, "textLength", len(text))

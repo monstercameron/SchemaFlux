@@ -49,16 +49,28 @@ func docComment(t *testing.T, name string) string {
 	return ""
 }
 
-// The redaction operations carry known S1 defects. Until M05 lands, every entry
-// point has to say so where a caller will see it.
-func TestRedactionOperationsDiscloseTheirState(t *testing.T) {
+// The redaction operations no longer carry the S1 defects the review found:
+// T-07 (substring field matching), T-08 (patterns that missed their formats),
+// T-09 (an audit that reported nothing), T-11 (a reversible permutation with a
+// guessable seed), and the offset half of T-13 are all closed.
+//
+// What replaces the warning is a description of what the mechanism does and
+// does not do, because "it works now" is not a useful thing to tell a caller
+// evaluating it for compliance use. These checks keep that description in
+// place; a doc comment has nothing else holding it there.
+func TestRedactionDocumentsWhatItDetects(t *testing.T) {
 	cases := []struct {
 		name    string
 		mustSay []string
 	}{
-		{"Redact", []string{"NOT PRODUCTION READY", "T-07", "T-08", "T-11", "T-13"}},
-		{"RedactWithResult", []string{"NOT PRODUCTION READY", "T-09"}},
-		{"RedactLLM", []string{"NOT PRODUCTION READY", "T-13"}},
+		{"Redact", []string{
+			"whole names, not substrings", // T-07: how field matching works
+			"Luhn",                        // T-08: how a card is recognised
+			"not a classifier",            // the limit
+			"redact` struct tag",          // the reliable path
+		}},
+		{"RedactWithResult", []string{"what was redacted", "audit"}},
+		{"RedactLLM", []string{"offsets", "refused"}},
 	}
 
 	for _, tc := range cases {
@@ -72,30 +84,28 @@ func TestRedactionOperationsDiscloseTheirState(t *testing.T) {
 					t.Errorf("the %s doc comment does not mention %q", tc.name, phrase)
 				}
 			}
-			if !strings.Contains(doc, "ADVERSARIAL_API_REVIEW.md") {
-				t.Errorf("the %s doc comment should point at the review", tc.name)
-			}
 		})
 	}
 }
 
-// A warning that says only "be careful" is not a warning. Each must name the
-// concrete failure a caller would otherwise discover in production.
-func TestRedactionDisclosuresAreSpecific(t *testing.T) {
-	doc := docComment(t, "Redact")
-
-	for _, specific := range []string{
-		"substring",  // T-07: how the field match actually works
-		"reversible", // T-11: what jumble is
-		"empty map",  // T-09: what the audit returns
-	} {
-		if !strings.Contains(doc, specific) {
-			t.Errorf("the disclosure does not name the failure %q", specific)
-		}
+// Jumbling is the one part that is still not a privacy mechanism, and it has to
+// say so: a permutation preserves length, alphabet, and frequency whatever the
+// seed.
+func TestJumbleIsDocumentedAsObfuscation(t *testing.T) {
+	for _, name := range []string{"Redact", "jumbleString"} {
+		t.Run(name, func(t *testing.T) {
+			doc := docComment(t, name)
+			if !strings.Contains(doc, "not anonymization") {
+				t.Errorf("the %s doc comment does not say jumbling is not anonymization", name)
+			}
+		})
 	}
 
-	if !strings.Contains(doc, "Do not use this") {
-		t.Error("the disclosure should say plainly what not to do with it")
+	doc := docComment(t, "jumbleString")
+	for _, phrase := range []string{"length", "alphabet", "frequency", "crypto/rand"} {
+		if !strings.Contains(doc, phrase) {
+			t.Errorf("the jumbleString doc comment does not mention %q", phrase)
+		}
 	}
 }
 
@@ -125,86 +135,42 @@ func TestProjectDocumentsWhatExcludeGuarantees(t *testing.T) {
 	}
 }
 
-// The README carries the same disclosure, because that is where someone
-// evaluating the library looks first.
-func TestREADMEDisclosesRedactionState(t *testing.T) {
+// The README describes what redaction detects and where it stops, because that
+// is where someone evaluating the library looks first. It used to carry a
+// NOT PRODUCTION READY warning; the defects behind that warning are closed, and
+// what replaces it is a description rather than reassurance.
+func TestREADMEDescribesRedaction(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
 		t.Fatalf("reading README.md: %v", err)
 	}
-	readme := string(raw)
-
-	if !strings.Contains(readme, "not production ready") {
-		t.Fatal("the README does not disclose the redaction state")
+	// Markdown wraps and this text is a blockquote, so the prose is flattened
+	// before matching rather than being checked against whatever happened to
+	// fit on one line today.
+	var flattened []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		flattened = append(flattened, strings.TrimPrefix(strings.TrimSpace(line), "> "))
 	}
-	for _, phrase := range []string{"Redacting", "LLMRedacting", "ADVERSARIAL_API_REVIEW.md"} {
+	readme := strings.Join(strings.Fields(strings.Join(flattened, " ")), " ")
+
+	for _, phrase := range []string{
+		"whole names, not substrings", // T-07
+		"Luhn",                        // T-08
+		"RedactWithResult` reports",   // T-09
+		"not anonymization",           // T-11
+		"not a classifier",            // the honest limit
+		"nine-digit",                  // the deliberate miss, stated
+	} {
 		if !strings.Contains(readme, phrase) {
-			t.Errorf("the README disclosure does not mention %q", phrase)
+			t.Errorf("the README does not mention %q", phrase)
 		}
 	}
-}
 
-// A disclosure has to be where the caller reads it. These check each surface
-// separately, because a warning in one place and silence in another is how a
-// caller ends up surprised.
-func TestRedactionDisclosureSurfaces(t *testing.T) {
-	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
-	if err != nil {
-		t.Fatalf("reading README.md: %v", err)
-	}
-
-	cases := []struct {
-		name    string
-		text    string
-		mustSay []string
-	}{
-		{"Redact doc", docComment(t, "Redact"),
-			[]string{"NOT PRODUCTION READY", "Do not use this", "substring", "reversible", "empty map"}},
-		{"RedactWithResult doc", docComment(t, "RedactWithResult"),
-			[]string{"NOT PRODUCTION READY", "empty", "T-09"}},
-		{"RedactLLM doc", docComment(t, "RedactLLM"),
-			[]string{"NOT PRODUCTION READY", "offsets", "T-13"}},
-		{"README", string(readme),
-			[]string{"not production ready", "substring test", "reversible", "ADVERSARIAL_API_REVIEW.md"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.text == "" {
-				t.Fatal("no text to check")
-			}
-			for _, phrase := range tc.mustSay {
-				if !strings.Contains(tc.text, phrase) {
-					t.Errorf("%s does not say %q", tc.name, phrase)
-				}
-			}
-		})
-	}
-}
-
-// A disclosure that only hedges is not a disclosure. None of these words may
-// carry the weight of the warning on their own.
-func TestDisclosuresDoNotMerelyHedge(t *testing.T) {
-	hedges := []string{
-		"may not be suitable",
-		"use with caution",
-		"best effort",
-		"should be reviewed",
-		"consider carefully",
-	}
-
-	for _, name := range []string{"Redact", "RedactWithResult", "RedactLLM"} {
-		t.Run(name, func(t *testing.T) {
-			doc := docComment(t, name)
-			for _, hedge := range hedges {
-				if strings.Contains(strings.ToLower(doc), hedge) {
-					t.Errorf("the %s disclosure hedges with %q instead of naming the failure", name, hedge)
-				}
-			}
-			if !strings.Contains(doc, "NOT PRODUCTION READY") {
-				t.Errorf("the %s disclosure does not state its conclusion", name)
-			}
-		})
+	// The warning is gone because the defects are, not because it was quietly
+	// deleted: this fails if redaction regains a NOT PRODUCTION READY marker
+	// without the README saying why.
+	if strings.Contains(readme, "not production ready") {
+		t.Error("the README still marks redaction not production ready; update this test with the reason")
 	}
 }
 

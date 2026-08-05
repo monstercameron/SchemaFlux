@@ -510,22 +510,22 @@ tests.
 
 ## Redaction — rebuild
 
-- [ ] **OP-501** — Replace the field-name substring matcher (`redact.go:359-387`), whose
+- [x] **OP-501** — Replace the field-name substring matcher (`redact.go:359-387`), whose
   sensitive list includes `"name"`, `"key"`, `"first"`, `"last"`, `"card"`, `"address"`, and
   `"full"`, so `Filename`, `Username`, `Keywords`, `LastUpdated`, and `CardCount` are all
   destroyed. Match on word boundaries and an explicit tag. Closes **T-07**.
-- [ ] **OP-502** — Replace the pattern set (`redact.go:406-438`). It misses undashed SSNs,
+- [x] **OP-502** — Replace the pattern set (`redact.go:406-438`). It misses undashed SSNs,
   every phone format except `###-###-####`, and unformatted 16-digit card numbers, while
   masking any two capitalized words, any nine-digit number, and every currency amount.
   Closes **T-08**.
   *Verify:* a labelled corpus of true positives and true negatives with per-category
   precision and recall floors asserted in CI.
-- [ ] **OP-503** — Implement `RedactWithResult`, which today returns an empty map and
+- [x] **OP-503** — Implement `RedactWithResult`, which today returns an empty map and
   `err == nil` under a `// For now` comment (`redact.go:186-200`), so an audit reads as
   "nothing was redacted". Closes **T-09**.
 - [ ] **OP-504** — Replace `Redact[T](input T, opts ...interface{})` with typed options; the
   `default:` branch currently discards an unrecognized options struct silently. Closes **T-10**.
-- [ ] **OP-505** — Remove or replace jumble redaction. `JumbleSeed` defaults to zero, so the
+- [x] **OP-505** — Remove or replace jumble redaction. `JumbleSeed` defaults to zero, so the
   RNG is seeded with `len(input)` — a value readable from the output — and `jumbleBasic` is a
   Fisher–Yates shuffle of the same runes, making the transform an **invertible** permutation.
   Closes **T-11**. Addresses **Gap-14**.
@@ -839,6 +839,11 @@ commit and the test that proves it.
 | **OP-103** | `09f93eb` | **C-02** and **C-03** closed. `Filter` verifies every returned item was in the input, rejects duplicates and any result longer than the set, and returns the caller's values in the caller's order. The one-item parse fallback is gone — a malformed array used to collapse a filter to a single result. The contradictory instruction is gone too: the system prompt said "Include items that match" while the steering said "Remove items that match", and the library reported whichever the model obeyed as success. |
 | **OP-403** | `9408aa0` | **T-06** closed. `MaxLength`, `ShowFirst`, and `ShowLast` are documented in characters and were indexed in bytes, so any cut landing mid-rune produced invalid UTF-8 — `Montréal` truncated to seven "characters" came back with a replacement character. `internal/ops/runes.go` does the same jobs on runes; `Complete`'s truncation and `RedactLLM`'s masking and splicing use it. `internal/ops/runes_test.go` walks every cut point of six ordinary strings (an accented place name, a currency symbol, Japanese, an emoji) and was verified to FAIL against byte indexing. Partially closes **T-13**: `applyRedactions` now refuses a span that is negative, inverted, out of range, or overlapping, rather than applying it — semantic validation of what a span contains remains **OP-507**. |
 | **S-005** | `5bf1d1f` | **I-04** closed. The response format was chosen by searching the concatenated system **and user** prompts for phrases like "json object", so a caller summarising a changelog that said "return a json object" got their text operation switched into JSON mode — the format depended on the data. Inference now reads the system prompt only, which the library writes, and `OpOptions.ResponseFormat` lets an operation declare what it needs outright. `internal/ops/response_format_test.go` uses ordinary inputs (a support ticket, a changelog, a bug report) rather than crafted attacks; **six of the seven flipped the format against the old code**. |
+| **OP-501** | `pending` | **T-07** closed. Field names are matched as whole normalised names, not substrings: `Filename`, `Username`, `Keywords`, `KeyMetrics`, `APIKeyLabel`, `FirstSeen`, `LastUpdated`, `CardCount`, and `AddressBookSize` survive; `FirstName` and `APIKey` do not. Map keys are treated as field names too, which they never were. |
+| **OP-502** | `pending` | **T-08** closed. Card numbers are validated with Luhn rather than recognised by shape, so an unformatted PAN is caught and a 16-digit order number is not. Phone patterns cover `(305) 555-1234`, `305.555.1234`, and international forms. The three false-positive patterns are deleted: two capitalised words (which matched "New York"), a bare nine-digit run (order IDs), and every currency amount. A bare nine-digit SSN stays deliberately undetected and the docs say so. |
+| **OP-503** | `pending` | **T-09** closed. `RedactWithResult` reports the values it matched by category and the fields it replaced by name, and a field matched by *content* now has only the matching span replaced — so a notes field containing a phone number keeps the note. |
+| **OP-505** | `pending` | **T-11** closed. `JumbleSeed` defaults to zero and the RNG was then seeded with the input's LENGTH, a number readable off the output, so the permutation was reproducible and the jumble exactly invertible. The default now draws from `crypto/rand`. An explicit seed still gives determinism, documented as a thing to want for fixtures and not for privacy — and jumbling is documented as obfuscation, not anonymization, because a permutation preserves length, alphabet, and frequency whatever the seed. |
+| **T-13 (part)** | `pending` | The offset half closed with **OP-403**: spans that are negative, inverted, out of range, or overlapping are refused. The semantic half — whether a span contains what the model says — remains **OP-507**. |
 | **B-01/B-04** | `9474687` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
 | **P-012** | `9474687` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |

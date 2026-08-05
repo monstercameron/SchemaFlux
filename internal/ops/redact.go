@@ -2,11 +2,14 @@
 package ops
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
@@ -16,7 +19,13 @@ import (
 type RedactResult struct {
 	Redacted map[string][]string `json:"redacted"` // category -> list of redacted values
 	Count    int                 `json:"count"`    // total items redacted
-	Metadata map[string]any      `json:"metadata"` // additional metadata
+
+	// FieldsRedacted names the struct fields that were replaced because of
+	// their name or a redact tag, which the category map cannot express: a
+	// field redacted by name matched no pattern.
+	FieldsRedacted []string `json:"fields_redacted,omitempty"`
+
+	Metadata map[string]any `json:"metadata"` // additional metadata
 }
 
 // RedactStrategy defines how sensitive data should be redacted
@@ -50,6 +59,37 @@ type RedactOptions struct {
 	JumbleSeed     int64          // Random seed for reproducible jumbling
 	JumbleMode     JumbleMode     // How to perform jumbling
 	CustomPatterns []string       // Additional regex patterns to match
+
+	// report accumulates what was redacted, so RedactWithResult can say. It is
+	// a pointer because RedactOptions is copied by value through the recursive
+	// traversal, and every copy has to record into the same place.
+	report *redactionReport
+}
+
+// redactionReport accumulates what a redaction pass replaced.
+type redactionReport struct {
+	byCategory map[string][]string
+	fields     []string
+}
+
+func newRedactionReport() *redactionReport {
+	return &redactionReport{byCategory: map[string][]string{}}
+}
+
+func (r *redactionReport) addValues(found map[string][]string) {
+	if r == nil {
+		return
+	}
+	for category, values := range found {
+		r.byCategory[category] = append(r.byCategory[category], values...)
+	}
+}
+
+func (r *redactionReport) addField(name string) {
+	if r == nil {
+		return
+	}
+	r.fields = append(r.fields, name)
 }
 
 // NewRedactOptions creates RedactOptions with defaults
@@ -137,51 +177,58 @@ func (opts RedactOptions) Validate() error {
 	return nil
 }
 
+// resolveRedactOptions turns the variadic any into options. The signature
+// takes `...interface{}`, so an argument of an unexpected type is silently
+// replaced by the defaults (T-10); resolveRedactOptions is where that will be
+// fixed when the signature is tightened.
+func resolveRedactOptions(opts ...interface{}) RedactOptions {
+	if len(opts) == 0 {
+		return NewRedactOptions()
+	}
+	switch opt := opts[0].(type) {
+	case RedactOptions:
+		return opt
+	case types.OpOptions:
+		options := NewRedactOptions()
+		options.OpOptions = opt
+		return options
+	default:
+		return NewRedactOptions()
+	}
+}
+
 // Redact removes or masks sensitive information from data.
 // Returns a new object of the same type with sensitive data redacted.
 //
-// # NOT PRODUCTION READY
+// # What it detects, and what it does not
 //
-// Do not use this to remove sensitive data from anything that leaves your
-// control. The known defects are recorded as T-07 through T-13 in
-// docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md, and the fixes are
-// scheduled in TODOS.md under M05. In summary:
+// Field names are matched as whole names, not substrings: FirstName and APIKey
+// are redacted; Filename, Username, Keywords, KeyMetrics, FirstSeen,
+// LastUpdated, and CardCount are not. The `redact` struct tag is the precise
+// mechanism and should be preferred when you know the shape of your data.
 //
-//   - Field matching is a substring test, so a field named "password_reset_url"
-//     is redacted because it contains "pass", and a field named "taxpayer_id" is
-//     not, because it does not contain "ssn" (T-07).
-//   - The built-in patterns miss the formats they name: the SSN pattern does not
-//     match an unhyphenated SSN, and the card pattern does not match a card
-//     number written without separators (T-08).
-//   - RedactWithResult returns an empty map and a nil error whatever it did, so
-//     an audit of a redaction pass reads as "nothing was redacted" (T-09).
-//   - Jumble is a character permutation with a seed derived from the input, so
-//     it is reversible by anyone who wants to reverse it. It is obfuscation, not
-//     redaction (T-11).
-//   - RedactLLM applies character offsets the model reports without checking
-//     them against the text, so an off-by-one shifts every subsequent span
-//     (T-13).
+// Values are matched by pattern per category. Card numbers are validated with
+// Luhn rather than recognised by shape, so an unformatted 16-digit PAN is
+// caught and a 16-digit order number is not. SSNs are matched in the forms they
+// are written in; a bare nine-digit run is deliberately NOT matched, because it
+// is indistinguishable from an order ID and matching it destroyed ordinary
+// data.
 //
-// What it is usable for today: reducing the incidental visibility of fields in
-// logs and demos, where a missed value is an annoyance rather than a breach.
+// It is a pattern matcher, not a classifier. It finds what its categories
+// describe and nothing else: a card number spelled out in words, or a name
+// inside a free-text note, is not detected. Tagging the fields is the reliable
+// path; the patterns are a safety net under it.
+//
+// # Jumbling is obfuscation, not anonymization
+//
+// RedactJumble and RedactScramble permute characters, which preserves length,
+// alphabet, and frequency. Use them for demo data that has to look realistic,
+// not for anything where re-identification matters.
 func Redact[T any](input T, opts ...interface{}) (T, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting redact operation", "requestID", "unknown", "inputType", fmt.Sprintf("%T", input))
 
-	var options RedactOptions
-	if len(opts) == 0 {
-		options = NewRedactOptions()
-	} else {
-		switch opt := opts[0].(type) {
-		case RedactOptions:
-			options = opt
-		case types.OpOptions:
-			options = NewRedactOptions()
-			options.OpOptions = opt
-		default:
-			options = NewRedactOptions()
-		}
-	}
+	options := resolveRedactOptions(opts...)
 
 	if err := options.Validate(); err != nil {
 		log.Error("Redact operation validation failed", "requestID", "unknown", "error", err)
@@ -213,13 +260,37 @@ func RedactWithResult[T any](input T, opts ...interface{}) (T, RedactResult, err
 		Metadata: make(map[string]any),
 	}
 
-	redacted, err := Redact(input, opts...)
-	if err != nil {
-		return redacted, result, err
+	options := resolveRedactOptions(opts...)
+	options.report = newRedactionReport()
+
+	if err := options.Validate(); err != nil {
+		var zero T
+		return zero, result, fmt.Errorf("invalid options: %w", err)
 	}
 
-	// For now, return empty result - full implementation would track what was redacted
-	// This would require more complex logic to compare original vs redacted
+	redacted, err := redactValue(input, options)
+	if err != nil {
+		var zero T
+		return zero, result, err
+	}
+
+	// This used to return an empty map with a nil error whatever it had done,
+	// so a caller auditing a redaction pass was told nothing was redacted and
+	// treated that as success.
+	result.Redacted = options.report.byCategory
+	if result.Redacted == nil {
+		result.Redacted = map[string][]string{}
+	}
+	result.FieldsRedacted = options.report.fields
+	result.Metadata["fields_redacted"] = len(options.report.fields)
+
+	total := 0
+	for _, values := range result.Redacted {
+		total += len(values)
+	}
+	result.Metadata["values_redacted"] = total
+	result.Count = total + len(options.report.fields)
+
 	return redacted, result, nil
 }
 
@@ -268,30 +339,59 @@ func redactValue[T any](input T, opts RedactOptions) (T, error) {
 	}
 }
 
-// redactString redacts sensitive information from a string
+// redactString redacts sensitive information from a string.
 func redactString(input string, opts RedactOptions) string {
+	redacted, _ := redactStringWithReport(input, opts)
+	return redacted
+}
+
+// redactStringWithReport redacts and reports what it replaced, keyed by
+// category. The report is what RedactWithResult returns; it used to be empty by
+// construction, so an audit of a redaction pass read as "nothing was redacted".
+func redactStringWithReport(input string, opts RedactOptions) (string, map[string][]string) {
+	report := map[string][]string{}
 	if input == "" {
-		return input
+		return input, report
 	}
 
-	// For now, use simple pattern matching
-	// In a full implementation, this would use LLM for intelligent detection
-	patterns := getPatternsForCategories(opts.Categories)
-	patterns = append(patterns, opts.CustomPatterns...)
-
 	result := input
-	for _, pattern := range patterns {
-		re, err := regexp.Compile(pattern)
+	defer func() { opts.report.addValues(report) }()
+
+	for _, category := range opts.Categories {
+		for _, pattern := range categoryPatterns(category) {
+			result = pattern.ReplaceAllStringFunc(result, func(match string) string {
+				report[category] = append(report[category], match)
+				return applyRedactionStrategy(match, opts)
+			})
+		}
+
+		if categoryUsesCardDetection(category) {
+			result = cardCandidatePattern.ReplaceAllStringFunc(result, func(match string) string {
+				// Shape is not enough: an order number is 16 digits too. Luhn
+				// is what separates a payment card from a sequence number, and
+				// it is why an unformatted PAN is caught now and "New York"
+				// never was a card in the first place.
+				if !luhn(digitsOnly(match)) {
+					return match
+				}
+				report[category] = append(report[category], match)
+				return applyRedactionStrategy(match, opts)
+			})
+		}
+	}
+
+	for _, raw := range opts.CustomPatterns {
+		pattern, err := regexp.Compile(raw)
 		if err != nil {
 			continue // Skip invalid patterns
 		}
-
-		result = re.ReplaceAllStringFunc(result, func(match string) string {
+		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
+			report["custom"] = append(report["custom"], match)
 			return applyRedactionStrategy(match, opts)
 		})
 	}
 
-	return result
+	return result, report
 }
 
 // redactStruct redacts sensitive fields from a struct
@@ -312,10 +412,21 @@ func redactStruct[T any](input T, opts RedactOptions) (T, error) {
 		fieldType := t.Field(i)
 		fieldName := fieldType.Name
 
-		// Check if field should be redacted based on name, tags, or content
-		if shouldRedactField(fieldName, fieldType, field, opts) {
-			redactedValue := applyRedactionToValue(field, opts)
-			newStruct.Field(i).Set(redactedValue)
+		// A field named as sensitive is replaced wholesale; a field that merely
+		// contains something sensitive has that part replaced, so a notes field
+		// with a phone number in it keeps the note. Recording which of the two
+		// happened is what makes RedactWithResult an audit rather than a count.
+		byName := fieldNameIsSensitive(fieldName) || fieldType.Tag.Get("redact") != ""
+
+		if byName {
+			opts.report.addField(fieldName)
+			newStruct.Field(i).Set(applyRedactionToValue(field, opts))
+		} else if field.Kind() == reflect.String &&
+			valueIsSensitive(field.String(), opts.Categories, opts.CustomPatterns) {
+			redacted, found := redactStringWithReport(field.String(), opts)
+			opts.report.addField(fieldName)
+			_ = found // redactStringWithReport already recorded into opts.report
+			newStruct.Field(i).SetString(redacted)
 		} else {
 			// Recursively redact nested structs/slices/maps
 			redactedValue, err := redactValue(field.Interface(), opts)
@@ -367,6 +478,16 @@ func redactMap[T any](input T, opts RedactOptions) (T, error) {
 
 	for _, key := range v.MapKeys() {
 		value := v.MapIndex(key)
+
+		// A map key names its value exactly as a struct field name does, and
+		// this used to ignore it entirely: map[string]any{"ssn": ...} was
+		// redacted only if the value happened to match a pattern.
+		if key.Kind() == reflect.String && fieldNameIsSensitive(key.String()) {
+			opts.report.addField(key.String())
+			newMap.SetMapIndex(key, applyRedactionToValue(value, opts))
+			continue
+		}
+
 		redactedValue, err := redactValue(value.Interface(), opts)
 		if err != nil {
 			// Keep original if redaction fails
@@ -386,79 +507,22 @@ func shouldRedactField(fieldName string, fieldType reflect.StructField, fieldVal
 		return stringSliceContains(opts.Categories, tag)
 	}
 
-	// Check field name patterns
-	lowerName := strings.ToLower(fieldName)
-	sensitivePatterns := []string{
-		"password", "secret", "token", "key", "ssn", "social", "credit", "card",
-		"email", "phone", "address", "name", "first", "last", "full",
-	}
-
-	for _, pattern := range sensitivePatterns {
-		if strings.Contains(lowerName, pattern) {
-			return true
-		}
+	// The field name has to name the thing, not merely contain a word that
+	// appears in it. Substring matching here destroyed Filename, Username,
+	// Keywords, KeyMetrics, APIKeyLabel, FirstSeen, LastUpdated, CardCount,
+	// and AddressBookSize, and RedactWithResult would not tell you which.
+	if fieldNameIsSensitive(fieldName) {
+		return true
 	}
 
 	// Check content patterns for string fields
 	if fieldValue.Kind() == reflect.String {
-		strValue := fieldValue.String()
-		if matchesSensitivePattern(strValue, opts.Categories) {
+		if valueIsSensitive(fieldValue.String(), opts.Categories, opts.CustomPatterns) {
 			return true
 		}
 	}
 
 	return false
-}
-
-// matchesSensitivePattern checks if a string matches sensitive data patterns
-func matchesSensitivePattern(value string, categories []string) bool {
-	patterns := getPatternsForCategories(categories)
-
-	for _, pattern := range patterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			continue
-		}
-		if re.MatchString(value) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// getPatternsForCategories returns regex patterns for given categories
-func getPatternsForCategories(categories []string) []string {
-	patterns := make(map[string][]string)
-
-	patterns["PII"] = []string{
-		`\b\d{3}-\d{2}-\d{4}\b`,       // SSN
-		`\b\d{3}-\d{3}-\d{4}\b`,       // Phone
-		`\S+@\S+\.\S+`,                // Email
-		`\b\d{4} \d{4} \d{4} \d{4}\b`, // Credit card
-		`\b[A-Z][a-z]+ [A-Z][a-z]+\b`, // Names (First Last)
-	}
-
-	patterns["secrets"] = []string{
-		`(?i)(password|passwd|pwd)\s*[:=]\s*\S+`,
-		`(?i)(secret|token|key)\s*[:=]\s*\S+`,
-		`Bearer\s+[A-Za-z0-9+/=]{20,}`,
-	}
-
-	patterns["financial"] = []string{
-		`\b\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}\b`, // Credit cards
-		`\b\d{9}\b`,                            // Bank routing numbers
-		`\$\d+(?:\.\d{2})?`,                    // Currency amounts
-	}
-
-	var result []string
-	for _, category := range categories {
-		if categoryPatterns, exists := patterns[category]; exists {
-			result = append(result, categoryPatterns...)
-		}
-	}
-
-	return result
 }
 
 // generateMaskText creates mask text based on the options
@@ -503,6 +567,18 @@ func applyRedactionStrategy(value string, opts RedactOptions) string {
 
 // applyRedactionToValue applies redaction to a reflect.Value
 func applyRedactionToValue(value reflect.Value, opts RedactOptions) reflect.Value {
+	// A map[string]any holds interface values, so the string inside has to be
+	// unwrapped or nothing is ever redacted by key name.
+	if value.Kind() == reflect.Interface && !value.IsNil() {
+		redacted := applyRedactionToValue(value.Elem(), opts)
+		wrapper := reflect.New(value.Type()).Elem()
+		if redacted.Type().AssignableTo(value.Type()) {
+			wrapper.Set(redacted)
+			return wrapper
+		}
+		return value
+	}
+
 	switch value.Kind() {
 	case reflect.String:
 		redacted := applyRedactionStrategy(value.String(), opts)
@@ -526,15 +602,37 @@ func applyRedactionToValue(value reflect.Value, opts RedactOptions) reflect.Valu
 }
 
 // jumbleString scrambles a string according to the jumble mode
+// jumbleString permutes the characters of the input.
+//
+// # This is obfuscation, not anonymization
+//
+// A permutation preserves length, alphabet, and character frequency. Those
+// three facts are often enough to re-identify a value, so jumbling is suitable
+// for demo data and screenshots that need to look realistic, and is not
+// suitable for anything where re-identification matters. Use RedactMask or
+// RedactNil for that.
+//
+// It used to be worse than that: JumbleSeed defaults to zero and the RNG was
+// then seeded with the input's LENGTH -- a number an attacker reads off the
+// output. The permutation was fully determined by a seed anyone could
+// reproduce with this library, which made RedactJumble and RedactScramble
+// exactly invertible. The default now draws from crypto/rand and is not
+// reproducible.
+//
+// Setting JumbleSeed explicitly restores determinism, and with it
+// invertibility by anyone who knows the seed. That is a reasonable thing to
+// want for reproducible test fixtures and an unreasonable thing to rely on for
+// privacy.
 func jumbleString(input string, opts RedactOptions) string {
 	if input == "" {
 		return input
 	}
 
-	r := rand.New(rand.NewSource(opts.JumbleSeed))
-	if opts.JumbleSeed == 0 {
-		r = rand.New(rand.NewSource(int64(len(input))))
+	seed := opts.JumbleSeed
+	if seed == 0 {
+		seed = unpredictableSeed()
 	}
+	r := rand.New(rand.NewSource(seed))
 
 	switch opts.JumbleMode {
 	case JumbleTypeAware:
@@ -544,6 +642,17 @@ func jumbleString(input string, opts RedactOptions) string {
 	default: // JumbleBasic
 		return jumbleBasic(input, r)
 	}
+}
+
+// unpredictableSeed draws a seed the caller cannot reconstruct from the output.
+// A failure to read the system source falls back to the clock, which is weaker
+// but still not a function of the input.
+func unpredictableSeed() int64 {
+	var buf [8]byte
+	if _, err := cryptorand.Read(buf[:]); err == nil {
+		return int64(binary.LittleEndian.Uint64(buf[:]))
+	}
+	return time.Now().UnixNano()
 }
 
 // jumbleBasic performs simple character scrambling
