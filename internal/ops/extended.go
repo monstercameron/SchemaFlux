@@ -229,8 +229,8 @@ func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 	rulesDesc := opts.Rules
 	if len(opts.FieldRules) > 0 {
 		var fieldRulesStr []string
-		for field, rule := range opts.FieldRules {
-			fieldRulesStr = append(fieldRulesStr, fmt.Sprintf("- %s: %s", field, rule))
+		for _, field := range sortedKeys(opts.FieldRules) {
+			fieldRulesStr = append(fieldRulesStr, fmt.Sprintf("- %s: %s", field, opts.FieldRules[field]))
 		}
 		if rulesDesc != "" {
 			rulesDesc += "\n\nField-specific rules:\n" + strings.Join(fieldRulesStr, "\n")
@@ -241,8 +241,8 @@ func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 
 	if len(opts.SchemaHints) > 0 {
 		var hintsStr []string
-		for field, hint := range opts.SchemaHints {
-			hintsStr = append(hintsStr, fmt.Sprintf("- %s: %s", field, hint))
+		for _, field := range sortedKeys(opts.SchemaHints) {
+			hintsStr = append(hintsStr, fmt.Sprintf("- %s: %s", field, opts.SchemaHints[field]))
 		}
 		rulesDesc += "\n\nSchema hints:\n" + strings.Join(hintsStr, "\n")
 	}

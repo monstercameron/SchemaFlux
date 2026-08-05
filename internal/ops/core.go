@@ -70,16 +70,16 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 
 		if len(opts.SchemaHints) > 0 {
 			hints := "Schema hints: "
-			for field, hint := range opts.SchemaHints {
-				hints += fmt.Sprintf("%s (%s), ", field, hint)
+			for _, field := range sortedKeys(opts.SchemaHints) {
+				hints += fmt.Sprintf("%s (%s), ", field, opts.SchemaHints[field])
 			}
 			steeringParts = append(steeringParts, strings.TrimSuffix(hints, ", "))
 		}
 
 		if len(opts.FieldRules) > 0 {
 			rules := "Field rules: "
-			for field, rule := range opts.FieldRules {
-				rules += fmt.Sprintf("%s: %s; ", field, rule)
+			for _, field := range sortedKeys(opts.FieldRules) {
+				rules += fmt.Sprintf("%s: %s; ", field, opts.FieldRules[field])
 			}
 			steeringParts = append(steeringParts, strings.TrimSuffix(rules, "; "))
 		}
@@ -173,7 +173,6 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 			Input:      input,
 			TargetType: targetType.String(),
 			Reason:     err.Error(),
-			Confidence: 0,
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
 		}
@@ -186,21 +185,16 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 
 	// Parse JSON response into target type
 	if err := ParseJSON(response, &result); err != nil {
-		// Calculate partial confidence based on parsing attempt
-		confidence := CalculateParsingConfidence(response, targetType)
-
 		extractErr := types.ExtractError{
 			Input:      input,
 			TargetType: targetType.String(),
 			Reason:     fmt.Sprintf("failed to parse response: %v", err),
-			Confidence: confidence,
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
 		}
 
 		log.Error("Extract failed: JSON parsing error",
 			"requestID", opt.RequestID,
-			"confidence", confidence,
 			"error", extractErr,
 		)
 		return result, extractErr
@@ -213,7 +207,6 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 				Input:      input,
 				TargetType: targetType.String(),
 				Reason:     fmt.Sprintf("validation failed: %v", err),
-				Confidence: opt.Threshold - 0.1, // Just below threshold
 				RequestID:  opt.RequestID,
 				Timestamp:  time.Now(),
 			}

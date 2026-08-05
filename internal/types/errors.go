@@ -70,7 +70,6 @@ type ExtractError struct {
 	Input      any
 	TargetType string
 	Reason     string
-	Confidence float64
 	RequestID  string
 	Timestamp  any // Using any to avoid time import if not needed, or add time import
 }

@@ -188,48 +188,6 @@ func TestProcessCompletionResponse(t *testing.T) {
 	}
 }
 
-func TestEstimateCompletionConfidence(t *testing.T) {
-	tests := []struct {
-		name      string
-		completed string
-		original  string
-		minConf   float64
-		maxConf   float64
-	}{
-		{
-			name:      "no completion",
-			completed: "Hello",
-			original:  "Hello",
-			minConf:   0.0,
-			maxConf:   0.1,
-		},
-		{
-			name:      "short completion",
-			completed: "Hello world",
-			original:  "Hello",
-			minConf:   0.4,
-			maxConf:   0.7,
-		},
-		{
-			name:      "long completion with punctuation",
-			completed: "Hello world! This is a great day to be programming.",
-			original:  "Hello",
-			minConf:   0.7,
-			maxConf:   0.9,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			conf := estimateCompletionConfidence(tt.completed, tt.original)
-			if conf < tt.minConf || conf > tt.maxConf {
-				t.Errorf("estimateCompletionConfidence() = %f, expected between %f and %f",
-					conf, tt.minConf, tt.maxConf)
-			}
-		})
-	}
-}
-
 func TestBuildCompleteSystemPrompt(t *testing.T) {
 	tests := []struct {
 		name     string

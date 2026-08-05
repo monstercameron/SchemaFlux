@@ -92,8 +92,8 @@ func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], e
 	}
 
 	if len(opts.CategoryDescriptions) > 0 {
-		for category, description := range opts.CategoryDescriptions {
-			instructions = append(instructions, fmt.Sprintf("%s: %s", category, description))
+		for _, category := range sortedKeys(opts.CategoryDescriptions) {
+			instructions = append(instructions, fmt.Sprintf("%s: %s", category, opts.CategoryDescriptions[category]))
 		}
 	}
 

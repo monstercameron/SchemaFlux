@@ -41,14 +41,12 @@ type BatchResult[T any] struct {
 
 // BatchMetadata provides metrics about the batch operation
 type BatchMetadata struct {
-	Mode          BatchMode
-	TotalItems    int
-	Succeeded     int
-	Failed        int
-	Duration      time.Duration
-	TokensSaved   int
-	APICallsMade  int
-	EstimatedCost float64
+	Mode         BatchMode
+	TotalItems   int
+	Succeeded    int
+	Failed       int
+	Duration     time.Duration
+	APICallsMade int
 }
 
 // NewBatchProcessor creates a new batch processor for a given provider.
@@ -186,7 +184,6 @@ func extractMerged[T any](batchProcessor *BatchProcessor, inputs []interface{}, 
 	var allResults []T
 	var allErrors []error
 	apiCalls := 0
-	tokensSaved := 0
 
 	// Process in chunks
 	chunks := batchProcessor.createChunks(inputs, batchProcessor.maxBatchSize)
@@ -236,7 +233,6 @@ Return format: [{"index": 0, "data": {...}}, {"index": 1, "data": {...}}, ...]`,
 		allErrors = append(allErrors, parseErrors...)
 
 		// Estimate tokens saved (rough calculation)
-		tokensSaved += (len(chunk) - 1) * 100 // Approximate overhead per call
 	}
 
 	// Calculate metadata
@@ -251,14 +247,12 @@ Return format: [{"index": 0, "data": {...}}, {"index": 1, "data": {...}}, ...]`,
 		Results: allResults,
 		Errors:  allErrors,
 		Metadata: BatchMetadata{
-			Mode:          MergedMode,
-			TotalItems:    len(inputs),
-			Succeeded:     succeeded,
-			Failed:        len(inputs) - succeeded,
-			Duration:      time.Since(startTime),
-			TokensSaved:   tokensSaved,
-			APICallsMade:  apiCalls,
-			EstimatedCost: float64(apiCalls) * 0.01, // Rough estimate
+			Mode:         MergedMode,
+			TotalItems:   len(inputs),
+			Succeeded:    succeeded,
+			Failed:       len(inputs) - succeeded,
+			Duration:     time.Since(startTime),
+			APICallsMade: apiCalls,
 		},
 	}
 }

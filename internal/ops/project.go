@@ -168,8 +168,8 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 	mappingsDesc := ""
 	if len(opt.Mappings) > 0 {
 		var parts []string
-		for src, dst := range opt.Mappings {
-			parts = append(parts, fmt.Sprintf("- %s → %s", src, dst))
+		for _, src := range sortedKeys(opt.Mappings) {
+			parts = append(parts, fmt.Sprintf("- %s → %s", src, opt.Mappings[src]))
 		}
 		mappingsDesc = fmt.Sprintf("\n\nExplicit mappings:\n%s", strings.Join(parts, "\n"))
 	}

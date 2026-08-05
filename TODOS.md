@@ -133,20 +133,20 @@ regardless of what happens to the rest of the plan.
 
 ## Schema generation
 
-- [ ] **F-015** — `json:"-"` fields are described to the model and requested back
+- [x] **F-015** — `json:"-"` fields are described to the model and requested back
   (`utils.go:32-37`): when the tag is `-`, the branch is skipped and the Go field name is
   used. Skip the field entirely. Closes **D-02**.
   *Verify:* golden test — a struct with a `json:"-"` field produces a schema omitting it.
 
 ## Fabricated numbers
 
-- [ ] **F-016** — Delete `CalculateParsingConfidence` (`utils.go:167-178`: `0.3` if the text
+- [x] **F-016** — Delete `CalculateParsingConfidence` (`utils.go:167-178`: `0.3` if the text
   starts with `{`, else `0.1`). Closes half of **D-06**.
-- [ ] **F-017** — Delete the `Confidence: opt.Threshold - 0.1` literal (`core.go:216`).
+- [x] **F-017** — Delete the `Confidence: opt.Threshold - 0.1` literal (`core.go:216`).
   Closes the other half of **D-06**.
-- [ ] **F-018** — Delete `estimateCompletionConfidence` (`complete.go:281-311`: `+0.2` if the
+- [x] **F-018** — Delete `estimateCompletionConfidence` (`complete.go:281-311`: `+0.2` if the
   completion exceeds 20 characters, `+0.1` if it contains a full stop). Closes **T-05**.
-- [ ] **F-019** — Delete `BatchResult.TokensSaved`, computed as `(len(chunk)-1) * 100`
+- [x] **F-019** — Delete `BatchResult.TokensSaved`, computed as `(len(chunk)-1) * 100`
   (`batch.go:239`), in a library that receives real token counts from every response.
   Closes **C-09**.
 - [ ] **F-020** — Rename every model-self-reported score to make its provenance explicit
@@ -621,7 +621,7 @@ tests.
 
 ## Prompt caching
 
-- [ ] **CA-001** — Sort map keys before rendering them into prompts. Go randomizes map
+- [x] **CA-001** — Sort map keys before rendering them into prompts. Go randomizes map
   iteration order, so `SchemaHints` (`core.go:73`), `FieldRules` (`core.go:80`,
   `extended.go:232`), `Mappings` (`project.go:171`), and `CategoryDescriptions`
   (`analysis.go:95`) produce different prompt bytes on every call — defeating any prefix cache
@@ -814,6 +814,12 @@ commit and the test that proves it.
 | **F-009** | `6653590` | `Compose[T]` chains every operation over one type; the old `Compose[T, U]` signature could never chain, because operation 1's output type did not match operation 2's input. `TestCompose` (5 subtests) replaces the test that had enshrined the bug. |
 | **F-010** | `6653590` | `attempts = MaxRetries + 1` when retries are on. `TestPipelineRunsEveryStepWithZeroValueMaxRetries` fails against the old code by running every step zero times; `TestPipelineAttemptCounts` covers seven retry counts. |
 | **F-011** | `6653590` | Backoff uses a cancellable timer (`sleepWithContext`) and `PipelineOptions.RetryDelay` makes it configurable. `TestPipelineBackoffIsCancellable`, `TestSleepWithContext`, `TestPipelineTimeoutStopsBetweenSteps`. |
+| **F-015** | `pending` | `json:"-"` fields are skipped entirely, following the encoding/json grammar (`-` alone excludes; `-,` names the field `-`). `internal/ops/schema_determinism_test.go` covers eight tag shapes plus an all-excluded struct; `schema_integration_test.go` asserts the excluded names never appear in the bytes the provider receives. Found while here: `required` was a substring test on the whole tag, so a field named `omitempty_flag` was reported optional — now `hasJSONOption`. |
+| **F-016** | `pending` | `CalculateParsingConfidence` deleted along with its only call site. |
+| **F-017** | `pending` | `Confidence: opt.Threshold - 0.1` deleted, and with it `ExtractError.Confidence`: an error has no confidence, and a zero-valued field invites the next guess. `TestFailedExtractionCarriesNoInventedConfidence`. |
+| **F-018** | `pending` | `estimateCompletionConfidence` deleted; `CompleteResult.Confidence` stays zero. `TestCompleteReportsNoInventedConfidence`. The test that asserted the heuristic's output ranges is deleted with it. |
+| **F-019** | `pending` | `BatchResult.TokensSaved` deleted, and `EstimatedCost: float64(apiCalls) * 0.01` with it — the same fabrication one field over, in a library that has a pricing package. |
+| **CA-001** | `pending` | All six map-into-prompt sites sorted through `sortedKeys`. `TestPromptsAreByteIdenticalAcrossRuns` renders each twenty times and compares bytes; every subtest was verified to FAIL against the unsorted code before the fix landed. `TestIntegrationRepeatedCallsSendIdenticalBytes` checks the same at the provider boundary. |
 
 ### Added during the work
 

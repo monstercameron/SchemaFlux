@@ -176,16 +176,13 @@ func completeImpl(ctx context.Context, provider llm.Provider, partialText string
 	result.Text = completedText
 	result.Length = len(completedText) - len(partialText)
 
-	// Basic confidence estimation
-	result.Confidence = estimateCompletionConfidence(completedText, partialText)
-
 	// Add metadata
 	result.Metadata["model"] = "llm-completion"
 	result.Metadata["temperature"] = opts.Temperature
 	result.Metadata["max_length"] = opts.MaxLength
 	result.Metadata["context_messages"] = len(opts.Context)
 
-	logger.Debug("Complete operation succeeded", "requestID", opts.RequestID, "completionLength", result.Length, "confidence", result.Confidence)
+	logger.Debug("Complete operation succeeded", "requestID", opts.RequestID, "completionLength", result.Length)
 
 	return result, nil
 }
@@ -276,38 +273,6 @@ func processCompletionResponse(response, originalText string, opts CompleteOptio
 	}
 
 	return completedText
-}
-
-// estimateCompletionConfidence provides a basic confidence estimate
-func estimateCompletionConfidence(completed, original string) float64 {
-	if len(completed) <= len(original) {
-		return 0.0 // No completion generated
-	}
-
-	completion := strings.TrimSpace(completed[len(original):])
-	if completion == "" {
-		return 0.0
-	}
-
-	// Basic heuristics for confidence
-	confidence := 0.5 // Base confidence
-
-	// Longer completions tend to be more confident
-	if len(completion) > 20 {
-		confidence += 0.2
-	}
-
-	// Completions with proper punctuation
-	if strings.Contains(completion, ".") || strings.Contains(completion, "!") || strings.Contains(completion, "?") {
-		confidence += 0.1
-	}
-
-	// Avoid overconfidence
-	if confidence > 0.9 {
-		confidence = 0.9
-	}
-
-	return confidence
 }
 
 // CompleteFieldResult contains the result of completing a field in a struct

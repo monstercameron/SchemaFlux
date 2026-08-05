@@ -257,8 +257,8 @@ func Normalize[T any](input T, opts NormalizeOptions) (NormalizeResult[T], error
 	mappingsDesc := ""
 	if len(opts.CanonicalMappings) > 0 {
 		mappings := make([]string, 0, len(opts.CanonicalMappings))
-		for from, to := range opts.CanonicalMappings {
-			mappings = append(mappings, fmt.Sprintf("%s -> %s", from, to))
+		for _, from := range sortedKeys(opts.CanonicalMappings) {
+			mappings = append(mappings, fmt.Sprintf("%s -> %s", from, opts.CanonicalMappings[from]))
 		}
 		mappingsDesc = fmt.Sprintf("\nCanonical mappings:\n%s", strings.Join(mappings, "\n"))
 	}

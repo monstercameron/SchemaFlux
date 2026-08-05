@@ -4,10 +4,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+// hasJSONOption reports whether a struct tag carries the named option, testing
+// the comma-separated options rather than the tag as a whole.
+func hasJSONOption(tag, option string) bool {
+	parts := strings.Split(tag, ",")
+	for _, part := range parts[1:] {
+		if part == option {
+			return true
+		}
+	}
+	return false
+}
+
+// sortedKeys returns a map's keys in a stable order. Go randomizes map
+// iteration, so rendering a map into a prompt unsorted produces different bytes
+// on every call: no prefix cache can hit, and no run is reproducible.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // GenerateTypeSchema creates a human-readable schema description for a Go type
 func GenerateTypeSchema(targetType reflect.Type) string {
@@ -26,12 +51,18 @@ func GenerateTypeSchema(targetType reflect.Type) string {
 				continue
 			}
 
-			// Get JSON tag or use field name
+			// Get JSON tag or use field name. `json:"-"` means the field is
+			// not serialised at all, so describing it to the model under its Go
+			// name asks for a value that will be discarded — and, for a field
+			// excluded because it is sensitive, sends its name out of process.
 			jsonTag := field.Tag.Get("json")
 			fieldName := field.Name
 			if jsonTag != "" {
 				parts := strings.Split(jsonTag, ",")
-				if parts[0] != "-" {
+				if parts[0] == "-" && len(parts) == 1 {
+					continue
+				}
+				if parts[0] != "" {
 					fieldName = parts[0]
 				}
 			}
@@ -39,8 +70,9 @@ func GenerateTypeSchema(targetType reflect.Type) string {
 			// Get field type description
 			fieldType := GetTypeDescription(field.Type)
 
-			// Check if field is required (no omitempty tag)
-			required := !strings.Contains(jsonTag, "omitempty")
+			// Check if field is required (no omitempty option). A substring
+			// test would also match a field literally named "omitempty_flag".
+			required := !hasJSONOption(jsonTag, "omitempty")
 			requiredStr := ""
 			if required {
 				requiredStr = " (required)"
@@ -162,19 +194,6 @@ func BuildGenerateStringPrompt(mode types.Mode) string {
 	default:
 		return "You are a content generator. Generate the requested content based on the prompt."
 	}
-}
-
-// CalculateParsingConfidence estimates confidence when parsing partially fails
-func CalculateParsingConfidence(response string, targetType reflect.Type) float64 {
-	// Basic heuristic: check if response looks like valid JSON
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "{") && strings.HasSuffix(response, "}") {
-		return 0.3 // Looks like JSON but failed to parse
-	}
-	if strings.HasPrefix(response, "[") && strings.HasSuffix(response, "]") {
-		return 0.3 // Looks like JSON array but failed to parse
-	}
-	return 0.1 // Doesn't look like JSON at all
 }
 
 // ValidateExtractedData validates extracted data meets requirements
