@@ -402,7 +402,43 @@ Common environment variables:
 - `SCHEMAFLUX_MODEL_FAST`
 - `SCHEMAFLUX_MODEL_QUICK`
 
-If `SCHEMAFLUX_API_KEY` is unset and `OPENAI_API_KEY` is present, SchemaFlux will use `OPENAI_API_KEY`.
+### Credential resolution
+
+`Init` and `InitWithEnv` take the first credential they find, in this order:
+
+1. the key passed to `Init(key)`, if it is not empty
+2. `SCHEMAFLUX_API_KEY`
+3. the provider-specific name — `SCHEMAFLUX_OPENAI_API_KEY`, `SCHEMAFLUX_ANTHROPIC_API_KEY`, and so on
+4. the provider's own conventional name — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+5. for OpenAI only, the bare `OPENAI`, which is a common spelling in `.env` files
+
+If none of them resolves, `Init` returns an error rather than falling through to
+the mock provider. The mock answers every operation with `Mock response for: …`,
+which parses into zero-valued structs and is indistinguishable from a working
+deployment until someone reads the output. To use it deliberately, set
+`SCHEMAFLUX_PROVIDER=local`, or call `NewClient("").WithMockProvider()`.
+
+Both functions return an error. Check it:
+
+```go
+if err := schemaflux.InitWithEnv(); err != nil {
+    log.Fatal(err)
+}
+```
+
+An operation run before a provider exists reports what to do about it, but that
+is a fallback — the error from `Init` is the one that says why.
+
+### `.env` files
+
+`InitWithEnv()` with no arguments loads `./.env` when it exists, and is not an
+error when it does not. `InitWithEnv("config/dev.env", "config/local.env")`
+loads exactly those paths, in order, and reports a path that does not exist.
+
+**A `.env` file supplies defaults; it does not override the process
+environment.** A variable already exported in the shell keeps its value, so
+`SCHEMAFLUX_API_KEY=… go run ./cmd/app` behaves as expected regardless of what
+the file contains.
 
 ## Design Notes
 

@@ -148,9 +148,9 @@ Rules:
 	if err != nil {
 		log.Error("Summarize operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return "", types.SummarizeError{
-			Input:  input,
-			Length: len(input),
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Length:     len(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -225,9 +225,9 @@ Rules:
 	if err != nil {
 		log.Error("SummarizeWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return SummarizeResult{}, types.SummarizeError{
-			Input:  input,
-			Length: len(input),
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Length:     len(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -335,8 +335,8 @@ Rules:
 	if err != nil {
 		log.Error("Rewrite operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return "", types.RewriteError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -427,8 +427,8 @@ Rules:
 	if err != nil {
 		log.Error("RewriteWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return RewriteResult{}, types.RewriteError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -525,8 +525,8 @@ Rules:
 	if err != nil {
 		log.Error("Translate operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return "", types.TranslateError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -615,8 +615,8 @@ Rules:
 	if err != nil {
 		log.Error("TranslateWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return TranslateResult{}, types.TranslateError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -707,8 +707,8 @@ Rules:
 	if err != nil {
 		log.Error("Expand operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return "", types.ExpandError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -787,8 +787,8 @@ Rules:
 	if err != nil {
 		log.Error("ExpandWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return ExpandResult{}, types.ExpandError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 

@@ -34,8 +34,8 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 
 	if len(options) == 0 {
 		return result, types.ChooseError{
-			Options: []any{},
-			Reason:  "no options provided",
+			OptionCount: 0,
+			Reason:      "no options provided",
 		}
 	}
 
@@ -78,8 +78,8 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 	optionsJSON, err := json.Marshal(options)
 	if err != nil {
 		return result, types.ChooseError{
-			Options: interfaceSlice(options),
-			Reason:  fmt.Sprintf("failed to marshal options: %v", err),
+			OptionCount: len(options),
+			Reason:      fmt.Sprintf("failed to marshal options: %v", err),
 		}
 	}
 
@@ -103,8 +103,8 @@ Rules:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOptions)
 	if err != nil {
 		return result, types.ChooseError{
-			Options: interfaceSlice(options),
-			Reason:  err.Error(),
+			OptionCount: len(options),
+			Reason:      err.Error(),
 		}
 	}
 
@@ -123,8 +123,8 @@ Rules:
 	// Parse the selected option directly
 	if err := json.Unmarshal([]byte(response), &result); err != nil {
 		return result, types.ChooseError{
-			Options: interfaceSlice(options),
-			Reason:  fmt.Sprintf("failed to parse selected option: %v (response: %s)", err, response),
+			OptionCount: len(options),
+			Reason:      fmt.Sprintf("failed to parse selected option: %v (response: %s)", err, response),
 		}
 	}
 
@@ -188,8 +188,8 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	itemsJSON, err := json.Marshal(items)
 	if err != nil {
 		return nil, types.FilterError{
-			Items:  interfaceSlice(items),
-			Reason: fmt.Sprintf("failed to marshal items: %v", err),
+			ItemCount: len(items),
+			Reason:    fmt.Sprintf("failed to marshal items: %v", err),
 		}
 	}
 
@@ -214,8 +214,8 @@ Examples:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOptions)
 	if err != nil {
 		return nil, types.FilterError{
-			Items:  interfaceSlice(items),
-			Reason: err.Error(),
+			ItemCount: len(items),
+			Reason:    err.Error(),
 		}
 	}
 
@@ -239,8 +239,8 @@ Examples:
 			return []T{single}, nil
 		}
 		return nil, types.FilterError{
-			Items:  interfaceSlice(items),
-			Reason: fmt.Sprintf("failed to parse filtered items: %v (response: %s)", err, response),
+			ItemCount: len(items),
+			Reason:    fmt.Sprintf("failed to parse filtered items: %v (response: %s)", err, response),
 		}
 	}
 
@@ -310,8 +310,8 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 	itemsJSON, err := json.Marshal(items)
 	if err != nil {
 		return nil, types.SortError{
-			Items:  interfaceSlice(items),
-			Reason: fmt.Sprintf("failed to marshal items: %v", err),
+			ItemCount: len(items),
+			Reason:    fmt.Sprintf("failed to marshal items: %v", err),
 		}
 	}
 
@@ -338,8 +338,8 @@ Examples:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOptions)
 	if err != nil {
 		return nil, types.SortError{
-			Items:  interfaceSlice(items),
-			Reason: err.Error(),
+			ItemCount: len(items),
+			Reason:    err.Error(),
 		}
 	}
 
@@ -363,8 +363,8 @@ Examples:
 			return fallback, nil
 		}
 		return nil, types.SortError{
-			Items:  interfaceSlice(items),
-			Reason: fmt.Sprintf("failed to parse sorted items: %v (response: %s)", err, response),
+			ItemCount: len(items),
+			Reason:    fmt.Sprintf("failed to parse sorted items: %v (response: %s)", err, response),
 		}
 	}
 
@@ -374,8 +374,8 @@ Examples:
 			return fallback, nil
 		}
 		return nil, types.SortError{
-			Items:  interfaceSlice(items),
-			Reason: fmt.Sprintf("received %d items for %d input items", len(result), len(items)),
+			ItemCount: len(items),
+			Reason:    fmt.Sprintf("received %d items for %d input items", len(result), len(items)),
 		}
 	}
 

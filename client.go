@@ -41,7 +41,10 @@ func NewClient(apiKey string) *Client {
 		logger:       telemetry.GetLogger(),
 	}
 
-	// Initialize with OpenAI provider by default
+	// Initialize with OpenAI provider by default. An empty key leaves the
+	// client with no provider: substituting the mock here meant every operation
+	// returned "Mock response for: ..." and the caller had no way to notice.
+	// Ask for the mock deliberately with WithMockProvider.
 	if apiKey != "" {
 		client.openaiClient = openai.NewClient(apiKey)
 		provider, err := llm.CreateProvider("openai", client.providerConfig("openai", llm.ProviderConfig{}))
@@ -51,10 +54,29 @@ func NewClient(apiKey string) *Client {
 			client.logger.Warn("Failed to create OpenAI provider", "error", err)
 		}
 	} else {
-		localProvider, _ := llm.CreateProvider("local", llm.ProviderConfig{})
-		client.provider = localProvider
+		client.logger.Warn("NewClient was given no API key; the client has no provider. " +
+			"Call WithProvider, WithProviderInstance, or WithMockProvider before using it.")
 	}
 
+	return client
+}
+
+// WithMockProvider attaches the local mock provider, which answers every
+// operation with canned text. It exists for tests and offline demos, and has to
+// be asked for: an empty key used to select it silently.
+func (client *Client) WithMockProvider() *Client {
+	provider, err := llm.CreateProvider("local", llm.ProviderConfig{})
+	if err != nil {
+		client.logger.Error("Failed to create the mock provider", "error", err)
+		return client
+	}
+
+	client.mu.Lock()
+	client.provider = provider
+	client.providerName = "local"
+	client.mu.Unlock()
+
+	ops.SetDefaultProvider(provider)
 	return client
 }
 
@@ -202,7 +224,7 @@ func Init(key string) error {
 				"schemaflux: no API key for provider %q; set SCHEMAFLUX_API_KEY or a provider-specific key, or set SCHEMAFLUX_PROVIDER=local to use the mock provider deliberately",
 				provider)
 		}
-		defaultClient = NewClient("")
+		defaultClient = NewClient("").WithMockProvider()
 		return nil
 	}
 
@@ -213,8 +235,11 @@ func Init(key string) error {
 	return nil
 }
 
-// GetDefaultClient returns the default client
+// GetDefaultClient returns the default client, or nil if the library has not
+// been initialised.
 func GetDefaultClient() *Client {
+	mu.RLock()
+	defer mu.RUnlock()
 	return defaultClient
 }
 
@@ -246,8 +271,10 @@ const defaultEnvFile = ".env"
 
 // GetLogger returns the default logger for the schemaflux package.
 func GetLogger() *telemetry.Logger {
-	if defaultClient != nil {
-		return defaultClient.logger
+	if client := GetDefaultClient(); client != nil {
+		client.mu.RLock()
+		defer client.mu.RUnlock()
+		return client.logger
 	}
 	return telemetry.GetLogger()
 }
@@ -255,9 +282,7 @@ func GetLogger() *telemetry.Logger {
 // ConfigureLogging replaces the global logger configuration and keeps the default client in sync.
 func ConfigureLogging(cfg telemetry.LoggerConfig) *telemetry.Logger {
 	log := telemetry.ConfigureLogger(cfg)
-	if defaultClient != nil {
-		defaultClient.logger = log
-	}
+	setDefaultClientLogger(log)
 	return log
 }
 
@@ -265,9 +290,21 @@ func ConfigureLogging(cfg telemetry.LoggerConfig) *telemetry.Logger {
 func SetLogLevel(level telemetry.LogLevel) {
 	log := telemetry.GetLogger()
 	log.SetLevel(level)
-	if defaultClient != nil {
-		defaultClient.logger = log
+	setDefaultClientLogger(log)
+}
+
+// setDefaultClientLogger keeps the default client's logger in step, under the
+// same locks Init writes it with. These accessors used to read defaultClient
+// unguarded while Init wrote it, which -race reports as soon as the two run
+// concurrently.
+func setDefaultClientLogger(log *telemetry.Logger) {
+	client := GetDefaultClient()
+	if client == nil {
+		return
 	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.logger = log
 }
 
 // GetLogEntries returns captured log history for review.

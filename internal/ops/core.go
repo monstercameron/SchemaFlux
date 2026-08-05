@@ -114,7 +114,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Validate input
 	if input == nil {
 		err := types.ExtractError{
-			Input:      input,
+			InputShape: types.DescribeValue(input),
 			TargetType: reflect.TypeOf(result).String(),
 			Reason:     "input cannot be nil",
 			RequestID:  opt.RequestID,
@@ -138,7 +138,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	inputStr, err := NormalizeInput(input)
 	if err != nil {
 		extractErr := types.ExtractError{
-			Input:      input,
+			InputShape: types.DescribeValue(input),
 			TargetType: targetType.String(),
 			Reason:     fmt.Sprintf("failed to normalize input: %v", err),
 			RequestID:  opt.RequestID,
@@ -170,11 +170,12 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		extractErr := types.ExtractError{
-			Input:      input,
+			InputShape: types.DescribeValue(input),
 			TargetType: targetType.String(),
 			Reason:     err.Error(),
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
+			Err:        err,
 		}
 		log.Error("Extract failed: LLM error",
 			"requestID", opt.RequestID,
@@ -186,11 +187,12 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Parse JSON response into target type
 	if err := ParseJSON(response, &result); err != nil {
 		extractErr := types.ExtractError{
-			Input:      input,
+			InputShape: types.DescribeValue(input),
 			TargetType: targetType.String(),
 			Reason:     fmt.Sprintf("failed to parse response: %v", err),
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
+			Err:        err,
 		}
 
 		log.Error("Extract failed: JSON parsing error",
@@ -204,7 +206,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	if opt.Mode == types.Strict {
 		if err := ValidateExtractedData(result, opt.Threshold); err != nil {
 			extractErr := types.ExtractError{
-				Input:      input,
+				InputShape: types.DescribeValue(input),
 				TargetType: targetType.String(),
 				Reason:     fmt.Sprintf("validation failed: %v", err),
 				RequestID:  opt.RequestID,
@@ -331,12 +333,12 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		transformErr := types.TransformError{
-			Input:     input,
-			FromType:  fromType.String(),
-			ToType:    toType.String(),
-			Reason:    fmt.Sprintf("failed to marshal input: %v", err),
-			RequestID: opt.RequestID,
-			Timestamp: time.Now(),
+			InputShape: types.DescribeValue(input),
+			FromType:   fromType.String(),
+			ToType:     toType.String(),
+			Reason:     fmt.Sprintf("failed to marshal input: %v", err),
+			RequestID:  opt.RequestID,
+			Timestamp:  time.Now(),
 		}
 		log.Error("Transform failed: marshaling error",
 			"requestID", opt.RequestID,
@@ -378,12 +380,12 @@ Transformation rules:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		transformErr := types.TransformError{
-			Input:     input,
-			FromType:  fromType.String(),
-			ToType:    toType.String(),
-			Reason:    err.Error(),
-			RequestID: opt.RequestID,
-			Timestamp: time.Now(),
+			InputShape: types.DescribeValue(input),
+			FromType:   fromType.String(),
+			ToType:     toType.String(),
+			Reason:     err.Error(),
+			RequestID:  opt.RequestID,
+			Timestamp:  time.Now(),
 		}
 		log.Error("Transform failed: LLM error",
 			"requestID", opt.RequestID,
@@ -395,7 +397,7 @@ Transformation rules:
 	// Parse transformed data
 	if err := ParseJSON(response, &result); err != nil {
 		transformErr := types.TransformError{
-			Input:      input,
+			InputShape: types.DescribeValue(input),
 			FromType:   fromType.String(),
 			ToType:     toType.String(),
 			Reason:     fmt.Sprintf("failed to parse response: %v", err),
@@ -518,11 +520,11 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		err := types.GenerateError{
-			Prompt:     prompt,
-			TargetType: reflect.TypeOf(result).String(),
-			Reason:     "prompt cannot be empty",
-			RequestID:  opt.RequestID,
-			Timestamp:  time.Now(),
+			PromptShape: types.DescribeValue(prompt),
+			TargetType:  reflect.TypeOf(result).String(),
+			Reason:      "prompt cannot be empty",
+			RequestID:   opt.RequestID,
+			Timestamp:   time.Now(),
 		}
 		log.Error("Generate failed: empty prompt",
 			"requestID", opt.RequestID,
@@ -556,11 +558,11 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 		response, err := callLLM(ctx, systemPrompt, prompt, opt)
 		if err != nil {
 			genErr := types.GenerateError{
-				Prompt:     prompt,
-				TargetType: targetType.String(),
-				Reason:     err.Error(),
-				RequestID:  opt.RequestID,
-				Timestamp:  time.Now(),
+				PromptShape: types.DescribeValue(prompt),
+				TargetType:  targetType.String(),
+				Reason:      err.Error(),
+				RequestID:   opt.RequestID,
+				Timestamp:   time.Now(),
 			}
 			log.Error("Generate failed: LLM error",
 				"requestID", opt.RequestID,
@@ -608,11 +610,11 @@ Generation rules:
 	response, err := callLLM(ctx, systemPrompt, prompt, opt)
 	if err != nil {
 		genErr := types.GenerateError{
-			Prompt:     prompt,
-			TargetType: targetType.String(),
-			Reason:     err.Error(),
-			RequestID:  opt.RequestID,
-			Timestamp:  time.Now(),
+			PromptShape: types.DescribeValue(prompt),
+			TargetType:  targetType.String(),
+			Reason:      err.Error(),
+			RequestID:   opt.RequestID,
+			Timestamp:   time.Now(),
 		}
 		log.Error("Generate failed: LLM error",
 			"requestID", opt.RequestID,
@@ -624,11 +626,11 @@ Generation rules:
 	// Parse generated data
 	if err := ParseJSON(response, &result); err != nil {
 		genErr := types.GenerateError{
-			Prompt:     prompt,
-			TargetType: targetType.String(),
-			Reason:     fmt.Sprintf("failed to parse response: %v", err),
-			RequestID:  opt.RequestID,
-			Timestamp:  time.Now(),
+			PromptShape: types.DescribeValue(prompt),
+			TargetType:  targetType.String(),
+			Reason:      fmt.Sprintf("failed to parse response: %v", err),
+			RequestID:   opt.RequestID,
+			Timestamp:   time.Now(),
 		}
 		log.Error("Generate failed: parsing error",
 			"requestID", opt.RequestID,

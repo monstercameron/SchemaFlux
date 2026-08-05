@@ -141,7 +141,7 @@ Return a JSON object with these fields:
 	if err != nil {
 		log.Error("Classify operation failed", "error", err)
 		return result, types.ClassifyError{
-			Input:      inputStr,
+			InputShape: types.DescribeValue(inputStr),
 			Categories: categories,
 			Reason:     err.Error(),
 		}
@@ -188,7 +188,7 @@ Return a JSON object with these fields:
 	if !found {
 		log.Error("Classify returned invalid category", "category", llmResult.Category, "valid", categories)
 		return result, types.ClassifyError{
-			Input:      inputStr,
+			InputShape: types.DescribeValue(inputStr),
 			Categories: categories,
 			Reason:     fmt.Sprintf("invalid category returned: %s", llmResult.Category),
 			Confidence: llmResult.Confidence,
@@ -364,8 +364,8 @@ Return a JSON object with these fields:
 	if err != nil {
 		log.Error("Score operation failed", "error", err)
 		return result, types.ScoreError{
-			Input:  input,
-			Reason: err.Error(),
+			InputShape: types.DescribeValue(input),
+			Reason:     err.Error(),
 		}
 	}
 
@@ -549,8 +549,8 @@ Return a JSON object with these fields:
 	if err != nil {
 		log.Error("Compare operation failed", "error", err)
 		return result, types.CompareError{
-			A:      itemA,
-			B:      itemB,
+			AShape: types.DescribeValue(itemA),
+			BShape: types.DescribeValue(itemB),
 			Reason: err.Error(),
 		}
 	}

@@ -820,6 +820,11 @@ commit and the test that proves it.
 | **F-018** | `6166e38` | `estimateCompletionConfidence` deleted; `CompleteResult.Confidence` stays zero. `TestCompleteReportsNoInventedConfidence`. The test that asserted the heuristic's output ranges is deleted with it. |
 | **F-019** | `6166e38` | `BatchResult.TokensSaved` deleted, and `EstimatedCost: float64(apiCalls) * 0.01` with it — the same fabrication one field over, in a library that has a pricing package. |
 | **CA-001** | `6166e38` | All six map-into-prompt sites sorted through `sortedKeys`. `TestPromptsAreByteIdenticalAcrossRuns` renders each twenty times and compares bytes; every subtest was verified to FAIL against the unsorted code before the fix landed. `TestIntegrationRepeatedCallsSendIdenticalBytes` checks the same at the provider boundary. |
+| **F-029** | `pending` | `NewClient("")` leaves the client with no provider and logs why; the mock is reached with `WithMockProvider()`. `client_concurrency_test.go` covers both paths plus chaining. |
+| **F-030** | `pending` | `ops.ErrNoProvider` names `Init`, `InitWithEnv`, and all four credential variables, and `ExtractError` gained `Unwrap` so `errors.Is` reaches it. `TestNoProviderErrorNamesTheWayOut`, `TestUninitialisedOperationErrorNamesTheWayOut`. |
+| **F-031** | `pending` | `GetDefaultClient`, `GetLogger`, `ConfigureLogging`, and `SetLogLevel` take the locks `Init` writes under. `TestConcurrentInitAndLoggerAccess` runs eight workers over all five entry points, `TestGetLoggerBeforeInit` covers the nil-client window. **Caveat:** `-race` is unavailable on windows/arm64, so the test exercises the interleaving without the detector; run it under `-race` on amd64 or linux to confirm. |
+| **F-034** | `pending` | Every error struct stores a description instead of the payload: `InputShape`, `AShape`/`BShape`, `ItemCount`, `OptionCount`, `PromptShape`, via `types.DescribeValue`. `ClassifyError.Error()` no longer prints the input with `%q`. `internal/ops/error_payload_test.go` drives seven operations with a payload marker and asserts no fragment survives. Closes **X-03** with F-033. |
+| **DOC-004** | `pending` | README gained a Credential resolution section (five-step order, why a missing key is an error, how to ask for the mock) and a `.env` section (default `./.env` optional, named paths required, process environment wins). Checked against `resolveProviderAPIKey`. |
 
 ### Added during the work
 
@@ -832,24 +837,24 @@ commit and the test that proves it.
   Found because `TestGPT56FamilyIsUnpricedUntilRatesAreKnown` skipped where it should have
   asserted — the skip was the signal.
 
-- [ ] **F-029** — `NewClient("")` still constructs the mock provider directly
+- [x] **F-029** — `NewClient("")` still constructs the mock provider directly
   (`client.go:51-54`). F-012 closed the `Init` path, but a caller who builds a client by hand
   with an empty key gets the same silent fake output. Either require a key or take an explicit
   `WithMockProvider()`.
   *Verify:* `NewClient("")` returns an error or a client whose provider is nil, never a mock
   chosen by accident.
-- [ ] **F-030** — When `Init` fails and the caller discards the error, `defaultClient` stays
+- [x] **F-030** — When `Init` fails and the caller discards the error, `defaultClient` stays
   nil and every operation reports `"no LLM provider configured"`
   (`internal/ops/llm_helper.go:47`), which does not say what to do. Make that error name
   `Init`/`InitWithEnv` and the credential variables it looked for.
   *Verify:* the message from an uninitialised call names at least one env var and one
   function.
-- [ ] **F-031** — `Init` now returns an error while `ConfigureLogging`, `SetLogLevel`, and
+- [x] **F-031** — `Init` now returns an error while `ConfigureLogging`, `SetLogLevel`, and
   `GetLogger` still read `defaultClient` without the mutex that `Init` writes it under. The
   new early return widens the window in which `defaultClient` is nil. Fold into **IN-001** if
   that lands first; listed separately so it is not lost.
   *Verify:* `go test -race` on a test that calls `Init` and `GetLogger` concurrently.
-- [ ] **DOC-004** — Document the credential resolution order in the README, including the
+- [x] **DOC-004** — Document the credential resolution order in the README, including the
   `OPENAI` alias added by B-02 and the fact that `.env` supplies defaults rather than
   overrides. The README's Environment section currently lists neither.
 
@@ -878,7 +883,7 @@ commit and the test that proves it.
   closes **X-03**; `types.ExtractError.Input` and the other error structs that retain payloads
   are still open.
   *Verify:* `internal/ops/json_redaction_test.go`.
-- [ ] **F-034** — Finish **X-03**: `types.ExtractError` and its siblings still store the raw
+- [x] **F-034** — Finish **X-03**: `types.ExtractError` and its siblings still store the raw
   `Input`. Same reasoning as F-033 — an error that carries the payload copies it wherever the
   error goes.
   *Verify:* a payload marker present in the input never appears in any error's `Error()`.

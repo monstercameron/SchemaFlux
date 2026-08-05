@@ -1,23 +1,72 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+)
+
+// DescribeValue summarises a value without reproducing it: its kind and size,
+// never its contents. Error structs used to retain the operation's input, so
+// every log line, every wrapped error, and every crash report carried a copy of
+// the caller's payload. They keep a description instead.
+func DescribeValue(value any) string {
+	if value == nil {
+		return "nil"
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return fmt.Sprintf("%s, %d bytes", describeText(typed), len(typed))
+	case []byte:
+		return fmt.Sprintf("%s, %d bytes", describeText(string(typed)), len(typed))
+	}
+
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Slice, reflect.Array, reflect.Map:
+		return fmt.Sprintf("%s of %d", reflected.Type().String(), reflected.Len())
+	default:
+		return reflected.Type().String()
+	}
+}
+
+// describeText classifies a string by shape alone.
+func describeText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	switch {
+	case trimmed == "":
+		return "empty"
+	case strings.HasPrefix(trimmed, "```"):
+		return "fenced block"
+	case strings.HasPrefix(trimmed, "{"):
+		return "json object"
+	case strings.HasPrefix(trimmed, "["):
+		return "json array"
+	case strings.HasPrefix(trimmed, "<"):
+		return "markup"
+	default:
+		return "text"
+	}
+}
 
 // ClassifyError represents an error during classification
 type ClassifyError struct {
-	Input      string
+	// InputShape describes the input without reproducing it.
+	InputShape string
 	Categories []string
 	Reason     string
 	Confidence float64
 }
 
 func (e ClassifyError) Error() string {
-	return fmt.Sprintf("classification failed: %s (input: %q)", e.Reason, e.Input)
+	return fmt.Sprintf("classification failed: %s (input was %s)", e.Reason, e.InputShape)
 }
 
 // ScoreError represents an error during scoring
 type ScoreError struct {
-	Input  any
-	Reason string
+	InputShape string
+	Reason     string
 }
 
 func (e ScoreError) Error() string {
@@ -26,8 +75,8 @@ func (e ScoreError) Error() string {
 
 // CompareError represents an error during comparison
 type CompareError struct {
-	A      any
-	B      any
+	AShape string
+	BShape string
 	Reason string
 }
 
@@ -37,8 +86,8 @@ func (e CompareError) Error() string {
 
 // ChooseError represents an error during selection
 type ChooseError struct {
-	Options []any
-	Reason  string
+	OptionCount int
+	Reason      string
 }
 
 func (e ChooseError) Error() string {
@@ -47,8 +96,8 @@ func (e ChooseError) Error() string {
 
 // FilterError represents an error during filtering
 type FilterError struct {
-	Items  []any
-	Reason string
+	ItemCount int
+	Reason    string
 }
 
 func (e FilterError) Error() string {
@@ -57,8 +106,8 @@ func (e FilterError) Error() string {
 
 // SortError represents an error during sorting
 type SortError struct {
-	Items  []any
-	Reason string
+	ItemCount int
+	Reason    string
 }
 
 func (e SortError) Error() string {
@@ -67,20 +116,27 @@ func (e SortError) Error() string {
 
 // ExtractError represents an error during extraction
 type ExtractError struct {
-	Input      any
+	InputShape string
 	TargetType string
 	Reason     string
 	RequestID  string
 	Timestamp  any // Using any to avoid time import if not needed, or add time import
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e ExtractError) Error() string {
 	return fmt.Sprintf("extraction failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause. Without it, a sentinel such as ErrNoProvider is
+// unreachable behind the wrapper and callers resort to string matching.
+func (e ExtractError) Unwrap() error { return e.Err }
+
 // TransformError represents an error during transformation
 type TransformError struct {
-	Input      any
+	InputShape string
 	FromType   string
 	ToType     string
 	Reason     string
@@ -95,11 +151,11 @@ func (e TransformError) Error() string {
 
 // GenerateError represents an error during generation
 type GenerateError struct {
-	Prompt     string
-	TargetType string
-	Reason     string
-	RequestID  string
-	Timestamp  any
+	PromptShape string
+	TargetType  string
+	Reason      string
+	RequestID   string
+	Timestamp   any
 }
 
 func (e GenerateError) Error() string {
@@ -108,9 +164,9 @@ func (e GenerateError) Error() string {
 
 // SummarizeError represents an error during summarization
 type SummarizeError struct {
-	Input  string
-	Length int
-	Reason string
+	InputShape string
+	Length     int
+	Reason     string
 }
 
 func (e SummarizeError) Error() string {
@@ -119,8 +175,8 @@ func (e SummarizeError) Error() string {
 
 // RewriteError represents an error during rewriting
 type RewriteError struct {
-	Input  string
-	Reason string
+	InputShape string
+	Reason     string
 }
 
 func (e RewriteError) Error() string {
@@ -129,8 +185,8 @@ func (e RewriteError) Error() string {
 
 // TranslateError represents an error during translation
 type TranslateError struct {
-	Input  string
-	Reason string
+	InputShape string
+	Reason     string
 }
 
 func (e TranslateError) Error() string {
@@ -139,8 +195,8 @@ func (e TranslateError) Error() string {
 
 // ExpandError represents an error during expansion
 type ExpandError struct {
-	Input  string
-	Reason string
+	InputShape string
+	Reason     string
 }
 
 func (e ExpandError) Error() string {

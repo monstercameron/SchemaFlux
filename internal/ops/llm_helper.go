@@ -18,6 +18,14 @@ import (
 
 var defaultProvider llm.Provider
 
+// ErrNoProvider is returned when an operation runs before the library has a
+// provider. It names the way out, because the usual cause is an Init that
+// returned an error the caller discarded.
+var ErrNoProvider = errors.New(
+	"no LLM provider configured: call schemaflux.Init(key) or schemaflux.InitWithEnv(path) " +
+		"and check the error, or set one of SCHEMAFLUX_API_KEY, SCHEMAFLUX_OPENAI_API_KEY, " +
+		"OPENAI_API_KEY, or OPENAI in the environment")
+
 // LLMCaller is the function type for calling the LLM
 type LLMCaller func(ctx context.Context, system, user string, opts types.OpOptions) (string, error)
 
@@ -42,9 +50,10 @@ func callLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.Op
 	}
 
 	if defaultProvider == nil {
-		// Try to initialize a default provider (e.g. OpenAI from env)
-		// For now, just return error if not set
-		return "", fmt.Errorf("no LLM provider configured")
+		// Name the way out. "no LLM provider configured" is true but leaves the
+		// caller nowhere to go, and it is what they see when Init returned an
+		// error they discarded.
+		return "", ErrNoProvider
 	}
 	return CallLLM(ctx, defaultProvider, systemPrompt, userPrompt, opts)
 }
