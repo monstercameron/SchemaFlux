@@ -34,31 +34,81 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// GenerateTypeSchema creates a human-readable schema description for a Go type
+// GenerateTypeSchema creates a human-readable schema description for a Go type.
+//
+// It recurses. It used to expand only the top level and describe every field
+// with its Go type name, so
+//
+//	type Order struct {
+//	    Customer Person      `json:"customer"`
+//	    Items    []OrderItem `json:"items"`
+//	}
+//
+// produced `customer: main.Person` and `items: []main.OrderItem` — names that
+// mean nothing to a model, which then had to invent the shape of the thing it
+// was being asked to produce.
 func GenerateTypeSchema(targetType reflect.Type) string {
-	if targetType.Kind() == reflect.Ptr {
+	return describeType(targetType, map[reflect.Type]bool{}, 0)
+}
+
+// maxSchemaDepth bounds the expansion. A schema deeper than this is more prompt
+// than it is worth, and the bound is also what stops a self-referential type
+// from expanding forever.
+const maxSchemaDepth = 6
+
+// describeType renders a type, expanding structs, slices, and maps. seen holds
+// the types on the current path so a cycle -- a Node with a Parent *Node -- is
+// named rather than followed.
+func describeType(targetType reflect.Type, seen map[reflect.Type]bool, depth int) string {
+	for targetType != nil && targetType.Kind() == reflect.Ptr {
 		targetType = targetType.Elem()
+	}
+	if targetType == nil {
+		return "unknown"
 	}
 
 	switch targetType.Kind() {
 	case reflect.Struct:
+		if targetType.String() == "time.Time" {
+			return "datetime (RFC3339)"
+		}
+		if depth >= maxSchemaDepth {
+			return targetType.String() + " (nested, not expanded)"
+		}
+		if seen[targetType] {
+			// A cycle. Naming it is honest; following it does not terminate.
+			return targetType.String() + " (recursive)"
+		}
+
+		seen[targetType] = true
+		defer delete(seen, targetType)
+
 		var fields []string
 		for i := 0; i < targetType.NumField(); i++ {
 			field := targetType.Field(i)
 
-			// Skip unexported fields
+			tag := field.Tag.Get("json")
+			if field.Anonymous && tag == "" {
+				// An embedded struct promotes its fields, so it is flattened
+				// here as encoding/json would flatten it.
+				embedded := field.Type
+				if embedded.Kind() == reflect.Ptr {
+					embedded = embedded.Elem()
+				}
+				if embedded.Kind() == reflect.Struct {
+					inner := describeType(embedded, seen, depth)
+					fields = append(fields, indentSchemaBody(inner))
+					continue
+				}
+			}
+
 			if !field.IsExported() {
 				continue
 			}
 
-			// Get JSON tag or use field name. `json:"-"` means the field is
-			// not serialised at all, so describing it to the model under its Go
-			// name asks for a value that will be discarded — and, for a field
-			// excluded because it is sensitive, sends its name out of process.
-			jsonTag := field.Tag.Get("json")
 			fieldName := field.Name
-			if jsonTag != "" {
-				parts := strings.Split(jsonTag, ",")
+			if tag != "" {
+				parts := strings.Split(tag, ",")
 				if parts[0] == "-" && len(parts) == 1 {
 					continue
 				}
@@ -67,37 +117,56 @@ func GenerateTypeSchema(targetType reflect.Type) string {
 				}
 			}
 
-			// Get field type description
-			fieldType := GetTypeDescription(field.Type)
-
-			// Check if field is required (no omitempty option). A substring
-			// test would also match a field literally named "omitempty_flag".
-			required := !hasJSONOption(jsonTag, "omitempty")
 			requiredStr := ""
-			if required {
+			if !hasJSONOption(tag, "omitempty") {
 				requiredStr = " (required)"
 			}
 
-			// Add field description
-			fields = append(fields, fmt.Sprintf("  %s: %s%s", fieldName, fieldType, requiredStr))
+			fields = append(fields, fmt.Sprintf("  %s: %s%s",
+				fieldName, indentNested(describeType(field.Type, seen, depth+1)), requiredStr))
+		}
+
+		if len(fields) == 0 {
+			return "{}"
 		}
 		return fmt.Sprintf("{\n%s\n}", strings.Join(fields, "\n"))
 
-	case reflect.Slice:
-		elemType := targetType.Elem()
-		return fmt.Sprintf("[]%s", GenerateTypeSchema(elemType))
+	case reflect.Slice, reflect.Array:
+		return "[" + describeType(targetType.Elem(), seen, depth+1) + "]"
 
 	case reflect.Map:
-		keyType := targetType.Key()
-		valueType := targetType.Elem()
-		return fmt.Sprintf("map[%s]%s", keyType.String(), GenerateTypeSchema(valueType))
+		return fmt.Sprintf("map[%s]%s",
+			GetTypeDescription(targetType.Key()),
+			describeType(targetType.Elem(), seen, depth+1))
 
 	default:
 		return GetTypeDescription(targetType)
 	}
 }
 
-// GetTypeDescription returns a simple description of a type
+// indentNested pushes a nested block in one level so the shape stays readable.
+func indentNested(body string) string {
+	if !strings.Contains(body, "\n") {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for i := 1; i < len(lines); i++ {
+		lines[i] = "  " + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// indentSchemaBody strips the braces from an embedded struct's rendering so its
+// fields sit alongside the outer ones, as encoding/json promotes them.
+func indentSchemaBody(body string) string {
+	body = strings.TrimPrefix(body, "{\n")
+	body = strings.TrimSuffix(body, "\n}")
+	return body
+}
+
+// GetTypeDescription returns a one-line description of a leaf type. Structs,
+// slices, and maps are rendered by describeType, which recurses; this is what
+// it calls at the leaves and what map keys use.
 func GetTypeDescription(targetType reflect.Type) string {
 	switch targetType.Kind() {
 	case reflect.String:

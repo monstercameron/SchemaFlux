@@ -183,3 +183,47 @@ func TestLiveUnknownModelIsReported(t *testing.T) {
 	}
 	t.Logf("error: %v", err)
 }
+
+// D-01: the schema described a nested field by its Go type name, so a model
+// asked for an Order was told its customer was a "main.Person" and had to
+// invent the shape. This is the case that was broken, against the real model.
+func TestLiveExtractNestedStructure(t *testing.T) {
+	requireLive(t)
+
+	type liveCustomer struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	type liveOrderLine struct {
+		SKU      string  `json:"sku"`
+		Quantity int     `json:"quantity"`
+		Price    float64 `json:"price"`
+	}
+	type liveOrder struct {
+		Number   string          `json:"number"`
+		Customer liveCustomer    `json:"customer"`
+		Lines    []liveOrderLine `json:"lines"`
+	}
+
+	order, err := schemaflux.Extract[liveOrder](
+		"Order ORD-77 for Ada Lovelace (ada@example.com): 2x SKU A-100 at $12.50, 1x SKU A-200 at $87.00.",
+		schemaflux.NewExtractOptions())
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	if order.Customer.Name == "" {
+		t.Error("the nested customer name was not extracted")
+	}
+	if order.Customer.Email != "ada@example.com" {
+		t.Errorf("Customer.Email = %q", order.Customer.Email)
+	}
+	if len(order.Lines) != 2 {
+		t.Fatalf("extracted %d lines, want 2: %+v", len(order.Lines), order.Lines)
+	}
+	if order.Lines[0].Quantity != 2 || order.Lines[0].Price != 12.50 {
+		t.Errorf("Lines[0] = %+v", order.Lines[0])
+	}
+
+	t.Logf("extracted: %+v", order)
+}
