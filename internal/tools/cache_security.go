@@ -3,11 +3,13 @@ package tools
 import (
 	"context"
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"sync"
@@ -402,7 +404,11 @@ func executeToken(ctx context.Context, params map[string]any) (Result, error) {
 	length, _ := params["length"].(float64)
 
 	if tokenType == "jwt" {
-		return StubResult("JWT token generation requires jwt-go integration. Configure JWT_SECRET environment variable."), nil
+		// This used to return StubResult, which reports Success: true. A caller
+		// filtering on IsStub could not see it, because the tool was not marked
+		// a stub — so this shipped as a working JWT generator that generated no
+		// JWT and said everything went fine.
+		return ErrorResultFromError(errors.New("jwt tokens are not implemented; this tool generates random tokens only")), nil
 	}
 
 	if action != "generate" {
@@ -413,8 +419,10 @@ func executeToken(ctx context.Context, params map[string]any) (Result, error) {
 		length = 32
 	}
 
-	// Generate random bytes and encode as hex
-	token := generateRandomToken(int(length))
+	token, err := generateRandomToken(int(length))
+	if err != nil {
+		return ErrorResultFromError(err), nil
+	}
 
 	return NewResultWithMeta(token, map[string]any{
 		"type":   tokenType,
@@ -422,16 +430,23 @@ func executeToken(ctx context.Context, params map[string]any) (Result, error) {
 	}), nil
 }
 
-func generateRandomToken(length int) string {
-	// Simple token generation using time and hash
-	// In production, use crypto/rand
-	data := fmt.Sprintf("%d-%d", time.Now().UnixNano(), length)
-	h := sha256.Sum256([]byte(data))
-	token := hex.EncodeToString(h[:])
-	if length < len(token) {
-		return token[:length]
+// generateRandomToken returns length hex characters from crypto/rand.
+//
+// It used to hash the current nanosecond timestamp, so a token was a
+// deterministic function of the time it was issued: anyone who could guess the
+// issue time within a window could enumerate the tokens. The comment said "in
+// production, use crypto/rand", from a tool in the security category.
+func generateRandomToken(length int) (string, error) {
+	if length <= 0 {
+		return "", errors.New("token length must be positive")
 	}
-	return token
+
+	raw := make([]byte, (length+1)/2)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
+	}
+
+	return hex.EncodeToString(raw)[:length], nil
 }
 
 // EncryptTool encrypts data (STUBBED - requires key management).
@@ -473,11 +488,11 @@ func executeDecryptStub(ctx context.Context, params map[string]any) (Result, err
 }
 
 func init() {
-	_ = Register(CacheTool)
-	_ = Register(MemoizeTool)
-	_ = Register(HashTool)
-	_ = Register(Base64Tool)
-	_ = Register(TokenTool)
-	_ = Register(EncryptTool)
-	_ = Register(DecryptTool)
+	mustRegister(CacheTool)
+	mustRegister(MemoizeTool)
+	mustRegister(HashTool)
+	mustRegister(Base64Tool)
+	mustRegister(TokenTool)
+	mustRegister(EncryptTool)
+	mustRegister(DecryptTool)
 }

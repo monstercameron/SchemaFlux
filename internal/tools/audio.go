@@ -128,10 +128,10 @@ var AudioAnalyzeTool = &Tool{
 }
 
 func init() {
-	_ = Register(TextToSpeechTool)
-	_ = Register(SpeechToTextTool)
-	_ = Register(AudioInfoTool)
-	_ = Register(AudioConvertTool)
-	_ = Register(AudioTrimTool)
-	_ = Register(AudioAnalyzeTool)
+	mustRegister(TextToSpeechTool)
+	mustRegister(SpeechToTextTool)
+	mustRegister(AudioInfoTool)
+	mustRegister(AudioConvertTool)
+	mustRegister(AudioTrimTool)
+	mustRegister(AudioAnalyzeTool)
 }

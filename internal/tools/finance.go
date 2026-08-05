@@ -264,9 +264,9 @@ func executeInterest(ctx context.Context, params map[string]any) (Result, error)
 }
 
 func init() {
-	_ = Register(ChartTool)
-	_ = Register(CurrencyTool)
-	_ = Register(StockTool)
-	_ = Register(TaxTool)
-	_ = Register(InterestTool)
+	mustRegister(ChartTool)
+	mustRegister(CurrencyTool)
+	mustRegister(StockTool)
+	mustRegister(TaxTool)
+	mustRegister(InterestTool)
 }

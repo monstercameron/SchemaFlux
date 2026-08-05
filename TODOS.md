@@ -184,18 +184,18 @@ regardless of what happens to the rest of the plan.
 
 ## Tools
 
-- [ ] **F-025** — Remove `ShellTool` from the default registry (`exec.go:246`). It passes a
+- [x] **F-025** — Remove `ShellTool` from the default registry (`exec.go:246`). It passes a
   model-authored string to `sh -c` / `cmd /C` with no allowlist, sandbox, or approval, and
   self-registers into the global registry that `GetOpenAITools()` exports. Gate behind
   `tools.EnableShell(policy)` taking a command allowlist. Closes **G-04**.
   *Verify:* default registry contains no `shell`; enabling it requires an explicit policy
   argument; a command outside the allowlist is refused before execution.
-- [ ] **F-026** — The `token` (JWT) tool returns a `StubResult` without setting `IsStub: true`
+- [x] **F-026** — The `token` (JWT) tool returns a `StubResult` without setting `IsStub: true`
   (`cache_security.go:386-405`), so the one filter consumers have still ships a fake JWT
   generator. Set the flag, then add a test asserting every `StubResult` call site belongs to a
   tool with `IsStub: true`. Closes **G-03**.
   *Verify:* the new test fails when the flag is removed from any stub.
-- [ ] **F-027** — `Register` errors are discarded at init (`_ = Register(...)` throughout
+- [x] **F-027** — `Register` errors are discarded at init (`_ = Register(...)` throughout
   `internal/tools`), so a duplicate name silently keeps whichever tool won the race.
   Panic at init or collect into a package-level error. Closes **G-06**.
 
@@ -825,6 +825,9 @@ commit and the test that proves it.
 | **F-031** | `1d9adae` | `GetDefaultClient`, `GetLogger`, `ConfigureLogging`, and `SetLogLevel` take the locks `Init` writes under. `TestConcurrentInitAndLoggerAccess` runs eight workers over all five entry points, `TestGetLoggerBeforeInit` covers the nil-client window. **Caveat:** `-race` is unavailable on windows/arm64, so the test exercises the interleaving without the detector; run it under `-race` on amd64 or linux to confirm. |
 | **F-034** | `1d9adae` | Every error struct stores a description instead of the payload: `InputShape`, `AShape`/`BShape`, `ItemCount`, `OptionCount`, `PromptShape`, via `types.DescribeValue`. `ClassifyError.Error()` no longer prints the input with `%q`. `internal/ops/error_payload_test.go` drives seven operations with a payload marker and asserts no fragment survives. Closes **X-03** with F-033. |
 | **DOC-004** | `1d9adae` | README gained a Credential resolution section (five-step order, why a missing key is an error, how to ask for the mock) and a `.env` section (default `./.env` optional, named paths required, process environment wins). Checked against `resolveProviderAPIKey`. |
+| **F-025** | `pending` | `ShellTool` is out of the default registry and out of `ToOpenAIFormat`; `tools.EnableShell(ShellPolicy{AllowedCommands: …})` registers it, `DisableShell` removes it. The policy also confines the working directory and caps the timeout, and shell metacharacters are refused so an allowed base name cannot carry a disallowed command. `internal/tools/shell_policy_test.go` covers 12 refusal cases plus the directory and timeout bounds. |
+| **F-026** | `pending` | The `token` tool's JWT path returns a refusal instead of a successful-looking `StubResult` from a tool not marked `IsStub`. `internal/tools/stub_honesty_test.go` parses the package and fails any tool that can reach `StubResult` without the flag — verified to catch a removed flag on `WebSearchTool`. Found while there: `generateRandomToken` hashed the current nanosecond, so tokens from a security-category tool were a deterministic function of their issue time; it uses `crypto/rand` now. Two stub tools whose descriptions did not say so now do. |
+| **F-027** | `pending` | All 79 `_ = Register(...)` calls became `mustRegister`, which panics at init on a duplicate. `Registry.Unregister` added, which `DisableShell` needs. `TestRegisterReportsADuplicate`, `TestMustRegisterPanicsOnADuplicate`, `TestUnregister`. |
 
 ### Added during the work
 

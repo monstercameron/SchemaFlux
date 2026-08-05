@@ -15,13 +15,19 @@ func TestRegistryDefaultRegistry(t *testing.T) {
 	// Check some expected tools are registered
 	expectedTools := []string{
 		"calculate", "fetch", "read_file", "sqlite", "cache",
-		"now", "csv", "tax", "zip", "shell",
+		"now", "csv", "tax", "zip",
 	}
 
 	for _, name := range expectedTools {
 		if _, ok := DefaultRegistry.Get(name); !ok {
 			t.Errorf("Expected tool %q to be registered", name)
 		}
+	}
+
+	// "shell" is deliberately absent: it hands a model-authored string to a
+	// shell, so it is registered only by EnableShell(policy).
+	if _, ok := DefaultRegistry.Get("shell"); ok {
+		t.Error("the shell tool must not be registered by default")
 	}
 }
 

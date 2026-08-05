@@ -8,6 +8,8 @@ import (
 )
 
 func TestShellToolBasic(t *testing.T) {
+	withShellEnabled(t, ShellPolicy{AllowedCommands: []string{"echo"}})
+
 	// The shell tool always wraps with cmd/sh, so just pass the command
 	result, _ := ShellTool.Execute(context.Background(), map[string]any{
 		"command": "echo hello",
@@ -28,6 +30,8 @@ func TestShellToolBasic(t *testing.T) {
 }
 
 func TestShellToolWithShell(t *testing.T) {
+	withShellEnabled(t, ShellPolicy{AllowedCommands: []string{"echo"}})
+
 	result, _ := ShellTool.Execute(context.Background(), map[string]any{
 		"command": "echo hello",
 	})
@@ -43,6 +47,8 @@ func TestShellToolWithShell(t *testing.T) {
 }
 
 func TestShellToolExitCode(t *testing.T) {
+	withShellEnabled(t, ShellPolicy{AllowedCommands: []string{"exit"}})
+
 	var command string
 	if runtime.GOOS == "windows" {
 		command = "exit /b 1"
@@ -55,7 +61,10 @@ func TestShellToolExitCode(t *testing.T) {
 	})
 
 	// On Windows, "exit /b 1" should return exit code 1
-	data := result.Data.(map[string]any)
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected a result payload, got %+v (error: %s)", result.Data, result.Error)
+	}
 	exitCode := data["exit_code"].(int)
 	// Accept either failure status or non-zero exit code
 	if result.Success && exitCode == 0 {
@@ -74,6 +83,8 @@ func TestShellToolTimeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping timeout test on Windows due to cmd /C context propagation limitations")
 	}
+
+	withShellEnabled(t, ShellPolicy{AllowedCommands: []string{"sleep"}})
 
 	result, _ := ShellTool.Execute(context.Background(), map[string]any{
 		"command": "sleep 10",
@@ -94,30 +105,25 @@ func TestShellToolTimeout(t *testing.T) {
 }
 
 func TestShellToolMissingCommand(t *testing.T) {
+	withShellEnabled(t, ShellPolicy{AllowedCommands: []string{"echo"}})
+
 	result, _ := ShellTool.Execute(context.Background(), map[string]any{})
 	if result.Success {
 		t.Error("Expected failure for missing command")
 	}
 }
 
+// An invalid command is now refused by the allowlist before it ever reaches a
+// shell, which is the point of the allowlist.
 func TestShellToolInvalidCommand(t *testing.T) {
+	withShellEnabled(t, ShellPolicy{AllowedCommands: []string{"echo"}})
+
 	result, _ := ShellTool.Execute(context.Background(), map[string]any{
 		"command": "nonexistent-command-12345",
 	})
-	// On Windows with cmd /C, an invalid command may return success=false or exit code != 0
-	data, ok := result.Data.(map[string]any)
-	if ok {
-		exitCode := data["exit_code"].(int)
-		// Windows returns exit code 1 for unknown command, which is still "success" to our tool
-		// But any non-zero exit code means the command failed
-		if exitCode != 0 || !result.Success {
-			return // Test passes if command failed in any way
-		}
+	if result.Success {
+		t.Fatal("a command outside the allowlist must be refused")
 	}
-	if !result.Success {
-		return // Also passes if marked as not successful
-	}
-	t.Skip("Command execution behavior varies by platform")
 }
 
 func TestRunCodeToolStub(t *testing.T) {

@@ -580,9 +580,9 @@ func diffJSON(left, right any, path string) []map[string]any {
 }
 
 func init() {
-	_ = Register(CSVTool)
-	_ = Register(JSONTool)
-	_ = Register(XMLTool)
-	_ = Register(TableTool)
-	_ = Register(DiffTool)
+	mustRegister(CSVTool)
+	mustRegister(JSONTool)
+	mustRegister(XMLTool)
+	mustRegister(TableTool)
+	mustRegister(DiffTool)
 }

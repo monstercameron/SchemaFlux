@@ -346,9 +346,9 @@ var BarcodeTool = &Tool{
 }
 
 func init() {
-	_ = Register(PDFTool)
-	_ = Register(ZipTool)
-	_ = Register(TarTool)
-	_ = Register(QRCodeTool)
-	_ = Register(BarcodeTool)
+	mustRegister(PDFTool)
+	mustRegister(ZipTool)
+	mustRegister(TarTool)
+	mustRegister(QRCodeTool)
+	mustRegister(BarcodeTool)
 }

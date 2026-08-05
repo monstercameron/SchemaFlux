@@ -586,14 +586,14 @@ func executeSearchFiles(ctx context.Context, params map[string]any) (Result, err
 }
 
 func init() {
-	_ = Register(ReadFileTool)
-	_ = Register(WriteFileTool)
-	_ = Register(ListDirTool)
-	_ = Register(CopyFileTool)
-	_ = Register(MoveFileTool)
-	_ = Register(DeleteFileTool)
-	_ = Register(FileExistsTool)
-	_ = Register(FileInfoTool)
-	_ = Register(WatchFileTool)
-	_ = Register(SearchFilesTool)
+	mustRegister(ReadFileTool)
+	mustRegister(WriteFileTool)
+	mustRegister(ListDirTool)
+	mustRegister(CopyFileTool)
+	mustRegister(MoveFileTool)
+	mustRegister(DeleteFileTool)
+	mustRegister(FileExistsTool)
+	mustRegister(FileInfoTool)
+	mustRegister(WatchFileTool)
+	mustRegister(SearchFilesTool)
 }

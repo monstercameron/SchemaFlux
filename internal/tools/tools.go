@@ -201,6 +201,36 @@ func Register(tool *Tool) error {
 	return DefaultRegistry.Register(tool)
 }
 
+// mustRegister registers a built-in tool and panics if it cannot. The package's
+// init functions used to discard Register's error, so a duplicate name left
+// whichever tool happened to register first in place and the second silently
+// vanished — a caller invoking that name got the other tool's behaviour. A
+// collision between two built-ins is a bug in this package, and it should stop
+// the program at init rather than surface as a wrong answer later.
+func mustRegister(tool *Tool) {
+	if err := Register(tool); err != nil {
+		panic(fmt.Sprintf("tools: registering built-in tool: %v", err))
+	}
+}
+
+// Unregister removes a tool from the registry. It reports whether a tool was
+// removed.
+func (r *Registry) Unregister(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.tools[name]; !exists {
+		return false
+	}
+	delete(r.tools, name)
+	return true
+}
+
+// Unregister removes a tool from the default registry.
+func Unregister(name string) bool {
+	return DefaultRegistry.Unregister(name)
+}
+
 // Get retrieves a tool from the default registry.
 func Get(name string) (*Tool, bool) {
 	return DefaultRegistry.Get(name)

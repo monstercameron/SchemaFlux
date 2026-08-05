@@ -216,7 +216,7 @@ func executeScrapeStub(ctx context.Context, params map[string]any) (Result, erro
 // BrowserTool opens URLs in browser (STUBBED).
 var BrowserTool = &Tool{
 	Name:        "browser",
-	Description: "Open URL in browser, take screenshots, interact with pages",
+	Description: "Open URL in browser, take screenshots, interact with pages (stub - requires browser automation)",
 	Category:    CategoryHTTP,
 	Parameters: ObjectSchema(map[string]ParameterSchema{
 		"action":   EnumParam("Action to perform", []string{"open", "screenshot", "click", "type"}),
@@ -393,12 +393,12 @@ func DownloadFile(ctx context.Context, urlStr string, timeout time.Duration) ([]
 }
 
 func init() {
-	_ = Register(FetchTool)
-	_ = Register(PostTool)
-	_ = Register(WebSearchTool)
-	_ = Register(ScrapeTool)
-	_ = Register(BrowserTool)
-	_ = Register(WebhookTool)
-	_ = Register(EncodeURLTool)
-	_ = Register(BuildURLTool)
+	mustRegister(FetchTool)
+	mustRegister(PostTool)
+	mustRegister(WebSearchTool)
+	mustRegister(ScrapeTool)
+	mustRegister(BrowserTool)
+	mustRegister(WebhookTool)
+	mustRegister(EncodeURLTool)
+	mustRegister(BuildURLTool)
 }

@@ -271,7 +271,7 @@ func stripMarkdown(md string) string {
 }
 
 func init() {
-	_ = Register(TemplateTool)
-	_ = Register(StringTemplateTool)
-	_ = Register(MarkdownTool)
+	mustRegister(TemplateTool)
+	mustRegister(StringTemplateTool)
+	mustRegister(MarkdownTool)
 }

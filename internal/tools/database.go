@@ -403,9 +403,9 @@ func executeVectorDBStub(ctx context.Context, params map[string]any) (Result, er
 }
 
 func init() {
-	_ = Register(SQLiteTool)
-	_ = Register(MigrateTool)
-	_ = Register(SeedTool)
-	_ = Register(BackupTool)
-	_ = Register(VectorDBTool)
+	mustRegister(SQLiteTool)
+	mustRegister(MigrateTool)
+	mustRegister(SeedTool)
+	mustRegister(BackupTool)
+	mustRegister(VectorDBTool)
 }

@@ -267,6 +267,6 @@ func Convert(value float64, from, to string) (float64, error) {
 }
 
 func init() {
-	_ = Register(RegexTool)
-	_ = Register(ConvertTool)
+	mustRegister(RegexTool)
+	mustRegister(ConvertTool)
 }

@@ -262,12 +262,12 @@ var ThumbnailTool = &Tool{
 }
 
 func init() {
-	_ = Register(VisionTool)
-	_ = Register(OCRTool)
-	_ = Register(ImageInfoTool)
-	_ = Register(ImageResizeTool)
-	_ = Register(ImageCropTool)
-	_ = Register(ImageConvertTool)
-	_ = Register(ImageBase64Tool)
-	_ = Register(ThumbnailTool)
+	mustRegister(VisionTool)
+	mustRegister(OCRTool)
+	mustRegister(ImageInfoTool)
+	mustRegister(ImageResizeTool)
+	mustRegister(ImageCropTool)
+	mustRegister(ImageConvertTool)
+	mustRegister(ImageBase64Tool)
+	mustRegister(ThumbnailTool)
 }

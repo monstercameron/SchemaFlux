@@ -127,7 +127,7 @@ var DiscordTool = &Tool{
 // WebhookNotifyTool sends webhook notifications
 var WebhookNotifyTool = &Tool{
 	Name:        "webhook_notify",
-	Description: "Send webhook notifications to external services",
+	Description: "Send webhook notifications to external services (stub - not implemented)",
 	Category:    CategoryBusiness,
 	IsStub:      true,
 	Parameters: ObjectSchema(map[string]ParameterSchema{
@@ -147,10 +147,10 @@ var WebhookNotifyTool = &Tool{
 }
 
 func init() {
-	_ = Register(EmailTool)
-	_ = Register(SMSTool)
-	_ = Register(PushTool)
-	_ = Register(SlackTool)
-	_ = Register(DiscordTool)
-	_ = Register(WebhookNotifyTool)
+	mustRegister(EmailTool)
+	mustRegister(SMSTool)
+	mustRegister(PushTool)
+	mustRegister(SlackTool)
+	mustRegister(DiscordTool)
+	mustRegister(WebhookNotifyTool)
 }

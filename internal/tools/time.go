@@ -520,11 +520,11 @@ func executeWeatherStub(ctx context.Context, params map[string]any) (Result, err
 }
 
 func init() {
-	_ = Register(NowTool)
-	_ = Register(ParseTimeTool)
-	_ = Register(DurationTool)
-	_ = Register(ScheduleTool)
-	_ = Register(HolidayTool)
-	_ = Register(GeoTool)
-	_ = Register(WeatherTool)
+	mustRegister(NowTool)
+	mustRegister(ParseTimeTool)
+	mustRegister(DurationTool)
+	mustRegister(ScheduleTool)
+	mustRegister(HolidayTool)
+	mustRegister(GeoTool)
+	mustRegister(WeatherTool)
 }

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -321,13 +322,14 @@ func TestTokenTool(t *testing.T) {
 		t.Errorf("Expected 16 char token, got %d", len(token))
 	}
 
-	// Test JWT stub
+	// The JWT path is unimplemented, and says so rather than returning a
+	// successful-looking stub from a tool that is not marked as a stub.
 	result, _ = TokenTool.Execute(context.Background(), map[string]any{
 		"action": "generate",
 		"type":   "jwt",
 	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected JWT to be stubbed")
+	if result.Success {
+		t.Error("Expected the unimplemented JWT path to be refused")
 	}
 }
 
@@ -388,10 +390,78 @@ func TestHashToolErrors(t *testing.T) {
 }
 
 func TestGenerateRandomToken(t *testing.T) {
-	token1 := generateRandomToken(32)
-	_ = generateRandomToken(32) // Generate second token to verify no errors
+	for _, length := range []int{1, 2, 8, 16, 32, 64, 128} {
+		token, err := generateRandomToken(length)
+		if err != nil {
+			t.Fatalf("generateRandomToken(%d): %v", length, err)
+		}
+		if len(token) != length {
+			t.Errorf("length %d produced %d characters", length, len(token))
+		}
+	}
 
-	if len(token1) != 32 {
-		t.Errorf("Expected 32 char token, got %d", len(token1))
+	if _, err := generateRandomToken(0); err == nil {
+		t.Error("a zero length must be an error")
+	}
+	if _, err := generateRandomToken(-1); err == nil {
+		t.Error("a negative length must be an error")
+	}
+}
+
+// The old implementation hashed the current nanosecond, so tokens issued in the
+// same nanosecond were identical and every token was a function of its issue
+// time. A thousand draws must all differ.
+func TestGeneratedTokensAreUnpredictable(t *testing.T) {
+	seen := make(map[string]struct{}, 1000)
+	for i := 0; i < 1000; i++ {
+		token, err := generateRandomToken(32)
+		if err != nil {
+			t.Fatalf("generateRandomToken: %v", err)
+		}
+		if _, duplicate := seen[token]; duplicate {
+			t.Fatalf("token %q was issued twice in %d draws", token, i+1)
+		}
+		seen[token] = struct{}{}
+	}
+}
+
+// The jwt path returned a successful-looking stub from a tool not marked as a
+// stub, so a caller filtering on IsStub shipped a JWT generator that generated
+// nothing.
+func TestTokenToolRefusesJWTRatherThanFakingIt(t *testing.T) {
+	result, err := TokenTool.Execute(context.Background(), map[string]any{
+		"action": "generate",
+		"type":   "jwt",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.Success {
+		t.Fatal("an unimplemented JWT path must not report success")
+	}
+	if !strings.Contains(strings.ToLower(result.Error), "jwt") {
+		t.Errorf("the error should name what is unimplemented, got %q", result.Error)
+	}
+	if stubbed, _ := result.Metadata["stubbed"].(bool); stubbed {
+		t.Error("this is not a stub result, it is a refusal")
+	}
+}
+
+// The random path still works.
+func TestTokenToolGeneratesRandomTokens(t *testing.T) {
+	result, err := TokenTool.Execute(context.Background(), map[string]any{
+		"action": "generate",
+		"type":   "random",
+		"length": float64(48),
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("the random path must work: %s", result.Error)
+	}
+	token, _ := result.Data.(string)
+	if len(token) != 48 {
+		t.Errorf("token length = %d, want 48", len(token))
 	}
 }

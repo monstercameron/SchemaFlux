@@ -245,5 +245,5 @@ func CalculateStats(numbers []float64) Stats {
 }
 
 func init() {
-	_ = Register(CalculateTool)
+	mustRegister(CalculateTool)
 }
