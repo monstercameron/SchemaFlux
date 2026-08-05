@@ -68,10 +68,14 @@ regardless of what happens to the rest of the plan.
   **Done:** `internal/ops/extended.go` returns an error on parse failure;
   `internal/ops/validate_failopen_test.go` covers four negative phrasings plus the
   well-formed success and failure paths. `go test ./internal/ops/ -run TestValidate` green.
-- [ ] **F-002** — Delete the JSON fallback in `SummarizeWithMetadata`
+- [x] **F-002** — Delete the JSON fallback in `SummarizeWithMetadata`
   (`internal/ops/text.go:241-251`) that returns `Confidence: 0.7` and empty `KeyPoints` on a
   parse failure with `err == nil`. Closes **T-02**.
   *Verify:* fenced-JSON input returns an error; assert no `0.7` literal survives in the file.
+  **Scope grew:** the same fallback existed in `RewriteWithMetadata`,
+  `TranslateWithMetadata`, and `ExpandWithMetadata` — four sites, four `0.7` literals, all
+  using `json.Unmarshal` directly rather than the shared fence-stripping `ParseJSON`, so a
+  fenced body always took the fallback path.
 - [ ] **F-003** — `Validate.AutoCorrect` silently drops a correction that fails to unmarshal
   (`extended.go:336-341`, `if err == nil` with no else). Return or log the error. Closes **A-06**.
   *Verify:* test with a `corrected` payload that does not match `T` asserts a non-nil error.
@@ -832,6 +836,32 @@ commit and the test that proves it.
 - [ ] **DOC-004** — Document the credential resolution order in the README, including the
   `OPENAI` alias added by B-02 and the fact that `.env` supplies defaults rather than
   overrides. The README's Environment section currently lists neither.
+
+- [ ] **PERF-001** — The retry classifier treats an empty completion as retryable
+  (`llm_helper.go:248`), so a test feeding an empty body waits out the full backoff: the
+  four-case integration table takes 3.5s of wall clock for what should be instant. Real
+  behaviour is right; what is missing is a way to run it fast. Add a per-call retry override
+  so tests and latency-sensitive callers can set zero attempts without touching global env.
+  *Verify:* the same table runs in well under 100ms with retries disabled, and unchanged with
+  them enabled.
+
+### Standard of done
+
+Raised mid-session, and applied from **F-002** onward. Every closed task carries:
+
+1. **unit tests** exercising the changed function directly, **at least 10 cases**;
+2. an **integration test** through the exported API with a provider injected via
+   `WithProviderInstance`, so the whole stack is covered, not just the unit;
+3. for an **LLM-backed (Smart+) operation**, a runnable **`Example` function with verified
+   output** — these execute under `go test` with a scripted provider, so an example that
+   rots fails CI, and none of them need a credential or spend.
+
+Tasks closed before this bar was set (F-001, F-012–F-014, P-00x, PR-001) have unit coverage
+and, where the boundary mattered, integration coverage; they do not all have examples.
+
+- [ ] **TEST-001** — Backfill the raised bar onto the tasks closed before it: examples for
+  the LLM-backed operations touched by F-001 (`Validate`) and integration coverage for the
+  provider fixes P-001 through P-004, which are currently unit-level only.
 
 ### Refined
 

@@ -2,7 +2,6 @@ package ops
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -238,16 +237,15 @@ Rules:
 		KeyPoints  []string `json:"key_points"`
 		Confidence float64  `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
-		// Fallback: treat entire response as summary text
-		log.Debug("SummarizeWithMetadata JSON parse failed, using fallback", "requestID", opts.CommonOptions.RequestID)
-		summaryText := strings.TrimSpace(response)
-		compressionRatio := float64(len(summaryText)) / float64(len(input))
-		return SummarizeResult{
-			Text:             summaryText,
-			CompressionRatio: compressionRatio,
-			Confidence:       0.7, // Default confidence for fallback
-		}, nil
+	if err := ParseJSON(response, &parsed); err != nil {
+		// No fallback verdict. The previous branch returned the raw response as
+		// the summary with a literal Confidence of 0.7 and no KeyPoints, and a
+		// nil error -- so a caller reading the documented metadata silently got
+		// an invented number and an empty list. It also used json.Unmarshal
+		// directly, without the shared fence stripping, so any fenced response
+		// took this path.
+		log.Error("SummarizeWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return SummarizeResult{}, fmt.Errorf("summarize: could not parse the summary response: %w", err)
 	}
 
 	compressionRatio := float64(len(parsed.Text)) / float64(len(input))
@@ -441,13 +439,9 @@ Rules:
 		ToneAchieved string   `json:"tone_achieved"`
 		Confidence   float64  `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
-		// Fallback: treat entire response as rewritten text
-		log.Debug("RewriteWithMetadata JSON parse failed, using fallback", "requestID", opts.CommonOptions.RequestID)
-		return RewriteResult{
-			Text:       strings.TrimSpace(response),
-			Confidence: 0.7,
-		}, nil
+	if err := ParseJSON(response, &parsed); err != nil {
+		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return RewriteResult{}, fmt.Errorf("rewrite: could not parse the rewrite response: %w", err)
 	}
 
 	result := RewriteResult{
@@ -633,13 +627,9 @@ Rules:
 		Confidence             float64                  `json:"confidence"`
 		Alternatives           []TranslationAlternative `json:"alternatives"`
 	}
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
-		// Fallback: treat entire response as translation
-		log.Debug("TranslateWithMetadata JSON parse failed, using fallback", "requestID", opts.CommonOptions.RequestID)
-		return TranslateResult{
-			Text:       strings.TrimSpace(response),
-			Confidence: 0.7,
-		}, nil
+	if err := ParseJSON(response, &parsed); err != nil {
+		log.Error("TranslateWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return TranslateResult{}, fmt.Errorf("translate: could not parse the translation response: %w", err)
 	}
 
 	result := TranslateResult{
@@ -808,16 +798,9 @@ Rules:
 		AddedContent []string `json:"added_content"`
 		Confidence   float64  `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
-		// Fallback: treat entire response as expanded text
-		log.Debug("ExpandWithMetadata JSON parse failed, using fallback", "requestID", opts.CommonOptions.RequestID)
-		expandedText := strings.TrimSpace(response)
-		expansionRatio := float64(len(expandedText)) / float64(len(input))
-		return ExpandResult{
-			Text:           expandedText,
-			ExpansionRatio: expansionRatio,
-			Confidence:     0.7,
-		}, nil
+	if err := ParseJSON(response, &parsed); err != nil {
+		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return ExpandResult{}, fmt.Errorf("expand: could not parse the expansion response: %w", err)
 	}
 
 	expansionRatio := float64(len(parsed.Text)) / float64(len(input))
