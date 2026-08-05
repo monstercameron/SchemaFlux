@@ -214,6 +214,12 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 		}
 	}
 
+	// A filter's worst case is keeping everything, so it has to be able to echo
+	// the whole input back.
+	if err := checkEchoBudget("Filter", string(itemsJSON), len(items), opOptions.Intelligence, 1.0); err != nil {
+		return nil, types.FilterError{ItemCount: len(items), Reason: err.Error(), Err: err}
+	}
+
 	// Use object-based filtering instead of index-based
 	// The rule below used to read "Include items that match the criteria"
 	// unconditionally, while the steering said "Remove items that match" when
@@ -356,6 +362,13 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 			ItemCount: len(items),
 			Reason:    fmt.Sprintf("failed to marshal items: %v", err),
 		}
+	}
+
+	// A sort returns every item, so it has to be able to echo the whole input
+	// back. Without this the completion simply truncated and the caller got a
+	// JSON parse error that said nothing about the real cause.
+	if err := checkEchoBudget("Sort", string(itemsJSON), len(items), opOptions.Intelligence, 1.0); err != nil {
+		return nil, types.SortError{ItemCount: len(items), Reason: err.Error(), Err: err}
 	}
 
 	// Use object-based sorting instead of index-based

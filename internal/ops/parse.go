@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -302,9 +303,15 @@ func parseCSV[T any](input string) (T, error) {
 		elemType := resultType.Elem()
 		slice := reflect.MakeSlice(resultType, len(data), len(data))
 
+		if elemType.Kind() == reflect.Struct {
+			if err := requireMappableHeaders(headers, elemType); err != nil {
+				return result, err
+			}
+		}
+
 		for i, row := range data {
 			item := reflect.New(elemType).Elem()
-			if err := mapCSVRowToStruct(row, headers, item); err != nil {
+			if _, err := mapCSVRowToStruct(row, headers, item); err != nil {
 				return result, err
 			}
 			slice.Index(i).Set(item)
@@ -317,12 +324,57 @@ func parseCSV[T any](input string) (T, error) {
 	// Handle single struct
 	if len(data) > 0 {
 		item := reflect.ValueOf(&result).Elem()
-		if err := mapCSVRowToStruct(data[0], headers, item); err != nil {
+		if item.Kind() == reflect.Struct {
+			if err := requireMappableHeaders(headers, item.Type()); err != nil {
+				return result, err
+			}
+		}
+		if _, err := mapCSVRowToStruct(data[0], headers, item); err != nil {
 			return result, err
 		}
 	}
 
 	return result, nil
+}
+
+// requireMappableHeaders refuses a CSV whose headers reach no field at all.
+// Returning a zero-valued struct with a nil error -- which is what this used to
+// do -- is a parse that says it worked and produced nothing.
+func requireMappableHeaders(headers []string, structType reflect.Type) error {
+	index := csvFieldIndex(structType)
+	for _, header := range headers {
+		if _, found := index[foldCSVName(header)]; found {
+			return nil
+		}
+	}
+
+	// Report the names a caller can actually write in a header row -- the json
+	// tag, or the field name -- rather than the folded lookup keys.
+	var known []string
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		if tag != "" {
+			parts := strings.Split(tag, ",")
+			if parts[0] == "-" && len(parts) == 1 {
+				continue
+			}
+			if parts[0] != "" {
+				known = append(known, parts[0])
+				continue
+			}
+		}
+		known = append(known, field.Name)
+	}
+	sort.Strings(known)
+
+	return fmt.Errorf(
+		"no CSV column maps to a field of %s: the headers are %v, and the columns it accepts are %v "+
+			"(matched ignoring case, spaces, underscores, and hyphens)",
+		structType.String(), headers, known)
 }
 
 // parseDelimited parses custom delimited data
@@ -370,27 +422,108 @@ func parseDelimited[T any](input string, delimiter string, opts ParseOptions) (T
 }
 
 // mapCSVRowToStruct maps CSV row to struct fields
-func mapCSVRowToStruct(row []string, headers []string, target reflect.Value) error {
-	if target.Kind() != reflect.Struct {
-		return fmt.Errorf("target must be a struct")
+// csvFieldIndex maps the names a CSV header might use to a struct field index.
+// A field is reachable by its json tag and by its Go name, both compared with
+// case, spaces, underscores, and hyphens folded away — so "full_name",
+// "Full Name", and "FullName" all reach FullName.
+//
+// The old lookup was FieldByName(capitalizeFirst(header)), which compared a
+// header against Go field names only: a struct with `json:"full_name"` never
+// received its own column, because "Full_name" is not "FullName".
+func csvFieldIndex(structType reflect.Type) map[string]int {
+	index := map[string]int{}
+
+	add := func(name string, i int) {
+		key := foldCSVName(name)
+		if key == "" {
+			return
+		}
+		if _, taken := index[key]; !taken {
+			index[key] = i
+		}
 	}
+
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		tag := field.Tag.Get("json")
+		if tag != "" {
+			parts := strings.Split(tag, ",")
+			if parts[0] == "-" && len(parts) == 1 {
+				continue
+			}
+			add(parts[0], i)
+		}
+		add(field.Name, i)
+	}
+
+	return index
+}
+
+// foldCSVName normalises a header or field name for comparison.
+func foldCSVName(name string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		switch r {
+		case ' ', '_', '-', '.':
+			continue
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+// mapCSVRowToStruct fills target from row. It reports how many columns it
+// mapped, because zero is the case that used to return a zero-valued struct and
+// a nil error: success with no data.
+func mapCSVRowToStruct(row []string, headers []string, target reflect.Value) (int, error) {
+	if target.Kind() != reflect.Struct {
+		return 0, fmt.Errorf("target must be a struct")
+	}
+
+	index := csvFieldIndex(target.Type())
+	mapped := 0
 
 	for i, header := range headers {
 		if i >= len(row) {
 			continue
 		}
 
-		field := target.FieldByName(capitalizeFirst(header))
+		fieldIndex, found := index[foldCSVName(header)]
+		if !found {
+			continue
+		}
+
+		field := target.Field(fieldIndex)
 		if !field.IsValid() || !field.CanSet() {
 			continue
 		}
 
 		if err := setFieldValue(field, row[i]); err != nil {
-			return fmt.Errorf("failed to set field %s: %w", header, err)
+			return mapped, fmt.Errorf("failed to set field %s: %w", header, err)
 		}
+		mapped++
 	}
 
-	return nil
+	return mapped, nil
+}
+
+// unmappedHeaders names the columns that reached no field, for an error a
+// caller can act on.
+func unmappedHeaders(headers []string, structType reflect.Type) []string {
+	index := csvFieldIndex(structType)
+
+	var unmapped []string
+	for _, header := range headers {
+		if _, found := index[foldCSVName(header)]; !found {
+			unmapped = append(unmapped, header)
+		}
+	}
+	return unmapped
 }
 
 // mapDelimitedFieldsToStruct maps delimited fields to struct

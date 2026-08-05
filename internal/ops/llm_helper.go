@@ -84,6 +84,8 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		Temperature:    float64(temperature),
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,
+		JSONSchema:     opts.JSONSchema,
+		SchemaName:     opts.SchemaName,
 	}
 
 	start := time.Now()

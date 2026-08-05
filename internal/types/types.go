@@ -93,6 +93,15 @@ type OpOptions struct {
 	// CorrelationID groups related requests across call chains.
 	CorrelationID string
 
+	// JSONSchema, when set, is enforced by providers that support structured
+	// outputs. An operation that knows its target type fills this in; the
+	// provider falls back to free-form JSON when the type cannot be expressed
+	// as a strict schema, and records which path it used.
+	JSONSchema map[string]any
+
+	// SchemaName names the schema in the provider request.
+	SchemaName string
+
 	// ResponseFormat declares whether the operation needs structured output:
 	// "json", "text", or "" to infer it.
 	//

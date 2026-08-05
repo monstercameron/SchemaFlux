@@ -227,3 +227,48 @@ func TestLiveExtractNestedStructure(t *testing.T) {
 
 	t.Logf("extracted: %+v", order)
 }
+
+// I-05: the library generated an exact schema for T, rendered it into the
+// prompt as prose, and then asked the API only for a json_object. The one
+// artifact that could make Extract[T] structurally guaranteed never reached the
+// API that can enforce it.
+//
+// This is the check that matters: the live API accepts the generated schema and
+// enforces it. A schema the API rejects would be worse than none.
+func TestLiveStructuredOutputIsEnforced(t *testing.T) {
+	requireLive(t)
+
+	type liveAddress struct {
+		City    string `json:"city"`
+		Country string `json:"country"`
+	}
+	type liveContact struct {
+		Name    string      `json:"name"`
+		Age     int         `json:"age"`
+		Address liveAddress `json:"address"`
+		Tags    []string    `json:"tags"`
+		Note    string      `json:"note,omitempty"`
+	}
+
+	contact, err := schemaflux.Extract[liveContact](
+		"Ada Lovelace, 36, lives in London, United Kingdom. Interests: mathematics, engines.",
+		schemaflux.NewExtractOptions())
+	if err != nil {
+		t.Fatalf("the live API rejected the generated schema or the result: %v", err)
+	}
+
+	if contact.Name == "" {
+		t.Error("name was not extracted")
+	}
+	if contact.Age != 36 {
+		t.Errorf("Age = %d, want 36", contact.Age)
+	}
+	if contact.Address.City == "" || contact.Address.Country == "" {
+		t.Errorf("Address = %+v", contact.Address)
+	}
+	if len(contact.Tags) == 0 {
+		t.Error("tags were not extracted")
+	}
+
+	t.Logf("extracted under a strict schema: %+v", contact)
+}

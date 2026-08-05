@@ -266,8 +266,20 @@ func BuildGenerateStringPrompt(mode types.Mode) string {
 }
 
 // ValidateExtractedData validates extracted data meets requirements
-func ValidateExtractedData(data any, threshold float64) error {
-	// Basic validation - can be extended based on needs
+// ValidateExtractedData is what Strict mode enforces. It checks that every
+// required field — every exported field without `omitempty` — was actually
+// populated, at every level of the structure.
+//
+// It used to take a threshold it never read and check only the top level, so
+// Strict() on a struct with a nested address whose every field came back empty
+// reported success. Strict is the most confidence-inspiring word in this API;
+// it should mean something.
+//
+// A field is "populated" if it is not the zero value of its type. That is a
+// blunt rule and it is the honest one available: a model that returns 0 for an
+// int it could not determine is indistinguishable from one that determined 0.
+// Mark such fields `omitempty` to say they are optional.
+func ValidateExtractedData(data any) error {
 	if data == nil {
 		return fmt.Errorf("data cannot be nil")
 	}
@@ -277,36 +289,95 @@ func ValidateExtractedData(data any, threshold float64) error {
 		return fmt.Errorf("invalid data")
 	}
 
-	if value.Kind() == reflect.Ptr {
+	return validateRequiredFields(value, "", 0)
+}
+
+// maxValidationDepth bounds the walk, matching the schema's own bound: a
+// structure the schema did not describe is one Strict cannot meaningfully
+// enforce.
+const maxValidationDepth = maxSchemaDepth
+
+func validateRequiredFields(value reflect.Value, path string, depth int) error {
+	if depth > maxValidationDepth {
+		return nil
+	}
+
+	for value.Kind() == reflect.Ptr || value.Kind() == reflect.Interface {
 		if value.IsNil() {
-			return fmt.Errorf("data cannot be nil pointer")
+			if path == "" {
+				return fmt.Errorf("data cannot be nil pointer")
+			}
+			return nil // a nil pointer field is checked by its own zero test
 		}
 		value = value.Elem()
 	}
 
-	if value.Kind() != reflect.Struct {
-		return nil // Only validate structs for now
-	}
+	switch value.Kind() {
+	case reflect.Struct:
+		structType := value.Type()
+		for i := 0; i < structType.NumField(); i++ {
+			field := structType.Field(i)
+			if !field.IsExported() {
+				continue
+			}
 
-	// Check for zero values in required fields
-	t := value.Type()
-	for i := 0; i < value.NumField(); i++ {
-		field := t.Field(i)
-		fieldValue := value.Field(i)
+			tag := field.Tag.Get("json")
+			parts := strings.Split(tag, ",")
+			if tag != "" && parts[0] == "-" && len(parts) == 1 {
+				continue
+			}
 
-		// Skip unexported fields
-		if !field.IsExported() {
-			continue
+			name := field.Name
+			if tag != "" && parts[0] != "" {
+				name = parts[0]
+			}
+			fieldPath := name
+			if path != "" {
+				fieldPath = path + "." + name
+			}
+
+			fieldValue := value.Field(i)
+			required := !hasJSONOption(tag, "omitempty")
+
+			if required && fieldValue.IsZero() {
+				return fmt.Errorf("required field %s is empty", fieldPath)
+			}
+
+			// Recurse into what was populated. An optional field that is
+			// present still has to be internally consistent.
+			if !fieldValue.IsZero() {
+				if err := validateRequiredFields(fieldValue, fieldPath, depth+1); err != nil {
+					return err
+				}
+			}
 		}
+		return nil
 
-		// Check if field is required (no omitempty tag)
-		jsonTag := field.Tag.Get("json")
-		if !strings.Contains(jsonTag, "omitempty") && fieldValue.IsZero() {
-			return fmt.Errorf("required field %s is empty", field.Name)
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			element := value.Index(i)
+			if element.Kind() == reflect.Struct || element.Kind() == reflect.Ptr || element.Kind() == reflect.Interface {
+				if err := validateRequiredFields(element, fmt.Sprintf("%s[%d]", path, i), depth+1); err != nil {
+					return err
+				}
+			}
 		}
-	}
+		return nil
 
-	return nil
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			element := value.MapIndex(key)
+			if element.Kind() == reflect.Struct || element.Kind() == reflect.Ptr || element.Kind() == reflect.Interface {
+				if err := validateRequiredFields(element, fmt.Sprintf("%s[%v]", path, key.Interface()), depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+
+	default:
+		return nil
+	}
 }
 
 func Min(a, b int) int {

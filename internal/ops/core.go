@@ -130,9 +130,18 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		ctx = context.Background()
 	}
 
-	// Generate type schema for the target type
+	// Generate type schema for the target type. The prose form goes into the
+	// prompt; the machine-readable form goes to the provider, which can enforce
+	// it. Sending only the prose was the difference between a contract and a
+	// polite request.
 	targetType := reflect.TypeOf(result)
 	typeInfo := GenerateTypeSchema(targetType)
+
+	opt.ResponseFormat = "json"
+	if schema := GenerateJSONSchema(targetType); schema != nil {
+		opt.JSONSchema = schema
+		opt.SchemaName = schemaNameFor(targetType)
+	}
 
 	// Convert input to string format for LLM processing
 	inputStr, err := NormalizeInput(input)
@@ -204,7 +213,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 
 	// Validate extracted data if in Strict mode
 	if opt.Mode == types.Strict {
-		if err := ValidateExtractedData(result, opt.Threshold); err != nil {
+		if err := ValidateExtractedData(result); err != nil {
 			extractErr := types.ExtractError{
 				InputShape: types.DescribeValue(input),
 				TargetType: targetType.String(),

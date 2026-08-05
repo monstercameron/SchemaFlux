@@ -42,6 +42,16 @@ type CompletionRequest struct {
 	Temperature    float64
 	MaxTokens      int
 	ResponseFormat string // "json" or "text"
+
+	// JSONSchema, when set, is sent as the Responses API's json_schema strict
+	// format. The library generates an exact schema for the target type and
+	// used to render it into the prompt as prose and ask only for a json_object,
+	// so the one artifact that could make the result structurally guaranteed
+	// never reached the API that can enforce it.
+	JSONSchema map[string]any
+
+	// SchemaName names the schema in the request. It is required by the API.
+	SchemaName string
 }
 
 // CompletionResponse represents a unified response format
@@ -141,8 +151,23 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 
 	textConfig := map[string]interface{}{}
 	if req.ResponseFormat == "json" {
-		textConfig["format"] = map[string]string{
-			"type": "json_object",
+		if len(req.JSONSchema) > 0 {
+			name := req.SchemaName
+			if name == "" {
+				name = "result"
+			}
+			// strict: the model must produce something the schema accepts, which
+			// is the difference between a contract and a request.
+			textConfig["format"] = map[string]interface{}{
+				"type":   "json_schema",
+				"name":   name,
+				"strict": true,
+				"schema": req.JSONSchema,
+			}
+		} else {
+			textConfig["format"] = map[string]string{
+				"type": "json_object",
+			}
 		}
 	}
 	if supportsReasoningControls(req.Model) {
