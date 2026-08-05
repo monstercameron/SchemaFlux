@@ -303,3 +303,34 @@ func Example_outage() {
 	// error is nil: false
 	// names the cause: true
 }
+
+// CF-01: a parse failure used to be terminal. The repair loop feeds the failure
+// back to the model and asks again, which is the defining feature of a typed
+// LLM library — and a consumer can now see it happen.
+func TestRepairIsVisibleToConsumers(t *testing.T) {
+	provider := schemafluxtest.New().Reply(
+		"I'm sorry, I can't produce JSON.",
+		`{"queue":"billing","priority":"high"}`,
+	)
+	defer schemafluxtest.Install(t, provider)()
+
+	result, err := schemaflux.Extract[triage]("charged twice", schemaflux.NewExtractOptions())
+	if err != nil {
+		t.Fatalf("the repair should have rescued this: %v", err)
+	}
+	if result.Queue != "billing" {
+		t.Errorf("result = %+v", result)
+	}
+
+	if provider.CallCount() != 2 {
+		t.Fatalf("CallCount = %d, want 2 (one attempt, one repair)", provider.CallCount())
+	}
+
+	repair := provider.Requests()[1]
+	if !strings.Contains(repair.UserPrompt, "previous answer could not be used") {
+		t.Errorf("the repair prompt does not tell the model what went wrong:\n%s", repair.UserPrompt)
+	}
+	if !strings.Contains(repair.UserPrompt, "charged twice") {
+		t.Error("the repair prompt lost the original task")
+	}
+}

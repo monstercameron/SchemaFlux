@@ -315,6 +315,15 @@ share one. Failing loudly beats a flake nobody can reproduce.
 
 SchemaFlux treats the shared LLM path as infrastructure.
 
+**Repair.** When an answer cannot be used — it is not JSON, it does not fit the
+type, a required field is missing under `Strict()` — the failure is fed back to
+the model and the request is made again with the problem named. That is
+different from a retry, which sends the same request and hopes. One repair is
+the default, which catches the common cases without turning one failed call
+into unbounded spend; `SCHEMAFLUX_REPAIR_ATTEMPTS` changes it, and `0` disables
+it.
+
+
 Built in:
 - automatic request IDs when missing
 - retries for transient provider failures and empty completions
@@ -327,6 +336,7 @@ Retry-related environment variables:
 - `SCHEMAFLUX_LLM_MAX_RETRIES`
 - `SCHEMAFLUX_LLM_RETRY_BACKOFF`
 - `SCHEMAFLUX_TIMEOUT`
+- `SCHEMAFLUX_REPAIR_ATTEMPTS`
 
 Client tuning:
 

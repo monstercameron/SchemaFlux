@@ -175,8 +175,25 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Build user prompt
 	userPrompt := fmt.Sprintf("Extract structured data from this input:\n%s", inputStr)
 
-	// Call LLM for extraction
-	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
+	// Call the model, and show it its own mistake if the answer cannot be used.
+	// A parse failure or a missing required field used to be terminal, even
+	// though the model can almost always fix both when told what was wrong.
+	var candidate T
+	response, repair, err := withRepair(ctx, systemPrompt, userPrompt, opt, RepairPolicy{},
+		func(body string) error {
+			var attempt T
+			if parseErr := ParseJSONStrict(body, &attempt); parseErr != nil {
+				return parseErr
+			}
+			if opt.Mode == types.Strict {
+				if validateErr := ValidateExtractedData(attempt); validateErr != nil {
+					return validateErr
+				}
+			}
+			candidate = attempt
+			return nil
+		})
+
 	if err != nil {
 		extractErr := types.ExtractError{
 			InputShape: types.DescribeValue(input),
@@ -186,52 +203,22 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 			Timestamp:  time.Now(),
 			Err:        err,
 		}
-		log.Error("Extract failed: LLM error",
+		log.Error("Extract failed",
 			"requestID", opt.RequestID,
+			"attempts", repair.Attempts,
 			"error", extractErr,
 		)
 		return result, extractErr
 	}
 
-	// Parse JSON response into target type
-	if err := ParseJSONStrict(response, &result); err != nil {
-		extractErr := types.ExtractError{
-			InputShape: types.DescribeValue(input),
-			TargetType: targetType.String(),
-			Reason:     fmt.Sprintf("failed to parse response: %v", err),
-			RequestID:  opt.RequestID,
-			Timestamp:  time.Now(),
-			Err:        err,
-		}
-
-		log.Error("Extract failed: JSON parsing error",
-			"requestID", opt.RequestID,
-			"error", extractErr,
-		)
-		return result, extractErr
-	}
-
-	// Validate extracted data if in Strict mode
-	if opt.Mode == types.Strict {
-		if err := ValidateExtractedData(result); err != nil {
-			extractErr := types.ExtractError{
-				InputShape: types.DescribeValue(input),
-				TargetType: targetType.String(),
-				Reason:     fmt.Sprintf("validation failed: %v", err),
-				RequestID:  opt.RequestID,
-				Timestamp:  time.Now(),
-			}
-			log.Error("Extract failed: validation error",
-				"requestID", opt.RequestID,
-				"error", extractErr,
-			)
-			return result, extractErr
-		}
-	}
+	_ = response
+	result = candidate
 
 	log.Info("Extract operation completed",
 		"requestID", opt.RequestID,
 		"duration", time.Since(startTime),
+		"attempts", repair.Attempts,
+		"repaired", repair.Repaired,
 	)
 
 	return result, nil

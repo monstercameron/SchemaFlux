@@ -58,6 +58,22 @@ func GetLLMMaxRetries() int {
 	return 3
 }
 
+// GetRepairAttempts returns how many times an operation may show the model its
+// own mistake and ask again, after the first attempt.
+//
+// Repair is not retry: a retry sends the same request and hopes, a repair sends
+// the same task plus what was wrong. One is enough for the common case -- prose
+// where JSON was asked for, or a missing field -- without turning one failed
+// call into an unbounded spend. Set SCHEMAFLUX_REPAIR_ATTEMPTS=0 to disable it.
+func GetRepairAttempts() int {
+	if raw := os.Getenv("SCHEMAFLUX_REPAIR_ATTEMPTS"); raw != "" {
+		if attempts, err := strconv.Atoi(raw); err == nil && attempts >= 0 {
+			return attempts
+		}
+	}
+	return 1
+}
+
 // GetLLMRetryBackoff returns the base backoff for LLM retries.
 func GetLLMRetryBackoff() time.Duration {
 	if raw := os.Getenv("SCHEMAFLUX_LLM_RETRY_BACKOFF"); raw != "" {

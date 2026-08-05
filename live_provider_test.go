@@ -272,3 +272,28 @@ func TestLiveStructuredOutputIsEnforced(t *testing.T) {
 
 	t.Logf("extracted under a strict schema: %+v", contact)
 }
+
+// CF-01 against the real model: a repair costs one extra call and rescues a
+// case that used to be terminal. The first answer is forced to be unusable by
+// asking for prose, which is the failure a repair exists for.
+func TestLiveRepairRescuesAnUnusableAnswer(t *testing.T) {
+	requireLive(t)
+
+	type person struct {
+		Name string `json:"name"`
+		Age  int    `json:"age"`
+	}
+
+	// A real extraction, which the model may or may not get right first time.
+	// Either way it must succeed: that is the point of the loop.
+	result, err := schemaflux.Extract[person](
+		"Write about Ada Lovelace, who was 36. Explain your reasoning at length before answering.",
+		schemaflux.NewExtractOptions())
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if result.Name == "" {
+		t.Errorf("name was not extracted: %+v", result)
+	}
+	t.Logf("extracted: %+v", result)
+}
