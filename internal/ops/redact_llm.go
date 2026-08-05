@@ -109,8 +109,16 @@ type llmSpanResponse struct {
 	} `json:"spans"`
 }
 
-// RedactLLM uses LLM to intelligently identify and redact sensitive data
-// It returns the redacted text with character-level precision
+// RedactLLM uses an LLM to identify and redact sensitive data.
+//
+// # NOT PRODUCTION READY
+//
+// It applies the character offsets the model reports without validating them
+// against the text, so a single off-by-one shifts every subsequent span and the
+// result silently redacts the wrong characters (T-13). "Character-level
+// precision" describes the interface, not the guarantee. See Redact in this
+// package for the rest, docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md for
+// the detail, and TODOS.md M05 for the fixes.
 func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactLLMResult, error) {
 	logger := telemetry.GetLogger()
 	logger.Debug("Starting LLM redact operation", "requestID", opts.RequestID, "textLength", len(text))

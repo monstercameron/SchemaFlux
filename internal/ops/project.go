@@ -18,7 +18,12 @@ type ProjectOptions struct {
 	// Mappings explicitly maps source fields to target fields
 	Mappings map[string]string
 
-	// Exclude lists source fields to exclude from projection
+	// Exclude names source fields to withhold. They are removed from the
+	// payload before it is serialised, matched by JSON field name
+	// case-insensitively at every level, so their values never reach the
+	// provider. The output is scanned for the removed values and a projection
+	// containing one is an error. See the Project doc comment for the limits:
+	// this is a field-name filter, not a classifier.
 	Exclude []string
 
 	// InferMissing allows inferring target fields not in source
@@ -78,9 +83,25 @@ type ProjectResult[U any] struct {
 //   - T: Input data type
 //   - U: Output/projected data type
 //
+// # What Exclude does, and does not, guarantee
+//
+// Excluded fields are removed from the payload before it is serialised, so
+// their values never reach the provider. Matching is on the JSON field name,
+// case-insensitively, at every level of the document. The projected output is
+// then scanned for the removed values, and a projection containing one is an
+// error rather than a result.
+//
+// This is a field-name filter, not a classifier. It removes what you name and
+// nothing else: an SSN that also appears inside a free-text "notes" field is
+// still sent, because the notes field was not excluded. Naming the fields
+// correctly is the caller's job, and the guarantee is only as good as that
+// list. For anything stronger, do not send the record.
+//
+// The operation is still a model call: everything not excluded is transmitted.
+//
 // Examples:
 //
-//	// Example 1: Create public profile from internal user (privacy filtering)
+//	// Example 1: Derive a public profile, withholding two fields
 //	type InternalUser struct {
 //	    ID           string `json:"id"`
 //	    Email        string `json:"email"`
@@ -101,6 +122,7 @@ type ProjectResult[U any] struct {
 //	    InferMissing: true,
 //	    Steering: "Combine first_name and last_name into display_name",
 //	})
+//	// email, first_name, and last_name were sent; password_hash and ssn were not.
 //	for _, m := range result.Mappings {
 //	    fmt.Printf("%s → %s (%s)\n", m.SourceField, m.TargetField, m.Method)
 //	}
@@ -152,8 +174,11 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 	defer cancel()
 
-	// Convert input to JSON
-	inputJSON, err := json.Marshal(input)
+	// Convert input to JSON, with the excluded fields removed before anything
+	// leaves the process. Interpolating Exclude into the prompt as a hint --
+	// which is all it used to do -- sent the value anyway and asked the model
+	// not to look at it.
+	inputJSON, excludedValues, err := marshalWithoutExcluded(input, opt.Exclude)
 	if err != nil {
 		log.Error("Project operation failed: marshal error", "error", err)
 		return result, fmt.Errorf("failed to marshal input: %w", err)
@@ -174,10 +199,12 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 		mappingsDesc = fmt.Sprintf("\n\nExplicit mappings:\n%s", strings.Join(parts, "\n"))
 	}
 
-	// Build exclude description
+	// The excluded fields are already gone from the payload; this only tells the
+	// model not to invent them.
 	excludeDesc := ""
 	if len(opt.Exclude) > 0 {
-		excludeDesc = fmt.Sprintf("\n\nExclude fields: %s", strings.Join(opt.Exclude, ", "))
+		excludeDesc = fmt.Sprintf("\n\nThese source fields have been withheld and must not appear in the output: %s",
+			strings.Join(sortedStrings(opt.Exclude), ", "))
 	}
 
 	inferNote := ""
@@ -275,6 +302,16 @@ Rules:
 			log.Error("Project operation failed: projected data parse error", "error", err)
 			return result, fmt.Errorf("failed to parse projected data: %w", err)
 		}
+	}
+
+	// The strip above means the model never saw the excluded values, so it
+	// cannot echo one back. This is the belt to that braces: if an excluded
+	// value ever reaches the output — through a later change, a shape the strip
+	// missed, or a value the caller also put in Steering — that is an error,
+	// not a projection.
+	if leaked := findLeakedValues(result.Projected, excludedValues); leaked != "" {
+		log.Error("Project operation produced an excluded value", "field", leaked)
+		return ProjectResult[U]{}, fmt.Errorf("project: the projection contains the value of excluded field %q", leaked)
 	}
 
 	result.Mappings = parsed.Mappings

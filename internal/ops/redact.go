@@ -145,8 +145,33 @@ func (opts RedactOptions) Validate() error {
 	return nil
 }
 
-// Redact removes or masks sensitive information from data
-// Returns a new object of the same type with sensitive data redacted
+// Redact removes or masks sensitive information from data.
+// Returns a new object of the same type with sensitive data redacted.
+//
+// # NOT PRODUCTION READY
+//
+// Do not use this to remove sensitive data from anything that leaves your
+// control. The known defects are recorded as T-07 through T-13 in
+// docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md, and the fixes are
+// scheduled in TODOS.md under M05. In summary:
+//
+//   - Field matching is a substring test, so a field named "password_reset_url"
+//     is redacted because it contains "pass", and a field named "taxpayer_id" is
+//     not, because it does not contain "ssn" (T-07).
+//   - The built-in patterns miss the formats they name: the SSN pattern does not
+//     match an unhyphenated SSN, and the card pattern does not match a card
+//     number written without separators (T-08).
+//   - RedactWithResult returns an empty map and a nil error whatever it did, so
+//     an audit of a redaction pass reads as "nothing was redacted" (T-09).
+//   - Jumble is a character permutation with a seed derived from the input, so
+//     it is reversible by anyone who wants to reverse it. It is obfuscation, not
+//     redaction (T-11).
+//   - RedactLLM applies character offsets the model reports without checking
+//     them against the text, so an off-by-one shifts every subsequent span
+//     (T-13).
+//
+// What it is usable for today: reducing the incidental visibility of fields in
+// logs and demos, where a missed value is an annoyance rather than a breach.
 func Redact[T any](input T, opts ...interface{}) (T, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting redact operation", "requestID", "unknown", "inputType", fmt.Sprintf("%T", input))
@@ -182,7 +207,14 @@ func Redact[T any](input T, opts ...interface{}) (T, error) {
 	return result, nil
 }
 
-// RedactWithResult provides detailed information about what was redacted
+// RedactWithResult provides detailed information about what was redacted.
+//
+// # NOT PRODUCTION READY
+//
+// It reports nothing by construction: the returned map is empty whatever the
+// operation did, so an audit of a redaction pass reads as "nothing was
+// redacted" with a nil error (T-09). See Redact for the rest, and
+// docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md for the detail.
 func RedactWithResult[T any](input T, opts ...interface{}) (T, RedactResult, error) {
 	result := RedactResult{
 		Redacted: make(map[string][]string),

@@ -98,8 +98,20 @@ Builder conventions:
 - `Expanding(input)`
 - `Completing(input)`
 - `CompletingField[T](input, fieldName)`
-- `Redacting[T](input)`
-- `LLMRedacting(input)`
+- `Redacting[T](input)` — **not production ready**, see below
+- `LLMRedacting(input)` — **not production ready**, see below
+
+> **The redaction operations are not production ready.** Do not use them to
+> remove sensitive data from anything that leaves your control. Field matching
+> is a substring test, so `password_reset_url` is redacted and `taxpayer_id` is
+> not; the built-in patterns miss the formats they name; `RedactWithResult`
+> reports an empty map whatever it did; jumble redaction is a reversible
+> permutation; and `RedactLLM` applies model-reported character offsets without
+> checking them. The details are T-07 through T-13 in
+> `docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md`, and the fixes are
+> scheduled in `TODOS.md` under M05. They are usable for reducing incidental
+> visibility in logs and demos, where a missed value is an annoyance rather than
+> a breach.
 
 ### Analysis and validation
 - `Classifying[T, C](input)`
