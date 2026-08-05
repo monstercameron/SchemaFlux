@@ -75,7 +75,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	maxTokens := config.GetMaxTokens(opts.Intelligence)
 	temperature := config.GetTemperature(opts.Mode)
 	effectiveSystemPrompt := applySteering(systemPrompt, opts.Steering)
-	responseFormat := inferResponseFormat(effectiveSystemPrompt, userPrompt)
+	responseFormat := resolveResponseFormat(opts.ResponseFormat, effectiveSystemPrompt)
 
 	req := llm.CompletionRequest{
 		Model:          model,
@@ -325,8 +325,26 @@ func applySteering(systemPrompt, steering string) string {
 	return strings.TrimSpace(systemPrompt + "\n\nAdditional instructions:\n" + steering)
 }
 
-func inferResponseFormat(systemPrompt, userPrompt string) string {
-	combined := strings.ToLower(systemPrompt + "\n" + userPrompt)
+// resolveResponseFormat decides whether to ask the provider for structured
+// output. An explicit declaration always wins; otherwise the format is inferred
+// from the SYSTEM prompt alone.
+//
+// The user prompt is deliberately not consulted. It used to be, so a caller
+// summarising a document that happened to contain the phrase "json object" got
+// their text operation silently switched into JSON mode — the response format
+// depended on the data, which is an injection-adjacent control path in a
+// library whose whole premise is types. The library writes every system prompt,
+// so inferring from that is inferring from its own words.
+func resolveResponseFormat(declared, systemPrompt string) string {
+	switch declared {
+	case "json", "text":
+		return declared
+	}
+	return inferResponseFormat(systemPrompt)
+}
+
+func inferResponseFormat(systemPrompt string) string {
+	combined := strings.ToLower(systemPrompt)
 	jsonSignals := []string{
 		"return a json object",
 		"return a json array",

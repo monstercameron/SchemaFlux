@@ -92,6 +92,17 @@ type OpOptions struct {
 
 	// CorrelationID groups related requests across call chains.
 	CorrelationID string
+
+	// ResponseFormat declares whether the operation needs structured output:
+	// "json", "text", or "" to infer it.
+	//
+	// It exists because the format used to be decided by searching the
+	// concatenated system AND user prompts for phrases like "json object". A
+	// caller whose input happened to contain that phrase flipped a text
+	// operation into JSON mode, which makes the response format depend on the
+	// data — an injection-adjacent control path in a typed library. An
+	// operation knows statically what it needs; this is where it says so.
+	ResponseFormat string
 }
 
 // Case represents a pattern matching case for the Match function.

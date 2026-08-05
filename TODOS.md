@@ -561,7 +561,7 @@ tests.
   requiredness, replace `ValidateExtractedData` — which takes a `threshold` and never reads
   it, checking only non-nil (`utils.go:180-198`). Closes **D-05**.
   *Verify:* a response missing a required field fails in Strict and repairs in Transform.
-- [ ] **S-005** — Replace `inferResponseFormat` (`llm_helper.go:299-317`), which decides JSON
+- [x] **S-005** — Replace `inferResponseFormat` (`llm_helper.go:299-317`), which decides JSON
   mode by searching the concatenated system **and user** prompt for phrases like
   `"json object"` — making response format data-dependent and rewording a prompt enough to
   silently disable enforcement. Use the `Format` field on the descriptor. Closes **I-04**.
@@ -838,11 +838,16 @@ commit and the test that proves it.
 | **OP-102** | `09f93eb` | **C-01** closed. `Choose` matches the model's answer back to the input and returns the caller's own item; a selection that was not offered is an error. The failure this guards against is not an invented product but an echoed one with a changed price, ID, or date — `internal/ops/collection_identity_test.go` covers seven such alterations, and all seven were verified to PASS silently against the old code. |
 | **OP-103** | `09f93eb` | **C-02** and **C-03** closed. `Filter` verifies every returned item was in the input, rejects duplicates and any result longer than the set, and returns the caller's values in the caller's order. The one-item parse fallback is gone — a malformed array used to collapse a filter to a single result. The contradictory instruction is gone too: the system prompt said "Include items that match" while the steering said "Remove items that match", and the library reported whichever the model obeyed as success. |
 | **OP-403** | `9408aa0` | **T-06** closed. `MaxLength`, `ShowFirst`, and `ShowLast` are documented in characters and were indexed in bytes, so any cut landing mid-rune produced invalid UTF-8 — `Montréal` truncated to seven "characters" came back with a replacement character. `internal/ops/runes.go` does the same jobs on runes; `Complete`'s truncation and `RedactLLM`'s masking and splicing use it. `internal/ops/runes_test.go` walks every cut point of six ordinary strings (an accented place name, a currency symbol, Japanese, an emoji) and was verified to FAIL against byte indexing. Partially closes **T-13**: `applyRedactions` now refuses a span that is negative, inverted, out of range, or overlapping, rather than applying it — semantic validation of what a span contains remains **OP-507**. |
+| **S-005** | `pending` | **I-04** closed. The response format was chosen by searching the concatenated system **and user** prompts for phrases like "json object", so a caller summarising a changelog that said "return a json object" got their text operation switched into JSON mode — the format depended on the data. Inference now reads the system prompt only, which the library writes, and `OpOptions.ResponseFormat` lets an operation declare what it needs outright. `internal/ops/response_format_test.go` uses ordinary inputs (a support ticket, a changelog, a bug report) rather than crafted attacks; **six of the seven flipped the format against the old code**. |
 | **B-01/B-04** | `9474687` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
 | **P-012** | `9474687` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
 
 ### Added during the work
+
+- [x] **S-006** — A test used `types.OpOptions` as sample data with a hardcoded field count, so
+  adding a field to a production type broke a test about counting fields. It owns its own struct
+  now.
 
 - [x] **OP-104** — Both collection errors embedded the whole model response in their `Reason`
   (`"failed to parse: %v (response: %s)"`), which is **X-03** in two more places: the response is

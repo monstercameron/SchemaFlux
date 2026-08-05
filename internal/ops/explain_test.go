@@ -3,8 +3,6 @@ package ops
 import (
 	"fmt"
 	"testing"
-
-	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 func TestExplainOptions(t *testing.T) {
@@ -65,6 +63,17 @@ func TestExplainOptions(t *testing.T) {
 	}
 }
 
+// explainSample is test data with a deliberately stable shape.
+type explainSample struct {
+	Alpha   string
+	Bravo   int
+	Charlie float64
+	Delta   bool
+	Echo    []string
+	Foxtrot map[string]int
+	Golf    *string
+}
+
 func TestAnalyzeDataForExplanation(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -81,9 +90,12 @@ func TestAnalyzeDataForExplanation(t *testing.T) {
 			wantErr:   false,
 		},
 		{
+			// A struct owned by this test. It used to be types.OpOptions with a
+			// hardcoded field count, so adding a field to a production type
+			// broke a test about counting fields.
 			name:      "complex struct",
-			data:      types.OpOptions{Mode: types.Strict, Intelligence: types.Smart},
-			wantType:  "types.OpOptions",
+			data:      explainSample{},
+			wantType:  "ops.explainSample",
 			wantCount: 7,
 			wantErr:   false,
 		},

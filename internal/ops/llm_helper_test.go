@@ -63,7 +63,6 @@ func TestInferResponseFormat(t *testing.T) {
 	tests := []struct {
 		name       string
 		system     string
-		user       string
 		wantFormat string
 	}{
 		{
@@ -85,7 +84,7 @@ func TestInferResponseFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := inferResponseFormat(tt.system, tt.user); got != tt.wantFormat {
+			if got := inferResponseFormat(tt.system); got != tt.wantFormat {
 				t.Fatalf("inferResponseFormat() = %q, want %q", got, tt.wantFormat)
 			}
 		})
