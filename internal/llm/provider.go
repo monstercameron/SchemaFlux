@@ -69,8 +69,9 @@ type ProviderFactory func(config ProviderConfig) (Provider, error)
 
 // OpenAIProvider implements Provider for OpenAI
 type OpenAIProvider struct {
-	client *openai.Client
-	config ProviderConfig
+	client     *openai.Client
+	httpClient *http.Client
+	config     ProviderConfig
 }
 
 // OpenAICompatibleProvider implements Provider for vendors with an OpenAI-compatible chat API.
@@ -93,7 +94,11 @@ func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 
 	return &OpenAIProvider{
 		client: client,
-		config: config,
+		// One client per provider. A fresh http.Client per request defeats
+		// connection reuse and HTTP/2 multiplexing; the per-request deadline
+		// rides on the context instead.
+		httpClient: &http.Client{Timeout: config.Timeout},
+		config:     config,
 	}, nil
 }
 
@@ -161,12 +166,7 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		httpReq.Header.Set("OpenAI-Organization", provider.config.OrgID)
 	}
 
-	// Use a custom HTTP client or default
-	client := &http.Client{
-		Timeout: provider.config.Timeout,
-	}
-
-	resp, err := client.Do(httpReq)
+	resp, err := provider.httpClient.Do(httpReq)
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("OpenAI request failed: %w", err)
 	}
@@ -192,9 +192,15 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 			} `json:"content"`
 		} `json:"output"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			TotalTokens        int `json:"total_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+			OutputTokensDetails struct {
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"output_tokens_details"`
 		} `json:"usage"`
 		Model string `json:"model"`
 	}
@@ -207,31 +213,51 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		return CompletionResponse{}, fmt.Errorf("empty response from OpenAI")
 	}
 
-	// Extract text content
-	content := ""
+	// Extract the answer only. A reasoning model returns `reasoning` items
+	// alongside the `message` item; concatenating every item prefixes the
+	// answer with reasoning prose, which corrupts a JSON payload.
+	var builder strings.Builder
 	for _, output := range response.Output {
+		if output.Type != "" && output.Type != "message" {
+			continue
+		}
 		for _, item := range output.Content {
-			if item.Text != "" {
-				content += item.Text
+			// Older payloads omit the content type; treat that as text.
+			if item.Type != "" && item.Type != "output_text" {
+				continue
 			}
+			builder.WriteString(item.Text)
 		}
 	}
+	content := builder.String()
+
 	if content == "" {
 		if response.Status == "incomplete" && response.IncompleteReason.Reason != "" {
 			return CompletionResponse{}, fmt.Errorf("OpenAI response incomplete: %s", response.IncompleteReason.Reason)
 		}
-		return CompletionResponse{}, fmt.Errorf("empty response from OpenAI")
+		return CompletionResponse{}, fmt.Errorf("empty response from OpenAI: no message output")
+	}
+
+	// A truncated answer must be distinguishable from a complete one.
+	finishReason := "stop"
+	if response.Status == "incomplete" {
+		finishReason = response.IncompleteReason.Reason
+		if finishReason == "" {
+			finishReason = "incomplete"
+		}
 	}
 
 	return CompletionResponse{
 		Content:      content,
 		Provider:     provider.Name(),
 		Model:        response.Model,
-		FinishReason: "stop", // Responses API doesn't explicitly return finish_reason in the same way, assuming stop
+		FinishReason: finishReason,
 		Usage: types.TokenUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.TotalTokens,
+			CachedTokens:     response.Usage.InputTokensDetails.CachedTokens,
+			ReasoningTokens:  response.Usage.OutputTokensDetails.ReasoningTokens,
 		},
 	}, nil
 }
