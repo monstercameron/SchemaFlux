@@ -40,3 +40,4 @@ smarttodo-wasm
 !examples/smarttodo/cmd/smarttodo-wasm/
 !examples/smarttodo/cmd/smarttodo-wasm/main.go
 .audit/passes.txt
+.audit/live/*.json

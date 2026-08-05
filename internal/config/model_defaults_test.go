@@ -33,16 +33,51 @@ func TestGetModelUsesGPT56FamilyForOpenAI(t *testing.T) {
 	}
 }
 
-// The tier constants are deliberately identical until TODOS.md P-013 measures
-// the family. This test documents that as a decision rather than an oversight:
-// when the split lands, it is expected to fail and be updated in the same
-// commit.
-func TestModelTierDefaultsAreDeliberatelyUnsplit(t *testing.T) {
-	if ModelDefaultSmart != ModelDefaultFast || ModelDefaultFast != ModelDefaultQuick {
-		t.Skip("tiers have been split; update this test alongside TODOS.md P-013")
+// The tier assignment is what the live benchmark supports and no more: Quick
+// takes terra because it was measurably fastest at no cost in accuracy, and
+// Smart and Fast stay on luna because nothing in the measurement separated luna
+// from sol. If a future benchmark splits them, this test is where the new
+// evidence gets recorded.
+func TestTierDefaultsMatchTheMeasurement(t *testing.T) {
+	if ModelDefaultQuick != "gpt-5.6-terra" {
+		t.Errorf("ModelDefaultQuick = %q, want gpt-5.6-terra (fastest at equal accuracy)", ModelDefaultQuick)
 	}
 	if ModelDefaultSmart != "gpt-5.6-luna" {
 		t.Errorf("ModelDefaultSmart = %q, want gpt-5.6-luna", ModelDefaultSmart)
+	}
+	if ModelDefaultFast != "gpt-5.6-luna" {
+		t.Errorf("ModelDefaultFast = %q, want gpt-5.6-luna", ModelDefaultFast)
+	}
+
+	// Smart and Fast being equal is a recorded absence of evidence, not an
+	// oversight. When P-014 splits them, this assertion is the thing to change.
+	if ModelDefaultSmart != ModelDefaultFast {
+		t.Log("Smart and Fast have been split; update the comment in config.go with the measurement that justified it")
+	}
+}
+
+// Every tier must name a model in the gpt-5.6 family, so a tier can never
+// silently resolve to a model the account cannot call.
+func TestEveryTierNamesAKnownModel(t *testing.T) {
+	known := map[string]struct{}{
+		"gpt-5.6-luna":  {},
+		"gpt-5.6-sol":   {},
+		"gpt-5.6-terra": {},
+	}
+
+	for _, tc := range []struct {
+		name  string
+		model string
+	}{
+		{"smart", ModelDefaultSmart},
+		{"fast", ModelDefaultFast},
+		{"quick", ModelDefaultQuick},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := known[tc.model]; !ok {
+				t.Errorf("the %s tier resolves to %q, which is not a verified gpt-5.6 model", tc.name, tc.model)
+			}
+		})
 	}
 }
 

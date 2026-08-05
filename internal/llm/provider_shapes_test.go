@@ -253,3 +253,95 @@ func TestOpenAIResponsesRequestShape(t *testing.T) {
 		t.Errorf("model = %v, want gpt-5.6-luna", captured["model"])
 	}
 }
+
+// The live Responses API reports cache_write_tokens alongside cached_tokens.
+// They bill differently, so cost accounting that reads only one under-reports
+// the first call of a cached prefix — which is exactly the call that pays to
+// build the cache.
+func TestOpenAIResponsesParsesCacheWriteTokens(t *testing.T) {
+	cases := []struct {
+		name       string
+		details    string
+		wantCached int
+		wantWrite  int
+	}{
+		{"both", `{"cached_tokens":120,"cache_write_tokens":880}`, 120, 880},
+		{"write_only", `{"cache_write_tokens":880}`, 0, 880},
+		{"read_only", `{"cached_tokens":120}`, 120, 0},
+		{"both_zero", `{"cached_tokens":0,"cache_write_tokens":0}`, 0, 0},
+		{"absent", `{}`, 0, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+			          "usage":{"input_tokens":1000,"output_tokens":5,"input_tokens_details":` + tc.details + `}}`
+
+			server := responsesServer(t, body)
+			provider := newTestOpenAIProvider(t, server.URL)
+
+			response, err := provider.Complete(context.Background(), CompletionRequest{
+				Model: "gpt-5.6-luna", UserPrompt: "hello",
+			})
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if response.Usage.CachedTokens != tc.wantCached {
+				t.Errorf("CachedTokens = %d, want %d", response.Usage.CachedTokens, tc.wantCached)
+			}
+			if response.Usage.CacheWriteTokens != tc.wantWrite {
+				t.Errorf("CacheWriteTokens = %d, want %d", response.Usage.CacheWriteTokens, tc.wantWrite)
+			}
+		})
+	}
+}
+
+// This is the exact usage block the live API returned on 2026-08-05, recorded
+// so a future change to the parser is checked against a real response rather
+// than against one we wrote to suit ourselves.
+func TestOpenAIResponsesParsesTheObservedLiveShape(t *testing.T) {
+	const observed = `{
+	  "id": "resp_07103f1f34c2e8a3006a72d6c50a2c81a080ca5a7e8d101104",
+	  "object": "response",
+	  "status": "completed",
+	  "model": "gpt-5.6-luna",
+	  "output": [
+	    {
+	      "id": "msg_07103f1f34c2e8a3006a72d6c5c86881a0a043a61492c6ffc7",
+	      "type": "message",
+	      "status": "completed",
+	      "content": [{"type": "output_text", "text": "OK"}]
+	    }
+	  ],
+	  "usage": {
+	    "input_tokens": 11,
+	    "input_tokens_details": {"cache_write_tokens": 0, "cached_tokens": 0},
+	    "output_tokens": 5,
+	    "output_tokens_details": {"reasoning_tokens": 0},
+	    "total_tokens": 16
+	  }
+	}`
+
+	server := responsesServer(t, observed)
+	provider := newTestOpenAIProvider(t, server.URL)
+
+	response, err := provider.Complete(context.Background(), CompletionRequest{
+		Model: "gpt-5.6-luna", UserPrompt: "Reply with exactly: OK",
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if response.Content != "OK" {
+		t.Errorf("Content = %q, want OK", response.Content)
+	}
+	if response.Model != "gpt-5.6-luna" {
+		t.Errorf("Model = %q", response.Model)
+	}
+	if response.Usage.PromptTokens != 11 || response.Usage.CompletionTokens != 5 || response.Usage.TotalTokens != 16 {
+		t.Errorf("Usage = %+v, want 11/5/16", response.Usage)
+	}
+	if response.FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want stop", response.FinishReason)
+	}
+}

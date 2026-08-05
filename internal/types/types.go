@@ -114,6 +114,13 @@ type TokenUsage struct {
 	OutputTokens    int `json:"output_tokens,omitempty"`
 	CachedTokens    int `json:"cached_tokens,omitempty"`
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"` // For o1-style models
+
+	// CacheWriteTokens is the input the provider wrote into its prompt cache on
+	// this call. It is billed differently from a cache read and from an
+	// uncached token, so cost accounting that ignores it under-reports the
+	// first call of a cached prefix. The live Responses API reports it as
+	// usage.input_tokens_details.cache_write_tokens.
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
 }
 
 // CostInfo tracks financial costs of operations

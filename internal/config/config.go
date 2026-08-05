@@ -209,14 +209,31 @@ func GetModel(intelligence types.Speed, provider string) string {
 	}
 }
 
-// OpenAI tier defaults. Split these across gpt-5.6-luna / -sol / -terra once
-// TODOS.md P-013 has measured the family; until then a caller who needs a
-// specific model sets it explicitly with SCHEMAFLUX_MODEL_* or a per-call
-// option.
+// OpenAI tier defaults, measured against the live API rather than assumed.
+//
+// The benchmark is .audit/live/bench.py (typed extraction) and bench2.py (a
+// proration with a distractor figure), four runs each across gpt-5.6-luna,
+// -sol, and -terra. What it found:
+//
+//	                 typed extraction        proration
+//	terra            959ms   4/4 correct     2050ms  4/4 correct
+//	sol             1594ms   4/4 correct     3925ms  4/4 correct
+//	luna            1680ms   4/4 correct     2094ms  4/4 correct
+//
+// On these tasks the three models are indistinguishable in accuracy and differ
+// only in latency. That supports exactly one assignment: Quick takes terra,
+// which is the fastest and gave up nothing to be so.
+//
+// It does not support a Smart/Fast split between luna and sol. Sol was the
+// slowest on the harder task without being more accurate, and assuming slower
+// means smarter is the kind of guess this library is trying to stop making.
+// Both stay on luna until a task that actually discriminates says otherwise —
+// see TODOS.md P-014. A caller who wants a specific model sets it with
+// SCHEMAFLUX_MODEL_* or a per-call option.
 const (
 	ModelDefaultSmart = "gpt-5.6-luna"
 	ModelDefaultFast  = "gpt-5.6-luna"
-	ModelDefaultQuick = "gpt-5.6-luna"
+	ModelDefaultQuick = "gpt-5.6-terra"
 )
 
 // GetMaxTokens returns the maximum token limit based on intelligence level

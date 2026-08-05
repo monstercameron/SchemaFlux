@@ -43,7 +43,7 @@ file proceeds without it.
   dependency. Load the named paths, default to `./.env`, and return a real error.
   *Verify:* unit test — `InitWithEnv("testdata/x.env")` populates config; a malformed file
   returns a non-nil error. Depends on B-02.
-- [ ] **B-04** — Establish the live-test gate before any `[LIVE]` task runs: provider-backed
+- [x] **B-04** — Establish the live-test gate before any `[LIVE]` task runs: provider-backed
   tests compile always and execute only when `SCHEMAFLUX_LIVE_TESTS=1` is set. Never let a
   default `go test ./...` reach a paid endpoint.
   *Verify:* `go test ./...` with the variable unset makes zero network calls (assert with a
@@ -835,8 +835,24 @@ commit and the test that proves it.
 | **OP-301** | `012ea72` | Excluded fields are stripped from the payload before serialisation — matched by JSON field name, case-insensitively, at every level — and the output is scanned for the removed values. `internal/ops/project_exclude_test.go` (12 strip cases, 9 leak-scan cases) and `project_integration_test.go` (6 exclusion cases at the provider boundary plus `Example_projectWithholdsFields`). Both end-to-end tests were verified to FAIL against the prompt-hint version. |
 | **F-024** | `9aec323` | `internal/ops/dead_options_test.go` walks the package and fails any exported `*Options` field with a setter and no reader, excluding the setter and merge functions that do not constitute a reader. Written first, so it produced the authoritative list rather than the review's: it found **five fields the review missed** (`ClusterOptions.GenerateDescriptions`, `ConformOptions.PreserveUnknown`, `DecomposeOptions.PreserveHierarchy`, `MatchOptions.Bidirectional`, `ScoreOptions.Normalize`) and corrected two entries (`FilterOptions.BatchSize` is live; `TransformOptions.To` no longer existed). 365 option fields, 0 dead. |
 | **F-023** | `9aec323` | All 18 resolved on a stated principle. The six that promised deterministic machinery a prompt cannot deliver — `OnProgress`, `PreProcess`, `PostProcess`, `SaveProgress`, `PreserveNulls`, `PreserveFormat` — were deleted with their setters. The twelve that are legitimately instructions to the model were threaded into their prompts. `internal/ops/options_reach_prompt_test.go` proves each one: it renders the prompt with and without the option and fails if they are identical, which is the difference between a field being read and a field being honoured. |
+| **B-01/B-04** | `pending` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
+| **P-012** | `pending` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
+| **P-013** | `pending` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
 
 ### Added during the work
+
+- [ ] **P-014** — Split `Smart` and `Fast` across the gpt-5.6 family, or record that they should
+  not be split. The P-013 benchmark did not discriminate: all three models were 4/4 correct on
+  both a typed extraction and a proration with a distractor, so the only measurable difference
+  was latency. A discriminating task set is needed — long-context recall, multi-step tool
+  reasoning, adversarial instruction-following — before Smart means anything other than Fast.
+  *Verify:* a benchmark in `.audit/live/` where the models score differently, and a tier
+  assignment justified by it in `config.go`.
+- [x] **P-015** — The live `usage.input_tokens_details` carries `cache_write_tokens` alongside
+  `cached_tokens`, which the provider did not parse. They bill differently, so cost accounting
+  that reads only one under-reports the first call of a cached prefix — the call that pays to
+  build the cache. Found by inspecting a real response rather than the docs.
+  *Verify:* `TestOpenAIResponsesParsesCacheWriteTokens` (5 cases).
 
 - [x] **AUDIT-001** — The standard of done was asserted per commit but never checked across the
   whole list, so twelve closed tasks sat below the ten-case bar without anyone noticing.
