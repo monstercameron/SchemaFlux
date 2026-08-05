@@ -33,12 +33,12 @@ file proceeds without it.
   `insufficient_quota` / `credit_balance_exhausted`; `GET /v1/models` still works, which is
   why model discovery succeeded. Every `[LIVE]` task below is blocked on this.
   *Verify:* a 1-token `/v1/responses` call returns HTTP 200.
-- [ ] **B-02** — `.env` defines the key as `OPENAI`, which no code path reads. The library
+- [x] **B-02** — `.env` defines the key as `OPENAI`, which no code path reads. The library
   looks for `SCHEMAFLUX_OPENAI_API_KEY`, `OPENAI_API_KEY`, then `SCHEMAFLUX_API_KEY`.
   Rename the key in `.env`, **or** add `OPENAI` to the resolution chain in
   `providerAPIKeyEnvVars`. Prefer renaming — a two-name alias invites drift.
   *Verify:* `Init` with only `.env` present selects the OpenAI provider, not the mock.
-- [ ] **B-03** — `InitWithEnv(paths ...string)` accepts paths and ignores them (I-13); it
+- [x] **B-03** — `InitWithEnv(paths ...string)` accepts paths and ignores them (I-13); it
   never loads a `.env` file at all. `github.com/joho/godotenv` is already an indirect
   dependency. Load the named paths, default to `./.env`, and return a real error.
   *Verify:* unit test — `InitWithEnv("testdata/x.env")` populates config; a malformed file
@@ -115,15 +115,15 @@ regardless of what happens to the rest of the plan.
 
 ## Initialization and configuration
 
-- [ ] **F-012** — A missing API key silently selects the mock provider
+- [x] **F-012** — A missing API key silently selects the mock provider
   (`client.go:51-54`, `186-188`), so a misconfigured deployment returns `Mock response for: ...`
   parsed into zero-valued structs instead of failing. Fall back to `local` only when it was
   explicitly requested; otherwise return an error. Closes **I-01**.
   *Verify:* `Init("")` with a clean environment returns an error naming the missing key.
-- [ ] **F-013** — `InitWithEnv` always returns `nil`, making the README's
+- [x] **F-013** — `InitWithEnv` always returns `nil`, making the README's
   `if err := InitWithEnv(); err != nil` dead code. Covered by B-03; tracked here because
   F-012 depends on it being able to fail.
-- [ ] **F-014** — `InitWithEnv` calls `os.Setenv` (`client.go:205`), mutating process-global
+- [x] **F-014** — `InitWithEnv` calls `os.Setenv` (`client.go:205`), mutating process-global
   state from a library and leaking into child processes. Remove. Closes **I-13**.
   *Verify:* test asserts the environment is unchanged after `InitWithEnv`.
 
@@ -795,6 +795,12 @@ commit and the test that proves it.
 | **PR-007** | `0c867e3` | See below — found while testing PR-001. |
 | **F-001** | *pending* | `Validate` returns an error on parse failure; `internal/ops/validate_failopen_test.go` covers four negative phrasings plus the well-formed success and failure paths. |
 
+| **F-012** | `2c917e6` | `Init` returns an error when no credential resolves and the provider is not `local`; `client_env_test.go`. |
+| **F-013** | `2c917e6` | Subsumed by B-03 — `InitWithEnv` can now fail. |
+| **F-014** | `2c917e6` | `os.Setenv` removed from `InitWithEnv`. |
+| **B-02** | `2c917e6` | `OPENAI` added to the OpenAI key chain after the two canonical names, rather than editing the operator's credential file. |
+| **B-03** | `2c917e6` | `godotenv` promoted to a direct dependency; named paths load, `./.env` is the default, a missing named path errors, and the process environment wins over the file. |
+
 ### Added during the work
 
 - [x] **PR-007** — `lookupPricingModel`'s prefix ladder matched `gpt-5.6-luna` against the
@@ -805,6 +811,45 @@ commit and the test that proves it.
   *Verify:* `TestVersionBumpIsNotTreatedAsSnapshot`, `TestDatedSnapshotsStillPriceFromBaseModel`.
   Found because `TestGPT56FamilyIsUnpricedUntilRatesAreKnown` skipped where it should have
   asserted — the skip was the signal.
+
+- [ ] **F-029** — `NewClient("")` still constructs the mock provider directly
+  (`client.go:51-54`). F-012 closed the `Init` path, but a caller who builds a client by hand
+  with an empty key gets the same silent fake output. Either require a key or take an explicit
+  `WithMockProvider()`.
+  *Verify:* `NewClient("")` returns an error or a client whose provider is nil, never a mock
+  chosen by accident.
+- [ ] **F-030** — When `Init` fails and the caller discards the error, `defaultClient` stays
+  nil and every operation reports `"no LLM provider configured"`
+  (`internal/ops/llm_helper.go:47`), which does not say what to do. Make that error name
+  `Init`/`InitWithEnv` and the credential variables it looked for.
+  *Verify:* the message from an uninitialised call names at least one env var and one
+  function.
+- [ ] **F-031** — `Init` now returns an error while `ConfigureLogging`, `SetLogLevel`, and
+  `GetLogger` still read `defaultClient` without the mutex that `Init` writes it under. The
+  new early return widens the window in which `defaultClient` is nil. Fold into **IN-001** if
+  that lands first; listed separately so it is not lost.
+  *Verify:* `go test -race` on a test that calls `Init` and `GetLogger` concurrently.
+- [ ] **DOC-004** — Document the credential resolution order in the README, including the
+  `OPENAI` alias added by B-02 and the fact that `.env` supplies defaults rather than
+  overrides. The README's Environment section currently lists neither.
+
+### Refined
+
+- **PR-002** — downgraded from blocking to opportunistic. With PR-001 and PR-007 in place an
+  unpriced model reports unpriced rather than a wrong figure, so shipping without gpt-5.6
+  rates is safe. Needs a published rate card as its source; do not populate the table from a
+  guess, which is the exact failure PR-001 removed.
+- **P-010 / P-011** — partially closed. The tier mapping and the capability gates are wired
+  conservatively; the luna/sol/terra split and the confirmation of accepted reasoning-effort
+  values both still depend on **P-013**, which is blocked on **B-01**.
+- **F-024** — widen the static check from dead options to dead unexported helpers as well.
+  `getDefaultPricing` sat unused-but-harmful for exactly the same reason a dead option does,
+  and the same check would have surfaced it.
+- **CI-006** — call out `testdata/*.env` explicitly. This repository now ships a fixture env
+  file, and a fixture is the most likely place for a real key to be pasted by accident.
+- **DOC-002** — add `Init` to the breaking-change list. It gained an `error` return; that is
+  source-compatible because Go permits discarding a call's result, but a caller who wants the
+  check must now add it.
 
 ## Standing rules for this list
 
