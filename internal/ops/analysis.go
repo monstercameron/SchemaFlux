@@ -170,7 +170,7 @@ Return a JSON object with these fields:
 		Reasoning string `json:"reasoning,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
 		log.Error("Classify failed to parse response", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse classification response: %w", err)
 	}
@@ -390,7 +390,7 @@ Return a JSON object with these fields:
 		Weaknesses []string           `json:"weaknesses,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
 		// Fallback: try to parse as simple number for backward compatibility
 		response = strings.Trim(response, "\"'")
 		score, parseErr := strconv.ParseFloat(response, 64)
@@ -583,7 +583,7 @@ Return a JSON object with these fields:
 		AspectScores map[string]float64 `json:"aspect_scores,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
 		log.Error("Compare failed to parse response", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse comparison response: %w", err)
 	}
@@ -802,7 +802,7 @@ Return a JSON object with these fields:
 		Explanation string `json:"explanation"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
 		// Fallback: try to parse as simple boolean for backward compatibility
 		response = strings.TrimSpace(strings.ToLower(response))
 		if response == "true" || response == "false" {

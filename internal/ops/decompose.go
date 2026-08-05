@@ -308,7 +308,7 @@ Return a JSON object with:
 		RootParts []string            `json:"root_parts"`
 	}
 
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Decompose operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse decomposition result: %w", err)
 	}
@@ -395,15 +395,15 @@ Return a JSON array of parts matching the output schema.`, inputSchema, outputSc
 		return result, fmt.Errorf("decomposition failed: %w", err)
 	}
 
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		var wrapped struct {
 			Parts []U `json:"parts"`
 		}
-		if err2 := ParseJSON(response, &wrapped); err2 == nil && len(wrapped.Parts) > 0 {
+		if err2 := ParseJSONStrict(response, &wrapped); err2 == nil && len(wrapped.Parts) > 0 {
 			result = wrapped.Parts
 		} else {
 			var single U
-			if err2 := ParseJSON(response, &single); err2 == nil {
+			if err2 := ParseJSONStrict(response, &single); err2 == nil {
 				result = []U{single}
 			} else {
 				log.Error("DecomposeToSlice failed: parse error", "error", err)

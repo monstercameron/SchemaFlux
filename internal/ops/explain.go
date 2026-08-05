@@ -276,13 +276,11 @@ func generateExplanation(data any, analysis dataAnalysis, opts ExplainOptions) (
 
 	// Parse the response
 	var result explanationResponse
-	if err := ParseJSON(response, &result); err != nil {
-		// If JSON parsing fails, treat the entire response as the explanation
-		result = explanationResponse{
-			Explanation: response,
-			Summary:     response,
-			KeyPoints:   []string{"Explanation generated"},
-		}
+	if err := ParseJSONStrict(response, &result); err != nil {
+		// Treating an unparseable body as the explanation manufactured a
+		// result out of a refusal or an error page, complete with a key point
+		// reading "Explanation generated".
+		return explanationResponse{}, fmt.Errorf("the explanation could not be parsed: %w", err)
 	}
 
 	return result, nil

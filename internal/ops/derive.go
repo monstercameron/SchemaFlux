@@ -254,7 +254,7 @@ Rules:
 		OverallConfidence float64            `json:"overall_confidence"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Derive operation failed: parse error", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse derivation result: %w", err)
 	}

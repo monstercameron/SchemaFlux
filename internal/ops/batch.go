@@ -295,7 +295,7 @@ func parseMergedResponse[T any](response string, expectedCount int) ([]T, []erro
 		Data  json.RawMessage `json:"data"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		// If parsing fails, return error for all items
 		for i := range errors {
 			errors[i] = fmt.Errorf("failed to parse merged response: %w", err)

@@ -296,7 +296,7 @@ Return a JSON object with:
 		RemovedInfo   []string        `json:"removed_info"`
 	}
 
-	if err := ParseJSON(response, &envelope); err != nil {
+	if err := ParseJSONStrict(response, &envelope); err != nil {
 		log.Error("Compress operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse compressed result: %w", err)
 	}
@@ -307,7 +307,7 @@ Return a JSON object with:
 			log.Error("Compress operation failed: compressed payload parse error", "error", err)
 			return result, fmt.Errorf("failed to parse compressed payload: %w", err)
 		}
-		if err2 := ParseJSON(compressedString, &result.Compressed); err2 != nil {
+		if err2 := ParseJSONStrict(compressedString, &result.Compressed); err2 != nil {
 			log.Error("Compress operation failed: compressed string parse error", "error", err2)
 			return result, fmt.Errorf("failed to parse compressed payload string: %w", err2)
 		}

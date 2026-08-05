@@ -276,7 +276,7 @@ Rules:
 		AverageConfidence float64           `json:"average_confidence"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Interpolate operation failed: parse error", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse interpolation result: %w", err)
 	}

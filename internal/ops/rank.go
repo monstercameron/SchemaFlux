@@ -309,7 +309,7 @@ Order the rankings from highest to lowest score.`, opts.Query, factorsDesc, boos
 		} `json:"rankings"`
 	}
 
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Rank operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse ranking result: %w", err)
 	}

@@ -301,7 +301,7 @@ Return a JSON object with:
 		Quality        float64 `json:"quality"`
 	}
 
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Cluster operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse clustering result: %w", err)
 	}

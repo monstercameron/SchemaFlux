@@ -361,7 +361,7 @@ Rules for "synthesized":
 		SourceCoverage map[int]float64     `json:"source_coverage"`
 	}
 
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Synthesize operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse synthesis result: %w", err)
 	}
@@ -369,7 +369,7 @@ Rules for "synthesized":
 	if err := json.Unmarshal(parsed.Synthesized, &result.Synthesized); err != nil {
 		var synthesizedString string
 		if err2 := json.Unmarshal(parsed.Synthesized, &synthesizedString); err2 == nil {
-			if err3 := ParseJSON(synthesizedString, &result.Synthesized); err3 != nil {
+			if err3 := ParseJSONStrict(synthesizedString, &result.Synthesized); err3 != nil {
 				var zero T
 				if _, ok := any(zero).(string); ok {
 					result.Synthesized = any(synthesizedString).(T)

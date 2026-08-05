@@ -276,7 +276,7 @@ Be thorough but precise. Only report genuine issues.`,
 		Findings []AuditFinding `json:"findings"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Audit operation failed: parse error", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse audit result: %w", err)
 	}

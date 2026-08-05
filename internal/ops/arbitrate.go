@@ -315,7 +315,7 @@ Rules:
 		TiesBroken  bool               `json:"ties_broken"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Arbitrate operation failed: parse error", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse arbitration result: %w", err)
 	}

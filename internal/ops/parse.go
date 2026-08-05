@@ -510,7 +510,7 @@ func parseWithLLM[T any](input string, detectedFormat string, opts ParseOptions)
 	}
 
 	// Parse LLM response
-	if err := ParseJSON(response, &zero); err != nil {
+	if err := ParseJSONStrict(response, &zero); err != nil {
 		return result, fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 

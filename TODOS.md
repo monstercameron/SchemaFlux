@@ -201,7 +201,7 @@ regardless of what happens to the rest of the plan.
 
 ## M01 exit gate
 
-- [ ] **F-028** — No operation in the package returns a successful result on a provider
+- [x] **F-028** — No operation in the package returns a successful result on a provider
   error, a parse failure, or a validation failure.
   *Verify:* a fault-injection suite that, for every exported operation, runs three scenarios —
   provider error, malformed body, schema-violating body — and asserts each returns a non-nil
@@ -828,8 +828,36 @@ commit and the test that proves it.
 | **F-025** | `b4220cc` | `ShellTool` is out of the default registry and out of `ToOpenAIFormat`; `tools.EnableShell(ShellPolicy{AllowedCommands: …})` registers it, `DisableShell` removes it. The policy also confines the working directory and caps the timeout, and shell metacharacters are refused so an allowed base name cannot carry a disallowed command. `internal/tools/shell_policy_test.go` covers 12 refusal cases plus the directory and timeout bounds. |
 | **F-026** | `b4220cc` | The `token` tool's JWT path returns a refusal instead of a successful-looking `StubResult` from a tool not marked `IsStub`. `internal/tools/stub_honesty_test.go` parses the package and fails any tool that can reach `StubResult` without the flag — verified to catch a removed flag on `WebSearchTool`. Found while there: `generateRandomToken` hashed the current nanosecond, so tokens from a security-category tool were a deterministic function of their issue time; it uses `crypto/rand` now. Two stub tools whose descriptions did not say so now do. |
 | **F-027** | `b4220cc` | All 79 `_ = Register(...)` calls became `mustRegister`, which panics at init on a duplicate. `Registry.Unregister` added, which `DisableShell` needs. `TestRegisterReportsADuplicate`, `TestMustRegisterPanicsOnADuplicate`, `TestUnregister`. |
+| **F-028** | `pending` | `faultinjection_integration_test.go` drives 57 exported operations through four faults — provider error, malformed body, schema-violating body, empty body — at the public API. It found real defects rather than confirming the fixes: `Explain`, `Question`, and `FormatWithMetadata` still manufactured results from unparseable bodies with invented confidences of 0.5 and 0.7, and roughly 35 operations accepted well-formed JSON of entirely the wrong shape and reported success with every field empty. Both are closed; see **F-035** and **F-036**. `TestFaultInjectionCoversTheExportedSurface` guards the table against falling behind the API. |
 
 ### Added during the work
+
+- [x] **F-035** — `encoding/json` ignores unrecognised fields, so a well-formed object of
+  entirely the wrong shape unmarshalled into a zero value and returned no error. Roughly 35
+  operations therefore reported success with every field empty: a cluster operation returning
+  no clusters, a verification returning no verdict, a projection returning an empty record.
+  `ParseJSONStrict` requires the body to carry at least one of the target's JSON field names —
+  a deliberately weak rule that catches an answer about something else without rejecting a
+  model that omits an optional field. All 62 body-parsing sites in `internal/ops` use it.
+  *Verify:* `internal/ops/json_strict_test.go` (10 rejections, 8 acceptances, the
+  no-field-names passthrough cases, embedded structs) and the fault-injection suite.
+- [x] **F-036** — `Explain`, `Question`, and `FormatWithMetadata` had the same fail-open
+  fallback F-002 removed from the text operations: an unparseable body became the result, with
+  an invented confidence of 0.5 or 0.7 and, for `Explain`, a fabricated key point reading
+  "Explanation generated". `Question` also logged the entire response, which is the caller's
+  data. All three return the error now.
+  *Verify:* the malformed-body arm of the fault-injection suite.
+- [x] **F-037** — `Diff` reported a failed summary as the prose "Summary generation failed,
+  but changes detected successfully" in the `Summary` field, which reads like a summary. The
+  structural comparison is computed locally and is still correct, so the operation still
+  succeeds — but `DiffResult.SummaryError` now says the explanation is missing, and an empty
+  body is treated as a failed summary rather than an empty one.
+  *Verify:* `TestFaultInjectionDiffKeepsTheStructuralResultAndReportsTheMissingSummary`,
+  `TestDiffReportsAWorkingSummary`.
+- [x] **F-038** — The shared test mock answered every operation with `{"mock": "response"}`,
+  which shares no field with any target. Every test using it was asserting that an answer
+  about something else parses successfully — the exact behaviour F-035 removed. It answers
+  with a body shaped like `Person` now.
 
 - [x] **PR-007** — `lookupPricingModel`'s prefix ladder matched `gpt-5.6-luna` against the
   plain `gpt-5` entry, because it only tested `strings.HasPrefix`. That is the same

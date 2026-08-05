@@ -364,7 +364,7 @@ Return a JSON object with:
 	}
 
 	// Parse the response
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		log.Error("Verify operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse verification result: %w", err)
 	}

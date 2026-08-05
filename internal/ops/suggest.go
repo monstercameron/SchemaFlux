@@ -249,7 +249,7 @@ Rules:
 
 	// Parse the response - try direct array first
 	var suggestions []T
-	if err := json.Unmarshal([]byte(response), &suggestions); err == nil {
+	if err := ParseJSONStrict(response, &suggestions); err == nil {
 		// Successfully parsed as array
 		if len(suggestions) > opts.TopN {
 			suggestions = suggestions[:opts.TopN]
@@ -262,7 +262,7 @@ Rules:
 	var result struct {
 		Suggestions []T `json:"suggestions"`
 	}
-	if err := json.Unmarshal([]byte(response), &result); err == nil && len(result.Suggestions) > 0 {
+	if err := ParseJSONStrict(response, &result); err == nil && len(result.Suggestions) > 0 {
 		suggestions = result.Suggestions
 		if len(suggestions) > opts.TopN {
 			suggestions = suggestions[:opts.TopN]
@@ -273,7 +273,7 @@ Rules:
 
 	// If T is string, try to extract strings from array of objects
 	var rawArray []map[string]any
-	if err := json.Unmarshal([]byte(response), &rawArray); err == nil {
+	if err := ParseJSONStrict(response, &rawArray); err == nil {
 		for _, item := range rawArray {
 			// Try common field names for suggestions
 			for _, key := range []string{"suggestion", "text", "content", "name", "value", "description"} {
@@ -300,7 +300,7 @@ Rules:
 
 	// Accept a single suggestion object as a one-item result.
 	var singleObject map[string]any
-	if err := json.Unmarshal([]byte(response), &singleObject); err == nil && len(singleObject) > 0 {
+	if err := ParseJSONStrict(response, &singleObject); err == nil && len(singleObject) > 0 {
 		var t T
 		if _, ok := any(t).(string); ok {
 			for _, key := range []string{"suggestion", "text", "content", "name", "value", "description"} {

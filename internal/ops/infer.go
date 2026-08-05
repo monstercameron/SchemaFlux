@@ -120,7 +120,7 @@ Rules:
 	}
 
 	// Parse inferred data
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		log.Error("Infer operation parse failed", "requestID", opts.RequestID, "error", err)
 		return result, fmt.Errorf("failed to parse inferred result: %w", err)
 	}

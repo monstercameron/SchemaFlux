@@ -121,7 +121,7 @@ Rules:
 	}
 
 	// Parse the selected option directly
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		return result, types.ChooseError{
 			OptionCount: len(options),
 			Reason:      fmt.Sprintf("failed to parse selected option: %v (response: %s)", err, response),
@@ -233,9 +233,9 @@ Examples:
 
 	// Parse the filtered objects directly
 	var result []T
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		var single T
-		if strings.TrimSpace(response) != "{}" && json.Unmarshal([]byte(response), &single) == nil {
+		if strings.TrimSpace(response) != "{}" && ParseJSONStrict(response, &single) == nil {
 			return []T{single}, nil
 		}
 		return nil, types.FilterError{
@@ -357,7 +357,7 @@ Examples:
 
 	// Parse the sorted objects directly
 	var result []T
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		fallback, fallbackErr := sortByScoringFallback(items, opts, opOptions)
 		if fallbackErr == nil {
 			return fallback, nil
@@ -427,7 +427,7 @@ Rules:
 		var parsed struct {
 			RankScore float64 `json:"rank_score"`
 		}
-		if err := ParseJSON(response, &parsed); err != nil {
+		if err := ParseJSONStrict(response, &parsed); err != nil {
 			return nil, err
 		}
 

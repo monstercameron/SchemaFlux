@@ -311,7 +311,7 @@ Against these rules:
 		Summary    string            `json:"summary,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
 		// A validator must not guess. The previous fallback inferred validity
 		// from strings.Contains(response, "valid"), which is also satisfied by
 		// the substring inside "invalid" -- so a response saying the data was
@@ -406,7 +406,7 @@ Against these rules:
 	}
 
 	var result ValidationResult
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		// Try to parse as plain text if JSON parsing fails
 		result.Valid = strings.Contains(strings.ToLower(response), "valid")
 		result.Confidence = 0.5
@@ -559,14 +559,12 @@ Into this format:
 		TransformationNotes []string `json:"transformation_notes"`
 		Confidence          float64  `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
-		// Fallback: treat entire response as formatted text
-		log.Debug("FormatWithMetadata JSON parse failed, using fallback")
-		return FormatResult{
-			Text:          strings.TrimSpace(response),
-			FormatApplied: template,
-			Confidence:    0.7,
-		}, nil
+	if err := ParseJSONStrict(response, &parsed); err != nil {
+		// The fallback returned the raw body as formatted text with an invented
+		// confidence of 0.7, so a refusal or an error page became the caller's
+		// formatted output.
+		log.Error("FormatWithMetadata could not parse the response", "error", err)
+		return FormatResult{}, fmt.Errorf("formatting failed: %w", err)
 	}
 
 	result := FormatResult{
@@ -668,7 +666,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 	}
 
 	// Parse the merged result
-	if err := json.Unmarshal([]byte(response), &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		log.Error("Merge operation failed: unmarshal error", "error", err)
 		return result, fmt.Errorf("failed to parse merged result: %w", err)
 	}
@@ -766,11 +764,11 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 		Conflicts   []MergeConflict `json:"conflicts"`
 		Confidence  float64         `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		// Fallback: try to parse as just the merged object
 		log.Debug("MergeWithMetadata JSON parse failed, trying fallback")
 		var merged T
-		if err := json.Unmarshal([]byte(response), &merged); err != nil {
+		if err := ParseJSONStrict(response, &merged); err != nil {
 			log.Error("MergeWithMetadata operation failed: unmarshal error", "error", err)
 			return result, fmt.Errorf("failed to parse merged result: %w", err)
 		}
@@ -1023,16 +1021,12 @@ Question: %s`, string(dataJSON), opts.Question)
 		Evidence   []string        `json:"evidence,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
-		log.Error("Question operation failed: parse error", "error", err, "response", response)
-		// Try to use the response as a plain string answer
-		var answer A
-		if strAnswer, ok := any(&answer).(*string); ok {
-			*strAnswer = response
-			result.Answer = answer
-			result.Confidence = 0.5
-			return result, nil
-		}
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
+		// The string-coercion fallback turned any unparseable body into the
+		// answer, with an invented confidence of 0.5 -- so a refusal became a
+		// confident answer whenever A was a string. The log line also carried
+		// the whole response, which is the caller's data.
+		log.Error("Question operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -1173,7 +1167,7 @@ Return a JSON object with:
 		Groups [][]int `json:"groups"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &grouping); err != nil {
+	if err := ParseJSONStrict(response, &grouping); err != nil {
 		// Fallback: treat all items as unique if parsing fails
 		result.Unique = items
 		return result, nil

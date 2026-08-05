@@ -295,7 +295,7 @@ Preserve data semantics. Document any data loss.`,
 		DataLoss []string        `json:"data_loss"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Pivot operation failed: parse error", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse pivot result: %w", err)
 	}

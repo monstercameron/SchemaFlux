@@ -3,7 +3,6 @@ package ops
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -238,7 +237,7 @@ func parseRedactResponse(response, originalText string) ([]RedactSpan, error) {
 	response = strings.TrimSpace(response)
 
 	var llmResponse llmSpanResponse
-	if err := json.Unmarshal([]byte(response), &llmResponse); err != nil {
+	if err := ParseJSONStrict(response, &llmResponse); err != nil {
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 

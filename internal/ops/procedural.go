@@ -166,7 +166,7 @@ Choose the best option based on the context.`, situation, strings.Join(options, 
 		Alternatives []int   `json:"alternatives"`
 	}
 
-	if err := ParseJSON(response, &llmResult); err != nil {
+	if err := ParseJSONStrict(response, &llmResult); err != nil {
 		log.Warn("Decide operation response was not usable", "error", err)
 		return fallback(fmt.Errorf("decide: the model's answer could not be parsed: %w", err))
 	}

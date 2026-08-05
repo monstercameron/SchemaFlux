@@ -277,7 +277,7 @@ Return a JSON object with:
 		Summary     map[string]any `json:"summary"`
 	}
 
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Annotate operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse annotations: %w", err)
 	}
@@ -364,7 +364,7 @@ Return only valid JSON matching the output schema.`, inputSchema, outputSchema, 
 		return result, fmt.Errorf("annotation failed: %w", err)
 	}
 
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		log.Error("AnnotateStruct failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse annotated result: %w", err)
 	}

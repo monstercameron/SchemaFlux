@@ -283,7 +283,7 @@ Return a JSON object with:
 		Derivations map[string]string  `json:"derivations"`
 	}
 
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Enrich operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse enriched result: %w", err)
 	}
@@ -361,7 +361,7 @@ Return ONLY the enriched data matching the schema (no wrapper object).`, typeSch
 		return result, fmt.Errorf("enrichment failed: %w", err)
 	}
 
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		log.Error("EnrichInPlace failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse enriched result: %w", err)
 	}

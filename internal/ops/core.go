@@ -185,7 +185,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	}
 
 	// Parse JSON response into target type
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		extractErr := types.ExtractError{
 			InputShape: types.DescribeValue(input),
 			TargetType: targetType.String(),
@@ -395,7 +395,7 @@ Transformation rules:
 	}
 
 	// Parse transformed data
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		transformErr := types.TransformError{
 			InputShape: types.DescribeValue(input),
 			FromType:   fromType.String(),
@@ -624,7 +624,7 @@ Generation rules:
 	}
 
 	// Parse generated data
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		genErr := types.GenerateError{
 			PromptShape: types.DescribeValue(prompt),
 			TargetType:  targetType.String(),

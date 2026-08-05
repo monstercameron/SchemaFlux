@@ -19,6 +19,14 @@ type DiffResult struct {
 	Removed  []string     `json:"removed"`  // Fields/values that were removed
 	Modified []DiffChange `json:"modified"` // Fields that changed with details
 	Summary  string       `json:"summary"`  // LLM-generated explanation of changes
+
+	// SummaryError reports why Summary is absent. The structural comparison is
+	// computed locally and is still correct when the model cannot be reached,
+	// so Diff succeeds -- but the caller has to be able to tell an explanation
+	// that was written from one that was skipped. This used to be smuggled into
+	// Summary as the prose "Summary generation failed, but changes detected
+	// successfully", which reads like an explanation.
+	SummaryError error `json:"-"`
 }
 
 // DiffChange represents a single field modification
@@ -132,8 +140,10 @@ func diffImpl[T any](oldData, newData T, opts DiffOptions) (DiffResult, error) {
 	if (opts.Intelligence != types.Fast || len(result.Modified) > 0) && hasChanges {
 		summary, err := generateDiffSummary(oldData, newData, changes, opts)
 		if err != nil {
-			// Don't fail the whole operation if summary fails
-			result.Summary = "Summary generation failed, but changes detected successfully"
+			// The structural diff above is the answer and it is already
+			// computed; the summary is a garnish. Report its absence rather
+			// than failing the operation or inventing prose for it.
+			result.SummaryError = err
 			log.Warn("Diff operation summary generation failed", "requestID", opts.RequestID, "error", err)
 		} else {
 			result.Summary = summary
@@ -393,5 +403,13 @@ Keep the summary under 200 words and focus on actionable insights.`
 		return "", fmt.Errorf("summary generation failed: %w", err)
 	}
 
-	return strings.TrimSpace(response), nil
+	// The summary is free text, so there is no shape to check -- but an empty
+	// body is not a summary, and reporting it as one leaves the caller unable
+	// to tell "nothing to say" from "nothing came back".
+	summary := strings.TrimSpace(response)
+	if summary == "" {
+		return "", fmt.Errorf("summary generation returned an empty body")
+	}
+
+	return summary, nil
 }

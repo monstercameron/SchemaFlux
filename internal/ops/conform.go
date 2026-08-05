@@ -257,7 +257,7 @@ Rules:
 		Compliance  float64         `json:"compliance"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Conform operation failed: parse error", "error", err, "response", response)
 		return result, fmt.Errorf("failed to parse conformance result: %w", err)
 	}

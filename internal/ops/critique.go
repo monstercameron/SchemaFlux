@@ -342,7 +342,7 @@ Return a JSON object with:
 	}
 
 	// Parse the response
-	if err := ParseJSON(response, &result); err != nil {
+	if err := ParseJSONStrict(response, &result); err != nil {
 		log.Error("Critique operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse critique result: %w", err)
 	}

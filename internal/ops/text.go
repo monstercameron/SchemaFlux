@@ -237,7 +237,7 @@ Rules:
 		KeyPoints  []string `json:"key_points"`
 		Confidence float64  `json:"confidence"`
 	}
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		// No fallback verdict. The previous branch returned the raw response as
 		// the summary with a literal Confidence of 0.7 and no KeyPoints, and a
 		// nil error -- so a caller reading the documented metadata silently got
@@ -439,7 +439,7 @@ Rules:
 		ToneAchieved string   `json:"tone_achieved"`
 		Confidence   float64  `json:"confidence"`
 	}
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return RewriteResult{}, fmt.Errorf("rewrite: could not parse the rewrite response: %w", err)
 	}
@@ -627,7 +627,7 @@ Rules:
 		Confidence             float64                  `json:"confidence"`
 		Alternatives           []TranslationAlternative `json:"alternatives"`
 	}
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("TranslateWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return TranslateResult{}, fmt.Errorf("translate: could not parse the translation response: %w", err)
 	}
@@ -798,7 +798,7 @@ Rules:
 		AddedContent []string `json:"added_content"`
 		Confidence   float64  `json:"confidence"`
 	}
-	if err := ParseJSON(response, &parsed); err != nil {
+	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return ExpandResult{}, fmt.Errorf("expand: could not parse the expansion response: %w", err)
 	}
