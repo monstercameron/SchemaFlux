@@ -143,3 +143,96 @@ func TestREADMEDisclosesRedactionState(t *testing.T) {
 		}
 	}
 }
+
+// A disclosure has to be where the caller reads it. These check each surface
+// separately, because a warning in one place and silence in another is how a
+// caller ends up surprised.
+func TestRedactionDisclosureSurfaces(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		text    string
+		mustSay []string
+	}{
+		{"Redact doc", docComment(t, "Redact"),
+			[]string{"NOT PRODUCTION READY", "Do not use this", "substring", "reversible", "empty map"}},
+		{"RedactWithResult doc", docComment(t, "RedactWithResult"),
+			[]string{"NOT PRODUCTION READY", "empty", "T-09"}},
+		{"RedactLLM doc", docComment(t, "RedactLLM"),
+			[]string{"NOT PRODUCTION READY", "offsets", "T-13"}},
+		{"README", string(readme),
+			[]string{"not production ready", "substring test", "reversible", "ADVERSARIAL_API_REVIEW.md"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.text == "" {
+				t.Fatal("no text to check")
+			}
+			for _, phrase := range tc.mustSay {
+				if !strings.Contains(tc.text, phrase) {
+					t.Errorf("%s does not say %q", tc.name, phrase)
+				}
+			}
+		})
+	}
+}
+
+// A disclosure that only hedges is not a disclosure. None of these words may
+// carry the weight of the warning on their own.
+func TestDisclosuresDoNotMerelyHedge(t *testing.T) {
+	hedges := []string{
+		"may not be suitable",
+		"use with caution",
+		"best effort",
+		"should be reviewed",
+		"consider carefully",
+	}
+
+	for _, name := range []string{"Redact", "RedactWithResult", "RedactLLM"} {
+		t.Run(name, func(t *testing.T) {
+			doc := docComment(t, name)
+			for _, hedge := range hedges {
+				if strings.Contains(strings.ToLower(doc), hedge) {
+					t.Errorf("the %s disclosure hedges with %q instead of naming the failure", name, hedge)
+				}
+			}
+			if !strings.Contains(doc, "NOT PRODUCTION READY") {
+				t.Errorf("the %s disclosure does not state its conclusion", name)
+			}
+		})
+	}
+}
+
+// Project's Exclude documentation has to describe a mechanism that exists. Each
+// claim here is checked against the code by project_exclude_test.go; this
+// checks the claim is actually made.
+func TestProjectExcludeDocumentationMatchesTheMechanism(t *testing.T) {
+	doc := docComment(t, "Project")
+
+	claims := []struct {
+		phrase string
+		why    string
+	}{
+		{"before it is serialised", "when the strip happens"},
+		{"never reach the provider", "what that buys"},
+		{"case-insensitively", "how names are matched"},
+		{"every level", "that nesting is covered"},
+		{"scanned", "that the output is checked too"},
+		{"not a classifier", "the limit"},
+		{"still sent", "the concrete case the limit covers"},
+		{"caller's job", "who owns the field list"},
+	}
+
+	for _, claim := range claims {
+		t.Run(claim.why, func(t *testing.T) {
+			if !strings.Contains(doc, claim.phrase) {
+				t.Errorf("the documentation does not state %s (%q)", claim.why, claim.phrase)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -156,5 +157,89 @@ func TestNoBareConfidenceRemainsInTheExportedSurface(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The rename has to hold across every result type a caller touches, not just
+// the ones that happened to be edited. These name the types the review called
+// out and assert the field is there under its honest name.
+func TestNamedResultTypesCarryModelConfidence(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		field string
+	}{
+		{"ValidateResult", ValidateResult[struct{}]{}, "ModelConfidence"},
+		{"ClassifyResult", ClassifyResult[string]{}, "ModelConfidence"},
+		{"SummarizeResult", SummarizeResult{}, "ModelConfidence"},
+		{"RewriteResult", RewriteResult{}, "ModelConfidence"},
+		{"TranslateResult", TranslateResult{}, "ModelConfidence"},
+		{"ExpandResult", ExpandResult{}, "ModelConfidence"},
+		{"DecisionResult", DecisionResult{}, "ModelConfidence"},
+		{"ProjectResult", ProjectResult[struct{}]{}, "ModelConfidence"},
+		{"FormatResult", FormatResult{}, "ModelConfidence"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			structType := reflect.TypeOf(tc.value)
+			if _, found := structType.FieldByName(tc.field); !found {
+				t.Errorf("%s has no %s field", tc.name, tc.field)
+			}
+			if _, found := structType.FieldByName("Confidence"); found {
+				t.Errorf("%s still has a bare Confidence field", tc.name)
+			}
+		})
+	}
+}
+
+// ScoreResult and ParseResult carry no confidence at all, which is the right
+// answer rather than an oversight: ScoreResult's Value IS the model's judgement,
+// and a second number scoring that judgement would add nothing. This pins that
+// as a decision so nobody adds one back.
+func TestSomeResultsCarryNoConfidenceByDesign(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"ScoreResult", ScoreResult{}},
+		{"ParseResult", ParseResult[struct{}]{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			structType := reflect.TypeOf(tc.value)
+			for _, field := range []string{"Confidence", "ModelConfidence"} {
+				if _, found := structType.FieldByName(field); found {
+					t.Errorf("%s gained a %s field; if that is deliberate, update this test with the reason",
+						tc.name, field)
+				}
+			}
+		})
+	}
+}
+
+// Every renamed name must be reachable from the root package, or the rename
+// broke the public surface rather than clarifying it.
+func TestRenamedFieldsAreStillReadable(t *testing.T) {
+	cases := []struct {
+		name string
+		read func() float64
+	}{
+		{"ValidateResult", func() float64 { return ValidateResult[struct{}]{ModelConfidence: 0.5}.ModelConfidence }},
+		{"DecisionResult", func() float64 { return DecisionResult{ModelConfidence: 0.5}.ModelConfidence }},
+		{"SummarizeResult", func() float64 { return SummarizeResult{ModelConfidence: 0.5}.ModelConfidence }},
+		{"RewriteResult", func() float64 { return RewriteResult{ModelConfidence: 0.5}.ModelConfidence }},
+		{"TranslateResult", func() float64 { return TranslateResult{ModelConfidence: 0.5}.ModelConfidence }},
+		{"ExpandResult", func() float64 { return ExpandResult{ModelConfidence: 0.5}.ModelConfidence }},
+		{"FormatResult", func() float64 { return FormatResult{ModelConfidence: 0.5}.ModelConfidence }},
+		{"ProjectResult", func() float64 { return ProjectResult[struct{}]{ModelConfidence: 0.5}.ModelConfidence }},
+		{"ClassifyResult", func() float64 { return ClassifyResult[string]{ModelConfidence: 0.5}.ModelConfidence }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.read(); got != 0.5 {
+				t.Errorf("%s.ModelConfidence round-tripped to %v", tc.name, got)
+			}
+		})
 	}
 }

@@ -52,6 +52,10 @@ CLUSTERS = [
  ("F-026  stub honesty",                 ["internal/tools/stub_honesty_test.go"], ["TestTokenToolRefusesJWTRatherThanFakingIt","TestTokenToolGeneratesRandomTokens","TestGenerateRandomToken","TestGeneratedTokensAreUnpredictable","TestTokenTool","TestEveryStubToolIsIdentifiable","TestNonStubToolsDoNotReturnStubResults","TestTokenLengths"], False),
  ("F-027  registry errors",              [], ["TestRegisterReportsADuplicate","TestMustRegisterPanicsOnADuplicate","TestUnregister","TestRegistryDefaultRegistry","TestRegisterRejectsBadRegistrations","TestFailedRegistrationLeavesTheRegistryIntact","TestUnregisterReportsWhatItDid","TestRegisterUnregisterRoundTrip","TestMustRegisterPanicMessageNamesTheTool"], False),
  ("F-028/F-035..F-038  exit gate",       ["faultinjection_integration_test.go","internal/ops/json_strict_test.go"], [], False),
+ ("F-020  score provenance",            ["internal/ops/provenance_test.go"], [], False),
+ ("F-021/F-022  disclosures",           ["internal/ops/disclosure_test.go"], [], False),
+ ("OP-301  Project.Exclude",            ["internal/ops/project_exclude_test.go","project_integration_test.go"], [], True),
+ ("F-023/F-024  dead options",          ["internal/ops/dead_options_test.go","internal/ops/options_reach_prompt_test.go"], [], False),
 ]
 
 print(f"{'cluster':<40} {'cases':>6} {'ex':>3}  status")
