@@ -18,10 +18,21 @@ type record struct {
 // reporting a problem produced Valid: true with a nil error.
 func TestValidateDoesNotReportInvalidAsValid(t *testing.T) {
 	responses := []string{
+		// Every one of these contains the substring "valid" and was therefore
+		// read as a passing verdict by the removed fallback.
 		"The data is invalid because the email is malformed.",
 		"INVALID: age must be at least 18.",
 		"This record is not valid.",
 		"invalid",
+		"The submission is invalidated by rule 3.",
+		"Validation failed: two errors found.",
+		"I could not validate this record.",
+		// And these do not contain it, but still must not be verdicts.
+		"I'm sorry, I can't help with that request.",
+		"<html><body>503 Service Unavailable</body></html>",
+		"{\"valid\": true",
+		"[]",
+		"",
 	}
 
 	for _, response := range responses {

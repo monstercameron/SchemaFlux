@@ -867,6 +867,14 @@ commit and the test that proves it.
   error goes.
   *Verify:* a payload marker present in the input never appears in any error's `Error()`.
 
+- [x] **PERF-002** — `Client.WithRetries(0)` could not disable retries. The dispatcher tested
+  `maxRetries <= 0` and substituted the global default of three, so a caller who explicitly
+  asked for none still waited out two backoffs, and the documented option did nothing. Negative
+  now means "not configured, use the default"; zero means zero. Root-package suite went from
+  7.1s to 0.135s, and the whole suite now runs in 1.2s.
+  *Verify:* `internal/ops/retry_policy_test.go` — disabled, four configured budgets,
+  negative-as-default, cancellation, deterministic failures, and four non-retryable messages.
+
 ### Standard of done
 
 Raised mid-session, and applied from **F-002** onward. Every closed task carries:

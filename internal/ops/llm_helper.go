@@ -88,7 +88,12 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	)
 
 	maxRetries, retryBackoff := provider.RetryPolicy()
-	if maxRetries <= 0 {
+	// Negative means "not configured, use the global default". Zero means the
+	// caller asked for no retries and gets none: the previous `<= 0` test made
+	// Client.WithRetries(0) -- which is documented as the retry ceiling and
+	// explicitly clamps negatives to zero -- silently become three, so retries
+	// could not be turned off at all.
+	if maxRetries < 0 {
 		maxRetries = config.GetLLMMaxRetries()
 	}
 	if retryBackoff <= 0 {
