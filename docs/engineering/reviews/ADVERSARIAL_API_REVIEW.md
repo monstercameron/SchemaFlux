@@ -1820,7 +1820,7 @@ type Meta struct {
 ```
 
 `Confidence` does not appear. Where a number is genuinely measured (sample agreement under
-`flow.Vote`, provider logprobs) it is named for its source; where the model asserts it, the field is
+`flux.Vote`, provider logprobs) it is named for its source; where the model asserts it, the field is
 `Judgement.ModelReported` and can never be mistaken for instrumentation. Closes **D-06**, **D-09**,
 **T-02**, **T-05**, **C-09**, and makes **I-02** expressible (an unpriced call reports
 `Estimated: false, PricingSource: ""` rather than `$0.00`).
@@ -1853,13 +1853,13 @@ status (**I-12**), and callers get real branching (**Gap-12**). `ErrTruncated` i
 Every combinator takes an `Op` and returns an `Op`, so they compose and each is written once:
 
 ```go
-flow.Escalate(op, Quick, Smart)                   // CF-02
-flow.Vote(op, 3, flow.Majority)                   // CF-03 — and an honest confidence number
-flow.MapReduce(op, chunk.BySize(4000), merge)     // CF-04 + C-06
-flow.Until(op, critique.Passes, flow.Max(3))      // CF-05
-flow.Checkpoint(store, runID)                     // CF-06
-flow.Approve(gate)                                // CF-07, including before the shell tool
-flow.Fallback(opA, opB)
+flux.Escalate(op, Quick, Smart)                   // CF-02
+flux.Vote(op, 3, flux.Majority)                   // CF-03 — and an honest confidence number
+flux.MapReduce(op, chunk.BySize(4000), merge)     // CF-04 + C-06
+flux.Until(op, critique.Passes, flux.Max(3))      // CF-05
+flux.Checkpoint(store, runID)                     // CF-06
+flux.Approve(gate)                                // CF-07, including before the shell tool
+flux.Fallback(opA, opB)
 ```
 
 This is the alternative to building the engine described in
@@ -1988,7 +1988,7 @@ Two to three weeks, family by family, in this order — highest defect density f
 4. Make `Strict()` mean something: with real schema enforcement plus `Invariant`-declared
    requiredness, `Strict` becomes a checkable contract rather than a prompt sentence
    (**D-05**, **D-03**).
-5. Add token estimation before dispatch, and `chunk.BySize` + `flow.MapReduce` for oversized inputs
+5. Add token estimation before dispatch, and `chunk.BySize` + `flux.MapReduce` for oversized inputs
    (**Gap-10**, **C-06**, **CF-04**), reusing `BatchProcessor`.
 
 ## Phase 4 — Make the operational claims true
@@ -2015,9 +2015,9 @@ Build Primitive 9 on top of the ported operations, then delete or reimplement th
 constructs. Closes **CF-02**, **CF-03**, **CF-05**, **CF-06**, **CF-07**, **CF-08**, **CF-09**,
 **P-03**, **P-09**, **P-10**.
 
-Sequencing note: combinators are worth building only after Phase 2, because `flow.Vote` needs
-comparable results, `flow.Escalate` needs a failure signal that is not "the model said something
-weird," and `flow.MapReduce` needs invariants to validate the merge.
+Sequencing note: combinators are worth building only after Phase 2, because `flux.Vote` needs
+comparable results, `flux.Escalate` needs a failure signal that is not "the model said something
+weird," and `flux.MapReduce` needs invariants to validate the merge.
 
 ## Phase 6 — Decide the shape of the product
 
