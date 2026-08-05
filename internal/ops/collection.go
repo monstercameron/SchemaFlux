@@ -105,6 +105,7 @@ Rules:
 		return result, types.ChooseError{
 			OptionCount: len(options),
 			Reason:      err.Error(),
+			Err:         err,
 		}
 	}
 
@@ -216,6 +217,7 @@ Examples:
 		return nil, types.FilterError{
 			ItemCount: len(items),
 			Reason:    err.Error(),
+			Err:       err,
 		}
 	}
 
@@ -340,6 +342,7 @@ Examples:
 		return nil, types.SortError{
 			ItemCount: len(items),
 			Reason:    err.Error(),
+			Err:       err,
 		}
 	}
 

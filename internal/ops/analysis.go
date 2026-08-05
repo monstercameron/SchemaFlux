@@ -144,6 +144,7 @@ Return a JSON object with these fields:
 			InputShape: types.DescribeValue(inputStr),
 			Categories: categories,
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -366,6 +367,7 @@ Return a JSON object with these fields:
 		return result, types.ScoreError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -552,6 +554,7 @@ Return a JSON object with these fields:
 			AShape: types.DescribeValue(itemA),
 			BShape: types.DescribeValue(itemB),
 			Reason: err.Error(),
+			Err:    err,
 		}
 	}
 

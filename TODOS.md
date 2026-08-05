@@ -832,6 +832,25 @@ commit and the test that proves it.
 
 ### Added during the work
 
+- [x] **AUDIT-001** — The standard of done was asserted per commit but never checked across the
+  whole list, so twelve closed tasks sat below the ten-case bar without anyone noticing.
+  `.audit/audit.py` maps each closed cluster to the test functions covering it, counts the leaf
+  cases those functions actually ran, and fails the ones below the bar. All 23 clusters clear it
+  now; the smallest is 10 and the largest 254.
+  *Verify:* `python .audit/audit.py` after a verbose test run, per `.audit/README.md`.
+- [x] **F-039** — `WithProviderConfig` assigned `providerName` before building the provider, so
+  a switch that failed left the client reporting the new provider's name while still running
+  the old one — or the mock. Name and provider now move together or not at all, and the failure
+  is recorded on `Client.Err()`, which is where a builder that returns `*Client` can put one.
+  Found by the coverage backfill for F-029.
+  *Verify:* `TestClientProviderSelection` (7 cases, each asserting name and provider agree),
+  `TestFailedProviderSwitchIsReportedByErr`, `TestSuccessfulProviderSwitchClearsErr`.
+- [x] **F-040** — Only `ExtractError` had `Unwrap`, so `errors.Is(err, ops.ErrNoProvider)` was
+  false for every other operation even though the message was right there: callers had to
+  string-match. All thirteen error types carry the cause and unwrap it now.
+  *Verify:* `TestEveryOperationReportsErrNoProvider` drives eleven operations with no provider
+  and asserts `errors.Is` reaches the sentinel through each one.
+
 - [x] **F-035** — `encoding/json` ignores unrecognised fields, so a well-formed object of
   entirely the wrong shape unmarshalled into a zero value and returned no error. Roughly 35
   operations therefore reported success with every field empty: a cluster operation returning
@@ -947,6 +966,10 @@ Raised mid-session, and applied from **F-002** onward. Every closed task carries
 Tasks closed before this bar was set (F-001, F-012–F-014, P-00x, PR-001) have unit coverage
 and, where the boundary mattered, integration coverage; they do not all have examples.
 
+- [x] **TEST-002** — Second backfill, driven by `.audit/audit.py`: the provider parsing,
+  retry policy, `Compose`, prompt determinism, fabricated numbers, client, `ErrNoProvider`,
+  stub honesty, and registry clusters were all below the ten-case bar. Each is now at or above
+  it, and the two defects the backfill found are recorded as **F-039** and **F-040**.
 - [x] **TEST-001** — Backfill the raised bar onto the tasks closed before it: examples for
   the LLM-backed operations touched by F-001 (`Validate`) and integration coverage for the
   provider fixes P-001 through P-004, which are currently unit-level only.

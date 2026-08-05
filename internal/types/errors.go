@@ -57,62 +57,98 @@ type ClassifyError struct {
 	Categories []string
 	Reason     string
 	Confidence float64
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e ClassifyError) Error() string {
 	return fmt.Sprintf("classification failed: %s (input was %s)", e.Reason, e.InputShape)
 }
 
+// Unwrap exposes the cause.
+func (e ClassifyError) Unwrap() error { return e.Err }
+
 // ScoreError represents an error during scoring
 type ScoreError struct {
 	InputShape string
 	Reason     string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e ScoreError) Error() string {
 	return fmt.Sprintf("scoring failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e ScoreError) Unwrap() error { return e.Err }
+
 // CompareError represents an error during comparison
 type CompareError struct {
 	AShape string
 	BShape string
 	Reason string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e CompareError) Error() string {
 	return fmt.Sprintf("comparison failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e CompareError) Unwrap() error { return e.Err }
+
 // ChooseError represents an error during selection
 type ChooseError struct {
 	OptionCount int
 	Reason      string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e ChooseError) Error() string {
 	return fmt.Sprintf("selection failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e ChooseError) Unwrap() error { return e.Err }
+
 // FilterError represents an error during filtering
 type FilterError struct {
 	ItemCount int
 	Reason    string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e FilterError) Error() string {
 	return fmt.Sprintf("filtering failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e FilterError) Unwrap() error { return e.Err }
+
 // SortError represents an error during sorting
 type SortError struct {
 	ItemCount int
 	Reason    string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e SortError) Error() string {
 	return fmt.Sprintf("sorting failed: %s", e.Reason)
 }
+
+// Unwrap exposes the cause.
+func (e SortError) Unwrap() error { return e.Err }
 
 // ExtractError represents an error during extraction
 type ExtractError struct {
@@ -143,11 +179,17 @@ type TransformError struct {
 	Confidence float64
 	RequestID  string
 	Timestamp  any
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e TransformError) Error() string {
 	return fmt.Sprintf("transformation failed: %s", e.Reason)
 }
+
+// Unwrap exposes the cause.
+func (e TransformError) Unwrap() error { return e.Err }
 
 // GenerateError represents an error during generation
 type GenerateError struct {
@@ -156,49 +198,79 @@ type GenerateError struct {
 	Reason      string
 	RequestID   string
 	Timestamp   any
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e GenerateError) Error() string {
 	return fmt.Sprintf("generation failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e GenerateError) Unwrap() error { return e.Err }
+
 // SummarizeError represents an error during summarization
 type SummarizeError struct {
 	InputShape string
 	Length     int
 	Reason     string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e SummarizeError) Error() string {
 	return fmt.Sprintf("summarization failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e SummarizeError) Unwrap() error { return e.Err }
+
 // RewriteError represents an error during rewriting
 type RewriteError struct {
 	InputShape string
 	Reason     string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e RewriteError) Error() string {
 	return fmt.Sprintf("rewrite failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e RewriteError) Unwrap() error { return e.Err }
+
 // TranslateError represents an error during translation
 type TranslateError struct {
 	InputShape string
 	Reason     string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e TranslateError) Error() string {
 	return fmt.Sprintf("translation failed: %s", e.Reason)
 }
 
+// Unwrap exposes the cause.
+func (e TranslateError) Unwrap() error { return e.Err }
+
 // ExpandError represents an error during expansion
 type ExpandError struct {
 	InputShape string
 	Reason     string
+
+	// Err is the underlying cause, so errors.Is and errors.As reach it.
+	Err error
 }
 
 func (e ExpandError) Error() string {
 	return fmt.Sprintf("expansion failed: %s", e.Reason)
 }
+
+// Unwrap exposes the cause.
+func (e ExpandError) Unwrap() error { return e.Err }

@@ -151,6 +151,7 @@ Rules:
 			InputShape: types.DescribeValue(input),
 			Length:     len(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -228,6 +229,7 @@ Rules:
 			InputShape: types.DescribeValue(input),
 			Length:     len(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -337,6 +339,7 @@ Rules:
 		return "", types.RewriteError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -429,6 +432,7 @@ Rules:
 		return RewriteResult{}, types.RewriteError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -527,6 +531,7 @@ Rules:
 		return "", types.TranslateError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -617,6 +622,7 @@ Rules:
 		return TranslateResult{}, types.TranslateError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -709,6 +715,7 @@ Rules:
 		return "", types.ExpandError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -789,6 +796,7 @@ Rules:
 		return ExpandResult{}, types.ExpandError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 

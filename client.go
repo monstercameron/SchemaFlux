@@ -27,7 +27,22 @@ type Client struct {
 	retryBackoff time.Duration
 	logger       *telemetry.Logger
 	debugMode    bool
-	mu           sync.RWMutex
+
+	// configErr records the last configuration failure, so a builder chain that
+	// could not do what it was asked is not silently indistinguishable from one
+	// that could. Read it with Err.
+	configErr error
+
+	mu sync.RWMutex
+}
+
+// Err reports the last configuration failure, or nil. The builder methods
+// return *Client so they can chain, which leaves them nowhere to put an error;
+// this is where it goes.
+func (client *Client) Err() error {
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	return client.configErr
 }
 
 // NewClient creates a new client with custom configuration
@@ -120,14 +135,21 @@ func (client *Client) WithProviderConfig(providerName string, config llm.Provide
 	defer client.mu.Unlock()
 
 	providerName = normalizeProviderName(providerName)
-	client.providerName = providerName
 
 	provider, err := llm.CreateProvider(providerName, client.providerConfig(providerName, config))
 	if err != nil {
-		client.logger.Warn("Failed to create provider, using default", "provider", providerName, "error", err)
+		// The name used to be assigned before the provider was built, so a
+		// failed switch left the client reporting the new provider's name while
+		// still running the old one -- or the mock. Name and provider now move
+		// together or not at all.
+		client.configErr = fmt.Errorf("configuring provider %q: %w", providerName, err)
+		client.logger.Error("Failed to configure provider; the previous one is still in use",
+			"provider", providerName, "previous", client.providerName, "error", err)
 		return client
 	}
 
+	client.configErr = nil
+	client.providerName = providerName
 	client.provider = provider
 	ops.SetDefaultProvider(provider)
 	client.logger.Info("Provider configured", "provider", providerName)

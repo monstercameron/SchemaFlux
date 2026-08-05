@@ -384,6 +384,7 @@ Transformation rules:
 			FromType:   fromType.String(),
 			ToType:     toType.String(),
 			Reason:     err.Error(),
+			Err:        err,
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
 		}
@@ -561,6 +562,7 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 				PromptShape: types.DescribeValue(prompt),
 				TargetType:  targetType.String(),
 				Reason:      err.Error(),
+				Err:         err,
 				RequestID:   opt.RequestID,
 				Timestamp:   time.Now(),
 			}
@@ -613,6 +615,7 @@ Generation rules:
 			PromptShape: types.DescribeValue(prompt),
 			TargetType:  targetType.String(),
 			Reason:      err.Error(),
+			Err:         err,
 			RequestID:   opt.RequestID,
 			Timestamp:   time.Now(),
 		}
