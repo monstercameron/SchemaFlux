@@ -485,7 +485,8 @@ func providerAPIKeyEnvVars(providerName string) []string {
 	case "openrouter":
 		return []string{"SCHEMAFLUX_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"}
 	case "cerebras":
-		return []string{"SCHEMAFLUX_CEREBRAS_API_KEY", "CEREBRAS_API_KEY"}
+		// "CEREBRAS" for the same reason bare "OPENAI" is accepted above.
+		return []string{"SCHEMAFLUX_CEREBRAS_API_KEY", "CEREBRAS_API_KEY", "CEREBRAS"}
 	case "deepseek":
 		return []string{"SCHEMAFLUX_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"}
 	case "qwen":

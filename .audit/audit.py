@@ -62,6 +62,12 @@ CLUSTERS = [
  ("FL-001  provider models",            ["internal/config/provider_models_test.go"], [], False),
  ("FL-002  builder wiring",             ["internal/api/fluent/wiring_test.go"], [], False),
  ("B-01/P-012  live verification",      ["live_provider_test.go"], [], "gated"),
+ ("CB-01/CB-02  compatible schema",     ["internal/llm/chatcompletions_test.go",
+                                         "provider_example_test.go"], [], True),
+ ("CB-03  rate limit retry-after",      ["internal/llm/ratelimit_test.go",
+                                         "internal/ops/retry_after_test.go",
+                                         "provider_example_test.go"], [], True),
+ ("CB-04  cerebras live verification",  ["live_cerebras_test.go"], [], "gated"),
 ]
 
 print(f"{'cluster':<40} {'cases':>6} {'ex':>3}  status")

@@ -681,8 +681,8 @@ results, `Escalate` needs a failure signal that is not "the model said something
 - [ ] **CF-002** — `flux.Vote(op, n, rule)` — and the first honest confidence number in the
   library, derived from sample agreement. Closes **CF-03**.
 - [ ] **CF-003** — `flux.Until(op, pred, max)`. Closes **CF-05**.
-- [ ] **CF-004** — `flux.MapReduce(op, chunk, merge)` with bounded concurrency. Closes
-  **CF-04**; unblocks **OP-108**.
+- [x] **CF-004** — `flux.MapReduce(op, chunk, merge)` with bounded concurrency. Closes
+  **CF-04**; unblocks **OP-108**. **Done `debaf6e`.**
 - [ ] **CF-005** — `flux.Checkpoint(store, runID)`. Closes **CF-06**, and replaces the
   declared-but-unimplemented `PipelineOptions.SaveProgress`.
 - [ ] **CF-006** — `flux.Approve(gate)`. Closes **CF-07**; required before **F-025**'s shell
@@ -691,8 +691,11 @@ results, `Escalate` needs a failure signal that is not "the model said something
 - [ ] **CF-008** — Retire or reimplement `Decide`, `Guard`, `Match`, and `Pipeline` on the
   combinators. `Guard` currently issues an unannounced LLM call with a hardcoded 2-second
   timeout and no options (`procedural.go:143-180`). Closes **P-03**, **P-10**. Addresses **CF-09**.
-- [ ] **CF-009** — Bounded-concurrency primitive used by OP-106, OP-304, and CF-004. Today
+- [x] **CF-009** — Bounded-concurrency primitive used by OP-106, OP-304, and CF-004. Today
   only `batch.go:136` and `pipeline.go:232` start goroutines. Closes **Gap-08**.
+  **Done `debaf6e`** — shipped as `MapReduceOptions.Concurrency`. Kept inside `MapReduce`
+  rather than extracted: a bare semaphore helper has no home of its own until OP-106 and
+  OP-304 need it, and the ordering guarantee is the part that was actually missing.
 
 ---
 
@@ -852,16 +855,27 @@ commit and the test that proves it.
 | **TI-001** | `46a1d51` | **Gap-06** closed — the review calls it the single largest adoption blocker. `schemafluxtest` ships an exported fake provider: scripted replies in sequence, a failure mode, a fail-then-recover mode for retries, a cancellable slow mode for timeouts, settable usage for cost accounting, and a recorder of the exact requests it received. `Install(t, provider)` swaps it in and restores the previous client. 15 tests plus two runnable Examples. Found while building it: `NewClient(...).WithProviderInstance(...)` registers the package-level provider but never installs the client, so `GetDefaultClient()` still returned the old one — `SetDefaultClient` is new, and `TokenUsage`, `CostInfo`, and `ResultMetadata` were not exported at the root, so a caller implementing `Provider` could not name the types they were required to return. |
 | **A-010** | `b2e39f4` | **CF-01** closed — the review calls it the highest-value missing feature. A parse failure or a failed `Strict()` post-condition used to be terminal, even though the retry machinery already existed in `CallLLM` and was simply not wired to what the answer said. `withRepair` feeds the failure back and asks again with the problem named; the original task stays at the front of the prompt so the cacheable prefix does not move. A transport failure is deliberately *not* repaired — there is no answer to show the model. Default one repair, `SCHEMAFLUX_REPAIR_ATTEMPTS` to change it. 20 unit cases, a consumer-facing test through `schemafluxtest`, and a live extraction. |
 | **T-13 (part)** | `56d680b` | The offset half closed with **OP-403**: spans that are negative, inverted, out of range, or overlapping are refused. The semantic half — whether a span contains what the model says — remains **OP-507**. |
+| **CF-04** | `debaf6e` | **CF-004 + OP-109 + CF-009** closed. There was no chunk → operate → merge primitive anywhere in the library — `BatchProcessor` chunks, but only for `Extract` and only internally — so a collection larger than one context window had no supported handling and a caller could not build the split either. `MapReduce`/`MapReduceFlat`/`Chunk` are exported, with bounded concurrency, input-order results regardless of finish order, and failures naming the chunk index *and* the input offset so a caller knows which of their items are missing. `Filter` now chunks itself; `Sort` still refuses, because a filter's merge is a concatenation the library knows and a sort's is an interleave it does not. Writing the integration example surfaced a second defect: a failing chunk cancelled the rest, and the reported error was whichever failure had the lowest index — usually a `context canceled` *caused by* the real failure. `rootFailure` reports the first non-cancellation. 12 unit tests, an integration test driving a 200-item `Filter` through the public API, and a runnable `Example_mapReduce`. |
+| **CB-01** | `PENDING` | **New, found while wiring Cerebras as the secondary provider.** `OpenAICompatibleProvider.Complete` went through go-openai, whose `ChatCompletionResponseFormat` carries a `Type` and nothing else — so a request arriving with a strict JSON schema had the schema **dropped** and was sent as `{"type":"json_object"}`. The same `Extract[T]` got constrained decoding on OpenAI and an unconstrained guess on Cerebras, DeepSeek, Qwen, ZAI, and OpenRouter, with nothing at the call site to tell them apart — the same fail-open the review is about, in the one place the library's whole contract lives. The chat transport is now hand-rolled for the same reason the Responses path is, and sends `json_schema` with `strict: true`. **Verified live** against `gemma-4-31b`: strict output enforced against a prose instruction, nested types, and a `time.Time` field. |
+| **CB-02** | `PENDING` | **New.** Cerebras rejects `format`, `pattern`, `minItems`/`maxItems`, `minLength`/`maxLength`, `minimum`/`maximum` outright rather than ignoring them. `GenerateJSONSchema` annotates `time.Time` with `format: date-time`, so the first extraction with a timestamp field would have failed the *whole* request with a 400 that named a keyword the caller never wrote. The transport strips them into a copy — never in place, since the caller's schema is reused across providers and a Cerebras call must not quietly strip annotations from the next OpenAI one. These are annotations on top of a type, never the type itself. `TestLiveCerebrasHandlesATimestampField` confirms the stripped schema round-trips a timestamp. |
+| **CB-03** | `PENDING` | **New, and the one with teeth.** A 429 was reported as a plain formatted error, so the `Retry-After` that came with it was discarded and the retry loop fell back to a backoff that doubles from 500ms and **stops at five seconds**. Against a provider that limits *per minute* — Cerebras' free tier is 5 req/min and answers `Retry-After: 53` — every attempt by construction landed inside the same closed window, so the retry budget bought nothing but latency before failing anyway. `llm.RateLimitError` carries the server's wait (both RFC forms, bounded at two minutes, caller's deadline still wins) and `nextRetryDelay` prefers it. Also fixed a latent bug the typed check exposed: `isRetryableLLMError` matches the *whole message including the vendor's body*, so a 429 whose body mentions `invalid_request_error` was classified permanent. Rate limits are now retryable by type. Applies to the OpenAI Responses path too. |
+| **CB-04** | `PENDING` | **New.** `providerModels["cerebras"]` mapped to `llama-3.3-70b`/`llama3.1-8b` — written from a docs page, never called. Now `gemma-4-31b` at all three tiers, and the choice is stated rather than assumed: there is no cheaper Cerebras sibling whose accuracy loss buys anything, so mapping `Quick` to a smaller model would be inventing a trade-off no benchmark has shown. Priced at $0.99/$1.49 per 1M, because an unpriced model reports **zero cost** and a secondary provider whose whole appeal is a cheaper number has to produce a real one. `.env`'s bare `CEREBRAS` spelling is accepted for the same reason bare `OPENAI` is. **Verified live:** all three tiers callable, cost accounting moves. |
 | **B-01/B-04** | `9474687` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
 | **P-012** | `9474687` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
 
 ### Added during the work
 
-- [ ] **OP-109** — Chunk the collection operations with a merge step, so a batch larger than the
+- [x] **OP-109** — Chunk the collection operations with a merge step, so a batch larger than the
   output budget succeeds rather than being refused. **OP-108** closed the half that matters for
   correctness — the call that cannot succeed now says so — but the useful behaviour is to split it.
-  *Verify:* a 500-item `Sort` at the Quick tier returns 500 items.
+  **Done `debaf6e` for `Filter`; `Sort` deliberately still refuses.** The merge is what varies:
+  for a filter it is a concatenation, which the library knows; for a sort it is an interleave of
+  two sorted runs, which it does not. `MapReduce` is exported so a caller can supply that merge.
+  The original verify line — "a 500-item `Sort` at the Quick tier returns 500 items" — is
+  therefore **not** met and was the wrong bar: a library-chosen sort merge would be guessing at
+  the caller's ordering. Restated: *a 500-item `Filter` at the Quick tier returns a subset in
+  input order*, which `TestIntegrationFilterChunksLargeCollections` drives through the public API.
 - [ ] **X-07** — A type embedding both `CommonOptions` and `types.OpOptions` has two `Intelligence`
   fields and two `Mode` fields, and `mergeEmbeddedOpOptions` takes both from `CommonOptions`
   unconditionally — so `opts.OpOptions.Intelligence = Quick` is silently ignored, while

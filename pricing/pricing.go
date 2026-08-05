@@ -186,6 +186,19 @@ var (
 			Currency:                "USD",
 			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		},
+
+		// Cerebras. Priced here rather than left to the provider's flat default
+		// because an unpriced model reports zero cost, and a secondary provider
+		// whose whole appeal is being cheaper is exactly the one a caller will
+		// want a real number for.
+		"gemma-4-31b": {
+			Provider:                "cerebras",
+			Model:                   "gemma-4-31b",
+			PricePerPromptToken:     0.00099, // $0.99 per 1M tokens
+			PricePerCompletionToken: 0.00149, // $1.49 per 1M tokens
+			Currency:                "USD",
+			EffectiveDate:           time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC),
+		},
 	}
 
 	// Cost tracking state

@@ -93,9 +93,12 @@ type OpenAIProvider struct {
 
 // OpenAICompatibleProvider implements Provider for vendors with an OpenAI-compatible chat API.
 type OpenAICompatibleProvider struct {
-	name   string
-	client *openai.Client
-	config ProviderConfig
+	name string
+	// The transport is hand-rolled rather than go-openai's: see
+	// chatcompletions.go for why the SDK's response format cannot carry a
+	// schema. One client per provider, so connections are reused.
+	httpClient *http.Client
+	config     ProviderConfig
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
@@ -206,6 +209,9 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		if isRateLimited(resp.StatusCode) {
+			return CompletionResponse{}, rateLimitError("openai", resp, string(bodyBytes))
+		}
 		return CompletionResponse{}, fmt.Errorf("OpenAI API error (status %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -388,15 +394,17 @@ func newOpenAIClient(config ProviderConfig, defaultBaseURL string) (*openai.Clie
 }
 
 func newOpenAICompatibleProvider(name string, config ProviderConfig, defaultBaseURL string) (*OpenAICompatibleProvider, error) {
-	client, config, err := newOpenAIClient(config, defaultBaseURL)
+	// newOpenAIClient is still what validates the key and settles the base URL,
+	// even though the SDK client it builds is no longer used to send the call.
+	_, config, err := newOpenAIClient(config, defaultBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("%s %w", name, err)
 	}
 
 	return &OpenAICompatibleProvider{
-		name:   normalizeProviderName(name),
-		client: client,
-		config: config,
+		name:       normalizeProviderName(name),
+		httpClient: &http.Client{Timeout: config.Timeout},
+		config:     config,
 	}, nil
 }
 
@@ -589,57 +597,12 @@ func NewOpenAICompatibleProvider(name string, config ProviderConfig) (*OpenAICom
 }
 
 // Complete sends a completion request to an OpenAI-compatible API.
+//
+// A typed operation arrives here with a strict JSON schema, and it is sent as
+// one. The SDK path this replaced could only ask for "some JSON", so every
+// provider other than OpenAI silently lost the contract.
 func (provider *OpenAICompatibleProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	messages := []openai.ChatCompletionMessage{
-		{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: req.SystemPrompt,
-		},
-		{
-			Role:    openai.ChatMessageRoleUser,
-			Content: req.UserPrompt,
-		},
-	}
-
-	chatRequest := openai.ChatCompletionRequest{
-		Model:    req.Model,
-		Messages: messages,
-	}
-
-	if req.Temperature > 0 {
-		chatRequest.Temperature = float32(req.Temperature)
-	}
-
-	if req.MaxTokens > 0 {
-		chatRequest.MaxTokens = req.MaxTokens
-	}
-
-	if req.ResponseFormat == "json" {
-		chatRequest.ResponseFormat = &openai.ChatCompletionResponseFormat{
-			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
-		}
-	}
-
-	completion, err := provider.client.CreateChatCompletion(ctx, chatRequest)
-	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("%s completion failed: %w", provider.name, err)
-	}
-
-	if len(completion.Choices) == 0 {
-		return CompletionResponse{}, fmt.Errorf("no completion choices returned")
-	}
-
-	return CompletionResponse{
-		Content:      completion.Choices[0].Message.Content,
-		Provider:     provider.Name(),
-		Model:        completion.Model,
-		FinishReason: string(completion.Choices[0].FinishReason),
-		Usage: types.TokenUsage{
-			PromptTokens:     completion.Usage.PromptTokens,
-			CompletionTokens: completion.Usage.CompletionTokens,
-			TotalTokens:      completion.Usage.TotalTokens,
-		},
-	}, nil
+	return completeViaChatCompletions(ctx, provider.httpClient, provider.name, provider.config, req)
 }
 
 // Name returns the provider name.

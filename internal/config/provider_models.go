@@ -21,10 +21,15 @@ var providerModels = map[string]map[types.Speed]string{
 		types.Fast:  "openai/gpt-4o-mini",
 		types.Quick: "openai/gpt-4o-mini",
 	},
+	// Cerebras runs one model across all three tiers on purpose. The tiers
+	// exist to trade accuracy against latency, and Cerebras' pitch is that
+	// gemma-4-31b is already the fast option -- there is no cheaper sibling
+	// whose accuracy loss buys anything here. Mapping Quick to a smaller model
+	// would be inventing a trade-off that the benchmark has not shown.
 	"cerebras": {
-		types.Smart: "llama-3.3-70b",
-		types.Fast:  "llama3.1-8b",
-		types.Quick: "llama3.1-8b",
+		types.Smart: "gemma-4-31b",
+		types.Fast:  "gemma-4-31b",
+		types.Quick: "gemma-4-31b",
 	},
 	"anthropic": {
 		types.Smart: "claude-3-5-sonnet-20240620",

@@ -152,7 +152,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			return "", err
 		}
 
-		delay := retryDelay(retryBackoff, attempt)
+		delay := nextRetryDelay(err, retryBackoff, attempt)
 		log.Warn("LLM request retry scheduled",
 			"requestID", requestID,
 			"correlationID", correlationID,
@@ -241,6 +241,14 @@ func isRetryableLLMError(err error) bool {
 		return false
 	}
 
+	// A rate limit is retryable by construction, and saying so by type rather
+	// than by substring keeps the answer from depending on how the message
+	// happens to be worded -- or on what the vendor put in the body, which is
+	// matched against the non-retryable list below.
+	if _, rateLimited := llm.RetryAfterFrom(err); rateLimited {
+		return true
+	}
+
 	msg := strings.ToLower(err.Error())
 
 	nonRetryable := []string{
@@ -291,6 +299,22 @@ func isRetryableLLMError(err error) bool {
 		}
 	}
 	return false
+}
+
+// nextRetryDelay picks how long to wait before the next attempt.
+//
+// The computed backoff is a guess that tops out at five seconds. When a server
+// rate-limits per minute it answers with the exact wait it wants, and a
+// five-second ceiling cannot clear a sixty-second window -- so every attempt
+// landed inside the same closed window and the retry budget bought nothing but
+// latency. When the server states a wait, that wait wins.
+func nextRetryDelay(err error, base time.Duration, attempt int) time.Duration {
+	if wait, rateLimited := llm.RetryAfterFrom(err); rateLimited && wait > 0 {
+		// The server's number is already bounded by llm.MaxRetryAfter, and the
+		// caller's context deadline still cuts the wait short in waitForRetry.
+		return wait
+	}
+	return retryDelay(base, attempt)
 }
 
 func retryDelay(base time.Duration, attempt int) time.Duration {

@@ -338,6 +338,16 @@ Retry-related environment variables:
 - `SCHEMAFLUX_TIMEOUT`
 - `SCHEMAFLUX_REPAIR_ATTEMPTS`
 
+### Rate limits
+
+A 429 or 503 carries the wait the server wants in `Retry-After`, and that number
+is used in place of the local backoff. This matters more than it sounds: the
+computed backoff doubles from 500ms and stops at five seconds, so against a
+provider that limits *per minute* every retry landed inside the same closed
+window and the retry budget bought nothing but latency. The server's wait is
+bounded at two minutes, and the caller's own context deadline still cuts it
+short. When the server states no wait, the local backoff stays in charge.
+
 Client tuning:
 
 ```go
@@ -416,13 +426,16 @@ if ok {
 ## Providers
 
 Default provider:
-- `openai`
+- `openai` (`gpt-5.6-luna` / `-sol` / `-terra` by tier, over the Responses API)
+
+Secondary provider:
+- `cerebras` (`gemma-4-31b`, over the OpenAI-compatible chat API)
 
 Built-in providers:
 - `openai`
+- `cerebras`
 - `anthropic`
 - `openrouter`
-- `cerebras`
 - `deepseek`
 - `qwen`
 - `zai`
@@ -442,7 +455,38 @@ client.WithProvider("local")
 Provider notes:
 - `anthropic` uses the native Anthropic Messages API
 - `deepseek`, `qwen`, `zai`, `openrouter`, and `cerebras` use the shared OpenAI-compatible provider path
-- provider-specific env vars are supported, including `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, and `ZAI_API_KEY`
+- provider-specific env vars are supported, including `CEREBRAS_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, and `ZAI_API_KEY`
+
+### Cerebras
+
+```go
+client := schemaflux.NewClient("").WithProvider("cerebras") // key from CEREBRAS_API_KEY
+schemaflux.SetDefaultClient(client)
+
+claim, err := schemaflux.Extract[ExpenseClaim](text, schemaflux.NewExtractOptions())
+```
+
+Nothing else about the call changes. `Extract[T]` sends the same strict JSON
+schema it sends to OpenAI, and Cerebras enforces it with constrained decoding —
+the guarantee is the provider's, not the prompt's. Runnable examples are
+`Example_secondaryProvider` and `Example_secondaryProviderEnforcesTheSchema`.
+
+Two things are worth knowing:
+
+- **All three tiers map to `gemma-4-31b`.** The tiers trade accuracy for
+  latency, and there is no cheaper Cerebras sibling whose accuracy loss buys
+  anything here. Mapping `Quick` to a smaller model would be inventing a
+  trade-off no benchmark has shown.
+- **Schema annotations are dropped.** Cerebras rejects `format`, `pattern`,
+  `minItems`, `minimum`, and their neighbours outright rather than ignoring
+  them, so a `time.Time` field — which the generator annotates with
+  `format: date-time` — would fail the whole request. The transport strips them.
+  They are annotations on top of a type, never the type itself, so nothing the
+  Go type enforces on unmarshal is lost.
+
+Free-tier keys are limited to **5 requests/minute**; paid keys to 500. Either
+way a 429 is waited out using the server's own `Retry-After`, not a local
+backoff — see the resilience note below.
 
 Custom provider registration:
 
