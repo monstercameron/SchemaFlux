@@ -805,8 +805,8 @@ commit and the test that proves it.
 | **B-02** | `2c917e6` | `OPENAI` added to the OpenAI key chain after the two canonical names, rather than editing the operator's credential file. |
 | **B-03** | `2c917e6` | `godotenv` promoted to a direct dependency; named paths load, `./.env` is the default, a missing named path errors, and the process environment wins over the file. |
 | **F-002** | `0915455` | All four `*WithMetadata` fallbacks replaced with `ParseJSON` plus an error return; `internal/ops/text_failopen_test.go` covers 40 cases across the four operations. |
-| **F-003** | `0300ff2` | An unusable `corrected` payload is now reported instead of dropped; `TestValidateReportsUnusableCorrection`, `TestValidateReturnsUsableCorrection`, `TestValidateNullCorrectionIsNotAnError`, and `TestIntegrationValidateCorrections` at the public boundary. |
-| **F-004** | `0300ff2` | `Valid` is always derived from the issue lists, `FailOn` defaults to `error`, and an unknown severity is an error; `TestValidateDerivesValidityFromIssues` (7 cases), `TestValidateFailOnSeverities` (3), `TestValidateRejectsUnknownFailOn`, `TestIntegrationValidateDerivesValidityFromIssues`, and `Example_validateAutoCorrect`. |
+| **F-003** | `234c6db` | An unusable `corrected` payload is now reported instead of dropped; `TestValidateReportsUnusableCorrection`, `TestValidateReturnsUsableCorrection`, `TestValidateNullCorrectionIsNotAnError`, and `TestIntegrationValidateCorrections` at the public boundary. |
+| **F-004** | `234c6db` | `Valid` is always derived from the issue lists, `FailOn` defaults to `error`, and an unknown severity is an error; `TestValidateDerivesValidityFromIssues` (7 cases), `TestValidateFailOnSeverities` (3), `TestValidateRejectsUnknownFailOn`, `TestIntegrationValidateDerivesValidityFromIssues`, and `Example_validateAutoCorrect`. |
 
 ### Added during the work
 
