@@ -184,13 +184,13 @@ type CritiquePositive struct {
 
 // CritiqueResult contains the results of critique
 type CritiqueResult struct {
-	OverallScore   float64            `json:"overall_score"`
-	CriteriaScores map[string]float64 `json:"criteria_scores"`
-	Issues         []CritiqueIssue    `json:"issues"`
-	Positives      []CritiquePositive `json:"positives,omitempty"`
-	Summary        string             `json:"summary"`
-	TopPriorities  []string           `json:"top_priorities,omitempty"`
-	Metadata       map[string]any     `json:"metadata,omitempty"`
+	ModelOverallScore float64            `json:"overall_score"`
+	CriteriaScores    map[string]float64 `json:"criteria_scores"`
+	Issues            []CritiqueIssue    `json:"issues"`
+	Positives         []CritiquePositive `json:"positives,omitempty"`
+	Summary           string             `json:"summary"`
+	TopPriorities     []string           `json:"top_priorities,omitempty"`
+	Metadata          map[string]any     `json:"metadata,omitempty"`
 }
 
 // Critique evaluates content with actionable feedback and improvement suggestions.
@@ -348,7 +348,7 @@ Return a JSON object with:
 	}
 
 	log.Debug("Critique operation succeeded",
-		"overallScore", result.OverallScore,
+		"overallScore", result.ModelOverallScore,
 		"issueCount", len(result.Issues),
 		"positiveCount", len(result.Positives))
 	return result, nil

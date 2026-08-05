@@ -131,10 +131,12 @@ type ValidationIssue struct {
 
 // ValidationResult contains the results of a validation operation (legacy)
 type ValidationResult struct {
-	Valid       bool     `json:"valid"`
-	Issues      []string `json:"issues"`
-	Confidence  float64  `json:"confidence"`
-	Suggestions []string `json:"suggestions"`
+	Valid  bool     `json:"valid"`
+	Issues []string `json:"issues"`
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64  `json:"confidence"`
+	Suggestions     []string `json:"suggestions"`
 }
 
 // ValidateResult contains the full results of validation.
@@ -155,8 +157,8 @@ type ValidateResult[T any] struct {
 	// Corrected is the auto-corrected version of the input (if AutoCorrect enabled)
 	Corrected *T `json:"corrected,omitempty"`
 
-	// Confidence score for the validation assessment
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the validation assessment
+	ModelConfidence float64 `json:"confidence"`
 
 	// Summary provides an overall assessment
 	Summary string `json:"summary,omitempty"`
@@ -302,13 +304,13 @@ Against these rules:
 
 	// Parse the response into a flexible structure first
 	var llmResult struct {
-		Valid      bool              `json:"valid"`
-		Errors     []ValidationIssue `json:"errors,omitempty"`
-		Warnings   []ValidationIssue `json:"warnings,omitempty"`
-		Info       []ValidationIssue `json:"info,omitempty"`
-		Corrected  json.RawMessage   `json:"corrected,omitempty"`
-		Confidence float64           `json:"confidence"`
-		Summary    string            `json:"summary,omitempty"`
+		Valid           bool              `json:"valid"`
+		Errors          []ValidationIssue `json:"errors,omitempty"`
+		Warnings        []ValidationIssue `json:"warnings,omitempty"`
+		Info            []ValidationIssue `json:"info,omitempty"`
+		Corrected       json.RawMessage   `json:"corrected,omitempty"`
+		ModelConfidence float64           `json:"confidence"`
+		Summary         string            `json:"summary,omitempty"`
 	}
 
 	if err := ParseJSONStrict(response, &llmResult); err != nil {
@@ -326,7 +328,7 @@ Against these rules:
 	result.Errors = llmResult.Errors
 	result.Warnings = llmResult.Warnings
 	result.Info = llmResult.Info
-	result.Confidence = llmResult.Confidence
+	result.ModelConfidence = llmResult.ModelConfidence
 	result.Summary = llmResult.Summary
 
 	// Parse corrected data if present. A correction that does not fit T is
@@ -409,7 +411,7 @@ Against these rules:
 	if err := ParseJSONStrict(response, &result); err != nil {
 		// Try to parse as plain text if JSON parsing fails
 		result.Valid = strings.Contains(strings.ToLower(response), "valid")
-		result.Confidence = 0.5
+		result.ModelConfidence = 0.5
 		if !result.Valid {
 			result.Issues = []string{response}
 		}
@@ -427,8 +429,8 @@ type FormatResult struct {
 	// FormatApplied describes the format that was applied
 	FormatApplied string `json:"format_applied,omitempty"`
 
-	// Confidence score for the formatting quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the formatting quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// TransformationNotes describe how the data was transformed
 	TransformationNotes []string `json:"transformation_notes,omitempty"`
@@ -557,7 +559,7 @@ Into this format:
 		Text                string   `json:"text"`
 		FormatApplied       string   `json:"format_applied"`
 		TransformationNotes []string `json:"transformation_notes"`
-		Confidence          float64  `json:"confidence"`
+		ModelConfidence     float64  `json:"confidence"`
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		// The fallback returned the raw body as formatted text with an invented
@@ -571,7 +573,7 @@ Into this format:
 		Text:                parsed.Text,
 		FormatApplied:       parsed.FormatApplied,
 		TransformationNotes: parsed.TransformationNotes,
-		Confidence:          parsed.Confidence,
+		ModelConfidence:     parsed.ModelConfidence,
 	}
 
 	log.Debug("FormatWithMetadata operation succeeded", "outputLength", len(result.Text))
@@ -590,8 +592,8 @@ type MergeResult[T any] struct {
 	// Conflicts lists any conflicting fields and how they were resolved
 	Conflicts []MergeConflict `json:"conflicts,omitempty"`
 
-	// Confidence score for the merge quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the merge quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Strategy describes the merge strategy that was applied
 	Strategy string `json:"strategy,omitempty"`
@@ -693,7 +695,7 @@ func MergeWithMetadata[T any](sources []T, strategy string, opts ...types.OpOpti
 	if len(sources) == 1 {
 		result.Merged = sources[0]
 		result.SourcesUsed = []int{0}
-		result.Confidence = 1.0
+		result.ModelConfidence = 1.0
 		return result, nil
 	}
 
@@ -759,10 +761,10 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 
 	// Parse JSON response
 	var parsed struct {
-		Merged      json.RawMessage `json:"merged"`
-		SourcesUsed []int           `json:"sources_used"`
-		Conflicts   []MergeConflict `json:"conflicts"`
-		Confidence  float64         `json:"confidence"`
+		Merged          json.RawMessage `json:"merged"`
+		SourcesUsed     []int           `json:"sources_used"`
+		Conflicts       []MergeConflict `json:"conflicts"`
+		ModelConfidence float64         `json:"confidence"`
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		// Fallback: try to parse as just the merged object
@@ -773,7 +775,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 			return result, fmt.Errorf("failed to parse merged result: %w", err)
 		}
 		result.Merged = merged
-		result.Confidence = 0.7
+		result.ModelConfidence = 0.7
 		// Assume all sources were used
 		for i := range sources {
 			result.SourcesUsed = append(result.SourcesUsed, i)
@@ -791,7 +793,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 
 	result.SourcesUsed = parsed.SourcesUsed
 	result.Conflicts = parsed.Conflicts
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 
 	log.Debug("MergeWithMetadata operation succeeded", "sourcesUsed", len(result.SourcesUsed), "conflicts", len(result.Conflicts))
 	return result, nil
@@ -892,8 +894,8 @@ type QuestionResult[A any] struct {
 	// Answer is the typed answer to the question
 	Answer A `json:"answer"`
 
-	// Confidence score for the answer (0.0-1.0)
-	Confidence float64 `json:"confidence,omitempty"`
+	// ModelConfidence score for the answer (0.0-1.0)
+	ModelConfidence float64 `json:"confidence,omitempty"`
 
 	// Reasoning explains how the answer was derived
 	Reasoning string `json:"reasoning,omitempty"`
@@ -915,7 +917,7 @@ type QuestionResult[A any] struct {
 //
 //	// Simple string answer
 //	result, err := Question[Report, string](report, NewQuestionOptions("What is the main finding?"))
-//	fmt.Println(result.Answer, "confidence:", result.Confidence)
+//	fmt.Println(result.Answer, "confidence:", result.ModelConfidence)
 //
 //	// Typed answer
 //	type TopRisks struct {
@@ -933,7 +935,7 @@ type QuestionResult[A any] struct {
 //	// Boolean answer
 //	result, err := Question[Document, bool](doc, NewQuestionOptions("Does this document contain PII?"))
 //	if result.Answer {
-//	    fmt.Println("PII detected with confidence:", result.Confidence)
+//	    fmt.Println("PII detected with confidence:", result.ModelConfidence)
 //	}
 func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], error) {
 	log := logger.GetLogger()
@@ -1015,10 +1017,10 @@ Question: %s`, string(dataJSON), opts.Question)
 
 	// Parse the response into a flexible structure
 	var llmResult struct {
-		Answer     json.RawMessage `json:"answer"`
-		Confidence float64         `json:"confidence,omitempty"`
-		Reasoning  string          `json:"reasoning,omitempty"`
-		Evidence   []string        `json:"evidence,omitempty"`
+		Answer          json.RawMessage `json:"answer"`
+		ModelConfidence float64         `json:"confidence,omitempty"`
+		Reasoning       string          `json:"reasoning,omitempty"`
+		Evidence        []string        `json:"evidence,omitempty"`
 	}
 
 	if err := ParseJSONStrict(response, &llmResult); err != nil {
@@ -1043,7 +1045,7 @@ Question: %s`, string(dataJSON), opts.Question)
 		}
 	}
 
-	result.Confidence = llmResult.Confidence
+	result.ModelConfidence = llmResult.ModelConfidence
 	result.Reasoning = llmResult.Reasoning
 	result.Evidence = llmResult.Evidence
 

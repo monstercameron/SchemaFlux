@@ -62,7 +62,7 @@ func main() {
 		fmt.Printf("      Text:       %s\n", result1.Text)
 		fmt.Printf("      Original:   %q\n", result1.Original)
 		fmt.Printf("      Length:     %d characters added\n", result1.Length)
-		fmt.Printf("      Confidence: %.2f\n", result1.Confidence)
+		fmt.Printf("      ModelConfidence: %.2f\n", result1.ModelConfidence)
 	}
 
 	// Example 2: Code completion
@@ -84,7 +84,7 @@ func main() {
 		fmt.Println("   ? CompleteResult:")
 		fmt.Printf("      Text:\n%s\n", result2.Text)
 		fmt.Printf("      Length:     %d characters added\n", result2.Length)
-		fmt.Printf("      Confidence: %.2f\n", result2.Confidence)
+		fmt.Printf("      ModelConfidence: %.2f\n", result2.ModelConfidence)
 	}
 
 	// Example 3: Email completion with context
@@ -112,7 +112,7 @@ func main() {
 		fmt.Println("   ? CompleteResult:")
 		fmt.Printf("      Text:       %s\n", result3.Text)
 		fmt.Printf("      Length:     %d characters added\n", result3.Length)
-		fmt.Printf("      Confidence: %.2f\n", result3.Confidence)
+		fmt.Printf("      ModelConfidence: %.2f\n", result3.ModelConfidence)
 	}
 
 	// Example 4: Creative story completion
@@ -134,7 +134,7 @@ func main() {
 		fmt.Println("   ? CompleteResult:")
 		fmt.Printf("      Text:       %s\n", result4.Text)
 		fmt.Printf("      Length:     %d characters added\n", result4.Length)
-		fmt.Printf("      Confidence: %.2f\n", result4.Confidence)
+		fmt.Printf("      ModelConfidence: %.2f\n", result4.ModelConfidence)
 	}
 
 	// ========================================
@@ -176,7 +176,7 @@ func main() {
 		fmt.Printf("      Original:   %q\n", result5.Original)
 		fmt.Printf("      Completed:  %s\n", result5.Completed)
 		fmt.Printf("      Length:     %d characters added\n", result5.Length)
-		fmt.Printf("      Confidence: %.2f\n", result5.Confidence)
+		fmt.Printf("      ModelConfidence: %.2f\n", result5.ModelConfidence)
 		fmt.Printf("\n   ?? Updated BlogPost.Body:\n      %s\n", result5.Data.Body)
 	}
 
@@ -211,7 +211,7 @@ func main() {
 		fmt.Printf("      Original:   %q\n", result6.Original)
 		fmt.Printf("      Completed:  %s\n", result6.Completed)
 		fmt.Printf("      Length:     %d characters added\n", result6.Length)
-		fmt.Printf("      Confidence: %.2f\n", result6.Confidence)
+		fmt.Printf("      ModelConfidence: %.2f\n", result6.ModelConfidence)
 		fmt.Printf("\n   ?? Updated ProductDescription.Description:\n      %s\n", result6.Data.Description)
 	}
 

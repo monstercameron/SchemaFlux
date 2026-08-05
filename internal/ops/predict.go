@@ -23,7 +23,7 @@ type PredictOptions struct {
 	// Include confidence intervals
 	IncludeConfidenceInterval bool
 
-	// Confidence level for intervals (e.g., 0.95 for 95%)
+	// ModelConfidence level for intervals (e.g., 0.95 for 95%)
 	ConfidenceLevel float64
 
 	// Prediction method hint ("trend", "pattern", "regression", "auto")
@@ -194,15 +194,17 @@ type PredictionFactor struct {
 
 // PredictResult contains the results of prediction
 type PredictResult[T any] struct {
-	Prediction  T                    `json:"prediction"`
-	Confidence  float64              `json:"confidence"`
-	Interval    *PredictionInterval  `json:"interval,omitempty"`
-	Scenarios   []PredictionScenario `json:"scenarios,omitempty"`
-	Factors     []PredictionFactor   `json:"factors,omitempty"`
-	Reasoning   string               `json:"reasoning,omitempty"`
-	Assumptions []string             `json:"assumptions,omitempty"`
-	Risks       []string             `json:"risks,omitempty"`
-	Metadata    map[string]any       `json:"metadata,omitempty"`
+	Prediction T `json:"prediction"`
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64              `json:"confidence"`
+	Interval        *PredictionInterval  `json:"interval,omitempty"`
+	Scenarios       []PredictionScenario `json:"scenarios,omitempty"`
+	Factors         []PredictionFactor   `json:"factors,omitempty"`
+	Reasoning       string               `json:"reasoning,omitempty"`
+	Assumptions     []string             `json:"assumptions,omitempty"`
+	Risks           []string             `json:"risks,omitempty"`
+	Metadata        map[string]any       `json:"metadata,omitempty"`
 }
 
 // Predict forecasts or extrapolates based on patterns in historical data.
@@ -351,7 +353,7 @@ Return a JSON object with:
 	}
 
 	log.Debug("Predict operation succeeded",
-		"confidence", result.Confidence,
+		"confidence", result.ModelConfidence,
 		"scenarioCount", len(result.Scenarios),
 		"factorCount", len(result.Factors))
 	return result, nil

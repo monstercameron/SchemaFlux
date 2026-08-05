@@ -138,7 +138,7 @@ func main() {
 		for _, c := range custResult.Conflicts {
 			fmt.Printf("  - %s: chose source %d (%s)\n", c.Field, c.ChosenSource, c.Resolution)
 		}
-		fmt.Printf("Confidence: %.0f%%\n", custResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", custResult.ModelConfidence*100)
 	}
 
 	// ============================================================
@@ -198,7 +198,7 @@ func main() {
 		for _, c := range prodResult.Conflicts {
 			fmt.Printf("  - %s: chose source %d (%s)\n", c.Field, c.ChosenSource, c.Resolution)
 		}
-		fmt.Printf("Confidence: %.0f%%\n", prodResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", prodResult.ModelConfidence*100)
 	}
 
 	// ============================================================
@@ -256,7 +256,7 @@ func main() {
 			fmt.Printf("  - %s: chose source %d (%s)\n", c.Field, c.ChosenSource, c.Resolution)
 		}
 		fmt.Printf("Strategy: %s (source %d authoritative)\n", empResult.Strategy, 1)
-		fmt.Printf("Confidence: %.0f%%\n", empResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", empResult.ModelConfidence*100)
 	}
 
 	fmt.Println("\n=== Resolve Example Complete ===")

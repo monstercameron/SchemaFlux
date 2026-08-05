@@ -53,8 +53,8 @@ type FilledItem struct {
 	// Reasoning explains the interpolation logic
 	Reasoning string `json:"reasoning,omitempty"`
 
-	// Confidence for this interpolated value
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence for this interpolated value
+	ModelConfidence float64 `json:"confidence"`
 }
 
 // InterpolateResult contains the complete sequence with filled gaps

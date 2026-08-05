@@ -19,7 +19,7 @@ func withResponse(t *testing.T, response string) {
 }
 
 // The four *WithMetadata operations each returned the raw response as their
-// result with a literal Confidence of 0.7, empty metadata, and a nil error when
+// result with a literal ModelConfidence of 0.7, empty metadata, and a nil error when
 // the body would not parse. A caller reading the documented metadata got an
 // invented number and an empty list, with nothing to distinguish it from a real
 // result. They also used json.Unmarshal directly, so any fenced response -- the
@@ -44,8 +44,8 @@ func TestTextMetadataOperationsDoNotFailOpen(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected an error, got result %+v", result)
 			}
-			if result.Confidence != 0 {
-				t.Errorf("a failed call must not report a confidence, got %v", result.Confidence)
+			if result.ModelConfidence != 0 {
+				t.Errorf("a failed call must not report a confidence, got %v", result.ModelConfidence)
 			}
 		})
 
@@ -96,7 +96,7 @@ func TestTextMetadataOperationsAcceptFencedJSON(t *testing.T) {
 				t.Errorf("Text = %q, want %q", result.Text, "a summary")
 			}
 			// The confidence must be the model's reported value, never a literal.
-			if result.Confidence == 0.7 {
+			if result.ModelConfidence == 0.7 {
 				t.Error("0.7 is the removed fallback literal; it must not reappear")
 			}
 		})
@@ -111,8 +111,8 @@ func TestSummarizeConfidenceComesFromTheResponse(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SummarizeWithMetadata: %v", err)
 		}
-		if result.Confidence != want {
-			t.Errorf("Confidence = %v, want %v", result.Confidence, want)
+		if result.ModelConfidence != want {
+			t.Errorf("ModelConfidence = %v, want %v", result.ModelConfidence, want)
 		}
 	}
 }
@@ -154,19 +154,19 @@ func TestNoFallbackConfidenceLiteralRemains(t *testing.T) {
 	for name, call := range map[string]func() (float64, error){
 		"summarize": func() (float64, error) {
 			r, err := SummarizeWithMetadata("x", NewSummarizeOptions())
-			return r.Confidence, err
+			return r.ModelConfidence, err
 		},
 		"rewrite": func() (float64, error) {
 			r, err := RewriteWithMetadata("x", NewRewriteOptions())
-			return r.Confidence, err
+			return r.ModelConfidence, err
 		},
 		"translate": func() (float64, error) {
 			r, err := TranslateWithMetadata("x", NewTranslateOptions())
-			return r.Confidence, err
+			return r.ModelConfidence, err
 		},
 		"expand": func() (float64, error) {
 			r, err := ExpandWithMetadata("x", NewExpandOptions())
-			return r.Confidence, err
+			return r.ModelConfidence, err
 		},
 	} {
 		confidence, err := call()

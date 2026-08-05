@@ -158,11 +158,13 @@ func (n NormalizeOptions) toOpOptions() types.OpOptions {
 
 // NormalizeChange represents a single normalization change
 type NormalizeChange struct {
-	Field      string  `json:"field"`
-	Original   string  `json:"original"`
-	Normalized string  `json:"normalized"`
-	Reason     string  `json:"reason,omitempty"`
-	Confidence float64 `json:"confidence,omitempty"`
+	Field      string `json:"field"`
+	Original   string `json:"original"`
+	Normalized string `json:"normalized"`
+	Reason     string `json:"reason,omitempty"`
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64 `json:"confidence,omitempty"`
 }
 
 // NormalizeResult contains the results of normalization

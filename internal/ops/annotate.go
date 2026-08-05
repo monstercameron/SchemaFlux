@@ -132,13 +132,15 @@ func (a AnnotateOptions) toOpOptions() types.OpOptions {
 
 // Annotation represents a single annotation
 type Annotation struct {
-	Type       string         `json:"type"`
-	Value      string         `json:"value"`
-	Text       string         `json:"text,omitempty"`
-	Start      int            `json:"start,omitempty"`
-	End        int            `json:"end,omitempty"`
-	Confidence float64        `json:"confidence,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	Type  string `json:"type"`
+	Value string `json:"value"`
+	Text  string `json:"text,omitempty"`
+	Start int    `json:"start,omitempty"`
+	End   int    `json:"end,omitempty"`
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64        `json:"confidence,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
 // AnnotateResult contains the results of annotation
@@ -284,7 +286,7 @@ Return a JSON object with:
 
 	// Filter by confidence if needed
 	for _, ann := range parsed.Annotations {
-		if opts.IncludeConfidence && ann.Confidence < opts.MinConfidence {
+		if opts.IncludeConfidence && ann.ModelConfidence < opts.MinConfidence {
 			continue
 		}
 		result.Annotations = append(result.Annotations, ann)

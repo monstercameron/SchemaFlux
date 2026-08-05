@@ -275,11 +275,11 @@ func TestBuildCompleteUserPrompt(t *testing.T) {
 
 func TestCompleteResult_Structure(t *testing.T) {
 	result := CompleteResult{
-		Text:       "Hello world complete",
-		Original:   "Hello world",
-		Length:     9,
-		Confidence: 0.8,
-		Metadata:   map[string]any{"test": "value"},
+		Text:            "Hello world complete",
+		Original:        "Hello world",
+		Length:          9,
+		ModelConfidence: 0.8,
+		Metadata:        map[string]any{"test": "value"},
 	}
 
 	if result.Text != "Hello world complete" {
@@ -291,8 +291,8 @@ func TestCompleteResult_Structure(t *testing.T) {
 	if result.Length != 9 {
 		t.Errorf("Expected Length 9, got %d", result.Length)
 	}
-	if result.Confidence != 0.8 {
-		t.Errorf("Expected Confidence 0.8, got %f", result.Confidence)
+	if result.ModelConfidence != 0.8 {
+		t.Errorf("Expected ModelConfidence 0.8, got %f", result.ModelConfidence)
 	}
 	if result.Metadata["test"] != "value" {
 		t.Errorf("Expected metadata test=value, got %v", result.Metadata["test"])

@@ -74,10 +74,12 @@ type (
 
 // Result wraps an operation result with metadata.
 type Result[T any] struct {
-	Value      T              // The actual result value
-	Confidence float64        // Confidence score (0.0-1.0)
-	Error      error          // Any error that occurred
-	Metadata   map[string]any // Additional metadata
+	Value T // The actual result value
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64        // ModelConfidence score (0.0-1.0)
+	Error           error          // Any error that occurred
+	Metadata        map[string]any // Additional metadata
 }
 
 // Re-export operation-specific options types
@@ -431,7 +433,7 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 //
 //	result, err := schemaflux.Classify[string, string]("Great product!",
 //	    schemaflux.NewClassifyOptions().WithCategories([]string{"positive", "negative", "neutral"}))
-//	fmt.Printf("Category: %s (%.0f%% confidence)\n", result.Category, result.Confidence*100)
+//	fmt.Printf("Category: %s (%.0f%% confidence)\n", result.Category, result.ModelConfidence*100)
 func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
 	return ops.Classify[T, C](input, opts)
 }
@@ -568,7 +570,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 //
 //	result, err := schemaflux.TranslateWithMetadata(text, schemaflux.NewTranslateOptions().WithTargetLanguage("French"))
 //	fmt.Printf("Translation: %s\nDetected language: %s\nConfidence: %.0f%%\n",
-//	    result.Text, result.SourceLanguageDetected, result.Confidence*100)
+//	    result.Text, result.SourceLanguageDetected, result.ModelConfidence*100)
 func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult, error) {
 	return ops.TranslateWithMetadata(input, opts)
 }
@@ -711,7 +713,7 @@ func ValidateLegacy[T any](data T, rules string, opts ...OpOptions) (ValidationR
 // Example:
 //
 //	result, err := schemaflux.Question[Report, string](report, schemaflux.NewQuestionOptions("What is the main finding?"))
-//	fmt.Println(result.Answer, "confidence:", result.Confidence)
+//	fmt.Println(result.Answer, "confidence:", result.ModelConfidence)
 func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], error) {
 	return ops.Question[T, A](data, opts)
 }
@@ -741,7 +743,7 @@ func Merge[T any](sources []T, strategy string, opts ...OpOptions) (T, error) {
 //
 //	result, err := schemaflux.MergeWithMetadata(sources, "prefer-newest")
 //	fmt.Printf("Merged: %+v\nConflicts: %d\nConfidence: %.0f%%\n",
-//	    result.Merged, len(result.Conflicts), result.Confidence*100)
+//	    result.Merged, len(result.Conflicts), result.ModelConfidence*100)
 func MergeWithMetadata[T any](sources []T, strategy string, opts ...OpOptions) (MergeResult[T], error) {
 	return ops.MergeWithMetadata(sources, strategy, opts...)
 }

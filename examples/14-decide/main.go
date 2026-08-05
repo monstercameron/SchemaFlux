@@ -129,7 +129,7 @@ func main() {
 
 		fmt.Println()
 		fmt.Printf("   ? Route to: %s\n", chosen.Name)
-		fmt.Printf("   Confidence: %.0f%%\n", result.Confidence*100)
+		fmt.Printf("   ModelConfidence: %.0f%%\n", result.ModelConfidence*100)
 		fmt.Printf("   Reasoning: %s\n", result.Explanation)
 	}
 

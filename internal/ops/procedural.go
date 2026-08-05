@@ -26,12 +26,14 @@ type Decision[T any] struct {
 type DecisionResult struct {
 	SelectedIndex int
 	Explanation   string
-	Confidence    float64
-	Alternatives  []int
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64
+	Alternatives    []int
 
 	// Fallback reports that the configured fallback index was selected because
 	// the model could not be reached or its answer could not be used. It is the
-	// only case in which Confidence is not the model's own number.
+	// only case in which ModelConfidence is not the model's own number.
 	Fallback bool
 }
 
@@ -110,7 +112,7 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 		result.SelectedIndex = index
 		result.Fallback = true
 		result.Explanation = fmt.Sprintf("fallback selection: %v", cause)
-		result.Confidence = 0
+		result.ModelConfidence = 0
 		return decisions[index].Value, result, nil
 	}
 
@@ -118,7 +120,7 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 	for i, decision := range decisions {
 		if decision.Condition != nil && decision.Condition(situation) {
 			result.SelectedIndex = i
-			result.Confidence = 1.0
+			result.ModelConfidence = 1.0
 			result.Explanation = fmt.Sprintf("Condition met for: %s", decision.Description)
 			return decision.Value, result, nil
 		}
@@ -160,10 +162,10 @@ Choose the best option based on the context.`, situation, strings.Join(options, 
 
 	// Parse LLM response
 	var llmResult struct {
-		Selected     int     `json:"selected"`
-		Explanation  string  `json:"explanation"`
-		Confidence   float64 `json:"confidence"`
-		Alternatives []int   `json:"alternatives"`
+		Selected        int     `json:"selected"`
+		Explanation     string  `json:"explanation"`
+		ModelConfidence float64 `json:"confidence"`
+		Alternatives    []int   `json:"alternatives"`
 	}
 
 	if err := ParseJSONStrict(response, &llmResult); err != nil {
@@ -178,9 +180,9 @@ Choose the best option based on the context.`, situation, strings.Join(options, 
 
 	result.SelectedIndex = llmResult.Selected
 	result.Explanation = llmResult.Explanation
-	result.Confidence = llmResult.Confidence
+	result.ModelConfidence = llmResult.ModelConfidence
 	result.Alternatives = llmResult.Alternatives
-	log.Debug("Decide operation succeeded", "selectedIndex", llmResult.Selected, "confidence", llmResult.Confidence)
+	log.Debug("Decide operation succeeded", "selectedIndex", llmResult.Selected, "confidence", llmResult.ModelConfidence)
 	return decisions[llmResult.Selected].Value, result, nil
 }
 

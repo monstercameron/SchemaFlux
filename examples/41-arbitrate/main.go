@@ -148,7 +148,7 @@ func main() {
 			fmt.Printf("  %s: %.0f%%\n", v.VendorName, score*100)
 		}
 		fmt.Printf("\nDecision: %s\n", vendorResult.Reasoning)
-		fmt.Printf("Confidence: %.0f%%\n", vendorResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", vendorResult.ModelConfidence*100)
 	}
 
 	// ============================================================
@@ -281,7 +281,7 @@ func main() {
 			fmt.Printf("\nPriority Claim: %s (best documentation, fastest processing)\n",
 				claimResult.Winner.ClaimID)
 		}
-		fmt.Printf("Confidence: %.0f%%\n", claimResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", claimResult.ModelConfidence*100)
 	}
 
 	fmt.Println("\n=== Arbitrate Example Complete ===")

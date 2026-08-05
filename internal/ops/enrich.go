@@ -140,11 +140,11 @@ func (e EnrichOptions) toOpOptions() types.OpOptions {
 
 // EnrichResult contains the enriched data and metadata
 type EnrichResult[T any] struct {
-	Enriched    T                  `json:"enriched"`
-	AddedFields []string           `json:"added_fields"`
-	Confidence  map[string]float64 `json:"confidence,omitempty"`
-	Derivations map[string]string  `json:"derivations,omitempty"`
-	Metadata    map[string]any     `json:"metadata,omitempty"`
+	Enriched        T                  `json:"enriched"`
+	AddedFields     []string           `json:"added_fields"`
+	ModelConfidence map[string]float64 `json:"confidence,omitempty"`
+	Derivations     map[string]string  `json:"derivations,omitempty"`
+	Metadata        map[string]any     `json:"metadata,omitempty"`
 }
 
 // Enrich adds derived or inferred fields to data using LLM intelligence.
@@ -175,7 +175,7 @@ func Enrich[T any, U any](input T, opts EnrichOptions) (EnrichResult[U], error) 
 	log.Debug("Starting enrich operation")
 
 	var result EnrichResult[U]
-	result.Confidence = make(map[string]float64)
+	result.ModelConfidence = make(map[string]float64)
 	result.Derivations = make(map[string]string)
 	result.Metadata = make(map[string]any)
 
@@ -277,10 +277,10 @@ Return a JSON object with:
 
 	// Parse the response
 	var parsed struct {
-		Enriched    U                  `json:"enriched"`
-		AddedFields []string           `json:"added_fields"`
-		Confidence  map[string]float64 `json:"confidence"`
-		Derivations map[string]string  `json:"derivations"`
+		Enriched        U                  `json:"enriched"`
+		AddedFields     []string           `json:"added_fields"`
+		ModelConfidence map[string]float64 `json:"confidence"`
+		Derivations     map[string]string  `json:"derivations"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -290,7 +290,7 @@ Return a JSON object with:
 
 	result.Enriched = parsed.Enriched
 	result.AddedFields = parsed.AddedFields
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 	result.Derivations = parsed.Derivations
 
 	log.Debug("Enrich operation succeeded", "addedFields", len(result.AddedFields))

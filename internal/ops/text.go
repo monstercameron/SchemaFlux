@@ -21,8 +21,8 @@ type SummarizeResult struct {
 	// KeyPoints are the main points extracted
 	KeyPoints []string `json:"key_points,omitempty"`
 
-	// Confidence score for the summary quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the summary quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -36,8 +36,8 @@ type RewriteResult struct {
 	// ChangesMade describes what was changed
 	ChangesMade []string `json:"changes_made,omitempty"`
 
-	// Confidence score for the rewrite quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the rewrite quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// ToneAchieved describes the tone of the output
 	ToneAchieved string `json:"tone_achieved,omitempty"`
@@ -54,8 +54,8 @@ type TranslateResult struct {
 	// SourceLanguageDetected is the detected source language (if not specified)
 	SourceLanguageDetected string `json:"source_language_detected,omitempty"`
 
-	// Confidence score for the translation quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the translation quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Alternatives are alternative translations for ambiguous phrases
 	Alternatives []TranslationAlternative `json:"alternatives,omitempty"`
@@ -82,8 +82,8 @@ type ExpandResult struct {
 	// AddedContent describes what was added
 	AddedContent []string `json:"added_content,omitempty"`
 
-	// Confidence score for the expansion quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the expansion quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -235,13 +235,13 @@ Rules:
 
 	// Parse JSON response
 	var parsed struct {
-		Text       string   `json:"text"`
-		KeyPoints  []string `json:"key_points"`
-		Confidence float64  `json:"confidence"`
+		Text            string   `json:"text"`
+		KeyPoints       []string `json:"key_points"`
+		ModelConfidence float64  `json:"confidence"`
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		// No fallback verdict. The previous branch returned the raw response as
-		// the summary with a literal Confidence of 0.7 and no KeyPoints, and a
+		// the summary with a literal ModelConfidence of 0.7 and no KeyPoints, and a
 		// nil error -- so a caller reading the documented metadata silently got
 		// an invented number and an empty list. It also used json.Unmarshal
 		// directly, without the shared fence stripping, so any fenced response
@@ -256,7 +256,7 @@ Rules:
 		Text:             parsed.Text,
 		CompressionRatio: compressionRatio,
 		KeyPoints:        parsed.KeyPoints,
-		Confidence:       parsed.Confidence,
+		ModelConfidence:  parsed.ModelConfidence,
 	}
 
 	log.Debug("SummarizeWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "keyPoints", len(result.KeyPoints))
@@ -438,10 +438,10 @@ Rules:
 
 	// Parse JSON response
 	var parsed struct {
-		Text         string   `json:"text"`
-		ChangesMade  []string `json:"changes_made"`
-		ToneAchieved string   `json:"tone_achieved"`
-		Confidence   float64  `json:"confidence"`
+		Text            string   `json:"text"`
+		ChangesMade     []string `json:"changes_made"`
+		ToneAchieved    string   `json:"tone_achieved"`
+		ModelConfidence float64  `json:"confidence"`
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
@@ -449,10 +449,10 @@ Rules:
 	}
 
 	result := RewriteResult{
-		Text:         parsed.Text,
-		ChangesMade:  parsed.ChangesMade,
-		ToneAchieved: parsed.ToneAchieved,
-		Confidence:   parsed.Confidence,
+		Text:            parsed.Text,
+		ChangesMade:     parsed.ChangesMade,
+		ToneAchieved:    parsed.ToneAchieved,
+		ModelConfidence: parsed.ModelConfidence,
 	}
 
 	log.Debug("RewriteWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "changesMade", len(result.ChangesMade))
@@ -630,7 +630,7 @@ Rules:
 	var parsed struct {
 		Text                   string                   `json:"text"`
 		SourceLanguageDetected string                   `json:"source_language_detected"`
-		Confidence             float64                  `json:"confidence"`
+		ModelConfidence        float64                  `json:"confidence"`
 		Alternatives           []TranslationAlternative `json:"alternatives"`
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -641,7 +641,7 @@ Rules:
 	result := TranslateResult{
 		Text:                   parsed.Text,
 		SourceLanguageDetected: parsed.SourceLanguageDetected,
-		Confidence:             parsed.Confidence,
+		ModelConfidence:        parsed.ModelConfidence,
 		Alternatives:           parsed.Alternatives,
 	}
 
@@ -802,9 +802,9 @@ Rules:
 
 	// Parse JSON response
 	var parsed struct {
-		Text         string   `json:"text"`
-		AddedContent []string `json:"added_content"`
-		Confidence   float64  `json:"confidence"`
+		Text            string   `json:"text"`
+		AddedContent    []string `json:"added_content"`
+		ModelConfidence float64  `json:"confidence"`
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
@@ -814,10 +814,10 @@ Rules:
 	expansionRatio := float64(len(parsed.Text)) / float64(len(input))
 
 	result := ExpandResult{
-		Text:           parsed.Text,
-		ExpansionRatio: expansionRatio,
-		AddedContent:   parsed.AddedContent,
-		Confidence:     parsed.Confidence,
+		Text:            parsed.Text,
+		ExpansionRatio:  expansionRatio,
+		AddedContent:    parsed.AddedContent,
+		ModelConfidence: parsed.ModelConfidence,
 	}
 
 	log.Debug("ExpandWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "expansionRatio", result.ExpansionRatio)

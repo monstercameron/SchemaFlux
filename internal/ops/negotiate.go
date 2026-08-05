@@ -75,8 +75,8 @@ type NegotiateResult[T any] struct {
 	// Reasoning explains the negotiation process
 	Reasoning string `json:"reasoning,omitempty"`
 
-	// Confidence in the solution quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence in the solution quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -255,7 +255,7 @@ Rules:
 		Tradeoffs           []Tradeoff        `json:"tradeoffs"`
 		Alternatives        []json.RawMessage `json:"alternatives"`
 		Reasoning           string            `json:"reasoning"`
-		Confidence          float64           `json:"confidence"`
+		ModelConfidence     float64           `json:"confidence"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -287,7 +287,7 @@ Rules:
 	result.OverallSatisfaction = parsed.OverallSatisfaction
 	result.Tradeoffs = parsed.Tradeoffs
 	result.Reasoning = parsed.Reasoning
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 
 	log.Debug("Negotiate operation succeeded",
 		"overallSatisfaction", result.OverallSatisfaction,
@@ -424,8 +424,8 @@ type AdversarialResult[T any] struct {
 	// Reasoning explains the negotiation dynamics
 	Reasoning string `json:"reasoning,omitempty"`
 
-	// Confidence in the result quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence in the result quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 }
 
 // AdversarialOptions configures the adversarial negotiation
@@ -590,7 +590,7 @@ Rules:
 		OurSatisfaction   float64         `json:"our_satisfaction"`
 		TheirSatisfaction float64         `json:"their_satisfaction"`
 		Reasoning         string          `json:"reasoning"`
-		Confidence        float64         `json:"confidence"`
+		ModelConfidence   float64         `json:"confidence"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -612,7 +612,7 @@ Rules:
 	result.OurSatisfaction = parsed.OurSatisfaction
 	result.TheirSatisfaction = parsed.TheirSatisfaction
 	result.Reasoning = parsed.Reasoning
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 
 	log.Debug("Adversarial negotiation succeeded",
 		"dealReached", result.DealReached,

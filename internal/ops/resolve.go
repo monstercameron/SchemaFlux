@@ -71,8 +71,8 @@ type ResolveResult[T any] struct {
 	// Strategy describes how resolution was performed
 	Strategy string `json:"strategy"`
 
-	// Confidence in the resolution quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence in the resolution quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -135,7 +135,7 @@ func Resolve[T any](sources []T, opts ...ResolveOptions) (ResolveResult[T], erro
 		result.Resolved = sources[0]
 		result.SourceContributions[0] = []string{"*"}
 		result.Strategy = "single-source"
-		result.Confidence = 1.0
+		result.ModelConfidence = 1.0
 		return result, nil
 	}
 
@@ -256,7 +256,7 @@ Strategy explanations:
 		Resolved            json.RawMessage     `json:"resolved"`
 		Conflicts           []Conflict          `json:"conflicts"`
 		SourceContributions map[string][]string `json:"source_contributions"`
-		Confidence          float64             `json:"confidence"`
+		ModelConfidence     float64             `json:"confidence"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -273,7 +273,7 @@ Strategy explanations:
 	}
 
 	result.Conflicts = parsed.Conflicts
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 
 	// Convert source contributions from string keys to int keys
 	for key, fields := range parsed.SourceContributions {
@@ -284,7 +284,7 @@ Strategy explanations:
 
 	log.Debug("Resolve operation succeeded",
 		"conflicts", len(result.Conflicts),
-		"confidence", result.Confidence)
+		"confidence", result.ModelConfidence)
 
 	return result, nil
 }

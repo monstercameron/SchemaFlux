@@ -98,10 +98,12 @@ type OpOptions struct {
 // Result wraps an operation result with metadata.
 // Used for operations that need to return confidence scores.
 type Result[T any] struct {
-	Value      T              // The actual result value
-	Confidence float64        // Confidence score (0.0-1.0)
-	Error      error          // Any error that occurred
-	Metadata   map[string]any // Additional metadata (tokens used, model, etc.)
+	Value T // The actual result value
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64        // ModelConfidence score (0.0-1.0)
+	Error           error          // Any error that occurred
+	Metadata        map[string]any // Additional metadata (tokens used, model, etc.)
 }
 
 // Case represents a pattern matching case for the Match function.

@@ -199,8 +199,8 @@ func TestNoConfidenceIsInventedFromTextShape(t *testing.T) {
 				// that no confidence was invented on the way out.
 				return
 			}
-			if result.Confidence != 0 {
-				t.Errorf("body %q produced confidence %v; the heuristic must stay deleted", tc.body, result.Confidence)
+			if result.ModelConfidence != 0 {
+				t.Errorf("body %q produced confidence %v; the heuristic must stay deleted", tc.body, result.ModelConfidence)
 			}
 		})
 	}
@@ -233,8 +233,8 @@ func TestFailedExtractionNeverCarriesAConfidence(t *testing.T) {
 			var extractErr types.ExtractError
 			if errors.As(err, &extractErr) {
 				// The field is gone; this asserts the type has not regained it.
-				if strings.Contains(fmt.Sprintf("%+v", extractErr), "Confidence") {
-					t.Errorf("ExtractError has regained a Confidence field: %+v", extractErr)
+				if strings.Contains(fmt.Sprintf("%+v", extractErr), "ModelConfidence") {
+					t.Errorf("ExtractError has regained a ModelConfidence field: %+v", extractErr)
 				}
 			}
 		})

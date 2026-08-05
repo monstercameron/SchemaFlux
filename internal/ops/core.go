@@ -398,13 +398,13 @@ Transformation rules:
 	// Parse transformed data
 	if err := ParseJSONStrict(response, &result); err != nil {
 		transformErr := types.TransformError{
-			InputShape: types.DescribeValue(input),
-			FromType:   fromType.String(),
-			ToType:     toType.String(),
-			Reason:     fmt.Sprintf("failed to parse response: %v", err),
-			Confidence: 0.5,
-			RequestID:  opt.RequestID,
-			Timestamp:  time.Now(),
+			InputShape:      types.DescribeValue(input),
+			FromType:        fromType.String(),
+			ToType:          toType.String(),
+			Reason:          fmt.Sprintf("failed to parse response: %v", err),
+			ModelConfidence: 0.5,
+			RequestID:       opt.RequestID,
+			Timestamp:       time.Now(),
 		}
 		log.Error("Transform failed: parsing error",
 			"requestID", opt.RequestID,

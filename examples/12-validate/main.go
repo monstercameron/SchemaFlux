@@ -162,7 +162,7 @@ Validation Rules:
 		if result.Valid {
 			fmt.Println()
 			fmt.Println("   ✅ VALID - Registration accepted")
-			fmt.Printf("   Confidence: %.0f%%\n", result.Confidence*100)
+			fmt.Printf("   ModelConfidence: %.0f%%\n", result.ModelConfidence*100)
 		} else {
 			fmt.Println()
 			fmt.Println("   ❌ INVALID - Issues found:")

@@ -18,8 +18,8 @@ type ClassifyResult[C any] struct {
 	// Category is the primary classification result
 	Category C `json:"category"`
 
-	// Confidence score for the classification (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence score for the classification (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Alternatives are other possible categories with their confidence scores
 	Alternatives []ClassifyAlternative[C] `json:"alternatives,omitempty"`
@@ -33,8 +33,10 @@ type ClassifyResult[C any] struct {
 
 // ClassifyAlternative represents an alternative classification with confidence
 type ClassifyAlternative[C any] struct {
-	Category   C       `json:"category"`
-	Confidence float64 `json:"confidence"`
+	Category C `json:"category"`
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64 `json:"confidence"`
 }
 
 // Classify categorizes any Go type into typed categories.
@@ -47,7 +49,7 @@ type ClassifyAlternative[C any] struct {
 //	// Classify text into string categories
 //	result, err := Classify[string, string]("This product is amazing!",
 //	    NewClassifyOptions().WithCategories([]string{"positive", "negative", "neutral"}))
-//	fmt.Printf("Category: %s (%.0f%% confidence)\n", result.Category, result.Confidence*100)
+//	fmt.Printf("Category: %s (%.0f%% confidence)\n", result.Category, result.ModelConfidence*100)
 //
 //	// Classify a struct into custom categories
 //	type Sentiment string
@@ -162,11 +164,11 @@ Return a JSON object with these fields:
 
 	// Parse the structured response
 	var llmResult struct {
-		Category     string  `json:"category"`
-		Confidence   float64 `json:"confidence"`
-		Alternatives []struct {
-			Category   string  `json:"category"`
-			Confidence float64 `json:"confidence"`
+		Category        string  `json:"category"`
+		ModelConfidence float64 `json:"confidence"`
+		Alternatives    []struct {
+			Category        string  `json:"category"`
+			ModelConfidence float64 `json:"confidence"`
 		} `json:"alternatives,omitempty"`
 		Reasoning string `json:"reasoning,omitempty"`
 	}
@@ -189,10 +191,10 @@ Return a JSON object with these fields:
 	if !found {
 		log.Error("Classify returned invalid category", "category", llmResult.Category, "valid", categories)
 		return result, types.ClassifyError{
-			InputShape: types.DescribeValue(inputStr),
-			Categories: categories,
-			Reason:     fmt.Sprintf("invalid category returned: %s", llmResult.Category),
-			Confidence: llmResult.Confidence,
+			InputShape:      types.DescribeValue(inputStr),
+			Categories:      categories,
+			Reason:          fmt.Sprintf("invalid category returned: %s", llmResult.Category),
+			ModelConfidence: llmResult.ModelConfidence,
 		}
 	}
 
@@ -204,7 +206,7 @@ Return a JSON object with these fields:
 	}
 
 	result.Category = category
-	result.Confidence = llmResult.Confidence
+	result.ModelConfidence = llmResult.ModelConfidence
 	result.Reasoning = llmResult.Reasoning
 
 	// Convert alternatives
@@ -213,13 +215,13 @@ Return a JSON object with these fields:
 		altJSON, _ := json.Marshal(alt.Category)
 		if err := json.Unmarshal(altJSON, &altCat); err == nil {
 			result.Alternatives = append(result.Alternatives, ClassifyAlternative[C]{
-				Category:   altCat,
-				Confidence: alt.Confidence,
+				Category:        altCat,
+				ModelConfidence: alt.ModelConfidence,
 			})
 		}
 	}
 
-	log.Debug("Classify operation completed", "category", llmResult.Category, "confidence", result.Confidence)
+	log.Debug("Classify operation completed", "category", llmResult.Category, "confidence", result.ModelConfidence)
 	return result, nil
 }
 

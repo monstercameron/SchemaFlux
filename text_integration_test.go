@@ -62,8 +62,8 @@ func TestIntegrationSummarizeWithMetadataSucceeds(t *testing.T) {
 	if len(result.KeyPoints) != 2 {
 		t.Errorf("KeyPoints = %v, want two", result.KeyPoints)
 	}
-	if result.Confidence != 0.88 {
-		t.Errorf("Confidence = %v, want the reported 0.88", result.Confidence)
+	if result.ModelConfidence != 0.88 {
+		t.Errorf("ModelConfidence = %v, want the reported 0.88", result.ModelConfidence)
 	}
 }
 
@@ -83,8 +83,8 @@ func TestIntegrationMalformedBodyIsAnErrorAtThePublicAPI(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected an error, got %+v", result)
 			}
-			if result.Confidence != 0 {
-				t.Errorf("failed call reported confidence %v", result.Confidence)
+			if result.ModelConfidence != 0 {
+				t.Errorf("failed call reported confidence %v", result.ModelConfidence)
 			}
 		})
 	}
@@ -166,7 +166,7 @@ func Example_summarizeWithMetadata() {
 
 	fmt.Println(result.Text)
 	fmt.Println("key points:", len(result.KeyPoints))
-	fmt.Printf("confidence: %.2f\n", result.Confidence)
+	fmt.Printf("confidence: %.2f\n", result.ModelConfidence)
 
 	// Output:
 	// Costs rose 12% on higher freight.
@@ -184,7 +184,7 @@ func Example_summarizeFailsClosed() {
 
 	result, err := schemaflux.SummarizeWithMetadata("input", schemaflux.NewSummarizeOptions())
 	fmt.Println("error is nil:", err == nil)
-	fmt.Printf("confidence: %.1f\n", result.Confidence)
+	fmt.Printf("confidence: %.1f\n", result.ModelConfidence)
 
 	// Output:
 	// error is nil: false

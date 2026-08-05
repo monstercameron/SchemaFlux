@@ -53,8 +53,8 @@ func TestValidate(t *testing.T) {
 			t.Errorf("Expected no errors, got %v", result.Errors)
 		}
 
-		if result.Confidence < 0.9 {
-			t.Errorf("Expected high confidence, got %.2f", result.Confidence)
+		if result.ModelConfidence < 0.9 {
+			t.Errorf("Expected high confidence, got %.2f", result.ModelConfidence)
 		}
 	})
 
@@ -236,8 +236,8 @@ func TestQuestion(t *testing.T) {
 			t.Errorf("Expected answer about average age, got: %s", result.Answer)
 		}
 
-		if result.Confidence < 0.9 {
-			t.Errorf("Expected high confidence, got: %.2f", result.Confidence)
+		if result.ModelConfidence < 0.9 {
+			t.Errorf("Expected high confidence, got: %.2f", result.ModelConfidence)
 		}
 
 		if result.Reasoning == "" {

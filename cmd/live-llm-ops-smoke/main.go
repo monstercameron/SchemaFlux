@@ -286,7 +286,7 @@ func testSummarizeWithMetadata() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.Confidence > 0, "summary metadata invalid")
+	return req(out.Text != "" && out.ModelConfidence > 0, "summary metadata invalid")
 }
 func testRewrite() error {
 	opts := schemaflux.NewRewriteOptions()
@@ -304,7 +304,7 @@ func testRewriteWithMetadata() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.Confidence > 0, "rewrite metadata invalid")
+	return req(out.Text != "" && out.ModelConfidence > 0, "rewrite metadata invalid")
 }
 func testTranslate() error {
 	opts := schemaflux.NewTranslateOptions()
@@ -322,7 +322,7 @@ func testTranslateWithMetadata() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.Confidence > 0, "translate metadata invalid")
+	return req(out.Text != "" && out.ModelConfidence > 0, "translate metadata invalid")
 }
 func testExpand() error {
 	in := "We launched a new billing dashboard."
@@ -337,7 +337,7 @@ func testExpandWithMetadata() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.Confidence > 0, "expand metadata invalid")
+	return req(out.Text != "" && out.ModelConfidence > 0, "expand metadata invalid")
 }
 func testSuggest() error {
 	opts := schemaflux.NewSuggestOptions()
@@ -399,7 +399,7 @@ func testQuestion() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Confidence > 0, "question confidence missing")
+	return req(out.ModelConfidence > 0, "question confidence missing")
 }
 func testQuestionLegacy() error {
 	out, err := schemaflux.QuestionLegacy(map[string]any{"email": "vip@example.com", "age": 30}, "What email is on the record?", schemaflux.OpOptions{Intelligence: schemaflux.Fast})
@@ -420,7 +420,7 @@ func testMergeWithMetadata() error {
 	if err != nil {
 		return err
 	}
-	return req(s(out.Merged["email"]) != "" && out.Confidence > 0, "merge metadata invalid")
+	return req(s(out.Merged["email"]) != "" && out.ModelConfidence > 0, "merge metadata invalid")
 }
 func testFormat() error {
 	out, err := schemaflux.Format(map[string]any{"name": "Dana Kim", "email": "dana@example.com", "role": "PM"}, "professional two-sentence bio", schemaflux.OpOptions{Intelligence: schemaflux.Fast})
@@ -434,7 +434,7 @@ func testFormatWithMetadata() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.Confidence > 0, "format metadata invalid")
+	return req(out.Text != "" && out.ModelConfidence > 0, "format metadata invalid")
 }
 func testDecide() error {
 	_, meta, err := schemaflux.Decide(context.Background(), map[string]any{"budget": "low", "deadline": "soon", "risk_tolerance": "low"}, []schemaflux.Decision[string]{{Value: "ship now", Description: "Ship immediately with current scope"}, {Value: "cut scope", Description: "Cut risky features and ship core workflow"}, {Value: "delay", Description: "Delay release until all features are done"}}, schemaflux.NewDecideOptions().WithIntelligence(schemaflux.Fast))
@@ -594,7 +594,7 @@ func testPredict() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Prediction > 0 && out.Confidence > 0, "predict output invalid")
+	return req(out.Prediction > 0 && out.ModelConfidence > 0, "predict output invalid")
 }
 func testVerify() error {
 	opts := schemaflux.NewVerifyOptions()
@@ -605,7 +605,7 @@ func testVerify() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Summary != "" && out.OverallConfidence > 0, "verify output invalid")
+	return req(out.Summary != "" && out.ModelOverallConfidence > 0, "verify output invalid")
 }
 func testVerifyClaim() error {
 	opts := schemaflux.NewVerifyOptions()
@@ -614,7 +614,7 @@ func testVerifyClaim() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Verdict != "" && out.Confidence > 0, "verifyclaim invalid")
+	return req(out.Verdict != "" && out.ModelConfidence > 0, "verifyclaim invalid")
 }
 func testNegotiate() error {
 	out, err := schemaflux.Negotiate[map[string]any](map[string]any{"candidate_min_salary": 145000, "company_max_salary": 150000, "remote_preference": "3 days", "bonus_target": 10000}, schemaflux.NegotiateOptions{Strategy: "balanced", Intelligence: schemaflux.Fast})
@@ -629,14 +629,14 @@ func testNegotiateAdversarial() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Confidence > 0, "adversarial negotiation confidence missing")
+	return req(out.ModelConfidence > 0, "adversarial negotiation confidence missing")
 }
 func testResolve() error {
 	out, err := schemaflux.Resolve([]map[string]any{{"id": "C1", "name": "Jordan Lee", "email": "jordan@old.com", "phone": ""}, {"id": "C1", "name": "Jordan Lee", "email": "jordan@new.com", "phone": "555-1000"}}, schemaflux.ResolveOptions{Strategy: "most-complete", Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
 	}
-	return req(s(out.Resolved["email"]) != "" && out.Confidence > 0, "resolve output invalid")
+	return req(s(out.Resolved["email"]) != "" && out.ModelConfidence > 0, "resolve output invalid")
 }
 func testDerive() error {
 	type src struct {
@@ -648,7 +648,7 @@ func testDerive() error {
 	if err != nil {
 		return err
 	}
-	return req(out.Derived.Generation != "" && out.OverallConfidence > 0, "derive output invalid")
+	return req(out.Derived.Generation != "" && out.ModelOverallConfidence > 0, "derive output invalid")
 }
 func testConform() error {
 	out, err := schemaflux.Conform(map[string]any{"name": "john doe", "street": "123 n main st apt 4", "city": "los angeles", "state": "california", "zip_code": "90210"}, "USPS", schemaflux.ConformOptions{Validate: true, Intelligence: schemaflux.Fast})
@@ -669,7 +669,7 @@ func testArbitrate() error {
 	if err != nil {
 		return err
 	}
-	return req(s(out.Winner["name"]) != "" && out.Confidence > 0, "arbitrate invalid")
+	return req(s(out.Winner["name"]) != "" && out.ModelConfidence > 0, "arbitrate invalid")
 }
 func testProject() error {
 	out, err := schemaflux.Project[map[string]any, map[string]any](map[string]any{"id": "u1", "email": "zoe@example.com", "password_hash": "hash", "first_name": "Zoe", "last_name": "Miller", "created_at": "2025-01-01"}, schemaflux.ProjectOptions{Mappings: map[string]string{"id": "user_id", "created_at": "member_since"}, Exclude: []string{"password_hash", "email"}, InferMissing: true, Steering: "Combine first_name and last_name into display_name", Intelligence: schemaflux.Fast})

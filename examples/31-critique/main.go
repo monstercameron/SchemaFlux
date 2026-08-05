@@ -68,7 +68,7 @@ func main() {
 	}
 
 	fmt.Println("OUTPUT: CritiqueResult")
-	fmt.Printf("  OverallScore: %.2f/1.00\n", result.OverallScore)
+	fmt.Printf("  ModelOverallScore: %.2f/1.00\n", result.ModelOverallScore)
 	fmt.Println("  CriteriaScores:")
 	for criterion, score := range result.CriteriaScores {
 		fmt.Printf("    %s: %.2f\n", criterion, score)
@@ -114,7 +114,7 @@ func main() {
 	}
 
 	fmt.Println("OUTPUT: CritiqueResult")
-	fmt.Printf("  OverallScore: %.2f\n", codeResult.OverallScore)
+	fmt.Printf("  ModelOverallScore: %.2f\n", codeResult.ModelOverallScore)
 	fmt.Println("  Issues:")
 	for i, issue := range codeResult.Issues {
 		fmt.Printf("    %d. [%s] %s\n", i+1, issue.Severity, issue.Description)

@@ -155,7 +155,7 @@ func Example_decideRouting() {
 	}
 
 	fmt.Println("route to:", chosen.Name)
-	fmt.Printf("confidence: %.2f\n", decision.Confidence)
+	fmt.Printf("confidence: %.2f\n", decision.ModelConfidence)
 	fmt.Println("fallback:", decision.Fallback)
 
 	// Output:

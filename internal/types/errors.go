@@ -56,7 +56,7 @@ type ClassifyError struct {
 	InputShape string
 	Categories []string
 	Reason     string
-	Confidence float64
+	ModelConfidence float64
 
 	// Err is the underlying cause, so errors.Is and errors.As reach it.
 	Err error
@@ -176,7 +176,7 @@ type TransformError struct {
 	FromType   string
 	ToType     string
 	Reason     string
-	Confidence float64
+	ModelConfidence float64
 	RequestID  string
 	Timestamp  any
 

@@ -118,7 +118,7 @@ func TestPredict(t *testing.T) {
 			t.Fatalf("Predict failed: %v", err)
 		}
 
-		if result.Confidence <= 0 {
+		if result.ModelConfidence <= 0 {
 			t.Error("expected positive confidence")
 		}
 	})

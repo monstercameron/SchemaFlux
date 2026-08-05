@@ -104,7 +104,7 @@ type RespondentSurvey struct {
 	Satisfaction   string `json:"satisfaction"`
 	Recommendation string `json:"would_recommend"`
 	Feedback       string `json:"open_feedback"`
-	OverallScore   string `json:"overall_score"`
+	ModelOverallScore   string `json:"overall_score"`
 }
 
 func main() {
@@ -264,7 +264,7 @@ func main() {
 				feedback = feedback[:22] + "..."
 			}
 			fmt.Printf("  %-4s | %-15s | %-9s | %-25s | %s\n",
-				r.RespondentID, r.Satisfaction, r.Recommendation, feedback, r.OverallScore)
+				r.RespondentID, r.Satisfaction, r.Recommendation, feedback, r.ModelOverallScore)
 		}
 		fmt.Printf("\nCompression: 8 EAV rows → 2 respondent rows\n")
 	}

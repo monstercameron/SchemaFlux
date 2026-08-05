@@ -15,11 +15,13 @@ import (
 
 // CompleteResult contains the completion result and metadata
 type CompleteResult struct {
-	Text       string         `json:"text"`       // The completed text
-	Original   string         `json:"original"`   // The original partial text
-	Length     int            `json:"length"`     // Length of completion
-	Confidence float64        `json:"confidence"` // Confidence score (0.0-1.0)
-	Metadata   map[string]any `json:"metadata"`   // Additional metadata
+	Text     string `json:"text"`     // The completed text
+	Original string `json:"original"` // The original partial text
+	Length   int    `json:"length"`   // Length of completion
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64        `json:"confidence"` // ModelConfidence score (0.0-1.0)
+	Metadata        map[string]any `json:"metadata"`   // Additional metadata
 }
 
 // CompleteOptions configures the Complete operation
@@ -277,13 +279,15 @@ func processCompletionResponse(response, originalText string, opts CompleteOptio
 
 // CompleteFieldResult contains the result of completing a field in a struct
 type CompleteFieldResult[T any] struct {
-	Data       T              `json:"data"`       // The struct with the completed field
-	Field      string         `json:"field"`      // The field that was completed
-	Original   string         `json:"original"`   // Original field value
-	Completed  string         `json:"completed"`  // Completed field value
-	Length     int            `json:"length"`     // Characters added
-	Confidence float64        `json:"confidence"` // Confidence score (0.0-1.0)
-	Metadata   map[string]any `json:"metadata"`   // Additional metadata
+	Data      T      `json:"data"`      // The struct with the completed field
+	Field     string `json:"field"`     // The field that was completed
+	Original  string `json:"original"`  // Original field value
+	Completed string `json:"completed"` // Completed field value
+	Length    int    `json:"length"`    // Characters added
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64        `json:"confidence"` // ModelConfidence score (0.0-1.0)
+	Metadata        map[string]any `json:"metadata"`   // Additional metadata
 }
 
 // CompleteFieldOptions extends CompleteOptions with field-specific settings
@@ -404,7 +408,7 @@ func CompleteField[T any](ctx context.Context, provider llm.Provider, data T, op
 
 	result.Completed = completeResult.Text
 	result.Length = completeResult.Length
-	result.Confidence = completeResult.Confidence
+	result.ModelConfidence = completeResult.ModelConfidence
 	result.Metadata = completeResult.Metadata
 	result.Metadata["field"] = opts.FieldName
 

@@ -70,8 +70,8 @@ type ProjectResult[U any] struct {
 	// Inferred lists target fields that were inferred (not from source)
 	Inferred []string `json:"inferred,omitempty"`
 
-	// Confidence in the projection quality (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence in the projection quality (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -284,11 +284,11 @@ Rules:
 
 	// Parse response
 	var parsed struct {
-		Projected  json.RawMessage `json:"projected"`
-		Mappings   []FieldMapping  `json:"mappings"`
-		Lost       []string        `json:"lost"`
-		Inferred   []string        `json:"inferred"`
-		Confidence float64         `json:"confidence"`
+		Projected       json.RawMessage `json:"projected"`
+		Mappings        []FieldMapping  `json:"mappings"`
+		Lost            []string        `json:"lost"`
+		Inferred        []string        `json:"inferred"`
+		ModelConfidence float64         `json:"confidence"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -317,13 +317,13 @@ Rules:
 	result.Mappings = parsed.Mappings
 	result.Lost = parsed.Lost
 	result.Inferred = parsed.Inferred
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 
 	log.Debug("Project operation succeeded",
 		"mappings", len(result.Mappings),
 		"lost", len(result.Lost),
 		"inferred", len(result.Inferred),
-		"confidence", result.Confidence)
+		"confidence", result.ModelConfidence)
 
 	return result, nil
 }

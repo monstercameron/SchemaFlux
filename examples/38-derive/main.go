@@ -151,7 +151,7 @@ func main() {
 		fmt.Printf("  Return Rate: %.1f%%\n", custResult.Derived.ReturnRate*100)
 		fmt.Printf("  Churn Risk: %s\n", custResult.Derived.ChurnRisk)
 		fmt.Printf("  Customer Segment: %s\n", custResult.Derived.CustomerSegment)
-		fmt.Printf("\nOverall Confidence: %.0f%%\n", custResult.OverallConfidence*100)
+		fmt.Printf("\nOverall ModelConfidence: %.0f%%\n", custResult.ModelOverallConfidence*100)
 	}
 
 	// ============================================================
@@ -196,7 +196,7 @@ func main() {
 				fmt.Printf("  %s: %s\n", d.Field, d.Method)
 			}
 		}
-		fmt.Printf("Confidence: %.0f%%\n", propResult.OverallConfidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", propResult.ModelOverallConfidence*100)
 	}
 
 	// ============================================================
@@ -236,7 +236,7 @@ func main() {
 				fmt.Printf("  %s: %s\n", d.Field, d.Reasoning)
 			}
 		}
-		fmt.Printf("Confidence: %.0f%%\n", resumeResult.OverallConfidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", resumeResult.ModelOverallConfidence*100)
 	}
 
 	fmt.Println("\n=== Derive Example Complete ===")

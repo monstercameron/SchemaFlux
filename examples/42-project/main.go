@@ -179,7 +179,7 @@ func main() {
 		fmt.Printf("  Status Display: %s\n", orderResult.Projected.StatusDisplay)
 		fmt.Printf("  Order Date: %s\n", orderResult.Projected.OrderDate)
 		fmt.Printf("\nExcluded Fields: %v\n", orderResult.Lost)
-		fmt.Printf("Confidence: %.0f%%\n", orderResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", orderResult.ModelConfidence*100)
 	}
 
 	// ============================================================
@@ -278,7 +278,7 @@ func main() {
 		fmt.Printf("  Total Comp: $%d\n", modernResult.Projected.TotalComp)
 		fmt.Printf("  Manager ID: %s\n", modernResult.Projected.ManagerID)
 		fmt.Printf("\nInferred Fields: %v\n", modernResult.Inferred)
-		fmt.Printf("Confidence: %.0f%%\n", modernResult.Confidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", modernResult.ModelConfidence*100)
 	}
 
 	fmt.Println("\n=== Project Example Complete ===")

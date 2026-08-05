@@ -60,8 +60,8 @@ func TestDecideDoesNotSilentlyTakeBranchZero(t *testing.T) {
 			if result.SelectedIndex != -1 {
 				t.Errorf("SelectedIndex = %d, want -1 on failure", result.SelectedIndex)
 			}
-			if result.Confidence != 0 {
-				t.Errorf("a failed decision must not carry a confidence, got %v", result.Confidence)
+			if result.ModelConfidence != 0 {
+				t.Errorf("a failed decision must not carry a confidence, got %v", result.ModelConfidence)
 			}
 		})
 	}
@@ -93,8 +93,8 @@ func TestDecideFallbackIsExplicitAndLabelled(t *testing.T) {
 			if !result.Fallback {
 				t.Error("Fallback must be set so the caller can tell a default from a decision")
 			}
-			if result.Confidence != 0 {
-				t.Errorf("a fallback carries no confidence, got %v", result.Confidence)
+			if result.ModelConfidence != 0 {
+				t.Errorf("a fallback carries no confidence, got %v", result.ModelConfidence)
 			}
 			if !strings.Contains(result.Explanation, "fallback") {
 				t.Errorf("the explanation should say it was a fallback, got %q", result.Explanation)
@@ -139,8 +139,8 @@ func TestDecideHonoursAWellFormedAnswer(t *testing.T) {
 	if value != "billing" || result.SelectedIndex != 1 {
 		t.Errorf("selected %q at %d, want billing at 1", value, result.SelectedIndex)
 	}
-	if result.Confidence != 0.82 {
-		t.Errorf("Confidence = %v, want the model's 0.82", result.Confidence)
+	if result.ModelConfidence != 0.82 {
+		t.Errorf("ModelConfidence = %v, want the model's 0.82", result.ModelConfidence)
 	}
 	if result.Fallback {
 		t.Error("a real decision must not be labelled a fallback")
@@ -180,8 +180,8 @@ func TestDecideProgrammaticConditionNeedsNoProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if value != "billing" || result.SelectedIndex != 1 || result.Confidence != 1.0 {
-		t.Errorf("selected %q at %d with confidence %v", value, result.SelectedIndex, result.Confidence)
+	if value != "billing" || result.SelectedIndex != 1 || result.ModelConfidence != 1.0 {
+		t.Errorf("selected %q at %d with confidence %v", value, result.SelectedIndex, result.ModelConfidence)
 	}
 }
 

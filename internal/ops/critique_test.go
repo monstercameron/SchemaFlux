@@ -115,7 +115,7 @@ func TestCritique(t *testing.T) {
 			t.Fatalf("Critique failed: %v", err)
 		}
 
-		if result.OverallScore <= 0 {
+		if result.ModelOverallScore <= 0 {
 			t.Error("expected positive overall score")
 		}
 

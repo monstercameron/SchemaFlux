@@ -89,8 +89,8 @@ type ArbitrateResult[T any] struct {
 	// Reasoning explains the overall decision
 	Reasoning string `json:"reasoning"`
 
-	// Confidence in the decision (0.0-1.0)
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence in the decision (0.0-1.0)
+	ModelConfidence float64 `json:"confidence"`
 
 	// TiesBroken indicates if ties were broken
 	TiesBroken bool `json:"ties_broken"`
@@ -173,7 +173,7 @@ func Arbitrate[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResult[T]
 		result.Winner = options[0]
 		result.WinnerIndex = 0
 		result.Scores[0] = 1.0
-		result.Confidence = 1.0
+		result.ModelConfidence = 1.0
 		result.Reasoning = "Only one option provided"
 		return result, nil
 	}
@@ -307,12 +307,12 @@ Rules:
 
 	// Parse response
 	var parsed struct {
-		WinnerIndex int                `json:"winner_index"`
-		Scores      map[string]float64 `json:"scores"`
-		Evaluations []OptionEvaluation `json:"evaluations"`
-		Reasoning   string             `json:"reasoning"`
-		Confidence  float64            `json:"confidence"`
-		TiesBroken  bool               `json:"ties_broken"`
+		WinnerIndex     int                `json:"winner_index"`
+		Scores          map[string]float64 `json:"scores"`
+		Evaluations     []OptionEvaluation `json:"evaluations"`
+		Reasoning       string             `json:"reasoning"`
+		ModelConfidence float64            `json:"confidence"`
+		TiesBroken      bool               `json:"ties_broken"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -329,7 +329,7 @@ Rules:
 	result.WinnerIndex = parsed.WinnerIndex
 	result.Evaluations = parsed.Evaluations
 	result.Reasoning = parsed.Reasoning
-	result.Confidence = parsed.Confidence
+	result.ModelConfidence = parsed.ModelConfidence
 	result.TiesBroken = parsed.TiesBroken
 
 	// Convert scores from string keys to int keys
@@ -341,7 +341,7 @@ Rules:
 
 	log.Debug("Arbitrate operation succeeded",
 		"winnerIndex", result.WinnerIndex,
-		"confidence", result.Confidence,
+		"confidence", result.ModelConfidence,
 		"tiesBroken", result.TiesBroken)
 
 	return result, nil

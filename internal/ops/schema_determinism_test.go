@@ -333,8 +333,8 @@ func TestCompleteReportsNoInventedConfidence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Complete: %v", err)
 			}
-			if result.Confidence != 0 {
-				t.Errorf("Confidence = %v; the length-and-punctuation heuristic must stay deleted", result.Confidence)
+			if result.ModelConfidence != 0 {
+				t.Errorf("ModelConfidence = %v; the length-and-punctuation heuristic must stay deleted", result.ModelConfidence)
 			}
 		})
 	}

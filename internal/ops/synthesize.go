@@ -155,18 +155,22 @@ func (s SynthesizeOptions) toOpOptions() types.OpOptions {
 
 // SynthesisFact represents a synthesized fact with optional citation
 type SynthesisFact struct {
-	Fact       string   `json:"fact"`
-	Sources    []int    `json:"sources"`
-	Confidence float64  `json:"confidence,omitempty"`
-	Conflicts  []string `json:"conflicts,omitempty"`
+	Fact    string `json:"fact"`
+	Sources []int  `json:"sources"`
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64  `json:"confidence,omitempty"`
+	Conflicts       []string `json:"conflicts,omitempty"`
 }
 
 // SynthesisInsight represents a generated insight
 type SynthesisInsight struct {
-	Insight    string  `json:"insight"`
-	Supporting []int   `json:"supporting_sources"`
-	Type       string  `json:"type"` // "pattern", "gap", "contradiction", "trend"
-	Confidence float64 `json:"confidence,omitempty"`
+	Insight    string `json:"insight"`
+	Supporting []int  `json:"supporting_sources"`
+	Type       string `json:"type"` // "pattern", "gap", "contradiction", "trend"
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64 `json:"confidence,omitempty"`
 }
 
 // SynthesisConflict represents a conflict between sources

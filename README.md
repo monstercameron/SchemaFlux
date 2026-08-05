@@ -254,6 +254,19 @@ answer, err := schemaflux.Asking[string, string](report, "What changed from last
     Run()
 ```
 
+## Confidence, and what it is not
+
+Result types carry `ModelConfidence`, not `Confidence`. The number is the
+model's own claim about its own answer, produced by the same process that
+produced the answer being scored. It is not calibrated, it is not comparable
+across models or prompts, and it is not a measurement.
+
+Use it as a tie-breaker or a review trigger. Do not use it as a threshold that
+decides whether a result is correct — a wrong answer with a stated 0.95 is a
+normal event, not an anomaly. The fields renamed by this rule are
+`ModelConfidence`, `ModelTrustScore`, `ModelOverallConfidence`, and
+`ModelOverallScore`.
+
 ## Reliability
 
 SchemaFlux treats the shared LLM path as infrastructure.

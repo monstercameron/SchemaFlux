@@ -50,8 +50,8 @@ type Derivation struct {
 	// Reasoning explains the derivation logic
 	Reasoning string `json:"reasoning,omitempty"`
 
-	// Confidence for this specific derivation
-	Confidence float64 `json:"confidence"`
+	// ModelConfidence for this specific derivation
+	ModelConfidence float64 `json:"confidence"`
 }
 
 // DeriveResult contains the derived data and derivation information
@@ -65,8 +65,8 @@ type DeriveResult[U any] struct {
 	// FieldConfidence maps field names to confidence scores
 	FieldConfidence map[string]float64 `json:"field_confidence"`
 
-	// OverallConfidence is the average confidence across all fields
-	OverallConfidence float64 `json:"overall_confidence"`
+	// ModelOverallConfidence is the average confidence across all fields
+	ModelOverallConfidence float64 `json:"overall_confidence"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -121,7 +121,7 @@ type DeriveResult[U any] struct {
 //	    IncludeReasoning: true,
 //	})
 //	for _, d := range result.Derivations {
-//	    fmt.Printf("%s: %s (%.0f%% confident)\n", d.Field, d.Method, d.Confidence*100)
+//	    fmt.Printf("%s: %s (%.0f%% confident)\n", d.Field, d.Method, d.ModelConfidence*100)
 //	}
 func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], error) {
 	log := logger.GetLogger()
@@ -248,10 +248,10 @@ Rules:
 
 	// Parse response
 	var parsed struct {
-		Derived           json.RawMessage    `json:"derived"`
-		Derivations       []Derivation       `json:"derivations"`
-		FieldConfidence   map[string]float64 `json:"field_confidence"`
-		OverallConfidence float64            `json:"overall_confidence"`
+		Derived                json.RawMessage    `json:"derived"`
+		Derivations            []Derivation       `json:"derivations"`
+		FieldConfidence        map[string]float64 `json:"field_confidence"`
+		ModelOverallConfidence float64            `json:"overall_confidence"`
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
@@ -269,11 +269,11 @@ Rules:
 
 	result.Derivations = parsed.Derivations
 	result.FieldConfidence = parsed.FieldConfidence
-	result.OverallConfidence = parsed.OverallConfidence
+	result.ModelOverallConfidence = parsed.ModelOverallConfidence
 
 	log.Debug("Derive operation succeeded",
 		"derivations", len(result.Derivations),
-		"overallConfidence", result.OverallConfidence)
+		"overallConfidence", result.ModelOverallConfidence)
 
 	return result, nil
 }

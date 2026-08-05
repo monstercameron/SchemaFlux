@@ -164,13 +164,15 @@ func (v VerifyOptions) toOpOptions() types.OpOptions {
 
 // ClaimVerification represents the verification of a single claim
 type ClaimVerification struct {
-	Claim       string   `json:"claim"`
-	Verdict     string   `json:"verdict"` // "verified", "false", "partially_true", "unverifiable", "misleading"
-	Confidence  float64  `json:"confidence"`
-	Evidence    []string `json:"evidence,omitempty"`
-	Reasoning   string   `json:"reasoning,omitempty"`
-	Sources     []int    `json:"sources,omitempty"`
-	Corrections string   `json:"corrections,omitempty"`
+	Claim   string `json:"claim"`
+	Verdict string `json:"verdict"` // "verified", "false", "partially_true", "unverifiable", "misleading"
+	// ModelConfidence is the model's own claim about this result, not a measurement.
+	// It is not calibrated and is not comparable across models or prompts.
+	ModelConfidence float64  `json:"confidence"`
+	Evidence        []string `json:"evidence,omitempty"`
+	Reasoning       string   `json:"reasoning,omitempty"`
+	Sources         []int    `json:"sources,omitempty"`
+	Corrections     string   `json:"corrections,omitempty"`
 }
 
 // LogicIssue represents a logical problem found
@@ -191,14 +193,14 @@ type ConsistencyIssue struct {
 
 // VerifyResult contains the results of verification
 type VerifyResult struct {
-	OverallVerdict    string              `json:"overall_verdict"`
-	OverallConfidence float64             `json:"overall_confidence"`
-	Claims            []ClaimVerification `json:"claims"`
-	LogicIssues       []LogicIssue        `json:"logic_issues,omitempty"`
-	ConsistencyIssues []ConsistencyIssue  `json:"consistency_issues,omitempty"`
-	Summary           string              `json:"summary"`
-	TrustScore        float64             `json:"trust_score"`
-	Metadata          map[string]any      `json:"metadata,omitempty"`
+	OverallVerdict         string              `json:"overall_verdict"`
+	ModelOverallConfidence float64             `json:"overall_confidence"`
+	Claims                 []ClaimVerification `json:"claims"`
+	LogicIssues            []LogicIssue        `json:"logic_issues,omitempty"`
+	ConsistencyIssues      []ConsistencyIssue  `json:"consistency_issues,omitempty"`
+	Summary                string              `json:"summary"`
+	ModelTrustScore        float64             `json:"trust_score"`
+	Metadata               map[string]any      `json:"metadata,omitempty"`
 }
 
 // Verify fact-checks claims against knowledge sources and checks for consistency.
@@ -372,7 +374,7 @@ Return a JSON object with:
 	log.Debug("Verify operation succeeded",
 		"overallVerdict", result.OverallVerdict,
 		"claimCount", len(result.Claims),
-		"trustScore", result.TrustScore)
+		"trustScore", result.ModelTrustScore)
 	return result, nil
 }
 
@@ -386,9 +388,9 @@ func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 		return result.Claims[0], nil
 	}
 	return ClaimVerification{
-		Claim:      claim,
-		Verdict:    result.OverallVerdict,
-		Confidence: result.OverallConfidence,
-		Reasoning:  result.Summary,
+		Claim:           claim,
+		Verdict:         result.OverallVerdict,
+		ModelConfidence: result.ModelOverallConfidence,
+		Reasoning:       result.Summary,
 	}, nil
 }

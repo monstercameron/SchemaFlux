@@ -119,7 +119,7 @@ func main() {
 			fmt.Printf("  %s: %.1f°C, %.0f%% humidity, %.1f hPa%s\n",
 				s.Timestamp[11:16], s.TempCelsius, s.Humidity, s.Pressure, status)
 		}
-		fmt.Printf("\nGaps Filled: %d, Avg Confidence: %.0f%%\n",
+		fmt.Printf("\nGaps Filled: %d, Avg ModelConfidence: %.0f%%\n",
 			sensorResult.GapCount, sensorResult.AverageConfidence*100)
 	}
 
@@ -177,7 +177,7 @@ func main() {
 				fmt.Printf("\nReasoning: %s\n", f.Reasoning)
 			}
 		}
-		fmt.Printf("Confidence: %.0f%%\n", stockResult.AverageConfidence*100)
+		fmt.Printf("ModelConfidence: %.0f%%\n", stockResult.AverageConfidence*100)
 	}
 
 	// ============================================================
@@ -233,7 +233,7 @@ func main() {
 		fmt.Printf("\nFilled %d skipped questions\n", surveyResult.GapCount)
 		for _, f := range surveyResult.Filled {
 			fmt.Printf("  Q%d: %s (%.0f%% confidence)\n",
-				surveyResult.Complete[f.Index].QuestionNum, f.Method, f.Confidence*100)
+				surveyResult.Complete[f.Index].QuestionNum, f.Method, f.ModelConfidence*100)
 		}
 	}
 

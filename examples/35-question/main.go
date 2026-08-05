@@ -103,7 +103,7 @@ func main() {
 
 	fmt.Println("OUTPUT: QuestionResult[string]{")
 	fmt.Printf("  Answer:     %q,\n", truncate(result1.Answer, 80))
-	fmt.Printf("  Confidence: %.2f,\n", result1.Confidence)
+	fmt.Printf("  ModelConfidence: %.2f,\n", result1.ModelConfidence)
 	fmt.Printf("  Reasoning:  %q,\n", truncate(result1.Reasoning, 60))
 	fmt.Println("}")
 	fmt.Println()
@@ -149,7 +149,7 @@ func main() {
 
 	fmt.Println("OUTPUT: QuestionResult[bool]{")
 	fmt.Printf("  Answer:     %v,\n", result2.Answer)
-	fmt.Printf("  Confidence: %.2f,\n", result2.Confidence)
+	fmt.Printf("  ModelConfidence: %.2f,\n", result2.ModelConfidence)
 	if len(result2.Evidence) > 0 {
 		fmt.Println("  Evidence: []string{")
 		for i, e := range result2.Evidence {
@@ -228,7 +228,7 @@ func main() {
 	}
 	fmt.Println("    },")
 	fmt.Println("  },")
-	fmt.Printf("  Confidence: %.2f,\n", result3.Confidence)
+	fmt.Printf("  ModelConfidence: %.2f,\n", result3.ModelConfidence)
 	fmt.Println("}")
 
 	fmt.Println("\n=== Question Example Complete ===")

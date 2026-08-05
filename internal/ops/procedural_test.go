@@ -46,8 +46,8 @@ func TestDecide(t *testing.T) {
 			t.Errorf("Expected index 0, got %d", decision.SelectedIndex)
 		}
 
-		if decision.Confidence != 1.0 {
-			t.Errorf("Expected confidence 1.0 for condition match, got %.2f", decision.Confidence)
+		if decision.ModelConfidence != 1.0 {
+			t.Errorf("Expected confidence 1.0 for condition match, got %.2f", decision.ModelConfidence)
 		}
 	})
 

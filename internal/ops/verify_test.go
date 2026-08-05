@@ -153,7 +153,7 @@ func TestVerify(t *testing.T) {
 			t.Fatalf("Verify failed: %v", err)
 		}
 
-		if result.TrustScore >= 1.0 {
+		if result.ModelTrustScore >= 1.0 {
 			t.Error("expected trust score < 1.0 for flawed argument")
 		}
 	})

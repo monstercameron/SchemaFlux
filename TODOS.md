@@ -149,7 +149,7 @@ regardless of what happens to the rest of the plan.
 - [x] **F-019** — Delete `BatchResult.TokensSaved`, computed as `(len(chunk)-1) * 100`
   (`batch.go:239`), in a library that receives real token counts from every response.
   Closes **C-09**.
-- [ ] **F-020** — Rename every model-self-reported score to make its provenance explicit
+- [x] **F-020** — Rename every model-self-reported score to make its provenance explicit
   (`ProjectResult.Confidence`, `EnrichResult.Confidence`, `NormalizeChange.Confidence`,
   `VerifyResult.TrustScore` / `OverallConfidence`, `CritiqueResult.OverallScore`,
   `AuditFinding.Severity`, `ClusterResult.Quality`). Closes **D-09**.
@@ -158,10 +158,10 @@ regardless of what happens to the rest of the plan.
 
 ## Redaction — mark unusable, then fix
 
-- [ ] **F-021** — Mark `Redact`, `RedactWithResult`, and `RedactLLM` not-production-ready in
+- [x] **F-021** — Mark `Redact`, `RedactWithResult`, and `RedactLLM` not-production-ready in
   their doc comments and in the README until M05's redaction tasks land. Covers **T-07**,
   **T-08**, **T-09**, **T-11**, **T-13**.
-- [ ] **F-022** — Delete the "privacy filtering" framing from `Project`'s package
+- [x] **F-022** — Delete the "privacy filtering" framing from `Project`'s package
   documentation (`project.go:83-107`), whose first example is `Exclude: []string{"password_hash", "ssn"}`
   against a mechanism that is a prompt hint with no post-filter. Closes the documentation half
   of **D-08**.
@@ -469,7 +469,7 @@ tests.
 
 ## Structured data
 
-- [ ] **OP-301** — `Project`: filter excluded fields out of the marshalled input
+- [x] **OP-301** — `Project`: filter excluded fields out of the marshalled input
   deterministically and post-scan the output for excluded values, rather than interpolating
   `Exclude` into the prompt as a hint. Closes the mechanism half of **D-08**.
   *Verify:* an SSN present in the input never appears in the output, including when the model
@@ -829,6 +829,10 @@ commit and the test that proves it.
 | **F-026** | `b4220cc` | The `token` tool's JWT path returns a refusal instead of a successful-looking `StubResult` from a tool not marked `IsStub`. `internal/tools/stub_honesty_test.go` parses the package and fails any tool that can reach `StubResult` without the flag — verified to catch a removed flag on `WebSearchTool`. Found while there: `generateRandomToken` hashed the current nanosecond, so tokens from a security-category tool were a deterministic function of their issue time; it uses `crypto/rand` now. Two stub tools whose descriptions did not say so now do. |
 | **F-027** | `b4220cc` | All 79 `_ = Register(...)` calls became `mustRegister`, which panics at init on a duplicate. `Registry.Unregister` added, which `DisableShell` needs. `TestRegisterReportsADuplicate`, `TestMustRegisterPanicsOnADuplicate`, `TestUnregister`. |
 | **F-028** | `59a0048` | `faultinjection_integration_test.go` drives 57 exported operations through four faults — provider error, malformed body, schema-violating body, empty body — at the public API. It found real defects rather than confirming the fixes: `Explain`, `Question`, and `FormatWithMetadata` still manufactured results from unparseable bodies with invented confidences of 0.5 and 0.7, and roughly 35 operations accepted well-formed JSON of entirely the wrong shape and reported success with every field empty. Both are closed; see **F-035** and **F-036**. `TestFaultInjectionCoversTheExportedSurface` guards the table against falling behind the API. |
+| **F-020** | `pending` | 297 occurrences renamed across 53 files: `Confidence` → `ModelConfidence`, plus `ModelTrustScore`, `ModelOverallConfidence`, `ModelOverallScore`. JSON tags unchanged — that is the wire contract with the model. `internal/ops/provenance_test.go` walks 1070 exported fields and fails any that reads as a measurement without saying so, which is F-020's stated check made permanent. README gained a section on what the number is not. |
+| **F-021** | `pending` | `Redact`, `RedactWithResult`, and `RedactLLM` say NOT PRODUCTION READY in their doc comments and the README, each naming the concrete failure (substring field match, patterns that miss their formats, an audit that returns an empty map, a reversible jumble, unvalidated character offsets) rather than advising caution. `internal/ops/disclosure_test.go` parses the package and fails if any disclosure goes missing. |
+| **F-022** | `pending` | The "privacy filtering" framing is gone, replaced by what `Exclude` guarantees and where the guarantee stops. Closed together with **OP-301**, which made the documentation true rather than merely weaker. |
+| **OP-301** | `pending` | Excluded fields are stripped from the payload before serialisation — matched by JSON field name, case-insensitively, at every level — and the output is scanned for the removed values. `internal/ops/project_exclude_test.go` (12 strip cases, 9 leak-scan cases) and `project_integration_test.go` (6 exclusion cases at the provider boundary plus `Example_projectWithholdsFields`). Both end-to-end tests were verified to FAIL against the prompt-hint version. |
 
 ### Added during the work
 

@@ -14,7 +14,7 @@ import (
 // SuggestResult contains the result of a suggestion operation
 type SuggestResult[T any] struct {
 	Suggestions []T            `json:"suggestions"`        // The suggested items
-	Scores      []float64      `json:"scores,omitempty"`   // Confidence scores (if ranked)
+	Scores      []float64      `json:"scores,omitempty"`   // ModelConfidence scores (if ranked)
 	Reasons     []string       `json:"reasons,omitempty"`  // Reasons for each suggestion
 	Metadata    map[string]any `json:"metadata,omitempty"` // Additional metadata
 }

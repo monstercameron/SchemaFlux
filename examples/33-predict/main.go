@@ -109,7 +109,7 @@ func main() {
 
 	fmt.Println("OUTPUT: PredictResult[float64]")
 	fmt.Printf("  Prediction (Q1 2025 Revenue): $%.0f\n", result.Prediction)
-	fmt.Printf("  Confidence:                   %.0f%%\n", result.Confidence*100)
+	fmt.Printf("  ModelConfidence:                   %.0f%%\n", result.ModelConfidence*100)
 
 	if result.Interval != nil {
 		fmt.Println("  ConfidenceInterval:")

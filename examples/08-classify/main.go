@@ -11,7 +11,7 @@
 //
 // Expected Output: ClassificationResult for each
 //   - Category: "positive" | "negative" | "neutral"
-//   - Confidence: 0.0-1.0
+//   - ModelConfidence: 0.0-1.0
 //   - Reasoning: explanation of classification
 //   - Alternatives: other possible categories with confidence
 //
@@ -40,7 +40,7 @@ type Review struct {
 type ClassifiedReview struct {
 	Review
 	Sentiment  string
-	Confidence float64
+	ModelConfidence float64
 }
 
 // loadEnv loads environment variables from a .env file
@@ -139,7 +139,7 @@ func main() {
 		classified := ClassifiedReview{
 			Review:     review,
 			Sentiment:  result.Category,
-			Confidence: result.Confidence,
+			ModelConfidence: result.ModelConfidence,
 		}
 		results[result.Category] = append(results[result.Category], classified)
 
@@ -153,14 +153,14 @@ func main() {
 
 		fmt.Printf("Review #%d by %s %s\n", review.ID, review.Author, emoji)
 		fmt.Printf("  Product:    %s\n", review.Product)
-		fmt.Printf("  Sentiment:  %s (%.0f%% confidence)\n", result.Category, result.Confidence*100)
+		fmt.Printf("  Sentiment:  %s (%.0f%% confidence)\n", result.Category, result.ModelConfidence*100)
 		if result.Reasoning != "" {
 			fmt.Printf("  Reasoning:  %s\n", result.Reasoning)
 		}
 		if len(result.Alternatives) > 0 {
 			fmt.Printf("  Alternatives:\n")
 			for _, alt := range result.Alternatives {
-				fmt.Printf("    - %s (%.0f%%)\n", alt.Category, alt.Confidence*100)
+				fmt.Printf("    - %s (%.0f%%)\n", alt.Category, alt.ModelConfidence*100)
 			}
 		}
 		fmt.Printf("  Review:     \"%s\"\n\n", review.Text)
@@ -171,17 +171,17 @@ func main() {
 	fmt.Println("---")
 	fmt.Printf("😊 Positive Reviews: %d\n", len(results["positive"]))
 	for _, r := range results["positive"] {
-		fmt.Printf("   - Review #%d: %s ⭐⭐⭐⭐⭐ (%.0f%% confident)\n", r.ID, r.Product, r.Confidence*100)
+		fmt.Printf("   - Review #%d: %s ⭐⭐⭐⭐⭐ (%.0f%% confident)\n", r.ID, r.Product, r.ModelConfidence*100)
 	}
 
 	fmt.Printf("\n😞 Negative Reviews: %d\n", len(results["negative"]))
 	for _, r := range results["negative"] {
-		fmt.Printf("   - Review #%d: %s ⭐ (%.0f%% confident)\n", r.ID, r.Product, r.Confidence*100)
+		fmt.Printf("   - Review #%d: %s ⭐ (%.0f%% confident)\n", r.ID, r.Product, r.ModelConfidence*100)
 	}
 
 	fmt.Printf("\n😐 Neutral Reviews: %d\n", len(results["neutral"]))
 	for _, r := range results["neutral"] {
-		fmt.Printf("   - Review #%d: %s ⭐⭐⭐ (%.0f%% confident)\n", r.ID, r.Product, r.Confidence*100)
+		fmt.Printf("   - Review #%d: %s ⭐⭐⭐ (%.0f%% confident)\n", r.ID, r.Product, r.ModelConfidence*100)
 	}
 
 	// Calculate sentiment distribution

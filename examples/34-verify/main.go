@@ -93,13 +93,13 @@ func main() {
 
 	fmt.Println("OUTPUT: VerifyResult{")
 	fmt.Printf("  OverallVerdict:    %q,\n", result1.OverallVerdict)
-	fmt.Printf("  OverallConfidence: %.2f,\n", result1.OverallConfidence)
-	fmt.Printf("  TrustScore:        %.2f,\n", result1.TrustScore)
+	fmt.Printf("  ModelOverallConfidence: %.2f,\n", result1.ModelOverallConfidence)
+	fmt.Printf("  ModelTrustScore:        %.2f,\n", result1.ModelTrustScore)
 	fmt.Printf("  Summary:           %q,\n", truncate(result1.Summary, 100))
 	fmt.Println("  Claims: []ClaimVerification{")
 	for _, c := range result1.Claims {
-		fmt.Printf("    {Claim: %q, Verdict: %q, Confidence: %.2f, Corrections: %q},\n",
-			truncate(c.Claim, 40), c.Verdict, c.Confidence, truncate(c.Corrections, 50))
+		fmt.Printf("    {Claim: %q, Verdict: %q, ModelConfidence: %.2f, Corrections: %q},\n",
+			truncate(c.Claim, 40), c.Verdict, c.ModelConfidence, truncate(c.Corrections, 50))
 	}
 	fmt.Println("  },")
 	if len(result1.ConsistencyIssues) > 0 {
@@ -167,12 +167,12 @@ func main() {
 
 	fmt.Println("OUTPUT: VerifyResult{")
 	fmt.Printf("  OverallVerdict:    %q,\n", result2.OverallVerdict)
-	fmt.Printf("  OverallConfidence: %.2f,\n", result2.OverallConfidence)
-	fmt.Printf("  TrustScore:        %.2f,\n", result2.TrustScore)
+	fmt.Printf("  ModelOverallConfidence: %.2f,\n", result2.ModelOverallConfidence)
+	fmt.Printf("  ModelTrustScore:        %.2f,\n", result2.ModelTrustScore)
 	fmt.Println("  Claims: []ClaimVerification{")
 	for _, c := range result2.Claims {
-		fmt.Printf("    {Claim: %q, Verdict: %q, Confidence: %.2f, Corrections: %q},\n",
-			truncate(c.Claim, 50), c.Verdict, c.Confidence, truncate(c.Corrections, 40))
+		fmt.Printf("    {Claim: %q, Verdict: %q, ModelConfidence: %.2f, Corrections: %q},\n",
+			truncate(c.Claim, 50), c.Verdict, c.ModelConfidence, truncate(c.Corrections, 40))
 	}
 	fmt.Println("  },")
 	fmt.Println("}")
@@ -230,12 +230,12 @@ func main() {
 
 	fmt.Println("OUTPUT: VerifyResult{")
 	fmt.Printf("  OverallVerdict:    %q,\n", result3.OverallVerdict)
-	fmt.Printf("  OverallConfidence: %.2f,\n", result3.OverallConfidence)
-	fmt.Printf("  TrustScore:        %.2f,\n", result3.TrustScore)
+	fmt.Printf("  ModelOverallConfidence: %.2f,\n", result3.ModelOverallConfidence)
+	fmt.Printf("  ModelTrustScore:        %.2f,\n", result3.ModelTrustScore)
 	fmt.Println("  Claims: []ClaimVerification{")
 	for _, c := range result3.Claims {
-		fmt.Printf("    {Claim: %q, Verdict: %q, Confidence: %.2f, Corrections: %q},\n",
-			truncate(c.Claim, 45), c.Verdict, c.Confidence, truncate(c.Corrections, 40))
+		fmt.Printf("    {Claim: %q, Verdict: %q, ModelConfidence: %.2f, Corrections: %q},\n",
+			truncate(c.Claim, 45), c.Verdict, c.ModelConfidence, truncate(c.Corrections, 40))
 	}
 	fmt.Println("  },")
 	fmt.Println("}")

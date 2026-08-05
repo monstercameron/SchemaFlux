@@ -43,7 +43,7 @@ func main() {
 
 	fmt.Printf("Found %d annotations:\n", len(result.Annotations))
 	for _, ann := range result.Annotations {
-		fmt.Printf("  - %s (%s): confidence %.2f\n", ann.Text, ann.Type, ann.Confidence)
+		fmt.Printf("  - %s (%s): confidence %.2f\n", ann.Text, ann.Type, ann.ModelConfidence)
 		if ann.Start >= 0 && ann.End >= 0 {
 			fmt.Printf("    Span: %d-%d\n", ann.Start, ann.End)
 		}
@@ -67,7 +67,7 @@ func main() {
 	fmt.Printf("Input: %s\n", reviewText)
 	fmt.Println("Annotations:")
 	for _, ann := range sentimentResult.Annotations {
-		fmt.Printf("  - %s: %s (confidence %.2f)\n", ann.Type, ann.Value, ann.Confidence)
+		fmt.Printf("  - %s: %s (confidence %.2f)\n", ann.Type, ann.Value, ann.ModelConfidence)
 	}
 	fmt.Println()
 
@@ -89,7 +89,7 @@ func main() {
 
 	fmt.Println("Article topics:")
 	for _, ann := range topicResult.Annotations {
-		fmt.Printf("  - %s: %s (confidence %.2f)\n", ann.Type, ann.Value, ann.Confidence)
+		fmt.Printf("  - %s: %s (confidence %.2f)\n", ann.Type, ann.Value, ann.ModelConfidence)
 	}
 
 	fmt.Println("\n=== Annotate Example Complete ===")

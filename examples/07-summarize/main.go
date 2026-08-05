@@ -10,7 +10,7 @@
 //   2. Summary with Metadata:
 //      - Text: Condensed summary
 //      - CompressionRatio: ~0.10-0.20 (10-20% of original)
-//      - Confidence: 0.85+ (high confidence)
+//      - ModelConfidence: 0.85+ (high confidence)
 //      - KeyPoints: 3-5 main takeaways
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
@@ -145,7 +145,7 @@ socioeconomic status.
 
 	fmt.Printf("\n📊 Rich Metadata:\n")
 	fmt.Printf("   Compression Ratio: %.1f%% of original\n", result.CompressionRatio*100)
-	fmt.Printf("   Confidence:        %.0f%%\n", result.Confidence*100)
+	fmt.Printf("   ModelConfidence:        %.0f%%\n", result.ModelConfidence*100)
 
 	if len(result.KeyPoints) > 0 {
 		fmt.Println("\n📌 Key Points Extracted:")

@@ -7,11 +7,11 @@ import (
 )
 
 type verdict struct {
-	Valid      bool     `json:"valid"`
-	Reasons    []string `json:"reasons"`
-	Confidence float64  `json:"confidence,omitempty"`
-	Internal   string   `json:"-"`
-	unexported string
+	Valid           bool     `json:"valid"`
+	Reasons         []string `json:"reasons"`
+	ModelConfidence float64  `json:"confidence,omitempty"`
+	Internal        string   `json:"-"`
+	unexported      string
 }
 
 // encoding/json ignores fields it does not recognise, so a well-formed object
