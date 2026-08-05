@@ -4,6 +4,7 @@ package ops
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -167,9 +168,15 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 		return result, fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 
-	// Apply redactions
+	// Apply redactions. A span the text cannot support is an error: applying it
+	// anyway redacts the wrong characters and leaves the sensitive ones in
+	// place, which is worse than not redacting at all because it looks done.
 	result.Spans = spans
-	result.Text = applyRedactions(text, spans, opts)
+	redacted, err := applyRedactions(text, spans, opts)
+	if err != nil {
+		return RedactLLMResult{}, fmt.Errorf("redaction failed: %w", err)
+	}
+	result.Text = redacted
 
 	// Count categories
 	for _, span := range spans {
@@ -309,42 +316,63 @@ func mergeOverlappingSpans(spans []RedactSpan) []RedactSpan {
 }
 
 // applyRedactions applies the redaction spans to the text
-func applyRedactions(text string, spans []RedactSpan, opts RedactLLMOptions) string {
+// applyRedactions splices the masked spans into the text. The spans carry
+// character offsets reported by the model, so the slicing is rune-indexed --
+// byte indexing cut multi-byte runes in half -- and out-of-range or overlapping
+// spans are refused rather than applied, because a bad offset here silently
+// redacts the wrong characters and leaves the right ones in place.
+func applyRedactions(text string, spans []RedactSpan, opts RedactLLMOptions) (string, error) {
 	if len(spans) == 0 {
-		return text
+		return text, nil
 	}
 
-	// Build result string
+	runes := []rune(text)
+	total := len(runes)
+
+	ordered := make([]RedactSpan, len(spans))
+	copy(ordered, spans)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Start < ordered[j].Start })
+
 	var result strings.Builder
 	lastEnd := 0
 
-	for _, span := range spans {
-		// Add text before this span
-		if span.Start > lastEnd {
-			result.WriteString(text[lastEnd:span.Start])
+	for i, span := range ordered {
+		switch {
+		case span.Start < 0 || span.End < 0:
+			return "", fmt.Errorf("redaction span %d has a negative offset [%d:%d]", i, span.Start, span.End)
+		case span.Start > span.End:
+			return "", fmt.Errorf("redaction span %d is inverted [%d:%d]", i, span.Start, span.End)
+		case span.End > total:
+			return "", fmt.Errorf("redaction span %d [%d:%d] exceeds the text, which is %d characters",
+				i, span.Start, span.End, total)
+		case span.Start < lastEnd:
+			return "", fmt.Errorf("redaction span %d [%d:%d] overlaps the previous one, which ended at %d",
+				i, span.Start, span.End, lastEnd)
 		}
 
-		// Apply mask to this span
-		sensitiveText := text[span.Start:span.End]
-		maskedText := maskText(sensitiveText, opts)
-		result.WriteString(maskedText)
-
+		if span.Start > lastEnd {
+			result.WriteString(string(runes[lastEnd:span.Start]))
+		}
+		result.WriteString(maskText(string(runes[span.Start:span.End]), opts))
 		lastEnd = span.End
 	}
 
-	// Add remaining text after last span
-	if lastEnd < len(text) {
-		result.WriteString(text[lastEnd:])
+	if lastEnd < total {
+		result.WriteString(string(runes[lastEnd:]))
 	}
 
-	return result.String()
+	return result.String(), nil
 }
 
 // maskText applies the masking strategy to sensitive text
 func maskText(text string, opts RedactLLMOptions) string {
-	textLen := len(text)
+	// ShowFirst and ShowLast are documented in characters. Indexing bytes meant
+	// that revealing "the first four characters" of a name beginning with a
+	// multi-byte rune cut it in half, producing invalid UTF-8 in a function
+	// whose entire purpose is to be careful with the text it is handed.
+	runes := []rune(text)
+	textLen := len(runes)
 
-	// Calculate how many characters to mask
 	showFirst := opts.ShowFirst
 	showLast := opts.ShowLast
 
@@ -354,28 +382,30 @@ func maskText(text string, opts RedactLLMOptions) string {
 		showFirst = 0
 		showLast = 0
 	}
+	if showFirst < 0 {
+		showFirst = 0
+	}
+	if showLast < 0 {
+		showLast = 0
+	}
 
 	maskLen := textLen - showFirst - showLast
 	if maskLen < opts.MinMask {
 		maskLen = opts.MinMask
 	}
 
-	// Build masked text
 	var result strings.Builder
 
-	// Show first N characters
 	if showFirst > 0 && showFirst < textLen {
-		result.WriteString(text[:showFirst])
+		result.WriteString(string(runes[:showFirst]))
 	}
 
-	// Add mask characters
 	for i := 0; i < maskLen; i++ {
 		result.WriteRune(opts.MaskChar)
 	}
 
-	// Show last N characters
 	if showLast > 0 && showLast < textLen {
-		result.WriteString(text[textLen-showLast:])
+		result.WriteString(string(runes[textLen-showLast:]))
 	}
 
 	return result.String()

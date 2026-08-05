@@ -264,15 +264,12 @@ func processCompletionResponse(response, originalText string, opts CompleteOptio
 		completedText += response
 	}
 
-	// Limit total length
-	maxTotalLength := len(originalText) + opts.MaxLength
-	if len(completedText) > maxTotalLength {
-		completedText = completedText[:maxTotalLength]
-		// Try to cut at word boundary
-		if lastSpace := strings.LastIndex(completedText, " "); lastSpace > len(originalText) {
-			completedText = completedText[:lastSpace]
-		}
-	}
+	// Limit total length. MaxLength is documented in characters, and these were
+	// byte offsets: a cut landing mid-rune produced invalid UTF-8, so any
+	// non-ASCII completion could come back corrupted at exactly the boundary
+	// the caller asked for.
+	maxTotalLength := runeLen(originalText) + opts.MaxLength
+	completedText = truncateAtWord(completedText, maxTotalLength, runeLen(originalText))
 
 	return completedText
 }
