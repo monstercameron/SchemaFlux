@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -436,11 +437,11 @@ func testFormatWithMetadata() error {
 	return req(out.Text != "" && out.Confidence > 0, "format metadata invalid")
 }
 func testDecide() error {
-	_, meta, err := schemaflux.Decide(map[string]any{"budget": "low", "deadline": "soon", "risk_tolerance": "low"}, []schemaflux.Decision[string]{{Value: "ship now", Description: "Ship immediately with current scope"}, {Value: "cut scope", Description: "Cut risky features and ship core workflow"}, {Value: "delay", Description: "Delay release until all features are done"}}, schemaflux.OpOptions{Intelligence: schemaflux.Fast})
+	_, meta, err := schemaflux.Decide(context.Background(), map[string]any{"budget": "low", "deadline": "soon", "risk_tolerance": "low"}, []schemaflux.Decision[string]{{Value: "ship now", Description: "Ship immediately with current scope"}, {Value: "cut scope", Description: "Cut risky features and ship core workflow"}, {Value: "delay", Description: "Delay release until all features are done"}}, schemaflux.NewDecideOptions().WithIntelligence(schemaflux.Fast))
 	if err != nil {
 		return err
 	}
-	return req(meta.SelectedIndex >= 0 && !strings.Contains(strings.ToLower(meta.Explanation), "default"), "decide used fallback")
+	return req(meta.SelectedIndex >= 0 && !meta.Fallback, "decide used fallback")
 }
 func testAnnotate() error {
 	opts := schemaflux.NewAnnotateOptions()

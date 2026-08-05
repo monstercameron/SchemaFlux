@@ -124,27 +124,55 @@ func TestPipeline(t *testing.T) {
 }
 
 func TestCompose(t *testing.T) {
-	t.Run("ComposeOperations", func(t *testing.T) {
-		op1 := func(s string) (string, error) {
-			return s + "-op1", nil
-		}
+	t.Run("RunsEveryOperationInOrder", func(t *testing.T) {
+		op1 := func(s string) (string, error) { return s + "-op1", nil }
+		op2 := func(s string) (string, error) { return s + "-op2", nil }
+		op3 := func(s string) (string, error) { return s + "-op3", nil }
 
-		op2 := func(s string) (string, error) {
-			return s + "-op2", nil
-		}
-
-		composed := Compose(op1, op2)
-		result, err := composed("input")
-
+		result, err := Compose(op1, op2, op3)("input")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
+		if want := "input-op1-op2-op3"; result != want {
+			t.Errorf("Compose = %q, want %q", result, want)
+		}
+	})
 
-		// Note: Current implementation only executes first operation
-		// This is a limitation mentioned in the code
-		expected := "input-op1"
-		if result != expected {
-			t.Errorf("Expected %s, got %s", expected, result)
+	t.Run("SingleOperation", func(t *testing.T) {
+		result, err := Compose(func(s string) (string, error) { return s + "!", nil })("hi")
+		if err != nil || result != "hi!" {
+			t.Fatalf("Compose = %q, %v", result, err)
+		}
+	})
+
+	t.Run("StopsAtTheFirstFailure", func(t *testing.T) {
+		reached := false
+		_, err := Compose(
+			func(s string) (string, error) { return s, fmt.Errorf("boom") },
+			func(s string) (string, error) { reached = true; return s, nil },
+		)("input")
+
+		if err == nil {
+			t.Fatal("a failing operation must be reported")
+		}
+		if reached {
+			t.Error("operations after a failure must not run")
+		}
+		if !strings.Contains(err.Error(), "operation 0") {
+			t.Errorf("the error should name the failing operation, got %v", err)
+		}
+	})
+
+	t.Run("NoOperations", func(t *testing.T) {
+		if _, err := Compose[string]()("input"); err == nil {
+			t.Fatal("composing nothing must be an error")
+		}
+	})
+
+	t.Run("NilOperation", func(t *testing.T) {
+		_, err := Compose(func(s string) (string, error) { return s, nil }, nil)("input")
+		if err == nil {
+			t.Fatal("a nil operation must be reported rather than panic")
 		}
 	})
 }

@@ -3,7 +3,6 @@ package ops
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -29,10 +28,54 @@ type DecisionResult struct {
 	Explanation   string
 	Confidence    float64
 	Alternatives  []int
+
+	// Fallback reports that the configured fallback index was selected because
+	// the model could not be reached or its answer could not be used. It is the
+	// only case in which Confidence is not the model's own number.
+	Fallback bool
 }
 
-// Decide makes a decision based on conditions and context
-func Decide[T any](ctx any, decisions []Decision[T], opts ...types.OpOptions) (T, DecisionResult, error) {
+// DecideOptions configures a decision. It carries the usual operation options
+// plus the fallback policy, which has to be stated rather than assumed: a
+// decision that silently takes branch zero when the provider is down is worse
+// than one that fails.
+type DecideOptions struct {
+	types.OpOptions
+
+	// Fallback names the index to select when the provider fails or returns an
+	// answer that cannot be used. Nil means there is no fallback and the call
+	// returns an error instead of guessing.
+	Fallback *int
+}
+
+// NewDecideOptions returns options with no fallback: a failed decision is an
+// error until the caller says otherwise.
+func NewDecideOptions() DecideOptions {
+	return DecideOptions{OpOptions: types.OpOptions{Intelligence: types.Fast, Mode: types.TransformMode}}
+}
+
+// WithFallback selects index when the decision cannot be made.
+func (o DecideOptions) WithFallback(index int) DecideOptions {
+	o.Fallback = &index
+	return o
+}
+
+// WithIntelligence sets the quality/speed tier.
+func (o DecideOptions) WithIntelligence(speed types.Speed) DecideOptions {
+	o.Intelligence = speed
+	return o
+}
+
+// WithMode sets the reasoning mode.
+func (o DecideOptions) WithMode(mode types.Mode) DecideOptions {
+	o.Mode = mode
+	return o
+}
+
+// Decide chooses among decisions, first by the programmatic conditions and then
+// by asking the model. situation is prompt data describing the circumstances;
+// ctx is the real context governing cancellation.
+func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], opts ...DecideOptions) (T, DecisionResult, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting decide operation", "decisionsCount", len(decisions))
 
@@ -41,12 +84,39 @@ func Decide[T any](ctx any, decisions []Decision[T], opts ...types.OpOptions) (T
 
 	if len(decisions) == 0 {
 		log.Error("Decide operation failed: no decisions provided")
-		return zero, result, fmt.Errorf("no decisions provided")
+		return zero, result, fmt.Errorf("decide: no decisions provided")
+	}
+
+	var decideOpts DecideOptions
+	if len(opts) > 0 {
+		decideOpts = opts[0]
+	}
+	if decideOpts.Fallback != nil {
+		if index := *decideOpts.Fallback; index < 0 || index >= len(decisions) {
+			return zero, result, fmt.Errorf("decide: fallback index %d is out of range for %d decisions", index, len(decisions))
+		}
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Report a fallback selection, or the error that made one necessary.
+	fallback := func(cause error) (T, DecisionResult, error) {
+		if decideOpts.Fallback == nil {
+			return zero, result, cause
+		}
+		index := *decideOpts.Fallback
+		result.SelectedIndex = index
+		result.Fallback = true
+		result.Explanation = fmt.Sprintf("fallback selection: %v", cause)
+		result.Confidence = 0
+		return decisions[index].Value, result, nil
 	}
 
 	// First check programmatic conditions
 	for i, decision := range decisions {
-		if decision.Condition != nil && decision.Condition(ctx) {
+		if decision.Condition != nil && decision.Condition(situation) {
 			result.SelectedIndex = i
 			result.Confidence = 1.0
 			result.Explanation = fmt.Sprintf("Condition met for: %s", decision.Description)
@@ -55,8 +125,8 @@ func Decide[T any](ctx any, decisions []Decision[T], opts ...types.OpOptions) (T
 	}
 
 	// If no programmatic condition matches, use LLM for decision
-	opt := applyDefaults(opts...)
-	llmCtx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	opt := applyDefaults(decideOpts.OpOptions)
+	llmCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 	defer cancel()
 
 	// Prepare decision options for LLM
@@ -80,28 +150,12 @@ Return a JSON object with:
 Options:
 %s
 
-Choose the best option based on the context.`, ctx, strings.Join(options, "\n"))
+Choose the best option based on the context.`, situation, strings.Join(options, "\n"))
 
 	response, err := callLLM(llmCtx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Warn("Decide operation LLM call failed, using default", "error", err)
-		// Default to first option if LLM fails
-		result.SelectedIndex = 0
-		result.Explanation = "Default selection (LLM unavailable)"
-		result.Confidence = 0.5
-		return decisions[0].Value, result, nil
-	}
-
-	// Clean up response - remove markdown code blocks if present
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
+		log.Warn("Decide operation LLM call failed", "error", err)
+		return fallback(fmt.Errorf("decide: %w", err))
 	}
 
 	// Parse LLM response
@@ -112,23 +166,22 @@ Choose the best option based on the context.`, ctx, strings.Join(options, "\n"))
 		Alternatives []int   `json:"alternatives"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &llmResult); err == nil {
-		if llmResult.Selected >= 0 && llmResult.Selected < len(decisions) {
-			result.SelectedIndex = llmResult.Selected
-			result.Explanation = llmResult.Explanation
-			result.Confidence = llmResult.Confidence
-			result.Alternatives = llmResult.Alternatives
-			log.Debug("Decide operation succeeded", "selectedIndex", llmResult.Selected, "confidence", llmResult.Confidence)
-			return decisions[llmResult.Selected].Value, result, nil
-		}
+	if err := ParseJSON(response, &llmResult); err != nil {
+		log.Warn("Decide operation response was not usable", "error", err)
+		return fallback(fmt.Errorf("decide: the model's answer could not be parsed: %w", err))
 	}
 
-	log.Warn("Decide operation LLM response invalid, using default")
-	// Fallback to first option
-	result.SelectedIndex = 0
-	result.Explanation = "Default selection"
-	result.Confidence = 0.3
-	return decisions[0].Value, result, nil
+	if llmResult.Selected < 0 || llmResult.Selected >= len(decisions) {
+		log.Warn("Decide operation selected an out-of-range option", "selected", llmResult.Selected)
+		return fallback(fmt.Errorf("decide: the model selected option %d, which is out of range for %d decisions", llmResult.Selected, len(decisions)))
+	}
+
+	result.SelectedIndex = llmResult.Selected
+	result.Explanation = llmResult.Explanation
+	result.Confidence = llmResult.Confidence
+	result.Alternatives = llmResult.Alternatives
+	log.Debug("Decide operation succeeded", "selectedIndex", llmResult.Selected, "confidence", llmResult.Confidence)
+	return decisions[llmResult.Selected].Value, result, nil
 }
 
 // GuardResult represents the result of a guard check

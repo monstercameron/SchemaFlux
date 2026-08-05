@@ -87,33 +87,33 @@ regardless of what happens to the rest of the plan.
 
 ## Control flow
 
-- [ ] **F-005** — `Decide` returns `decisions[0]` with `err == nil` on LLM error, unparseable
+- [x] **F-005** — `Decide` returns `decisions[0]` with `err == nil` on LLM error, unparseable
   response, and out-of-range index (`procedural.go:86-92`, `126-131`), with fabricated
   confidences of `0.5` and `0.3`. Return the error. If a default is wanted, make it explicit
   (`WithFallback(index)`) and set `Fallback bool` on the result. Closes **P-01**.
   *Verify:* injected provider error asserts a non-nil error and no branch taken.
-- [ ] **F-006** — `Decide`'s first parameter is named `ctx` and is arbitrary prompt data, not
+- [x] **F-006** — `Decide`'s first parameter is named `ctx` and is arbitrary prompt data, not
   a `context.Context` (`schemaflux.go:769`) — and the doc comment shows `Decide(ctx, decisions)`,
   inviting callers to pass a real context that gets `%v`-formatted into the prompt. Rename to
   `situation`; add a real `context.Context` first parameter. Closes **P-02**.
   *Verify:* compile-time — the signature's first parameter is `context.Context`.
-- [ ] **F-007** — `Match` returns nothing and silently treats provider failure as
+- [x] **F-007** — `Match` returns nothing and silently treats provider failure as
   "case did not match" (`control_flow.go:95-122`), so an outage routes every input to
   `Otherwise`. Return `(matched bool, err error)`. Closes **P-04**, **P-06**.
   *Verify:* injected error asserts a non-nil error rather than a default-branch execution.
-- [ ] **F-008** — `Otherwise` fires by position rather than last (`control_flow.go:27-33`);
+- [x] **F-008** — `Otherwise` fires by position rather than last (`control_flow.go:27-33`);
   placed first, it wins and no other case is evaluated. Collect the default and evaluate it
   only after all others fail. Closes **P-05**.
   *Verify:* test with `Otherwise` as the first argument asserts a later matching case wins.
-- [ ] **F-009** — `Compose` runs only its first operation and returns
+- [x] **F-009** — `Compose` runs only its first operation and returns
   (`pipeline.go:161-183`). Implement it or delete it. Closes **P-07**.
   *Verify:* `Compose(a, b, c)` observes all three side effects, or the symbol is gone.
-- [ ] **F-010** — `Pipeline` computes `attempts = MaxRetries` rather than `MaxRetries + 1`
+- [x] **F-010** — `Pipeline` computes `attempts = MaxRetries` rather than `MaxRetries + 1`
   (`pipeline.go:120-124`), so a caller-supplied `PipelineOptions{RetryFailed: true}` with the
   zero-value `MaxRetries` executes **zero** attempts, skips every step, and reports no error.
   Closes **P-08**.
   *Verify:* test with `PipelineOptions{RetryFailed: true}` asserts each step ran exactly once.
-- [ ] **F-011** — `Pipeline` retry sleeps with `time.Sleep` (`pipeline.go:141`), ignoring the
+- [x] **F-011** — `Pipeline` retry sleeps with `time.Sleep` (`pipeline.go:141`), ignoring the
   context it checks at the top of every step. Use a cancellable timer. Closes **P-09**.
   *Verify:* cancelling mid-backoff returns promptly with `ctx.Err()`.
 
@@ -807,6 +807,13 @@ commit and the test that proves it.
 | **F-002** | `0915455` | All four `*WithMetadata` fallbacks replaced with `ParseJSON` plus an error return; `internal/ops/text_failopen_test.go` covers 40 cases across the four operations. |
 | **F-003** | `234c6db` | An unusable `corrected` payload is now reported instead of dropped; `TestValidateReportsUnusableCorrection`, `TestValidateReturnsUsableCorrection`, `TestValidateNullCorrectionIsNotAnError`, and `TestIntegrationValidateCorrections` at the public boundary. |
 | **F-004** | `234c6db` | `Valid` is always derived from the issue lists, `FailOn` defaults to `error`, and an unknown severity is an error; `TestValidateDerivesValidityFromIssues` (7 cases), `TestValidateFailOnSeverities` (3), `TestValidateRejectsUnknownFailOn`, `TestIntegrationValidateDerivesValidityFromIssues`, and `Example_validateAutoCorrect`. |
+| **F-005** | `pending` | `Decide` returns an error on provider failure, unparseable answer, and out-of-range index; a fallback is opt-in via `NewDecideOptions().WithFallback(i)` and sets `DecisionResult.Fallback`. `internal/ops/decide_failopen_test.go` (10 failure bodies plus fallback, config, success, cancellation) and `controlflow_integration_test.go` at the public API. |
+| **F-006** | `pending` | `Decide(ctx context.Context, situation any, ...)` — the real context governs cancellation, the prompt data is named for what it is. `TestDecideHonoursACancelledContext`. |
+| **F-007** | `pending` | `Match` returns `(bool, error)`; a provider failure or an answer that is neither true nor false is reported rather than read as a non-match. `internal/ops/control_flow_failopen_test.go`. |
+| **F-008** | `pending` | The default case is collected and evaluated last wherever it appears. `TestOtherwiseIsEvaluatedLastWhereverItAppears`, `TestOtherwiseRunsWhenNothingMatches`, `TestIntegrationOtherwiseDoesNotShadowLaterCases`. |
+| **F-009** | `pending` | `Compose[T]` chains every operation over one type; the old `Compose[T, U]` signature could never chain, because operation 1's output type did not match operation 2's input. `TestCompose` (5 subtests) replaces the test that had enshrined the bug. |
+| **F-010** | `pending` | `attempts = MaxRetries + 1` when retries are on. `TestPipelineRunsEveryStepWithZeroValueMaxRetries` fails against the old code by running every step zero times; `TestPipelineAttemptCounts` covers seven retry counts. |
+| **F-011** | `pending` | Backoff uses a cancellable timer (`sleepWithContext`) and `PipelineOptions.RetryDelay` makes it configurable. `TestPipelineBackoffIsCancellable`, `TestSleepWithContext`, `TestPipelineTimeoutStopsBetweenSteps`. |
 
 ### Added during the work
 

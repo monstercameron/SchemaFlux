@@ -5,69 +5,82 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"time"
 
+	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-func Match(input any, cases ...types.Case) {
+// Match runs the action of the first case whose condition holds, and reports
+// whether any case ran. A provider failure while evaluating a semantic
+// condition is returned rather than read as "did not match": treating an
+// outage as a non-match routes every input to the default branch.
+//
+// The default case (Otherwise, "_", "default") is evaluated last regardless of
+// where it appears in the argument list, so writing it first does not shadow
+// the cases after it.
+func Match(ctx context.Context, input any, cases ...types.Case) (bool, error) {
 	if len(cases) == 0 {
-		return
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	executed := false
+	var defaults []types.Case
 
 	for _, c := range cases {
 		if c.Action == nil {
 			continue
 		}
 
-		switch cond := c.Condition.(type) {
-		case string:
-			if cond == "_" || cond == "otherwise" || cond == "default" {
-				if !executed {
-					c.Action()
-					executed = true
-				}
-				break
-			}
-
-			if matchesStringCondition(input, cond) {
-				c.Action()
-				executed = true
-				break
-			}
-
-		case reflect.Type:
-			if matchesType(input, cond) {
-				c.Action()
-				executed = true
-				break
-			}
-
-		case error:
-			if err, ok := input.(error); ok {
-				if reflect.TypeOf(err) == reflect.TypeOf(cond) {
-					c.Action()
-					executed = true
-					break
-				}
-			}
-
-		default:
-			inputType := reflect.TypeOf(input)
-			condType := reflect.TypeOf(cond)
-
-			if inputType != nil && condType != nil && inputType == condType {
-				c.Action()
-				executed = true
-				break
-			}
+		if cond, ok := c.Condition.(string); ok && isDefaultCondition(cond) {
+			defaults = append(defaults, c)
+			continue
 		}
 
-		if executed {
-			break
+		matched, err := caseMatches(ctx, input, c.Condition)
+		if err != nil {
+			return false, err
 		}
+		if matched {
+			c.Action()
+			return true, nil
+		}
+	}
+
+	if len(defaults) > 0 {
+		defaults[0].Action()
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// isDefaultCondition reports whether a string condition names the default
+// branch rather than a pattern to evaluate.
+func isDefaultCondition(condition string) bool {
+	return condition == "_" || condition == "otherwise" || condition == "default"
+}
+
+// caseMatches evaluates one condition against the input.
+func caseMatches(ctx context.Context, input any, condition any) (bool, error) {
+	switch cond := condition.(type) {
+	case string:
+		return matchesStringCondition(ctx, input, cond)
+
+	case reflect.Type:
+		return matchesType(input, cond), nil
+
+	case error:
+		if err, ok := input.(error); ok {
+			return reflect.TypeOf(err) == reflect.TypeOf(cond), nil
+		}
+		return false, nil
+
+	default:
+		inputType := reflect.TypeOf(input)
+		condType := reflect.TypeOf(cond)
+		return inputType != nil && condType != nil && inputType == condType, nil
 	}
 }
 
@@ -92,12 +105,12 @@ func Otherwise(action func()) types.Case {
 	}
 }
 
-func matchesStringCondition(input any, condition string) bool {
+func matchesStringCondition(ctx context.Context, input any, condition string) (bool, error) {
 	if condition == "" {
-		return false
+		return false, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 	defer cancel()
 
 	inputStr := fmt.Sprintf("%v", input)
@@ -118,13 +131,22 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("match: evaluating condition %q: %w", condition, err)
 	}
 
 	response = strings.ToLower(strings.TrimSpace(response))
-	response = strings.Trim(response, "\"'")
+	response = strings.Trim(response, "\"'.")
 
-	return response == "true" || response == "yes"
+	switch response {
+	case "true", "yes":
+		return true, nil
+	case "false", "no":
+		return false, nil
+	default:
+		// An answer that is neither is not a "no". Saying so would route the
+		// input to the default branch on the strength of a misread.
+		return false, fmt.Errorf("match: condition %q got an answer that was neither true nor false", condition)
+	}
 }
 
 func matchesType(input any, targetType reflect.Type) bool {

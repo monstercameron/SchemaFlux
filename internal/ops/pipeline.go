@@ -29,7 +29,8 @@ type PipelineOptions struct {
 	FailFast     bool          // Stop on first error
 	Timeout      time.Duration // Overall pipeline timeout
 	RetryFailed  bool          // Retry failed steps
-	MaxRetries   int           // Maximum retry attempts
+	MaxRetries   int           // Maximum retry attempts, counted as retries, not attempts
+	RetryDelay   time.Duration // Base backoff between attempts; defaults to one second
 	SaveProgress bool          // Allow resuming from failure point
 }
 
@@ -57,6 +58,7 @@ func NewPipeline(name string, opts ...PipelineOptions) *Pipeline {
 			Timeout:     5 * time.Minute,
 			RetryFailed: false,
 			MaxRetries:  3,
+			RetryDelay:  time.Second,
 		}
 	}
 
@@ -83,6 +85,28 @@ func (p *Pipeline) AddOptional(name string, operation func(context.Context, any)
 	return p
 }
 
+// retryDelay is the base backoff between attempts.
+func (p *Pipeline) retryDelay() time.Duration {
+	if p.opts.RetryDelay > 0 {
+		return p.opts.RetryDelay
+	}
+	return time.Second
+}
+
+// sleepWithContext waits for d, or returns the context's error if it is
+// cancelled first.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Execute runs the pipeline with the given input
 func (p *Pipeline) Execute(ctx context.Context, input any) PipelineResult {
 	startTime := time.Now()
@@ -104,7 +128,7 @@ func (p *Pipeline) Execute(ctx context.Context, input any) PipelineResult {
 	for i, step := range p.steps {
 		select {
 		case <-ctx.Done():
-			result.Errors = append(result.Errors, fmt.Errorf("pipeline timeout at step %d (%s)", i, step.Name))
+			result.Errors = append(result.Errors, fmt.Errorf("pipeline stopped at step %d (%s): %w", i, step.Name, ctx.Err()))
 			result.Duration = time.Since(startTime)
 			return result
 		default:
@@ -116,11 +140,14 @@ func (p *Pipeline) Execute(ctx context.Context, input any) PipelineResult {
 			"index", i,
 		)
 
-		// Execute with retry if configured
+		// Execute with retry if configured. MaxRetries counts retries, so the
+		// total number of attempts is one more than that: computing
+		// attempts = MaxRetries meant a zero-value MaxRetries ran the step zero
+		// times and reported success.
 		var stepErr error
 		attempts := 1
-		if p.opts.RetryFailed && !step.Optional {
-			attempts = p.opts.MaxRetries
+		if p.opts.RetryFailed && !step.Optional && p.opts.MaxRetries > 0 {
+			attempts = p.opts.MaxRetries + 1
 		}
 
 		for attempt := 0; attempt < attempts; attempt++ {
@@ -128,6 +155,7 @@ func (p *Pipeline) Execute(ctx context.Context, input any) PipelineResult {
 			if err == nil {
 				current = output
 				result.StepsExecuted++
+				stepErr = nil
 				break
 			}
 
@@ -138,7 +166,13 @@ func (p *Pipeline) Execute(ctx context.Context, input any) PipelineResult {
 					"attempt", attempt+1,
 					"error", err,
 				)
-				time.Sleep(time.Duration(attempt+1) * time.Second)
+				// A cancellable wait: time.Sleep here ignored the context the
+				// loop checks at the top of every step, so a cancelled pipeline
+				// still sat out the whole backoff.
+				if err := sleepWithContext(ctx, time.Duration(attempt+1)*p.retryDelay()); err != nil {
+					stepErr = err
+					break
+				}
 			}
 		}
 
@@ -158,27 +192,31 @@ func (p *Pipeline) Execute(ctx context.Context, input any) PipelineResult {
 	return result
 }
 
-// Compose creates a composed function from multiple operations
-func Compose[T any, U any](operations ...func(T) (U, error)) func(T) (U, error) {
-	return func(input T) (U, error) {
-		var zero U
+// Compose chains operations over a single type, feeding each result into the
+// next. It is deliberately homogeneous: the previous signature took
+// func(T) (U, error) and could never chain, because the second operation's
+// input type did not match the first one's output. Use Then for the
+// two-operation heterogeneous case.
+func Compose[T any](operations ...func(T) (T, error)) func(T) (T, error) {
+	return func(input T) (T, error) {
+		var zero T
 		if len(operations) == 0 {
-			return zero, fmt.Errorf("no operations to compose")
+			return zero, fmt.Errorf("compose: no operations to compose")
 		}
 
-		// For single operation, just return it
-		if len(operations) == 1 {
-			return operations[0](input)
+		current := input
+		for i, operation := range operations {
+			if operation == nil {
+				return zero, fmt.Errorf("compose: operation %d is nil", i)
+			}
+			result, err := operation(current)
+			if err != nil {
+				return zero, fmt.Errorf("compose: operation %d failed: %w", i, err)
+			}
+			current = result
 		}
 
-		// For multiple operations, they need to be type-compatible
-		// This is a simplified version - in practice you'd need more sophisticated type handling
-		result, err := operations[0](input)
-		if err != nil {
-			return zero, err
-		}
-
-		return result, nil
+		return current, nil
 	}
 }
 

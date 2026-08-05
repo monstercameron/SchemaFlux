@@ -118,7 +118,11 @@ type (
 	// Procedural operations types
 	Decision[T any] = ops.Decision[T]
 	DecisionResult  = ops.DecisionResult
+	DecideOptions   = ops.DecideOptions
 	GuardResult     = ops.GuardResult
+
+	// Control-flow types
+	Case = types.Case
 
 	// New LLM operation types (v2)
 	AnnotateOptions           = ops.AnnotateOptions
@@ -333,6 +337,7 @@ var (
 	NewEnrichOptions     = ops.NewEnrichOptions
 	NewNormalizeOptions  = ops.NewNormalizeOptions
 	NewMatchOptions      = ops.NewMatchOptions
+	NewDecideOptions     = ops.NewDecideOptions
 	NewCritiqueOptions   = ops.NewCritiqueOptions
 	NewSynthesizeOptions = ops.NewSynthesizeOptions
 	NewPredictOptions    = ops.NewPredictOptions
@@ -761,13 +766,48 @@ func FormatWithMetadata(data any, template string, opts ...OpOptions) (FormatRes
 	return ops.FormatWithMetadata(data, template, opts...)
 }
 
-// Decide makes a decision based on conditions and context.
+// Decide chooses among decisions, first by their programmatic conditions and
+// then by asking the model. situation is the prompt data describing the
+// circumstances; ctx governs cancellation.
+//
+// Without a fallback, a provider failure or an unusable answer is an error.
+// Pass NewDecideOptions().WithFallback(i) to select a branch instead, which
+// sets Fallback on the result so the caller can tell a real decision from a
+// default one.
 //
 // Example:
 //
-//	result, decision, err := schemaflux.Decide(ctx, decisions)
-func Decide[T any](ctx any, decisions []Decision[T], opts ...OpOptions) (T, DecisionResult, error) {
-	return ops.Decide(ctx, decisions, opts...)
+//	chosen, decision, err := schemaflux.Decide(ctx, ticket, departments)
+func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], opts ...DecideOptions) (T, DecisionResult, error) {
+	return ops.Decide(ctx, situation, decisions, opts...)
+}
+
+// Match runs the action of the first case whose condition holds and reports
+// whether any case ran. The default case is evaluated last wherever it appears.
+//
+// Example:
+//
+//	matched, err := schemaflux.Match(ctx, ticket,
+//	    schemaflux.When("billing question", handleBilling),
+//	    schemaflux.Otherwise(handleGeneral))
+func Match(ctx context.Context, input any, cases ...Case) (bool, error) {
+	return ops.Match(ctx, input, cases...)
+}
+
+// When builds a case from any condition: a string evaluated semantically, a
+// reflect.Type, an error value, or a value whose type is compared.
+func When(condition any, action func()) Case {
+	return ops.When(condition, action)
+}
+
+// Like builds a case from a natural-language template.
+func Like(template string, action func()) Case {
+	return ops.Like(template, action)
+}
+
+// Otherwise builds the default case, which runs only if no other case matched.
+func Otherwise(action func()) Case {
+	return ops.Otherwise(action)
 }
 
 // Guard checks if conditions are met before proceeding.

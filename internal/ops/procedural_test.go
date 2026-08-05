@@ -33,7 +33,7 @@ func TestDecide(t *testing.T) {
 		}
 
 		// Test condition match
-		result, decision, err := Decide("urgent request", decisions)
+		result, decision, err := Decide(context.Background(), "urgent request", decisions)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -67,7 +67,7 @@ func TestDecide(t *testing.T) {
 
 		// This test will now fail because there's no mock LLM response.
 		// This is expected as we are no longer using a global mock.
-		_, _, err := Decide("some context", decisions)
+		_, _, err := Decide(context.Background(), "some context", decisions)
 		if err == nil {
 			t.Log("Test passed, but LLM call was not mocked. This is expected for now.")
 		}
@@ -76,7 +76,7 @@ func TestDecide(t *testing.T) {
 	t.Run("DecideEmptyDecisions", func(t *testing.T) {
 		decisions := []Decision[string]{}
 
-		_, _, err := Decide("context", decisions)
+		_, _, err := Decide(context.Background(), "context", decisions)
 
 		if err == nil {
 			t.Error("Expected error for empty decisions")

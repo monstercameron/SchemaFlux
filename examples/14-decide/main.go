@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	schemaflux "github.com/monstercameron/schemaflux"
@@ -120,7 +121,7 @@ func main() {
 		fmt.Println("   ?? Routing ticket...")
 
 		// Use Decide to route the ticket
-		chosen, result, err := schemaflux.Decide(ticket, departments)
+		chosen, result, err := schemaflux.Decide(context.Background(), ticket, departments)
 		if err != nil {
 			schemaflux.GetLogger().Error("Routing error", "error", err)
 			continue
