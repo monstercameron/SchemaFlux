@@ -123,13 +123,34 @@ Rules:
 
 	// Parse the selected option directly
 	if err := ParseJSONStrict(response, &result); err != nil {
-		return result, types.ChooseError{
+		return zeroOf[T](), types.ChooseError{
 			OptionCount: len(options),
-			Reason:      fmt.Sprintf("failed to parse selected option: %v (response: %s)", err, response),
+			Reason:      fmt.Sprintf("failed to parse selected option: %v", err),
+			Err:         err,
 		}
 	}
 
-	return result, nil
+	// The model returns a copy of the option, not the option. Match it back to
+	// the input and return the caller's own value: an echoed record with a
+	// subtly altered price or ID is the failure this guards against, and it is
+	// far likelier than an invented one.
+	chosen, _, err := resolveSelection(result, options)
+	if err != nil {
+		return zeroOf[T](), types.ChooseError{
+			OptionCount: len(options),
+			Reason:      err.Error(),
+			Err:         err,
+		}
+	}
+
+	return chosen, nil
+}
+
+// zeroOf returns the zero value of T, for the error paths that must not return
+// a partially-populated result.
+func zeroOf[T any]() T {
+	var zero T
+	return zero
 }
 
 // Filter semantically filters items with specialized options.
@@ -195,11 +216,21 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	}
 
 	// Use object-based filtering instead of index-based
+	// The rule below used to read "Include items that match the criteria"
+	// unconditionally, while the steering said "Remove items that match" when
+	// KeepMatching was false. The model received two contradictory orders and
+	// the library reported whichever it obeyed as success.
+	keepRule := "- Return the items that match the criteria and discard the rest"
+	if !opts.KeepMatching {
+		keepRule = "- Discard the items that match the criteria and return the rest"
+	}
+
 	systemPrompt := `You are a filtering expert. Filter items based on the specified criteria.
 
 Rules:
 - Evaluate each item against the criteria
-- Include items that match the criteria
+` + keepRule + `
+- Return every kept item exactly as it was given, byte for byte; do not edit, reformat, or invent values
 - Return a JSON array containing the COMPLETE objects that should be kept
 - If the items are primitive values like strings, return a JSON array of those same primitive values
 - Never return an object wrapper such as {} or {"item": ...}
@@ -233,20 +264,31 @@ Examples:
 		response = strings.TrimSpace(response)
 	}
 
-	// Parse the filtered objects directly
+	// Parse the filtered objects directly. There used to be a fallback here
+	// that parsed the body as a single item and returned a one-element slice,
+	// so a malformed array silently collapsed a filter to one result (C-03).
 	var result []T
 	if err := ParseJSONStrict(response, &result); err != nil {
-		var single T
-		if strings.TrimSpace(response) != "{}" && ParseJSONStrict(response, &single) == nil {
-			return []T{single}, nil
-		}
 		return nil, types.FilterError{
 			ItemCount: len(items),
-			Reason:    fmt.Sprintf("failed to parse filtered items: %v (response: %s)", err, response),
+			Reason:    fmt.Sprintf("failed to parse filtered items: %v", err),
+			Err:       err,
 		}
 	}
 
-	return result, nil
+	// A filter selects; it does not author. Every returned item must have been
+	// in the input, no item may repeat, and the result carries the caller's own
+	// values in the caller's own order.
+	kept, err := resolveSubset(result, items)
+	if err != nil {
+		return nil, types.FilterError{
+			ItemCount: len(items),
+			Reason:    err.Error(),
+			Err:       err,
+		}
+	}
+
+	return kept, nil
 }
 
 // Sort orders items semantically with specialized options.
