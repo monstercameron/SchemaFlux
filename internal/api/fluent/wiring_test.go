@@ -160,3 +160,124 @@ func parseFluentPackage(t *testing.T, fileSet *token.FileSet) []*ast.File {
 	}
 	return files
 }
+
+// A builder method that chains but changes nothing is the failure mode this
+// package is prone to, so the common controls are checked on a real builder
+// rather than only by parsing the source.
+func TestCommonControlsActuallySet(t *testing.T) {
+	base := NegotiatingAdversarially[string](AdversarialContext[string]{})
+
+	t.Run("mode", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			apply func(AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string]
+			want  Mode
+		}{
+			{"strict", func(r AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string] { return r.Strict() }, Strict},
+			{"transform", func(r AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string] {
+				return r.TransformMode()
+			}, TransformMode},
+			{"creative", func(r AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string] {
+				return r.Creative()
+			}, Creative},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := tc.apply(base).opts.Mode; got != tc.want {
+					t.Errorf("Mode = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("intelligence", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			apply func(AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string]
+			want  Speed
+		}{
+			{"smart", func(r AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string] { return r.Smart() }, Smart},
+			{"fast", func(r AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string] { return r.Fast() }, Fast},
+			{"quick", func(r AdversarialNegotiationRequest[string]) AdversarialNegotiationRequest[string] { return r.Quick() }, Quick},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := tc.apply(base).opts.Intelligence; got != tc.want {
+					t.Errorf("Intelligence = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("steering", func(t *testing.T) {
+		if got := base.Steer("be terse").opts.Steering; got != "be terse" {
+			t.Errorf("Steering = %q", got)
+		}
+	})
+
+	t.Run("request_id", func(t *testing.T) {
+		if got := base.RequestID("req-1").opts.RequestID; got != "req-1" {
+			t.Errorf("RequestID = %q", got)
+		}
+	})
+
+	t.Run("correlation_id", func(t *testing.T) {
+		if got := base.CorrelationID("corr-1").opts.CorrelationID; got != "corr-1" {
+			t.Errorf("CorrelationID = %q", got)
+		}
+	})
+
+	t.Run("strategy", func(t *testing.T) {
+		if got := base.Strategy("aggressive").opts.Strategy; got != "aggressive" {
+			t.Errorf("Strategy = %q", got)
+		}
+	})
+}
+
+// Chaining several controls must keep all of them: each method returns a new
+// value, so a lift that dropped a field would lose everything set before it.
+func TestChainedControlsAllSurvive(t *testing.T) {
+	built := NegotiatingAdversarially[string](AdversarialContext[string]{}).
+		Strict().
+		Quick().
+		Steer("be terse").
+		RequestID("req-9").
+		CorrelationID("corr-9").
+		Strategy("accommodating")
+
+	if built.opts.Mode != Strict {
+		t.Errorf("Mode = %v, want Strict", built.opts.Mode)
+	}
+	if built.opts.Intelligence != Quick {
+		t.Errorf("Intelligence = %v, want Quick", built.opts.Intelligence)
+	}
+	if built.opts.Steering != "be terse" {
+		t.Errorf("Steering = %q", built.opts.Steering)
+	}
+	if built.opts.RequestID != "req-9" {
+		t.Errorf("RequestID = %q", built.opts.RequestID)
+	}
+	if built.opts.CorrelationID != "corr-9" {
+		t.Errorf("CorrelationID = %q", built.opts.CorrelationID)
+	}
+	if built.opts.Strategy != "accommodating" {
+		t.Errorf("Strategy = %q", built.opts.Strategy)
+	}
+}
+
+// Strict and Smart are the zero values of their types, so a builder that
+// "helpfully" skips zero values cannot express them. F-01 is the finding; this
+// is the builder-side check that it stays expressible.
+func TestZeroValuedControlsAreExpressible(t *testing.T) {
+	built := NegotiatingAdversarially[string](AdversarialContext[string]{}).Creative().Fast()
+	if built.opts.Mode != Creative || built.opts.Intelligence != Fast {
+		t.Fatalf("setup failed: %+v", built.opts)
+	}
+
+	// Now set them back to the zero values and check they took.
+	back := built.Strict().Smart()
+	if back.opts.Mode != Strict {
+		t.Errorf("Mode = %v; Strict is the zero value and must still be settable", back.opts.Mode)
+	}
+	if back.opts.Intelligence != Smart {
+		t.Errorf("Intelligence = %v; Smart is the zero value and must still be settable", back.opts.Intelligence)
+	}
+}

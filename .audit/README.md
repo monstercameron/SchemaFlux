@@ -36,3 +36,18 @@ references — a task citing a finding ID the review does not contain.
 A task claims a finding by naming it in its body: `Closes **I-05**`,
 `Addresses **Gap-04**`. That citation is the whole mechanism, so a task that
 fixes something without naming what it fixes is invisible here.
+
+### Gated clusters
+
+The live cluster is reported as `GATED` rather than counted. Its tests skip
+unless `SCHEMAFLUX_LIVE_TESTS=1`, so they never appear in a default run:
+counting them as uncovered would be wrong, and counting them as covered from a
+run that skipped them would be a lie. Verify them with
+
+    SCHEMAFLUX_LIVE_TESTS=1 go test . -run TestLive -v
+
+### What these checks have caught
+
+Not hypothetical. `traceability.py` found five dead option fields the review
+missed, two live S1 defects with no task at all, and a duplicate task ID that
+silently un-traced a finding an hour after it was introduced.

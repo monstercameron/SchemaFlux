@@ -56,23 +56,37 @@ CLUSTERS = [
  ("F-021/F-022  disclosures",           ["internal/ops/disclosure_test.go"], [], False),
  ("OP-301  Project.Exclude",            ["internal/ops/project_exclude_test.go","project_integration_test.go"], [], True),
  ("F-023/F-024  dead options",          ["internal/ops/dead_options_test.go","internal/ops/options_reach_prompt_test.go"], [], False),
+ ("OP-102/OP-103  collection identity", ["internal/ops/collection_identity_test.go","collection_integration_test.go"], [], True),
+ ("OP-403  rune safety",                ["internal/ops/runes_test.go"], [], False),
+ ("S-005  response format",             ["internal/ops/response_format_test.go"], [], False),
+ ("FL-001  provider models",            ["internal/config/provider_models_test.go"], [], False),
+ ("FL-002  builder wiring",             ["internal/api/fluent/wiring_test.go"], [], False),
+ ("B-01/P-012  live verification",      ["live_provider_test.go"], [], "gated"),
 ]
 
 print(f"{'cluster':<40} {'cases':>6} {'ex':>3}  status")
 print("-" * 66)
 gaps = []
 for label, files, extra, smartplus in CLUSTERS:
+    gated = smartplus == "gated"
     fns = set(extra)
     for f in files:
         fns |= set(funcs_in(f))
     total = sum(by_top[f] for f in fns)
     ex = len(examples_in(files))
     flags = []
-    if total < 10:
-        flags.append("CASES")
-    if smartplus and ex == 0:
-        flags.append("EXAMPLE")
-    status = "OK" if not flags else "NEEDS " + "+".join(flags)
+    if gated:
+        # These skip unless SCHEMAFLUX_LIVE_TESTS=1, so they never appear in a
+        # default run. Counting them as uncovered would be wrong, and counting
+        # them as covered from a run that skipped them would be a lie. They are
+        # reported separately and verified by the live run.
+        pass
+    else:
+        if total < 10:
+            flags.append("CASES")
+        if smartplus and ex == 0:
+            flags.append("EXAMPLE")
+    status = "GATED (run with SCHEMAFLUX_LIVE_TESTS=1)" if gated else ("OK" if not flags else "NEEDS " + "+".join(flags))
     if flags:
         gaps.append((label, total, ex, flags))
     print(f"{label:<40} {total:>6} {ex:>3}  {status}")

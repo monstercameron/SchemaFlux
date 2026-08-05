@@ -845,9 +845,10 @@ commit and the test that proves it.
 
 ### Added during the work
 
-- [x] **S-006** — A test used `types.OpOptions` as sample data with a hardcoded field count, so
-  adding a field to a production type broke a test about counting fields. It owns its own struct
-  now.
+- [x] **TEST-003** — A test used `types.OpOptions` as sample data with a hardcoded field count,
+  so adding a field to a production type broke a test about counting fields. It owns its own
+  struct now. (Filed as S-006 at first, which collided with the existing S-006 and silently
+  un-traced **D-07** — the traceability check caught it on the next run.)
 
 - [x] **OP-104** — Both collection errors embedded the whole model response in their `Reason`
   (`"failed to parse: %v (response: %s)"`), which is **X-03** in two more places: the response is
