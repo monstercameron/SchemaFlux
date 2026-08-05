@@ -191,17 +191,33 @@ func GetModel(intelligence types.Speed, provider string) string {
 		}
 	}
 
+	// The gpt-5.6 family is luna, sol, and terra (confirmed against
+	// GET /v1/models). Which one belongs on which tier is a question about
+	// measured capability, latency, and price, and that evidence does not
+	// exist yet -- see TODOS.md P-013. Guessing an ordering from the names
+	// would silently put the wrong model behind Smart or Quick, so every tier
+	// resolves to luna until the matrix is run.
 	switch intelligence {
 	case types.Smart:
-		return "gpt-5.4"
+		return ModelDefaultSmart
 	case types.Fast:
-		return "gpt-5-mini"
+		return ModelDefaultFast
 	case types.Quick:
-		return "gpt-5-nano"
+		return ModelDefaultQuick
 	default:
-		return "gpt-5-mini"
+		return ModelDefaultFast
 	}
 }
+
+// OpenAI tier defaults. Split these across gpt-5.6-luna / -sol / -terra once
+// TODOS.md P-013 has measured the family; until then a caller who needs a
+// specific model sets it explicitly with SCHEMAFLUX_MODEL_* or a per-call
+// option.
+const (
+	ModelDefaultSmart = "gpt-5.6-luna"
+	ModelDefaultFast  = "gpt-5.6-luna"
+	ModelDefaultQuick = "gpt-5.6-luna"
+)
 
 // GetMaxTokens returns the maximum token limit based on intelligence level
 func GetMaxTokens(intelligence types.Speed) int {

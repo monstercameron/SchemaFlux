@@ -298,6 +298,13 @@ func supportsTemperature(model string) bool {
 
 func supportsReasoningControls(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
+	// The accepted reasoning-effort values for the gpt-5.6 family are not yet
+	// verified (TODOS.md P-013). Sending an unrecognised enum fails the whole
+	// request, while omitting the block is always valid, so omit until the
+	// live capability matrix confirms what this family accepts.
+	if strings.HasPrefix(model, "gpt-5.6") {
+		return false
+	}
 	return strings.HasPrefix(model, "gpt-5")
 }
 

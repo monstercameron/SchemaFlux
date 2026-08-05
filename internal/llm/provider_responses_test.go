@@ -177,3 +177,21 @@ func TestOpenAIProviderReusesHTTPClient(t *testing.T) {
 		t.Error("http.Client must not be replaced between requests")
 	}
 }
+
+// Reasoning controls must be omitted for the gpt-5.6 family until the accepted
+// effort values are verified live: an unrecognised enum fails the whole request,
+// while omitting the block is always valid.
+func TestGPT56OmitsUnverifiedReasoningControls(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+		if supportsReasoningControls(model) {
+			t.Errorf("%s: reasoning controls must be omitted until TODOS.md P-013 verifies them", model)
+		}
+		if supportsTemperature(model) {
+			t.Errorf("%s: gpt-5 family does not accept temperature", model)
+		}
+	}
+	// Older gpt-5 models keep the controls they were verified with.
+	if !supportsReasoningControls("gpt-5.4") {
+		t.Error("gpt-5.4 should still send reasoning controls")
+	}
+}
