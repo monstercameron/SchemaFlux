@@ -2,7 +2,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -351,7 +350,7 @@ func formatValue(v reflect.Value) any {
 
 // generateDiffSummary uses LLM to create an intelligent summary of changes
 func generateDiffSummary(oldData, newData any, changes comparisonResult, opts DiffOptions) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	// Marshal data for prompt (only when needed)

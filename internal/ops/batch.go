@@ -2,7 +2,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -123,7 +122,7 @@ func extractParallel[T any](batchProcessor *BatchProcessor, inputs []interface{}
 	semaphore := make(chan struct{}, batchProcessor.maxConcurrent)
 	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithTimeout(context.Background(), batchProcessor.timeout)
+	ctx, cancel := operationContext(opts.OpOptions.Context, batchProcessor.timeout)
 	defer cancel()
 
 	apiCalls := 0
@@ -204,7 +203,7 @@ Output JSON array where each element matches this schema:
 Return format: [{"index": 0, "data": {...}}, {"index": 1, "data": {...}}, ...]`, typeInfo)
 
 		opOptions := opts.toOpOptions()
-		ctx, cancel := context.WithTimeout(context.Background(), batchProcessor.timeout)
+		ctx, cancel := operationContext(opts.OpOptions.Context, batchProcessor.timeout)
 
 		// Use provider from batchProcessor if available, otherwise default
 		var response string

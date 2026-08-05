@@ -195,7 +195,13 @@ type GuardResult struct {
 }
 
 // Guard checks if conditions are met before proceeding
-func Guard[T any](state T, checks ...func(T) (bool, string)) GuardResult {
+// Guard checks conditions before proceeding, and asks the model for
+// suggestions on whatever failed.
+//
+// ctx governs that call. Guard used to take no context at all, so the
+// suggestion call could not be cancelled and ignored any deadline the caller
+// had set.
+func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)) GuardResult {
 	log := logger.GetLogger()
 	log.Debug("Starting guard operation", "checksCount", len(checks))
 
@@ -215,7 +221,7 @@ func Guard[T any](state T, checks ...func(T) (bool, string)) GuardResult {
 
 	// Generate suggestions for failed checks using LLM if available
 	if !result.CanProceed && len(result.FailedChecks) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := operationContext(ctx, 2*time.Second)
 		defer cancel()
 
 		systemPrompt := "You are a helpful assistant. Suggest how to fix these issues."

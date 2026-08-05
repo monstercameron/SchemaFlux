@@ -150,7 +150,7 @@ func completeImpl(ctx context.Context, provider llm.Provider, partialText string
 	// Use provided context or create one with timeout
 	if ctx == nil {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel = operationContext(opts.OpOptions.Context, 30*time.Second)
 		defer cancel()
 	}
 

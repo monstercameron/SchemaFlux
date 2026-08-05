@@ -816,9 +816,9 @@ func Otherwise(action func()) Case {
 //
 // Example:
 //
-//	result := schemaflux.Guard(state, check1, check2)
-func Guard[T any](state T, checks ...func(T) (bool, string)) GuardResult {
-	return ops.Guard(state, checks...)
+//	result := schemaflux.Guard(ctx, state, check1, check2)
+func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)) GuardResult {
+	return ops.Guard(ctx, state, checks...)
 }
 
 // === New LLM Operations (v2) ===

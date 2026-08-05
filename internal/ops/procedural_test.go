@@ -99,7 +99,7 @@ func TestGuard(t *testing.T) {
 
 		state := State{Value: 10, Name: "test"}
 
-		result := Guard(state,
+		result := Guard(context.Background(), state,
 			func(s State) (bool, string) {
 				return s.Value > 0, "Value must be positive"
 			},
@@ -125,7 +125,7 @@ func TestGuard(t *testing.T) {
 
 		state := State{Value: -5, Name: ""}
 
-		result := Guard(state,
+		result := Guard(context.Background(), state,
 			func(s State) (bool, string) {
 				return s.Value > 0, "Value must be positive"
 			},

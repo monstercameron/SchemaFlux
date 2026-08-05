@@ -350,7 +350,7 @@ port nothing yet except one operation as the proof.
 
 - [ ] **A-001** — `Op[In, Out]` descriptor: `Name`, `Prompt`, `Format`, `Schema`, `Decode`,
   `Invariants`. Closes the structural half of **D-15**.
-- [ ] **A-002** — `Run[In, Out](ctx, client, op, in, opts...)` owning context propagation,
+- [x] **A-002** — `Run[In, Out](ctx, client, op, in, opts...)` owning context propagation,
   response-format selection, provider dispatch, retry, decoding, invariant checking, repair,
   usage accounting, and telemetry. Closes **X-01** at one call site instead of thirty-one.
   *Verify:* cancelling the context aborts the call; assert with the fake provider's slow mode.
@@ -843,12 +843,20 @@ commit and the test that proves it.
 | **OP-502** | `56d680b` | **T-08** closed. Card numbers are validated with Luhn rather than recognised by shape, so an unformatted PAN is caught and a 16-digit order number is not. Phone patterns cover `(305) 555-1234`, `305.555.1234`, and international forms. The three false-positive patterns are deleted: two capitalised words (which matched "New York"), a bare nine-digit run (order IDs), and every currency amount. A bare nine-digit SSN stays deliberately undetected and the docs say so. |
 | **OP-503** | `56d680b` | **T-09** closed. `RedactWithResult` reports the values it matched by category and the fields it replaced by name, and a field matched by *content* now has only the matching span replaced — so a notes field containing a phone number keeps the note. |
 | **OP-505** | `56d680b` | **T-11** closed. `JumbleSeed` defaults to zero and the RNG was then seeded with the input's LENGTH, a number readable off the output, so the permutation was reproducible and the jumble exactly invertible. The default now draws from `crypto/rand`. An explicit seed still gives determinism, documented as a thing to want for fixtures and not for privacy — and jumbling is documented as obfuscation, not anonymization, because a permutation preserves length, alphabet, and frequency whatever the seed. |
+| **A-002** | `pending` | **X-01** closed. All 29 sites writing `context.WithTimeout(context.Background(), …)` now derive from the caller's context through `operationContext`. Caller cancellation reaches the provider call, and a caller deadline sooner than the library's wins. `Guard` gained a `context.Context` parameter — it had none at all, so its suggestion call could not be cancelled. `internal/ops/context_test.go` drives thirteen operations with a cancelled context and asserts the call sees it; a source-level check fails any reintroduction of the pattern. |
 | **T-13 (part)** | `56d680b` | The offset half closed with **OP-403**: spans that are negative, inverted, out of range, or overlapping are refused. The semantic half — whether a span contains what the model says — remains **OP-507**. |
 | **B-01/B-04** | `9474687` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
 | **P-012** | `9474687` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
 
 ### Added during the work
+
+- [ ] **X-06** — `CompleteOptions.Context` is a `[]string` and `InferOptions.Context` is a `string`:
+  both mean prose context for the prompt and collide with the embedded
+  `types.OpOptions.Context`, which is a `context.Context`. Found while threading X-01, where the
+  collision produced a compile error rather than silence — but a caller reading the field list
+  has no such warning. Rename the prose fields to `Background` or `Notes`.
+  *Verify:* no options struct has two fields named Context reachable from the same selector.
 
 - [x] **TEST-003** — A test used `types.OpOptions` as sample data with a hardcoded field count,
   so adding a field to a production type broke a test about counting fields. It owns its own

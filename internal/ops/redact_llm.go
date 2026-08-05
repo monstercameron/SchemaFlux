@@ -157,7 +157,7 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 	// Create context with timeout
 	if ctx == nil {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel = operationContext(opts.Context, 30*time.Second)
 		defer cancel()
 	}
 

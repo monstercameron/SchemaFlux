@@ -2,7 +2,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/csv"
 	"encoding/json"
 	"encoding/xml"
@@ -490,7 +489,7 @@ func setFieldValue(field reflect.Value, value string) error {
 func parseWithLLM[T any](input string, detectedFormat string, opts ParseOptions) (ParseResult[T], error) {
 	var result ParseResult[T]
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	// Generate type schema

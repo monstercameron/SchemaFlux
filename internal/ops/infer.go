@@ -2,7 +2,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -79,7 +78,7 @@ func inferImpl[T any](partialData T, opts InferOptions) (T, error) {
 
 	opt := opts.toOpOptions()
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	// Get type information

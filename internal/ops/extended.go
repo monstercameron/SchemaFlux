@@ -375,7 +375,7 @@ func ValidateLegacy[T any](data T, rules string, opts ...types.OpOptions) (Valid
 
 	opt := applyDefaults(opts...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert data to JSON for validation
@@ -454,7 +454,7 @@ func Format(data any, template string, opts ...types.OpOptions) (string, error) 
 	log.Debug("Starting format operation")
 
 	opt := applyDefaults(opts...)
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert data to string representation
@@ -497,7 +497,7 @@ func FormatWithMetadata(data any, template string, opts ...types.OpOptions) (For
 	log.Debug("Starting format with metadata operation")
 
 	opt := applyDefaults(opts...)
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert data to string representation
@@ -633,7 +633,7 @@ func Merge[T any](sources []T, strategy string, opts ...types.OpOptions) (T, err
 	}
 
 	opt := applyDefaults(opts...)
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert sources to JSON
@@ -700,7 +700,7 @@ func MergeWithMetadata[T any](sources []T, strategy string, opts ...types.OpOpti
 	}
 
 	opt := applyDefaults(opts...)
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert sources to JSON
@@ -1064,7 +1064,7 @@ func QuestionLegacy(data any, question string, opts ...types.OpOptions) (string,
 	log.Debug("Starting legacy question operation")
 
 	opt := applyDefaults(opts...)
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert data to string representation
@@ -1127,7 +1127,7 @@ func Deduplicate[T any](items []T, threshold float64, opts ...types.OpOptions) (
 	}
 
 	opt := applyDefaults(opts...)
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	// Convert items to JSON for comparison

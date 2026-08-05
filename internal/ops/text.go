@@ -1,7 +1,6 @@
 package ops
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -131,7 +130,7 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 		opt.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
@@ -203,7 +202,7 @@ func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult
 		opt.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
@@ -320,7 +319,7 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 		opt.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
@@ -405,7 +404,7 @@ func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, erro
 		opt.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
@@ -512,7 +511,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 	}
 	opt.Steering = steering
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a translation expert. Translate text accurately between languages.
@@ -593,7 +592,7 @@ func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult
 	}
 	opt.Steering = steering
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a translation expert. Translate text accurately between languages.
@@ -696,7 +695,7 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 		opt.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.
@@ -771,7 +770,7 @@ func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) 
 		opt.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.

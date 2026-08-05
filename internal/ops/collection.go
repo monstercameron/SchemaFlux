@@ -1,7 +1,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -72,7 +71,7 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 		opOptions.Steering = steering
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	optionsJSON, err := json.Marshal(options)
@@ -204,7 +203,7 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	itemsJSON, err := json.Marshal(items)
@@ -348,7 +347,7 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	itemsJSON, err := json.Marshal(items)
@@ -428,7 +427,7 @@ Examples:
 }
 
 func sortByScoringFallback[T any](items []T, opts SortOptions, opOptions types.OpOptions) ([]T, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	type scoredItem struct {

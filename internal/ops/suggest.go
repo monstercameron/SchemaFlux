@@ -1,7 +1,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -210,7 +209,7 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	// Marshal input for LLM

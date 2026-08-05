@@ -378,3 +378,21 @@ Every field must be populated with task-relevant values supported by the input o
 
 	return strings.TrimSpace(baseRules + "\n\n" + jsonRules + "\n\n" + systemPrompt)
 }
+
+// operationContext derives the context an operation runs under from the
+// caller's, applying the configured timeout.
+//
+// Twenty-nine call sites wrote `context.WithTimeout(context.Background(), ...)`
+// instead. Every options struct accepts a Context and every builder exposes a
+// Context(...) method, and all of them were ignored: caller cancellation did
+// nothing, so an abandoned HTTP request kept paying for tokens, and a deadline
+// the caller set was replaced by the library's own.
+func operationContext(caller context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if caller == nil {
+		caller = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = config.GetTimeout()
+	}
+	return context.WithTimeout(caller, timeout)
+}

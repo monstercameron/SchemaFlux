@@ -2,7 +2,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -251,7 +250,7 @@ type explanationResponse struct {
 
 // generateExplanation uses LLM to create a human explanation
 func generateExplanation(data any, analysis dataAnalysis, opts ExplainOptions) (explanationResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), config.GetTimeout())
+	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	// Marshal data for prompt
