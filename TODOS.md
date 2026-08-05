@@ -837,13 +837,35 @@ commit and the test that proves it.
   `OPENAI` alias added by B-02 and the fact that `.env` supplies defaults rather than
   overrides. The README's Environment section currently lists neither.
 
-- [ ] **PERF-001** — The retry classifier treats an empty completion as retryable
+- [x] **PERF-001** — The retry classifier treats an empty completion as retryable
   (`llm_helper.go:248`), so a test feeding an empty body waits out the full backoff: the
   four-case integration table takes 3.5s of wall clock for what should be instant. Real
   behaviour is right; what is missing is a way to run it fast. Add a per-call retry override
   so tests and latency-sensitive callers can set zero attempts without touching global env.
   *Verify:* the same table runs in well under 100ms with retries disabled, and unchanged with
   them enabled.
+
+- [ ] **F-032** — **14 options structs embed both `CommonOptions` and `types.OpOptions`, and
+  `toOpOptions()` returns only the `CommonOptions` half.** Everything set on the embedded
+  `OpOptions` — `RequestID`, `CorrelationID`, `Context`, `Threshold` — is silently discarded.
+  Affects `Extract`, `Transform`, `Generate`, `Summarize`, `Rewrite`, `Translate`, `Expand`,
+  `Classify`, `Score`, `Compare`, `Choose`, `Filter`, `Sort`, and `Batch`: the most-used
+  operations in the library. Found while writing the P-00x integration test, where setting
+  `opts.OpOptions.RequestID` produced no cost record because the field never reached the call.
+  Merge both halves, with the `CommonOptions` side winning on conflict, and note that `Mode`
+  and `Intelligence` cannot be merged correctly until **A-005** fixes the zero-value collision.
+  *Verify:* per-struct table test asserting `RequestID`, `CorrelationID`, and `Context` set on
+  either embedded struct reach the provider. This is the same class as **X-04**, one level up:
+  not a dead field but a dead *struct*.
+- [x] **F-033** — `ParseJSON` embedded the entire cleaned model output in its error string, and
+  every caller logs that error, so user payloads landed in every log aggregator. Partially
+  closes **X-03**; `types.ExtractError.Input` and the other error structs that retain payloads
+  are still open.
+  *Verify:* `internal/ops/json_redaction_test.go`.
+- [ ] **F-034** — Finish **X-03**: `types.ExtractError` and its siblings still store the raw
+  `Input`. Same reasoning as F-033 — an error that carries the payload copies it wherever the
+  error goes.
+  *Verify:* a payload marker present in the input never appears in any error's `Error()`.
 
 ### Standard of done
 

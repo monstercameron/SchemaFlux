@@ -209,6 +209,13 @@ func isRetryableLLMError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	// A response carrying no assistant message is deterministic: a reasoning-only
+	// response or an empty output list is identical on retry. It matched the
+	// "empty response" substring below and cost a full backoff cycle -- seven
+	// seconds per call -- to arrive at the same answer.
+	if errors.Is(err, llm.ErrNoMessageOutput) {
+		return false
+	}
 
 	msg := strings.ToLower(err.Error())
 

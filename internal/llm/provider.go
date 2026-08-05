@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,6 +67,12 @@ type ProviderConfig struct {
 
 // ProviderFactory creates a provider from configuration.
 type ProviderFactory func(config ProviderConfig) (Provider, error)
+
+// ErrNoMessageOutput reports a response that carried no assistant message.
+// It is deterministic, not transient: a reasoning-only response or an empty
+// output list will be identical on retry, so the retry classifier must not
+// spend a backoff cycle on it.
+var ErrNoMessageOutput = errors.New("response carried no message output")
 
 // OpenAIProvider implements Provider for OpenAI
 type OpenAIProvider struct {
@@ -210,7 +217,7 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 	}
 
 	if len(response.Output) == 0 {
-		return CompletionResponse{}, fmt.Errorf("empty response from OpenAI")
+		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
 	}
 
 	// Extract the answer only. A reasoning model returns `reasoning` items
@@ -235,7 +242,7 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		if response.Status == "incomplete" && response.IncompleteReason.Reason != "" {
 			return CompletionResponse{}, fmt.Errorf("OpenAI response incomplete: %s", response.IncompleteReason.Reason)
 		}
-		return CompletionResponse{}, fmt.Errorf("empty response from OpenAI: no message output")
+		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
 	}
 
 	// A truncated answer must be distinguishable from a complete one.
