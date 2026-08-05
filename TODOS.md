@@ -59,12 +59,15 @@ regardless of what happens to the rest of the plan.
 
 ## Validators and verdicts
 
-- [ ] **F-001** — Delete the text-inference fallback in `Validate`
+- [x] **F-001** — Delete the text-inference fallback in `Validate`
   (`internal/ops/extended.go:314-325`). `strings.Contains(strings.ToLower(response), "valid")`
   matches the substring inside `"invalid"`, so a model saying the data is invalid returns
   `Valid: true` with `err == nil`. Closes **A-01**.
   *Verify:* table test feeding `"The data is invalid because ..."` asserts an error, not a
   verdict. Add the literal string as a regression fixture.
+  **Done:** `internal/ops/extended.go` returns an error on parse failure;
+  `internal/ops/validate_failopen_test.go` covers four negative phrasings plus the
+  well-formed success and failure paths. `go test ./internal/ops/ -run TestValidate` green.
 - [ ] **F-002** — Delete the JSON fallback in `SummarizeWithMetadata`
   (`internal/ops/text.go:241-251`) that returns `Confidence: 0.7` and empty `KeyPoints` on a
   parse failure with `err == nil`. Closes **T-02**.
@@ -207,7 +210,7 @@ regardless of what happens to the rest of the plan.
 The provider already targets `POST /v1/responses` (`provider.go:100-237`). What is missing is
 everything around it. Every item here is code-verifiable; only P-012 and P-013 need credits.
 
-- [ ] **P-001** — The response parser concatenates `item.Text` from **every** output item
+- [x] **P-001** — The response parser concatenates `item.Text` from **every** output item
   regardless of `output[].type` (`provider.go:212-218`). The Responses API returns `reasoning`
   items alongside `message` items, so on a reasoning model the reasoning summary is glued onto
   the JSON payload and corrupts the parse. Filter to `type == "message"` and, within it, to
@@ -215,16 +218,16 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   *Verify:* golden test decoding a recorded body containing both a `reasoning` item and a
   `message` item asserts only the message text is returned. **This test must exist before the
   fix**, and must fail against the current parser.
-- [ ] **P-002** — Parse `usage.output_tokens_details.reasoning_tokens` into
+- [x] **P-002** — Parse `usage.output_tokens_details.reasoning_tokens` into
   `TokenUsage.ReasoningTokens`. Reasoning tokens are billed and currently invisible, which
   makes every cost figure on a reasoning model wrong.
   *Verify:* golden test asserts the field is populated from a recorded body.
-- [ ] **P-003** — Parse `usage.input_tokens_details.cached_tokens` into
+- [x] **P-003** — Parse `usage.input_tokens_details.cached_tokens` into
   `TokenUsage.CachedTokens`. The field, `CostInfo.CachedCost`, and `PriceCachedToken` all
   exist and are reported in `CostSummary`, but nothing ever populates them. Closes the
   measurement half of **Gap-04**.
   *Verify:* golden test asserts a non-zero cached count survives into `CostSummary`.
-- [ ] **P-004** — `FinishReason` is hardcoded to `"stop"` (`provider.go:230`). Map it from
+- [x] **P-004** — `FinishReason` is hardcoded to `"stop"` (`provider.go:230`). Map it from
   `status` and `incomplete_details.reason` so truncation is distinguishable from completion.
   *Verify:* golden test on an `incomplete` body asserts a truncation reason, not `"stop"`.
 - [ ] **P-005** — Send `text.format = {type: "json_schema", strict: true, schema: ...}` using
@@ -233,7 +236,7 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   Closes **I-05** and the structured-output half of **Gap-02**. Depends on **S-001**.
   *Verify:* a schema-violating instruction still yields a conforming object; a provider
   without strict support falls back to prompt-only and says so in `Meta`.
-- [ ] **P-006** — A new `http.Client` is constructed per request (`provider.go:165`),
+- [x] **P-006** — A new `http.Client` is constructed per request (`provider.go:165`),
   defeating connection reuse and HTTP/2 multiplexing. Build it once per provider; keep the
   per-request deadline on the context.
   *Verify:* benchmark showing connection reuse across sequential calls; assert one client
@@ -575,7 +578,7 @@ tests.
 
 ## Pricing and budgets
 
-- [ ] **PR-001** — Never substitute another model's price. `getDefaultPricing` returns
+- [x] **PR-001** — Never substitute another model's price. `getDefaultPricing` returns
   claude-3-haiku pricing for **any** Anthropic model, understating an Opus call by roughly
   60x while presenting it as a precise USD figure; six of eight providers have no entry at all
   and report `$0.00`. Add `Estimated` / `PricingSource` to `CostInfo`. Closes **I-02**.
@@ -773,6 +776,35 @@ S-001 ──> P-005 ──> S-004
 CF-004 ──> OP-108
 PS-004 ──> PS-001
 ```
+
+## Completed — evidence
+
+Recorded here rather than inline to keep the task bodies readable. Each entry names the
+commit and the test that proves it.
+
+| Task | Commit | Evidence |
+| --- | --- | --- |
+| **P-001** | `5a676ae` | `provider.go` extracts only `message` items and `output_text` content. `TestOpenAIResponsesIgnoresReasoningOutputItems` failed against the old parser with the observed value `First I identify the name, then the age.{"name":"John","age":30}` and passes now. |
+| **P-002** | `5a676ae` | `usage.output_tokens_details.reasoning_tokens` parsed; `TestOpenAIResponsesParsesTokenDetails`. |
+| **P-003** | `5a676ae` | `usage.input_tokens_details.cached_tokens` parsed; same test. |
+| **P-004** | `5a676ae` | `FinishReason` mapped from `status` / `incomplete_details`; `TestOpenAIResponsesReportsTruncationFinishReason`. A response with no message item now errors — `TestOpenAIResponsesReasoningOnlyIsAnError`. |
+| **P-006** | `5a676ae` | One `http.Client` per provider; `TestOpenAIProviderReusesHTTPClient`. |
+| **P-010** | `bfebb11` | Tiers resolve to `gpt-5.6-luna` via `ModelDefault*`; `TestGetModelUsesGPT56FamilyForOpenAI`, `TestExplicitModelOverrideBeatsTierDefault`. **Partial** — the luna/sol/terra split still needs P-013. |
+| **P-011** | `bfebb11` | Reasoning controls omitted for `gpt-5.6*`; `TestGPT56OmitsUnverifiedReasoningControls`. **Partial** — confirm against the live API in P-013. |
+| **PR-001** | `0c867e3` | `CostInfo.Priced` / `PricingSource`; `getDefaultPricing` deleted. `pricing/unpriced_test.go` covers unknown models, the Anthropic substitution, exact matches, and snapshot resolution. |
+| **PR-007** | `0c867e3` | See below — found while testing PR-001. |
+| **F-001** | *pending* | `Validate` returns an error on parse failure; `internal/ops/validate_failopen_test.go` covers four negative phrasings plus the well-formed success and failure paths. |
+
+### Added during the work
+
+- [x] **PR-007** — `lookupPricingModel`'s prefix ladder matched `gpt-5.6-luna` against the
+  plain `gpt-5` entry, because it only tested `strings.HasPrefix`. That is the same
+  substitution error as PR-001 one layer down: a different model priced at another model's
+  rates. Prefix matching now requires the suffix to be empty or to begin with `-`, so a dated
+  snapshot still resolves to its base while a minor-version bump does not.
+  *Verify:* `TestVersionBumpIsNotTreatedAsSnapshot`, `TestDatedSnapshotsStillPriceFromBaseModel`.
+  Found because `TestGPT56FamilyIsUnpricedUntilRatesAreKnown` skipped where it should have
+  asserted — the skip was the signal.
 
 ## Standing rules for this list
 

@@ -312,17 +312,14 @@ Against these rules:
 	}
 
 	if err := json.Unmarshal([]byte(response), &llmResult); err != nil {
-		log.Error("Validate operation failed: parse error", "error", err, "response", response)
-		// Try to infer from plain text
-		result.Valid = strings.Contains(strings.ToLower(response), "valid")
-		result.Confidence = 0.5
-		if !result.Valid {
-			result.Errors = []ValidationIssue{{
-				Severity: "error",
-				Message:  response,
-			}}
-		}
-		return result, nil
+		// A validator must not guess. The previous fallback inferred validity
+		// from strings.Contains(response, "valid"), which is also satisfied by
+		// the substring inside "invalid" -- so a response saying the data was
+		// invalid returned Valid: true with a nil error, and the caller's
+		// `if !result.Valid` gate never fired. A parse failure in a validator
+		// is a failure, not a verdict.
+		log.Error("Validate operation failed: parse error", "error", err)
+		return result, fmt.Errorf("validate: could not parse the validation response: %w", err)
 	}
 
 	result.Valid = llmResult.Valid
