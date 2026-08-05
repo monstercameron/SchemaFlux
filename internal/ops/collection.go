@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -166,6 +167,20 @@ func zeroOf[T any]() T {
 //	    WithCriteria("electronics under $500").
 //	    WithMinConfidence(0.8).
 //	    WithIncludeReasons(true))
+//
+// Filter selects the items matching the criteria.
+//
+// A collection too large to echo back within the output budget is split into
+// chunks and filtered a chunk at a time, then concatenated. That is safe for a
+// filter because the merge is a concatenation: each item's fate depends only on
+// the criteria, not on the other items. It is deliberately NOT done for Sort,
+// whose merge needs to know how to interleave two sorted runs -- see MapReduce
+// if you want to build that.
+//
+// The chunks run with bounded concurrency, and a failing chunk fails the call:
+// a filter that silently returned the items from the chunks that happened to
+// succeed would be the fail-open behaviour this library has spent its life
+// removing.
 func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	// Validate options
 	if err := opts.Validate(); err != nil {
@@ -176,6 +191,58 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 		return items, nil
 	}
 
+	opOptions := opts.toOpOptions()
+
+	// Split rather than refuse when the whole collection cannot be echoed back.
+	if fits := filterChunkSize(items, opOptions.Intelligence); fits > 0 && fits < len(items) {
+		ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+		defer cancel()
+
+		kept, _, err := MapReduceFlat(ctx, items,
+			MapReduceOptions{ChunkSize: fits},
+			func(ctx context.Context, chunk []T) ([]T, error) {
+				chunkOpts := opts
+				chunkOpts.OpOptions.Context = ctx
+				return filterOneChunk(chunk, chunkOpts)
+			})
+		if err != nil {
+			return nil, types.FilterError{ItemCount: len(items), Reason: err.Error(), Err: err}
+		}
+		return kept, nil
+	}
+
+	return filterOneChunk(items, opts)
+}
+
+// filterChunkSize returns the largest number of items whose echoed result fits
+// the output budget, or 0 when the whole collection already fits.
+func filterChunkSize[T any](items []T, intelligence types.Speed) int {
+	payload, err := json.Marshal(items)
+	if err != nil {
+		return 0
+	}
+	if checkEchoBudget("Filter", string(payload), len(items), intelligence, 1.0) == nil {
+		return 0
+	}
+
+	maxTokens := config.GetMaxTokens(intelligence)
+	perItem := estimateTokens(string(payload)) / len(items)
+	if perItem <= 0 {
+		return 0
+	}
+
+	// Two thirds of the budget, so a chunk that runs a little long still fits.
+	fits := (maxTokens * 2 / 3) / perItem
+	if fits < 1 {
+		fits = 1
+	}
+	if fits >= len(items) {
+		return 0
+	}
+	return fits
+}
+
+func filterOneChunk[T any](items []T, opts FilterOptions) ([]T, error) {
 	opOptions := opts.toOpOptions()
 
 	// Build filter instructions

@@ -137,6 +137,11 @@ type (
 	// Control-flow types
 	Case = types.Case
 
+	// Map-reduce types
+	MapReduceOptions = ops.MapReduceOptions
+	MapReduceResult  = ops.MapReduceResult
+	ChunkError       = ops.ChunkError
+
 	// New LLM operation types (v2)
 	AnnotateOptions           = ops.AnnotateOptions
 	Annotation                = ops.Annotation
@@ -821,6 +826,49 @@ func Like(template string, action func()) Case {
 // Otherwise builds the default case, which runs only if no other case matched.
 func Otherwise(action func()) Case {
 	return ops.Otherwise(action)
+}
+
+// MapReduce splits items into chunks, runs operation on each with bounded
+// concurrency, and returns the per-chunk results in input order.
+//
+// It exists because a collection larger than one context window had no
+// supported handling: the collection operations could not take one, and there
+// was no primitive for a caller to build around. Chunking a Filter is safe
+// automatically, because the merge is a concatenation; chunking a Sort is not,
+// because interleaving two sorted runs needs knowledge only the caller has.
+// This is that knowledge's home.
+//
+// Example:
+//
+//	ranked, summary, err := schemaflux.MapReduce(ctx, candidates,
+//	    schemaflux.MapReduceOptions{ChunkSize: 20},
+//	    func(ctx context.Context, chunk []Candidate) ([]Candidate, error) {
+//	        return schemaflux.Sort(chunk, schemaflux.NewSortOptions().WithCriteria("strongest first"))
+//	    })
+//	// ... then merge the sorted runs however your domain requires.
+func MapReduce[T any, R any](
+	ctx context.Context,
+	items []T,
+	opts MapReduceOptions,
+	operation func(ctx context.Context, chunk []T) (R, error),
+) ([]R, MapReduceResult, error) {
+	return ops.MapReduce(ctx, items, opts, operation)
+}
+
+// MapReduceFlat is MapReduce for the common case where each chunk produces a
+// slice and the caller wants them concatenated in input order.
+func MapReduceFlat[T any, R any](
+	ctx context.Context,
+	items []T,
+	opts MapReduceOptions,
+	operation func(ctx context.Context, chunk []T) ([]R, error),
+) ([]R, MapReduceResult, error) {
+	return ops.MapReduceFlat(ctx, items, opts, operation)
+}
+
+// Chunk splits a slice into runs of at most size.
+func Chunk[T any](items []T, size int) [][]T {
+	return ops.Chunk(items, size)
 }
 
 // Guard checks if conditions are met before proceeding.

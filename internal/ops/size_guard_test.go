@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -62,15 +63,75 @@ func TestSortRefusesABatchItCannotReturn(t *testing.T) {
 	}
 }
 
-func TestFilterRefusesABatchItCannotReturn(t *testing.T) {
-	restore := stubLLM(`[]`)
+// Filter no longer refuses a large batch: it chunks. The merge for a filter is
+// a concatenation, because each item's fate depends only on the criteria, so
+// splitting is safe. Sort is not split, because interleaving two sorted runs
+// needs knowledge the library does not have.
+func TestFilterChunksRatherThanRefusing(t *testing.T) {
+	items := guardItems(120)
+
+	// Every chunk keeps its first item, whatever the chunk boundaries are.
+	previous := customLLMCaller
+	setLLMCaller(func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
+		var chunk []guardItem
+		start := strings.Index(user, "[")
+		if start < 0 {
+			return "[]", nil
+		}
+		if err := json.Unmarshal([]byte(user[start:]), &chunk); err != nil {
+			return "[]", nil
+		}
+		if len(chunk) == 0 {
+			return "[]", nil
+		}
+		kept, err := json.Marshal(chunk[:1])
+		if err != nil {
+			return "[]", nil
+		}
+		return string(kept), nil
+	})
+	defer func() { customLLMCaller = previous }()
+
+	opts := NewFilterOptions().WithCriteria("anything")
+	opts.CommonOptions.Intelligence = types.Quick
+
+	kept, err := Filter(items, opts)
+	if err != nil {
+		t.Fatalf("Filter must chunk rather than refuse: %v", err)
+	}
+	if len(kept) == 0 {
+		t.Fatal("chunking produced nothing")
+	}
+	// One item per chunk, so more than one result means it really did split.
+	if len(kept) < 2 {
+		t.Errorf("kept %d items; the collection should have been split into several chunks", len(kept))
+	}
+	// And every kept item came from the input, in input order.
+	for i := 1; i < len(kept); i++ {
+		if kept[i-1].ID >= kept[i].ID {
+			t.Errorf("results are not in input order: %q then %q", kept[i-1].ID, kept[i].ID)
+		}
+	}
+}
+
+// A chunk that fails fails the call. A filter that quietly returned the items
+// from the chunks that happened to succeed would be exactly the fail-open
+// behaviour this library exists to remove.
+func TestFilterFailsWhenAChunkFails(t *testing.T) {
+	items := guardItems(120)
+
+	restore := stubLLM("I'm sorry, I can't help with that.")
 	defer restore()
 
 	opts := NewFilterOptions().WithCriteria("anything")
 	opts.CommonOptions.Intelligence = types.Quick
 
-	if _, err := Filter(guardItems(500), opts); err == nil {
-		t.Fatal("a filter that cannot echo its worst case must be refused")
+	kept, err := Filter(items, opts)
+	if err == nil {
+		t.Fatalf("a failing chunk must fail the call; got %d items", len(kept))
+	}
+	if kept != nil {
+		t.Error("a failed filter must return nothing, not a partial result")
 	}
 }
 

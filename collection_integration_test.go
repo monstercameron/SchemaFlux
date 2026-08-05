@@ -1,9 +1,12 @@
 package schemaflux_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
 )
@@ -144,3 +147,106 @@ func Example_chooseRefusesAnAlteredRecord() {
 	// error is nil: false
 	// returned SKU: true
 }
+
+// CF-04 / OP-109: a collection too large to echo back within the output budget
+// used to be refused. Filter splits it instead, because the merge for a filter
+// is a concatenation — each item's fate depends only on the criteria.
+func TestIntegrationFilterChunksLargeCollections(t *testing.T) {
+	lines := make([]lineItem, 200)
+	for i := range lines {
+		lines[i] = lineItem{
+			SKU:      fmt.Sprintf("A-%04d", i),
+			Name:     fmt.Sprintf("Item %d with a name long enough to be realistic", i),
+			UnitCost: float64(i) + 0.5,
+		}
+	}
+
+	// Each chunk keeps its first line, whatever the boundaries turn out to be.
+	provider := &chunkEchoProvider{}
+	schemaflux.NewClient("test-key").WithProviderInstance(provider)
+
+	opts := schemaflux.NewFilterOptions().WithCriteria("anything")
+	opts.CommonOptions.Intelligence = schemaflux.Quick
+
+	kept, err := schemaflux.Filter(lines, opts)
+	if err != nil {
+		t.Fatalf("Filter must chunk rather than refuse: %v", err)
+	}
+	if provider.calls < 2 {
+		t.Fatalf("made %d calls; a 200-item collection should have been split", provider.calls)
+	}
+	if len(kept) == 0 {
+		t.Fatal("chunking produced nothing")
+	}
+	for i := 1; i < len(kept); i++ {
+		if kept[i-1].SKU >= kept[i].SKU {
+			t.Fatalf("results are not in input order: %q then %q", kept[i-1].SKU, kept[i].SKU)
+		}
+	}
+}
+
+// Example_mapReduce shows the primitive for the case the library cannot decide
+// for you: chunking a Sort needs a merge that knows how to interleave two
+// sorted runs, and that is your domain's knowledge, not the library's.
+func Example_mapReduce() {
+	candidates := []lineItem{
+		{SKU: "A-1", Name: "cheap", UnitCost: 1},
+		{SKU: "A-2", Name: "mid", UnitCost: 5},
+		{SKU: "A-3", Name: "dear", UnitCost: 9},
+		{SKU: "A-4", Name: "dearest", UnitCost: 20},
+	}
+
+	// Keeps the first line of whatever chunk it is handed, so it is a valid
+	// answer for every chunk rather than only the first.
+	schemaflux.NewClient("example-key").WithProviderInstance(&chunkEchoProvider{})
+
+	perChunk, summary, err := schemaflux.MapReduce(context.Background(), candidates,
+		schemaflux.MapReduceOptions{ChunkSize: 2, Concurrency: 1},
+		func(ctx context.Context, chunk []lineItem) ([]lineItem, error) {
+			opts := schemaflux.NewFilterOptions().WithCriteria("under $3")
+			opts.CommonOptions.Context = ctx
+			return schemaflux.Filter(chunk, opts)
+		})
+	if err != nil {
+		fmt.Println("map-reduce failed:", err)
+		return
+	}
+
+	fmt.Println("chunks:", summary.Chunks)
+	fmt.Println("complete:", summary.Complete())
+	fmt.Println("results from chunk one:", len(perChunk[0]))
+
+	// Output:
+	// chunks: 2
+	// complete: true
+	// results from chunk one: 1
+}
+
+// chunkEchoProvider returns the first item of whatever chunk it is given.
+type chunkEchoProvider struct {
+	calls int
+}
+
+func (p *chunkEchoProvider) Complete(_ context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+	p.calls++
+
+	start := strings.Index(req.UserPrompt, "[")
+	if start < 0 {
+		return schemaflux.CompletionResponse{Content: "[]", FinishReason: "stop"}, nil
+	}
+
+	var chunk []lineItem
+	if err := json.Unmarshal([]byte(req.UserPrompt[start:]), &chunk); err != nil || len(chunk) == 0 {
+		return schemaflux.CompletionResponse{Content: "[]", FinishReason: "stop"}, nil
+	}
+
+	kept, err := json.Marshal(chunk[:1])
+	if err != nil {
+		return schemaflux.CompletionResponse{Content: "[]", FinishReason: "stop"}, nil
+	}
+	return schemaflux.CompletionResponse{Content: string(kept), FinishReason: "stop"}, nil
+}
+
+func (p *chunkEchoProvider) Name() string                                      { return "local" }
+func (p *chunkEchoProvider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
+func (p *chunkEchoProvider) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
