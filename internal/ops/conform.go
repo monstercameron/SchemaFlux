@@ -177,6 +177,12 @@ func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformRe
 		strictNote = "\nStrict mode: fail if any field cannot be fully conformed."
 	}
 
+	if opt.PreserveUnknown {
+		strictNote += "\nKeep source fields the standard does not define rather than dropping them."
+	} else {
+		strictNote += "\nDrop source fields the standard does not define."
+	}
+
 	systemPrompt := fmt.Sprintf(`You are a data standards compliance expert. Transform data to conform to the %s standard.
 
 Data schema: %s%s%s

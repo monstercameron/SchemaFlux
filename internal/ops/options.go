@@ -1398,15 +1398,6 @@ type BatchOptions struct {
 
 	// Maximum retries per item
 	MaxRetries int
-
-	// Progress callback
-	OnProgress func(completed, total int)
-
-	// Item preprocessor
-	PreProcess func(item interface{}) interface{}
-
-	// Result postprocessor
-	PostProcess func(result interface{}) interface{}
 }
 
 // NewBatchOptions creates BatchOptions with defaults

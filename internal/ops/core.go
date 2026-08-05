@@ -480,10 +480,15 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 
 	if len(opts.Constraints) > 0 {
 		constraints := "Constraints: "
-		for key, value := range opts.Constraints {
-			constraints += fmt.Sprintf("%s=%v; ", key, value)
+		for _, key := range sortedKeys(opts.Constraints) {
+			constraints += fmt.Sprintf("%s=%v; ", key, opts.Constraints[key])
 		}
 		promptParts = append(promptParts, strings.TrimSuffix(constraints, "; "))
+	}
+
+	if opts.EnsureUnique {
+		promptParts = append(promptParts,
+			"Every generated value must be distinct: do not repeat a value that appears in the seed data or examples")
 	}
 
 	if opts.SeedData != nil {

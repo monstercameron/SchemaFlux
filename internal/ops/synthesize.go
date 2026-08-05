@@ -304,6 +304,10 @@ func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[
 		excludeDesc = fmt.Sprintf("\nExclude: %s", strings.Join(opts.ExcludeAspects, ", "))
 	}
 
+	if opts.OutputStructure != "" {
+		excludeDesc += fmt.Sprintf("\nOrganise the synthesised output as: %s", opts.OutputStructure)
+	}
+
 	var zero T
 	targetSchema := GenerateTypeSchema(reflect.TypeOf(zero))
 

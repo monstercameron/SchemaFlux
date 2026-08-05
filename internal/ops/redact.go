@@ -49,7 +49,6 @@ type RedactOptions struct {
 	MaskLength     int            // Length of mask (-1 = use original length, default: 3)
 	JumbleSeed     int64          // Random seed for reproducible jumbling
 	JumbleMode     JumbleMode     // How to perform jumbling
-	PreserveFormat bool           // Keep special chars and formatting
 	CustomPatterns []string       // Additional regex patterns to match
 }
 
@@ -60,13 +59,12 @@ func NewRedactOptions() RedactOptions {
 			Mode:         types.Strict,
 			Intelligence: types.Smart,
 		},
-		Categories:     []string{"PII"},
-		Strategy:       RedactMask,
-		MaskText:       "",
-		MaskChar:       '*',
-		MaskLength:     3,
-		JumbleMode:     JumbleTypeAware,
-		PreserveFormat: true,
+		Categories: []string{"PII"},
+		Strategy:   RedactMask,
+		MaskText:   "",
+		MaskChar:   '*',
+		MaskLength: 3,
+		JumbleMode: JumbleTypeAware,
 	}
 }
 
@@ -109,12 +107,6 @@ func (opts RedactOptions) WithJumbleSeed(seed int64) RedactOptions {
 // WithJumbleMode sets how jumbling should work
 func (opts RedactOptions) WithJumbleMode(mode JumbleMode) RedactOptions {
 	opts.JumbleMode = mode
-	return opts
-}
-
-// WithPreserveFormat sets whether to preserve formatting
-func (opts RedactOptions) WithPreserveFormat(preserve bool) RedactOptions {
-	opts.PreserveFormat = preserve
 	return opts
 }
 

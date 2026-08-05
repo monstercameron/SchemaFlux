@@ -99,6 +99,17 @@ func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], e
 		}
 	}
 
+	if len(opts.CategoryExamples) > 0 {
+		for _, category := range sortedKeys(opts.CategoryExamples) {
+			examples := opts.CategoryExamples[category]
+			if len(examples) == 0 {
+				continue
+			}
+			instructions = append(instructions,
+				fmt.Sprintf("Examples of %s: %s", category, strings.Join(examples, "; ")))
+		}
+	}
+
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")
 		if opts.OpOptions.Steering != "" {
@@ -306,9 +317,20 @@ func Score[T any](input T, opts ScoreOptions) (ScoreResult, error) {
 	}
 
 	if len(opts.Rubric) > 0 {
-		for criterion, description := range opts.Rubric {
-			instructions = append(instructions, fmt.Sprintf("%s: %s", criterion, description))
+		for _, criterion := range sortedKeys(opts.Rubric) {
+			instructions = append(instructions, fmt.Sprintf("%s: %s", criterion, opts.Rubric[criterion]))
 		}
+	}
+
+	if opts.IncludeBreakdown {
+		instructions = append(instructions,
+			"Report a per-criterion breakdown alongside the overall score, so the number can be traced to its parts")
+	}
+
+	if opts.Normalize {
+		instructions = append(instructions,
+			fmt.Sprintf("Normalise the score to the range %.1f to %.1f, so it is comparable across inputs",
+				opts.ScaleMin, opts.ScaleMax))
 	}
 
 	if len(instructions) > 0 {
@@ -506,6 +528,11 @@ func Compare[T any](itemA, itemB T, opts CompareOptions) (CompareResult[T], erro
 	}
 
 	instructions = append(instructions, fmt.Sprintf("Depth level: %d/10", opts.Depth))
+
+	if opts.IncludeSimilarity {
+		instructions = append(instructions,
+			"Report a similarity score alongside the differences, not only what differs")
+	}
 
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")

@@ -300,6 +300,10 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 		explanationNote = "\nInclude brief explanations for why items matched."
 	}
 
+	if opts.Bidirectional {
+		explanationNote += "\nA match must hold in both directions: the target must be the best match for the source, and the source the best match for the target."
+	}
+
 	systemPrompt := fmt.Sprintf(`You are an expert at semantic matching and entity resolution.
 
 Strategy: %s%s%s%s%s%s

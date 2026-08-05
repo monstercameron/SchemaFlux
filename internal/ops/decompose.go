@@ -267,6 +267,10 @@ func Decompose[T any](input T, opts DecomposeOptions) (DecomposeResult[T], error
 		estimateNote = "\nInclude time/effort estimates for each part."
 	}
 
+	if opts.PreserveHierarchy {
+		estimateNote += "\nPreserve the nesting of the source: a part derived from a sub-section stays under its parent rather than being flattened to the top level."
+	}
+
 	systemPrompt := fmt.Sprintf(`You are an expert at breaking down complex items into manageable parts.
 
 Strategy: %s%s%s%s%s%s

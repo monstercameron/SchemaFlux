@@ -29,9 +29,6 @@ type ProjectOptions struct {
 	// InferMissing allows inferring target fields not in source
 	InferMissing bool
 
-	// PreserveNulls keeps null values instead of omitting them
-	PreserveNulls bool
-
 	// Common options
 	Steering      string
 	Mode          types.Mode
@@ -337,7 +334,6 @@ func mergeProjectOptions(defaults, user ProjectOptions) ProjectOptions {
 		defaults.Exclude = user.Exclude
 	}
 	defaults.InferMissing = user.InferMissing
-	defaults.PreserveNulls = user.PreserveNulls
 	if user.Steering != "" {
 		defaults.Steering = user.Steering
 	}

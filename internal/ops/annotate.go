@@ -235,6 +235,10 @@ func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 		domainContext = fmt.Sprintf("\nDomain context: %s", opts.Domain)
 	}
 
+	if opts.Language != "" {
+		domainContext += fmt.Sprintf("\nThe text is in %s; annotate in that language and do not translate it.", opts.Language)
+	}
+
 	confidenceNote := ""
 	if opts.IncludeConfidence {
 		confidenceNote = fmt.Sprintf("\nInclude confidence scores (0.0-1.0) for each annotation. Only include annotations with confidence >= %.2f.", opts.MinConfidence)

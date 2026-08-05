@@ -26,12 +26,11 @@ type PipelineStep struct {
 
 // PipelineOptions configures pipeline execution
 type PipelineOptions struct {
-	FailFast     bool          // Stop on first error
-	Timeout      time.Duration // Overall pipeline timeout
-	RetryFailed  bool          // Retry failed steps
-	MaxRetries   int           // Maximum retry attempts, counted as retries, not attempts
-	RetryDelay   time.Duration // Base backoff between attempts; defaults to one second
-	SaveProgress bool          // Allow resuming from failure point
+	FailFast    bool          // Stop on first error
+	Timeout     time.Duration // Overall pipeline timeout
+	RetryFailed bool          // Retry failed steps
+	MaxRetries  int           // Maximum retry attempts, counted as retries, not attempts
+	RetryDelay  time.Duration // Base backoff between attempts; defaults to one second
 }
 
 // PipelineResult contains the results of pipeline execution

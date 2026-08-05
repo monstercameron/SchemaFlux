@@ -496,20 +496,6 @@ func TestBatchOptions(t *testing.T) {
 			},
 			wantErr: true,
 		},
-		{
-			name: "valid with callbacks",
-			options: BatchOptions{
-				CommonOptions: CommonOptions{},
-				Mode:          "parallel",
-				Concurrency:   10,
-				BatchSize:     50,
-				ErrorStrategy: "continue",
-				OnProgress: func(completed, total int) {
-					// Progress callback
-				},
-			},
-			wantErr: false,
-		},
 	}
 
 	for _, tt := range tests {

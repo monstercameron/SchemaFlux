@@ -168,7 +168,7 @@ regardless of what happens to the rest of the plan.
 
 ## Dead options
 
-- [ ] **F-023** — Implement or delete the dead options. Each has a fluent setter, so the call
+- [x] **F-023** — Implement or delete the dead options. Each has a fluent setter, so the call
   chain reads as if it configured something: `BatchOptions.OnProgress` / `PreProcess` /
   `PostProcess`, `PipelineOptions.SaveProgress`, `ClassifyOptions.CategoryExamples`,
   `TransformOptions.To`, `ClusterOptions.MaxClusterSize`, `RedactOptions.PreserveFormat`,
@@ -177,7 +177,7 @@ regardless of what happens to the rest of the plan.
   `GenerateOptions.EnsureUnique`, `FilterOptions.BatchSize`, `GuardResult.RetryAfter`.
   Closes **X-04**, **C-10**, **D-10**, **CF-10**.
   *Verify:* **F-024**.
-- [ ] **F-024** — Add a static check that fails when an exported options-struct field is
+- [x] **F-024** — Add a static check that fails when an exported options-struct field is
   never read outside its own declaration, setter, and merge function. This is what found the
   list above; make it permanent so the class cannot recur.
   *Verify:* the check fails on a deliberately reintroduced dead field.
@@ -833,6 +833,8 @@ commit and the test that proves it.
 | **F-021** | `012ea72` | `Redact`, `RedactWithResult`, and `RedactLLM` say NOT PRODUCTION READY in their doc comments and the README, each naming the concrete failure (substring field match, patterns that miss their formats, an audit that returns an empty map, a reversible jumble, unvalidated character offsets) rather than advising caution. `internal/ops/disclosure_test.go` parses the package and fails if any disclosure goes missing. |
 | **F-022** | `012ea72` | The "privacy filtering" framing is gone, replaced by what `Exclude` guarantees and where the guarantee stops. Closed together with **OP-301**, which made the documentation true rather than merely weaker. |
 | **OP-301** | `012ea72` | Excluded fields are stripped from the payload before serialisation — matched by JSON field name, case-insensitively, at every level — and the output is scanned for the removed values. `internal/ops/project_exclude_test.go` (12 strip cases, 9 leak-scan cases) and `project_integration_test.go` (6 exclusion cases at the provider boundary plus `Example_projectWithholdsFields`). Both end-to-end tests were verified to FAIL against the prompt-hint version. |
+| **F-024** | `pending` | `internal/ops/dead_options_test.go` walks the package and fails any exported `*Options` field with a setter and no reader, excluding the setter and merge functions that do not constitute a reader. Written first, so it produced the authoritative list rather than the review's: it found **five fields the review missed** (`ClusterOptions.GenerateDescriptions`, `ConformOptions.PreserveUnknown`, `DecomposeOptions.PreserveHierarchy`, `MatchOptions.Bidirectional`, `ScoreOptions.Normalize`) and corrected two entries (`FilterOptions.BatchSize` is live; `TransformOptions.To` no longer existed). 365 option fields, 0 dead. |
+| **F-023** | `pending` | All 18 resolved on a stated principle. The six that promised deterministic machinery a prompt cannot deliver — `OnProgress`, `PreProcess`, `PostProcess`, `SaveProgress`, `PreserveNulls`, `PreserveFormat` — were deleted with their setters. The twelve that are legitimately instructions to the model were threaded into their prompts. `internal/ops/options_reach_prompt_test.go` proves each one: it renders the prompt with and without the option and fails if they are identical, which is the difference between a field being read and a field being honoured. |
 
 ### Added during the work
 

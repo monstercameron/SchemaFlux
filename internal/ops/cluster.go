@@ -251,6 +251,16 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 		clusterCriteria = opts.ClusterBy
 	}
 
+	sizeLimit := ""
+	if opts.MaxClusterSize > 0 {
+		sizeLimit = fmt.Sprintf("\nNo cluster may contain more than %d items; split a cluster that would exceed it.", opts.MaxClusterSize)
+	}
+
+	descriptionNote := "\nLeave the description empty; the cluster name is enough."
+	if opts.GenerateDescriptions {
+		descriptionNote = "\nGive every cluster a description saying what its members have in common."
+	}
+
 	outlierHandling := ""
 	if opts.IncludeOutliers {
 		outlierHandling = "Place items that don't fit well into any cluster in an 'outliers' group."
@@ -258,7 +268,7 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 		outlierHandling = "Force all items into the nearest cluster, even if not a perfect fit."
 	}
 
-	systemPrompt := fmt.Sprintf(`You are an expert at semantic clustering. Group the items based on %s.
+	systemPrompt := fmt.Sprintf(`You are an expert at semantic clustering. Group the items based on %s.%s%s
 
 %s
 
@@ -279,7 +289,7 @@ Return a JSON object with:
   ],
   "outlier_indices": [2, 5],
   "quality": 0.85
-}`, clusterCriteria, clusterConstraint, outlierHandling, opts.NamingStrategy, opts.SimilarityThreshold)
+}`, clusterCriteria, sizeLimit, descriptionNote, clusterConstraint, outlierHandling, opts.NamingStrategy, opts.SimilarityThreshold)
 
 	userPrompt := fmt.Sprintf("Cluster these items:\n\n%s", strings.Join(itemsJSON, "\n"))
 
