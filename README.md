@@ -338,6 +338,31 @@ Retry-related environment variables:
 - `SCHEMAFLUX_TIMEOUT`
 - `SCHEMAFLUX_REPAIR_ATTEMPTS`
 
+### Provider failures
+
+A non-200 arrives as a typed `*schemaflux.APIError`, so you branch on the
+status rather than on an English sentence:
+
+```go
+if status, ok := schemaflux.StatusCodeFrom(err); ok && status == 400 {
+    // your schema or your request is wrong; retrying will not help
+}
+
+var apiErr *schemaflux.APIError
+if errors.As(err, &apiErr) && apiErr.Retryable() {
+    // transient
+}
+```
+
+`Error()` prints the status, the model, and the vendor's own `message`, `type`,
+`code`, and `param` — but **not the raw response body**. A provider's error can
+quote your input back at you (a content filter naming the passage it objected
+to, a validation error echoing the field it could not parse), and this library
+exists to run invoices, tickets, and notes through models. That content does not
+belong in your logs by default. The body is retained on the value: use
+`apiErr.Body`, `apiErr.Detail()`, or set `SCHEMAFLUX_ERROR_DETAIL=1` while
+debugging against data you own.
+
 ### Rate limits
 
 A 429 or 503 carries the wait the server wants in `Retry-After`, and that number

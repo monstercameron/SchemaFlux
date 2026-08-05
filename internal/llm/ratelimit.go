@@ -20,30 +20,30 @@ import (
 // fails after burning its whole retry budget.
 
 // RateLimitError reports a rate-limited request along with the wait the server
-// asked for. RetryAfter is zero when the server did not say.
+// asked for. It is an APIError first: a 429 is a request that failed with a
+// status like any other, and a caller branching on the status should not have
+// to know that this one carries an extra field.
 type RateLimitError struct {
-	// Provider names who rate-limited the request.
-	Provider string
-
-	// StatusCode is the HTTP status, kept so the message reads the same as the
-	// generic transport error it replaces.
-	StatusCode int
+	*APIError
 
 	// RetryAfter is the wait the server asked for, zero if it did not say.
 	RetryAfter time.Duration
-
-	// Body is the server's explanation, which is where the quota that was hit
-	// is named.
-	Body string
 }
 
 func (e *RateLimitError) Error() string {
-	if e.RetryAfter > 0 {
-		return fmt.Sprintf("%s API error (status %d, retry after %s): %s",
-			e.Provider, e.StatusCode, e.RetryAfter, e.Body)
+	base := e.APIError.Error()
+	if e.RetryAfter <= 0 {
+		return base
 	}
-	return fmt.Sprintf("%s API error (status %d): %s", e.Provider, e.StatusCode, e.Body)
+	// The wait goes next to the status rather than at the end, because it is
+	// the part a reader acts on.
+	return strings.Replace(base,
+		fmt.Sprintf("status %d", e.StatusCode),
+		fmt.Sprintf("status %d, retry after %s", e.StatusCode, e.RetryAfter), 1)
 }
+
+// Unwrap exposes the underlying APIError, so errors.As recovers either type.
+func (e *RateLimitError) Unwrap() error { return e.APIError }
 
 // MaxRetryAfter bounds how long a server may make this library wait. A
 // misconfigured or hostile endpoint answering `Retry-After: 86400` must not
@@ -102,11 +102,9 @@ func isRateLimited(status int) bool {
 }
 
 // rateLimitError builds the typed error for a throttled response.
-func rateLimitError(provider string, resp *http.Response, body string) *RateLimitError {
+func rateLimitError(provider, model string, resp *http.Response, body string) *RateLimitError {
 	return &RateLimitError{
-		Provider:   provider,
-		StatusCode: resp.StatusCode,
+		APIError:   NewAPIError(provider, model, resp.StatusCode, body),
 		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
-		Body:       strings.TrimSpace(body),
 	}
 }

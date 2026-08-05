@@ -16,6 +16,7 @@ package schemaflux
 
 import (
 	"context"
+	"time"
 
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/ops"
@@ -52,6 +53,17 @@ type (
 
 	// ProviderFactory creates a provider from configuration.
 	ProviderFactory = llm.ProviderFactory
+
+	// APIError reports a provider request that failed with an HTTP status.
+	// Recover it with errors.As to branch on StatusCode rather than
+	// substring-matching an error message. Error() withholds the raw response
+	// body -- a provider's error can quote your input back, and that does not
+	// belong in your logs by default. Detail() includes it.
+	APIError = llm.APIError
+
+	// RateLimitError is an APIError that also carries the wait the server
+	// asked for. errors.As recovers it as either type.
+	RateLimitError = llm.RateLimitError
 
 	// CompletionRequest is the low-level provider request shape.
 	CompletionRequest = llm.CompletionRequest
@@ -827,6 +839,15 @@ func Like(template string, action func()) Case {
 func Otherwise(action func()) Case {
 	return ops.Otherwise(action)
 }
+
+// StatusCodeFrom recovers the HTTP status from a provider failure, through
+// whatever wrapping the call stack added. It is the supported way to ask "was
+// this a 429 or a 400" -- the alternative is matching on an English sentence.
+func StatusCodeFrom(err error) (int, bool) { return llm.StatusCodeFrom(err) }
+
+// RetryAfterFrom returns the wait a rate-limited provider asked for, and
+// whether the failure was a rate limit at all.
+func RetryAfterFrom(err error) (time.Duration, bool) { return llm.RetryAfterFrom(err) }
 
 // MapReduce splits items into chunks, runs operation on each with bounded
 // concurrency, and returns the per-chunk results in input order.

@@ -166,12 +166,12 @@ func completeViaChatCompletions(
 		// Reporting it as a plain error throws that away and leaves the retry
 		// loop guessing at a window it cannot see.
 		if isRateLimited(resp.StatusCode) {
-			return CompletionResponse{}, rateLimitError(name, resp, string(raw))
+			return CompletionResponse{}, rateLimitError(name, req.Model, resp, string(raw))
 		}
-		// The body is included because a schema rejection is reported there and
-		// nowhere else; a bare status code sends the caller guessing.
-		return CompletionResponse{}, fmt.Errorf("%s API error (status %d): %s",
-			name, resp.StatusCode, strings.TrimSpace(string(raw)))
+		// Typed, so a caller can branch on the status rather than substring-
+		// matching an English sentence, and so the raw body is retained without
+		// being printed into their logs by default.
+		return CompletionResponse{}, NewAPIError(name, req.Model, resp.StatusCode, string(raw))
 	}
 
 	var decoded chatCompletionResponse

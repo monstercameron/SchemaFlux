@@ -76,7 +76,7 @@ func TestIsRateLimited(t *testing.T) {
 // RetryAfterFrom has to see through the wrapping the call stack adds, or the
 // wait is discovered by nobody.
 func TestRetryAfterFromUnwraps(t *testing.T) {
-	base := &RateLimitError{Provider: "cerebras", StatusCode: 429, RetryAfter: 53 * time.Second, Body: "quota"}
+	base := &RateLimitError{APIError: &APIError{Provider: "cerebras", StatusCode: 429, Body: "quota"}, RetryAfter: 53 * time.Second}
 
 	cases := []struct {
 		name string
@@ -87,7 +87,7 @@ func TestRetryAfterFromUnwraps(t *testing.T) {
 		{"direct", base, 53 * time.Second, true},
 		{"wrapped_once", fmt.Errorf("extraction failed: %w", base), 53 * time.Second, true},
 		{"wrapped_twice", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", base)), 53 * time.Second, true},
-		{"no_wait_stated", &RateLimitError{Provider: "x", StatusCode: 429}, 0, true},
+		{"no_wait_stated", &RateLimitError{APIError: &APIError{Provider: "x", StatusCode: 429}}, 0, true},
 		{"unrelated", errors.New("connection reset"), 0, false},
 		{"nil", nil, 0, false},
 	}
@@ -109,8 +109,14 @@ func TestRetryAfterFromUnwraps(t *testing.T) {
 // not a replacement for the vendor's explanation.
 func TestRateLimitErrorMessage(t *testing.T) {
 	withWait := &RateLimitError{
-		Provider: "cerebras", StatusCode: 429, RetryAfter: 53 * time.Second,
-		Body: `{"message":"Requests per minute limit exceeded"}`,
+		APIError: &APIError{
+			Provider: "cerebras", StatusCode: 429,
+			Body: `{"message":"Requests per minute limit exceeded"}`,
+			// Extracted from the body by newAPIError in the real path; set
+			// here because this test builds the value directly.
+			Message: "Requests per minute limit exceeded",
+		},
+		RetryAfter: 53 * time.Second,
 	}
 	message := withWait.Error()
 	for _, want := range []string{"cerebras", "429", "53s", "per minute limit exceeded"} {
@@ -119,7 +125,7 @@ func TestRateLimitErrorMessage(t *testing.T) {
 		}
 	}
 
-	withoutWait := &RateLimitError{Provider: "cerebras", StatusCode: 429, Body: "slow down"}
+	withoutWait := &RateLimitError{APIError: &APIError{Provider: "cerebras", StatusCode: 429, Body: "slow down"}}
 	if strings.Contains(withoutWait.Error(), "retry after") {
 		t.Errorf("a wait was reported that the server never gave: %s", withoutWait.Error())
 	}

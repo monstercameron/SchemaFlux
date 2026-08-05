@@ -249,6 +249,15 @@ func isRetryableLLMError(err error) bool {
 		return true
 	}
 
+	// A provider failure that carries a real HTTP status answers this question
+	// directly. Deciding from the status rather than from prose also survives
+	// the body being redacted out of the message, which is the whole point of
+	// the typed error: the string is for a human, the status is for the code.
+	var apiErr *llm.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 {
+		return apiErr.Retryable()
+	}
+
 	msg := strings.ToLower(err.Error())
 
 	nonRetryable := []string{

@@ -68,6 +68,9 @@ CLUSTERS = [
                                          "internal/ops/retry_after_test.go",
                                          "provider_example_test.go"], [], True),
  ("CB-04  cerebras live verification",  ["live_cerebras_test.go"], [], "gated"),
+ ("P-007  typed provider errors",       ["internal/llm/apierror_test.go",
+                                         "provider_example_test.go"], [], True),
+ ("P-011/P-013  capability matrix",     ["internal/llm/capabilities_test.go"], [], False),
 ]
 
 print(f"{'cluster':<40} {'cases':>6} {'ex':>3}  status")

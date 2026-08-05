@@ -1,6 +1,7 @@
 package schemaflux_test
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -153,4 +154,51 @@ func Example_rateLimitsAreWaitedOut() {
 	// claimant: R. Okonkwo
 	// attempts: 2
 	// waited out the window: true
+}
+
+// Example_branchingOnAProviderFailure shows the supported way to ask what went
+// wrong. Before this, the status code was formatted into an English sentence
+// and thrown away, so a caller who wanted to distinguish "my schema is wrong"
+// from "come back later" had to substring-match prose.
+//
+// Note what the printed error does NOT contain: the raw response body. A
+// provider's error can quote your input back, and this library exists to run
+// invoices and medical notes through models -- that content does not belong in
+// your logs by default. The value keeps it; Detail() prints it.
+func Example_branchingOnAProviderFailure() {
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"Invalid schema: exceeds maximum nesting depth",
+			"type":"invalid_request_error","param":"response_format"},
+			"echoed_input":"R. Okonkwo, account 4471-9920, $12,000"}`)
+	}))
+	defer vendor.Close()
+
+	client := schemaflux.NewClient("k").
+		WithProviderConfig("cerebras", schemaflux.ProviderConfig{
+			BaseURL: vendor.URL, Timeout: 30 * time.Second,
+		})
+	schemaflux.SetDefaultClient(client)
+
+	_, err := schemaflux.Extract[expenseClaim]("R. Okonkwo, account 4471-9920, $12,000",
+		schemaflux.NewExtractOptions())
+
+	status, ok := schemaflux.StatusCodeFrom(err)
+	fmt.Println("status recovered:", ok)
+	fmt.Println("status:", status)
+
+	var apiErr *schemaflux.APIError
+	if errors.As(err, &apiErr) {
+		fmt.Println("vendor said:", apiErr.Message)
+		fmt.Println("worth retrying:", apiErr.Retryable())
+	}
+
+	fmt.Println("account number in the error text:", strings.Contains(err.Error(), "4471-9920"))
+
+	// Output:
+	// status recovered: true
+	// status: 400
+	// vendor said: Invalid schema: exceeds maximum nesting depth
+	// worth retrying: false
+	// account number in the error text: false
 }

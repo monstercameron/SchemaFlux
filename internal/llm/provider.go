@@ -223,9 +223,9 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		if isRateLimited(resp.StatusCode) {
-			return CompletionResponse{}, rateLimitError("openai", resp, string(bodyBytes))
+			return CompletionResponse{}, rateLimitError("openai", req.Model, resp, string(bodyBytes))
 		}
-		return CompletionResponse{}, fmt.Errorf("OpenAI API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+		return CompletionResponse{}, NewAPIError("openai", req.Model, resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse response
