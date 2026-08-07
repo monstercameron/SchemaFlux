@@ -194,3 +194,73 @@ func TestCanonicalKeyIsStableForMaps(t *testing.T) {
 		t.Errorf("SameMultiset over equal maps = %v", err)
 	}
 }
+
+// OP-402. MaxLength and TargetLength were requested in a prompt and never
+// checked, so an operation documented as producing at most N of something
+// produced whatever the model produced.
+func TestWithinLength(t *testing.T) {
+	cases := []struct {
+		name      string
+		text      string
+		limit     int
+		unit      LengthUnit
+		tolerance float64
+		wantErr   bool
+	}{
+		{"under the limit", "one two three", 5, LengthInWords, 0, false},
+		{"exactly at the limit", "one two three", 3, LengthInWords, 0, false},
+		{"over the limit", "one two three four five six", 3, LengthInWords, 0, true},
+		{"over but inside the tolerance", "one two three four", 3, LengthInWords, 0.5, false},
+		{"over the tolerance", "one two three four five", 3, LengthInWords, 0.2, true},
+		{"no limit configured", "anything at all, really", 0, LengthInWords, 0, false},
+		{"characters count runes", "Montréal", 8, LengthInCharacters, 0, false},
+		{"characters would fail as bytes", "東京都", 3, LengthInCharacters, 0, false},
+		{"three sentences requested, three given", "One. Two. Three.", 3, LengthInSentences, 0, false},
+		{"three sentences requested, six given", "A. B. C. D. E. F.", 3, LengthInSentences, 0, true},
+		{"paragraphs", "first\n\nsecond", 2, LengthInParagraphs, 0, false},
+		{"too many paragraphs", "a\n\nb\n\nc\n\nd", 2, LengthInParagraphs, 0, true},
+		{"empty text", "", 3, LengthInSentences, 0, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := WithinLength(tc.text, tc.limit, tc.unit, tc.tolerance)
+			if tc.wantErr && err == nil {
+				t.Errorf("WithinLength accepted %d %s against a limit of %d",
+					MeasureLength(tc.text, tc.unit), tc.unit, tc.limit)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("WithinLength = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// The measurement itself, per unit. Counting is where a length check goes
+// wrong quietly.
+func TestMeasureLength(t *testing.T) {
+	cases := []struct {
+		text string
+		unit LengthUnit
+		want int
+	}{
+		{"one two three", LengthInWords, 3},
+		{"  spaced   out  ", LengthInWords, 2},
+		{"", LengthInWords, 0},
+		{"One. Two! Three?", LengthInSentences, 3},
+		{"No terminator", LengthInSentences, 1},
+		{"Ends with two dots..", LengthInSentences, 1},
+		{"", LengthInSentences, 0},
+		{"a\n\nb\n\nc", LengthInParagraphs, 3},
+		{"single", LengthInParagraphs, 1},
+		{"Montréal", LengthInCharacters, 8},
+		{"東京都", LengthInCharacters, 3},
+		{"", LengthInCharacters, 0},
+	}
+
+	for _, tc := range cases {
+		if got := MeasureLength(tc.text, tc.unit); got != tc.want {
+			t.Errorf("MeasureLength(%q, %s) = %d, want %d", tc.text, tc.unit, got, tc.want)
+		}
+	}
+}

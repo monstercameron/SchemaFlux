@@ -387,10 +387,16 @@ to test code that uses this library without paying a provider.
   and user prompt for a fixed input. Prompt changes then become reviewable diffs instead of
   silent behavior changes for every downstream user. Closes the testing half of **Gap-13**.
   *Verify:* editing any prompt literal fails a golden test until the snapshot is updated.
-- [ ] **TI-005** — Determinism test: build the same prompt twice from identical options and
+- [x] **TI-005** — Determinism test: build the same prompt twice from identical options and
   assert byte equality. This currently **fails** — Go map iteration order randomizes prompt
   bytes (see **CA-001**). Write it now so the fix has a witness.
   *Verify:* the test fails today and passes after CA-001.
+  **Done, with CA-001** (`6166e38`) — the task asked for the test to be written first so the
+  fix had a witness, and that is what happened: `TestPromptsAreByteIdenticalAcrossRuns`
+  renders each of six map-into-prompt sites twenty times and compares bytes, and every
+  subtest was verified to FAIL against the unsorted code before the sort landed.
+  `TestIntegrationRepeatedCallsSendIdenticalBytes` checks the same at the provider boundary.
+  The box was left open.
 - [ ] **TI-006** — Fault-injection harness backing **F-028**: provider error, malformed body,
   schema-violating body, truncated body, empty body — parameterized across every exported
   operation.
@@ -416,9 +422,21 @@ to test code that uses this library without paying a provider.
   case alongside the race case; it is the one that fails today by construction.
   *Verify (added):* two clients with different fake providers and different budgets run
   concurrently and each sees only its own.
-- [ ] **TI-009** — UTF-8 corpus fixtures (CJK, emoji, combining marks, RTL) used by every
+- [x] **TI-009** — UTF-8 corpus fixtures (CJK, emoji, combining marks, RTL) used by every
   truncation, slicing, and redaction test. Closes the test half of **T-06**.
-- [ ] **TI-010** — Cost-accounting tests: assert an unpriced model reports "unpriced" rather
+  **Done** — `internal/ops/utf8corpus_test.go` holds one corpus of eleven entries, chosen for
+  what breaks rather than for coverage of Unicode: accented Latin (two bytes, one rune), CJK
+  (three bytes, no spaces to split on), emoji including a ZWJ sequence (several runes that
+  display as one), decomposed combining marks (seven visible characters, nine runes), RTL
+  Arabic and Hebrew (visual order is not byte order), and a mixed string.
+  Four tests consume it: truncation at **every** cut point of every entry; masking, which has
+  to reveal characters not bytes; length measurement; and redaction span location. A new
+  operation inherits the cases instead of rediscovering them.
+  Found while writing it: the combining-marks entry has to be spelled with an explicit
+  `́`, because a precomposed é is one rune and tests nothing — the test asserts every
+  non-ASCII entry actually differs in byte and rune length, so a corpus entry that exercises
+  nothing fails.
+- [x] **TI-010** — Cost-accounting tests: assert an unpriced model reports "unpriced" rather
   than `$0.00`, and that a priced model's arithmetic matches a hand-computed figure.
 
 ---
@@ -428,6 +446,14 @@ to test code that uses this library without paying a provider.
 Primitives 1–5 and 7–8 from the review's target shape. Build alongside the existing code;
 port nothing yet except one operation as the proof.
 
+  **Done** — `pricing/accounting_test.go`. The unpriced path across six models, asserting
+  zero-with-`Priced:false` is never confusable with free; the arithmetic against a
+  hand-computed figure using a model registered by the test, so it does not depend on a rate
+  card that will change; cached and reasoning tokens costed separately, with an explicit
+  assertion that cached tokens are *not* charged at the prompt rate (nine times too much in
+  that case); a missing rate contributing nothing rather than inventing a number; PR-007's
+  snapshot-versus-version-bump distinction; nil usage; and a summary of unpriced calls not
+  reading as a summary of free ones.
 - [ ] **A-001** — `Op[In, Out]` descriptor: `Name`, `Prompt`, `Format`, `Schema`, `Decode`,
   `Invariants`. Closes the structural half of **D-15**.
   **Revised (ARC-04, ARC-16, API-09):** the descriptor is wider than six fields and it is
@@ -803,8 +829,18 @@ tests.
 - [ ] **OP-401** — Collapse the `X` / `XWithMetadata` twins into one operation returning
   `Result[T]` (`text.go:95/166`, `269/353`, `467/547`, `659/733`), each pair duplicating ~40
   identical lines. Closes **T-01**.
-- [ ] **OP-402** — Attach `WithinLength` so `MaxLength` and `TargetLength` are checked rather
+- [x] **OP-402** — Attach `WithinLength` so `MaxLength` and `TargetLength` are checked rather
   than requested, and compute `CompressionRatio` on runes rather than bytes. Closes **T-03**.
+  **Done** — `WithinLength` and `MeasureLength` join the invariant library, with an explicit
+  `LengthUnit` because "200" means nothing without one, and `Summarize` checks its
+  `TargetLength` against them. The tolerance is 20% and deliberate: the prompt says *target*,
+  and a summary asked for three sentences that returns four has done the job — failing the
+  call would be a worse answer than the one it gave.
+  `CompressionRatio` is computed on runes. In bytes, the same summary of the same text
+  reported a number three times smaller for Japanese than for English, and that ratio is what
+  a caller tunes `MaxCompression` against.
+  *Verify:* `TestWithinLength` (13 cases across four units, including two that would pass or
+  fail differently if characters meant bytes) and `TestMeasureLength` (12 cases).
 - [x] **OP-403** — Replace byte slicing with rune-safe truncation in `complete.go:269-276`
   and `redact_llm.go:305-336`. Closes **T-06**. Depends on **TI-009**.
 - [ ] **OP-404** — `Complete` and `CompleteField`: drop the `provider llm.Provider` parameter

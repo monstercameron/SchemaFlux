@@ -211,3 +211,96 @@ func AtLeastConfidence(reported, minimum float64) error {
 	}
 	return fmt.Errorf("the model reported confidence %.2f, below the %.2f floor this operation was configured with", reported, minimum)
 }
+
+// LengthUnit names what a length is counted in. The unit is part of the
+// contract: "200" means nothing without it, and a summary asked for 3 sentences
+// that comes back as 3 paragraphs is not the length that was requested.
+type LengthUnit string
+
+const (
+	LengthInCharacters LengthUnit = "characters"
+	LengthInWords      LengthUnit = "words"
+	LengthInSentences  LengthUnit = "sentences"
+	LengthInParagraphs LengthUnit = "paragraphs"
+)
+
+// MeasureLength counts text in the given unit. Characters means runes, not
+// bytes: an accented character is one character to everyone except a byte
+// count.
+func MeasureLength(text string, unit LengthUnit) int {
+	switch unit {
+	case LengthInWords:
+		return len(strings.Fields(text))
+	case LengthInSentences:
+		return countSentences(text)
+	case LengthInParagraphs:
+		return countParagraphs(text)
+	default:
+		return len([]rune(text))
+	}
+}
+
+// WithinLength reports whether text is at most limit units long.
+//
+// MaxLength and TargetLength were requested in a prompt and never checked, so
+// an operation documented as producing at most N of something produced whatever
+// the model produced. The tolerance exists because "target" is a target: a
+// model asked for three sentences that returns four has done the job, and
+// failing the call would be a worse answer than the one it gave.
+func WithinLength(text string, limit int, unit LengthUnit, tolerance float64) error {
+	if limit <= 0 {
+		return nil
+	}
+	if tolerance < 0 {
+		tolerance = 0
+	}
+
+	measured := MeasureLength(text, unit)
+	ceiling := int(float64(limit) * (1 + tolerance))
+	if measured <= ceiling {
+		return nil
+	}
+
+	return fmt.Errorf("the result is %d %s, above the %d requested (tolerance %.0f%%)",
+		measured, unit, limit, tolerance*100)
+}
+
+// countSentences counts terminators rather than splitting, so trailing
+// punctuation and a missing final period both behave.
+func countSentences(text string) int {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return 0
+	}
+
+	count := 0
+	inSentence := false
+	for _, char := range trimmed {
+		switch char {
+		case '.', '!', '?':
+			if inSentence {
+				count++
+				inSentence = false
+			}
+		case ' ', '\t', '\n', '\r':
+			// whitespace does not start a sentence
+		default:
+			inSentence = true
+		}
+	}
+	if inSentence {
+		// Text that does not end in a terminator is still a sentence.
+		count++
+	}
+	return count
+}
+
+func countParagraphs(text string) int {
+	count := 0
+	for _, block := range strings.Split(strings.TrimSpace(text), "\n\n") {
+		if strings.TrimSpace(block) != "" {
+			count++
+		}
+	}
+	return count
+}

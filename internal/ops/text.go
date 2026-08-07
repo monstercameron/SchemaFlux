@@ -14,7 +14,11 @@ type SummarizeResult struct {
 	// Text is the summarized content
 	Text string `json:"text"`
 
-	// CompressionRatio is output length / input length
+	// CompressionRatio is output length / input length, measured in runes.
+	//
+	// Bytes would make the same summary of the same text report a different
+	// number depending on the alphabet: three times smaller for Japanese, and
+	// the ratio is what a caller tunes MaxCompression against.
 	CompressionRatio float64 `json:"compression_ratio"`
 
 	// KeyPoints are the main points extracted
@@ -249,7 +253,24 @@ Rules:
 		return SummarizeResult{}, fmt.Errorf("summarize: could not parse the summary response: %w", err)
 	}
 
-	compressionRatio := float64(len(parsed.Text)) / float64(len(input))
+	// TargetLength was requested in the prompt and never checked, so an
+	// operation documented as producing at most N sentences produced whatever
+	// the model produced. The tolerance is deliberate: a summary asked for
+	// three sentences that comes back as four has done the job, and failing the
+	// call would be a worse answer than the one it gave.
+	if err := WithinLength(parsed.Text, opts.TargetLength, LengthUnit(opts.LengthUnit), summaryLengthTolerance); err != nil {
+		log.Error("SummarizeWithMetadata result is longer than requested",
+			"requestID", opts.CommonOptions.RequestID, "error", err)
+		return SummarizeResult{}, fmt.Errorf("summarize: %w", err)
+	}
+
+	// Runes, not bytes. A summary of Japanese text measured in bytes reports a
+	// compression ratio three times smaller than the one a reader would count,
+	// and the ratio is the number a caller tunes MaxCompression against.
+	compressionRatio := 0.0
+	if inputRunes := len([]rune(input)); inputRunes > 0 {
+		compressionRatio = float64(len([]rune(parsed.Text))) / float64(inputRunes)
+	}
 
 	result := SummarizeResult{
 		Text:             parsed.Text,
@@ -823,3 +844,12 @@ Rules:
 
 	return result, nil
 }
+
+// summaryLengthTolerance is how far past TargetLength a summary may land before
+// the result is refused.
+//
+// Twenty percent, because the prompt says "target" and a model that returns
+// four sentences for three has done what was asked. A caller who needs a hard
+// ceiling wants MaxLength on a different operation, not a stricter reading of
+// this one.
+const summaryLengthTolerance = 0.2
