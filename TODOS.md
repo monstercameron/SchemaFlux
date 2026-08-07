@@ -826,16 +826,34 @@ tests.
 - [x] **OP-503** — Implement `RedactWithResult`, which today returns an empty map and
   `err == nil` under a `// For now` comment (`redact.go:186-200`), so an audit reads as
   "nothing was redacted". Closes **T-09**.
-- [ ] **OP-504** — Replace `Redact[T](input T, opts ...interface{})` with typed options; the
+- [x] **OP-504** — Replace `Redact[T](input T, opts ...interface{})` with typed options; the
   `default:` branch currently discards an unrecognized options struct silently. Closes **T-10**.
+  **Done** — `Redact` and `RedactWithResult` take `...RedactOptions`. The public wrappers in
+  `schemaflux.go` and the fluent aliases already had typed signatures, so this was contained
+  to `internal/ops`: what changes is that passing the wrong struct is now a compile error
+  instead of a redaction pass configured with none of the caller's settings and no error.
+  *Verify:* `TestRedactOptionsResolution` — the compiler covers the removed branch; the test
+  covers what remains, that no options means the documented defaults and options given are the
+  ones used.
 - [x] **OP-505** — Remove or replace jumble redaction. `JumbleSeed` defaults to zero, so the
   RNG is seeded with `len(input)` — a value readable from the output — and `jumbleBasic` is a
   Fisher–Yates shuffle of the same runes, making the transform an **invertible** permutation.
   Closes **T-11**. Addresses **Gap-14**.
   *Verify:* a test asserting the output is not a permutation of the input.
-- [ ] **OP-506** — `JumbleSmart` is documented as preserving vowel/consonant structure and
+- [x] **OP-506** — `JumbleSmart` is documented as preserving vowel/consonant structure and
   calls `jumbleBasic` (`redact.go:535-539`). Implement or delete. Closes **T-12**.
-- [ ] **OP-507** — `RedactLLM`: locate spans by matching the model's reported substring with
+  **Done, implemented rather than deleted.** Each character is replaced by a random one of
+  the same class — vowel for vowel, consonant for consonant, digit for digit, case preserved,
+  punctuation and spacing untouched — so the result reads like the same kind of thing.
+  Substitution rather than permutation was the deliberate choice: a shuffle keeps the exact
+  multiset of characters, so the original is a rearrangement away and the character counts
+  are a fingerprint. That is **OP-505**'s lesson about the seed, applied to the transform.
+  *Verify:* `TestJumbleSmartPreservesTheStructureItPromises` walks every character of four
+  inputs and checks the class survives; `TestJumbleSmartPreservesCase`; and
+  `TestJumbleSmartIsNotAPermutation`, which fails if it ever becomes a shuffle again.
+  Still documented as obfuscation, not anonymisation — length and layout survive on purpose,
+  which is what "preserve some structure" means.
+- [x] **OP-507** — `RedactLLM`: locate spans by matching the model's reported substring with
   `strings.Index` rather than trusting model-reported character offsets, which are
   bounds-checked only (`redact_llm.go:232-269`) and compared against `len()` in bytes while
   models count characters. Reject a span whose sliced text does not match the reported
@@ -845,13 +863,46 @@ tests.
   the digest of the source it claims to come from, which is the same structure the evidence
   contract needs in **TC-002**. Building it here means redaction is the first consumer of
   evidence rather than a parallel mechanism that has to be replaced later.
-- [ ] **OP-508** — Lift the redaction not-production-ready markers from **F-021** once
+  **Done** — the model returns the substring and the library finds it; the offsets are a hint
+  used only to choose between repeated occurrences. A bounds check cannot tell a correct
+  offset from a plausible wrong one, so a span that was in range but a few characters off
+  masked the wrong part of the document and reported the wrong thing as redacted — worse than
+  not redacting, because it looks done. Locating by text also removes the character-versus-byte
+  mismatch by construction: the model counts runes, Go slices bytes, and they agree only for
+  ASCII.
+  A span whose text is not in the document is dropped, so a hallucinated finding removes
+  nothing. A span with **no** text is dropped too — there is nothing to verify it against, and
+  accepting it would keep the old behaviour alive under a new name. The prompt asks for the
+  substring accordingly.
+  Found while writing the tests: "first occurrence at or after the hint" silently skipped a
+  correct occurrence starting one byte *before* the hint, collapsing two spans onto one.
+  `locateSpan` picks the nearest occurrence in either direction, and only among those not
+  already claimed by an earlier span.
+  *Verify:* `internal/ops/redact_spans_test.go` — five offset shapes (correct, off by five,
+  past the value, absent, wildly out of range) all landing on the right text; hallucinated
+  and textless spans dropped; repeated values mapping to distinct occurrences; a non-ASCII
+  document where byte and character offsets diverge; and the redacted output containing none
+  of the values while keeping the invoice number it was not asked about.
+  **Not closed by this:** whether a span *is* what the model called it. A span labelled "ssn"
+  over an order number is still applied — that is classification, and this layer verifies
+  location.
+- [x] **OP-508** — Lift the redaction not-production-ready markers from **F-021** once
   OP-501–OP-507 are green.
 
 ---
 
 # M06 — Make the types load-bearing
 
+  **Done** — the last marker was on `RedactWithResult`, describing an empty-map return that
+  **OP-503** had already replaced. The README markers went with **OP-501**–**OP-503**.
+  What replaces them is a description of what the mechanism does and does not do, because
+  "it works now" is not useful to somebody evaluating this for compliance use: field names
+  matched as whole names, cards validated with Luhn, a bare nine-digit run deliberately not
+  matched, jumbling documented as obfuscation, and RedactLLM verifying location rather than
+  classification.
+  `internal/ops/disclosure_test.go` is what holds those descriptions in place, and its
+  expected phrases were updated with the mechanism rather than around it — the note in the
+  test says which tasks changed what.
 - [x] **S-001** — Recurse `GenerateTypeSchema` into nested structs and slices, with a depth
   cap and cycle detection. Today the struct branch describes each field with
   `GetTypeDescription`, which returns `main.Person` for a struct field and `[]main.OrderItem`

@@ -69,8 +69,13 @@ func TestRedactionDocumentsWhatItDetects(t *testing.T) {
 			"not a classifier",            // the limit
 			"redact` struct tag",          // the reliable path
 		}},
-		{"RedactWithResult", []string{"what was redacted", "audit"}},
-		{"RedactLLM", []string{"offsets", "refused"}},
+		// Updated when OP-503 and OP-507 landed: the phrases have to describe
+		// the mechanism that exists now, not the one that was being warned
+		// about. RedactWithResult reports rather than returning an empty map;
+		// RedactLLM locates spans by their text, so the interesting disclosure
+		// is what happens to a span it cannot find, not offset validation.
+		{"RedactWithResult", []string{"reports what it replaced", "audit"}},
+		{"RedactLLM", []string{"offsets", "hint", "dropped", "not classification"}},
 	}
 
 	for _, tc := range cases {

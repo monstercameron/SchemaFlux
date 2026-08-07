@@ -104,6 +104,13 @@ func (opts RedactLLMOptions) Validate() error {
 // llmSpanResponse is the expected JSON response from LLM
 type llmSpanResponse struct {
 	Spans []struct {
+		// Text is the sensitive substring itself, and it is what the library
+		// works from. Start and End are accepted as a hint for which
+		// occurrence is meant, never as the authority: models count characters
+		// and Go slices bytes, so an offset that is correct in the model's
+		// terms lands mid-rune in ours, and a bounds check cannot tell the
+		// difference between a valid offset and a plausible wrong one.
+		Text     string `json:"text"`
 		Start    int    `json:"start"`
 		End      int    `json:"end"`
 		Category string `json:"category"`
@@ -112,21 +119,28 @@ type llmSpanResponse struct {
 
 // RedactLLM uses an LLM to identify and redact sensitive data.
 //
-// # What it guarantees about the offsets
+// # How a span is located
 //
-// The model reports character offsets, and they used to be applied verbatim:
-// a single off-by-one shifted every subsequent span, so the result redacted the
-// wrong characters and left the sensitive ones in place — which is worse than
-// not redacting, because it looks done.
+// The model returns the sensitive substring, and the library finds it in the
+// document. The offsets it also reports are a hint used only to choose between
+// repeated occurrences.
 //
-// A span that is negative, inverted, past the end of the text, or overlapping
-// another is now refused and the call returns an error. Spans arriving out of
-// order are sorted rather than mis-spliced, and the slicing is by character so
-// multi-byte text survives it.
+// Offsets used to be the authority, bounds-checked and otherwise trusted. A
+// bounds check cannot tell a correct offset from a plausible wrong one, so a
+// span that was in range but off by a few characters masked the wrong part of
+// the document and reported the wrong thing as redacted -- which is worse than
+// not redacting, because it looks done. Offsets were also the one place where
+// the model and Go disagree by construction: the model counts characters, Go
+// slices bytes, and the two agree only for ASCII.
 //
-// What is still not checked is whether a span contains what the model says it
-// contains: a span labelled "ssn" over an order number is applied. That is
-// TODOS.md OP-507.
+// A span whose text is not in the document is dropped rather than applied, so a
+// hallucinated finding removes nothing. A span with no text is dropped too:
+// there is nothing to verify it against, and accepting it would keep the old
+// behaviour alive under a new name.
+//
+// What is still not checked is whether the substring *is* what the model called
+// it: a span labelled "ssn" over an order number is applied. Detection is the
+// model's judgement, and this layer verifies location, not classification.
 //
 // # It is a model call
 //
@@ -206,11 +220,11 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 
 // buildRedactSystemPrompt creates the system prompt for redaction
 func buildRedactSystemPrompt(opts RedactLLMOptions) string {
-	prompt := `You are a sensitive data detection expert. Your task is to identify ALL sensitive information in the given text and return their exact character positions.
+	prompt := `You are a sensitive data detection expert. Your task is to identify ALL sensitive information in the given text and quote it back exactly.
 
 Return a JSON object with a "spans" array. Each span must have:
-- "start": the 0-based index where the sensitive data starts
-- "end": the 0-based index where it ends (exclusive, like Python slicing)
+- "text": the sensitive substring, copied exactly as it appears in the input
+- "start": a 0-based position hint, used only to disambiguate repeated values
 - "category": the type of sensitive data
 
 Categories to detect:
@@ -238,13 +252,13 @@ Categories to detect:
 	prompt += `
 IMPORTANT:
 1. Be thorough - find ALL instances of sensitive data
-2. Indices must be exact character positions (0-based)
-3. "end" is exclusive (text[start:end] gives the sensitive part)
+2. "text" must be the sensitive substring copied EXACTLY as it appears, character for character
+3. "start" is a 0-based position hint; it is used only to pick between repeated occurrences
 4. Return ONLY valid JSON, no explanations
 5. If no sensitive data found, return {"spans": []}
 
 Example for "Contact john@email.com or call 555-1234":
-{"spans": [{"start": 8, "end": 22, "category": "email"}, {"start": 31, "end": 39, "category": "phone"}]}`
+{"spans": [{"text": "john@email.com", "start": 8, "category": "email"}, {"text": "555-1234", "start": 31, "category": "phone"}]}`
 
 	return prompt
 }
@@ -268,23 +282,41 @@ func parseRedactResponse(response, originalText string) ([]RedactSpan, error) {
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 
-	// Convert to RedactSpan and validate indices
+	// Locate each span by its text rather than by the offsets the model
+	// reported.
+	//
+	// The offsets were bounds-checked and otherwise trusted, and a bounds check
+	// cannot tell a correct offset from a plausible wrong one -- so a span that
+	// was in range but off by a few characters masked the wrong part of the
+	// document and reported the wrong thing as redacted. Searching for the
+	// substring also removes the character-versus-byte mismatch entirely: the
+	// model counts runes, Go slices bytes, and the two agree only for ASCII.
 	spans := make([]RedactSpan, 0, len(llmResponse.Spans))
-	textLen := len(originalText)
+	consumed := make(map[string]int, len(llmResponse.Spans))
 
 	for _, s := range llmResponse.Spans {
-		// Validate indices
-		if s.Start < 0 || s.End > textLen || s.Start >= s.End {
-			continue // Skip invalid spans
+		if s.Text == "" {
+			// Nothing to verify against. A span with only offsets is exactly
+			// the case this task removed, and accepting it would keep the old
+			// behaviour alive under a new name.
+			continue
 		}
 
-		span := RedactSpan{
-			Start:    s.Start,
-			End:      s.End,
-			Category: s.Category,
-			Original: originalText[s.Start:s.End],
+		start := locateSpan(originalText, s.Text, s.Start, consumed[s.Text])
+		if start < 0 {
+			// The model reported text that is not in the document. That is a
+			// hallucinated span; masking anything for it would remove content
+			// the model never actually found.
+			continue
 		}
-		spans = append(spans, span)
+		consumed[s.Text] = start + len(s.Text)
+
+		spans = append(spans, RedactSpan{
+			Start:    start,
+			End:      start + len(s.Text),
+			Category: s.Category,
+			Original: s.Text,
+		})
 	}
 
 	// Sort spans by start position and merge overlapping
@@ -431,4 +463,62 @@ func containsCategory(categories []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// locateSpan finds the occurrence of value that the model most likely meant.
+//
+// The reported start is a hint: the nearest occurrence at or after it wins,
+// because a model that miscounts usually miscounts low. Failing that, the first
+// occurrence not already claimed by an earlier span is used, so a value
+// appearing three times produces three distinct spans rather than three copies
+// of the first.
+func locateSpan(text, value string, hint, from int) int {
+	if value == "" {
+		return -1
+	}
+
+	// Every occurrence not already claimed by an earlier span, so a value
+	// appearing three times produces three distinct spans rather than three
+	// copies of the first.
+	var candidates []int
+	for at := from; at <= len(text); {
+		if at < 0 {
+			at = 0
+		}
+		found := strings.Index(text[at:], value)
+		if found < 0 {
+			break
+		}
+		candidates = append(candidates, at+found)
+		at = at + found + 1
+	}
+	if len(candidates) == 0 {
+		// Everything at or after `from` is taken, or the value is not there at
+		// all. Fall back to the whole document before giving up: a model that
+		// reports spans out of order should not lose one.
+		if at := strings.Index(text, value); at >= 0 {
+			return at
+		}
+		return -1
+	}
+
+	// The nearest candidate to the hint, in either direction. A model that
+	// miscounts usually miscounts low -- it counts runes where Go counts bytes
+	// -- but it can miscount high too, and "first occurrence at or after the
+	// hint" silently skips a correct occurrence that starts one byte earlier.
+	best := candidates[0]
+	bestDistance := abs(best - hint)
+	for _, candidate := range candidates[1:] {
+		if distance := abs(candidate - hint); distance < bestDistance {
+			best, bestDistance = candidate, distance
+		}
+	}
+	return best
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }

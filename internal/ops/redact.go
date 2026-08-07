@@ -177,24 +177,19 @@ func (opts RedactOptions) Validate() error {
 	return nil
 }
 
-// resolveRedactOptions turns the variadic any into options. The signature
-// takes `...interface{}`, so an argument of an unexpected type is silently
-// replaced by the defaults (T-10); resolveRedactOptions is where that will be
-// fixed when the signature is tightened.
-func resolveRedactOptions(opts ...interface{}) RedactOptions {
+// resolveRedactOptions picks the options to use, defaulting when none are
+// given.
+//
+// The signature is typed now. It used to take ...interface{} with a `default:`
+// branch that silently substituted the defaults for anything it did not
+// recognise -- so passing the wrong options struct, which the compiler would
+// have caught for every other operation in this library, produced a redaction
+// pass configured with none of the caller's settings and no error.
+func resolveRedactOptions(opts ...RedactOptions) RedactOptions {
 	if len(opts) == 0 {
 		return NewRedactOptions()
 	}
-	switch opt := opts[0].(type) {
-	case RedactOptions:
-		return opt
-	case types.OpOptions:
-		options := NewRedactOptions()
-		options.OpOptions = opt
-		return options
-	default:
-		return NewRedactOptions()
-	}
+	return opts[0]
 }
 
 // Redact removes or masks sensitive information from data.
@@ -224,7 +219,7 @@ func resolveRedactOptions(opts ...interface{}) RedactOptions {
 // RedactJumble and RedactScramble permute characters, which preserves length,
 // alphabet, and frequency. Use them for demo data that has to look realistic,
 // not for anything where re-identification matters.
-func Redact[T any](input T, opts ...interface{}) (T, error) {
+func Redact[T any](input T, opts ...RedactOptions) (T, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting redact operation", "requestID", "unknown", "inputType", fmt.Sprintf("%T", input))
 
@@ -246,15 +241,18 @@ func Redact[T any](input T, opts ...interface{}) (T, error) {
 	return result, nil
 }
 
-// RedactWithResult provides detailed information about what was redacted.
+// RedactWithResult redacts and reports what it replaced.
 //
-// # NOT PRODUCTION READY
+// The report has two halves, because they answer different questions. Redacted
+// maps a category to the values that matched its patterns. FieldsRedacted names
+// the struct fields replaced because of their name or a `redact` tag -- those
+// matched no pattern, so the category map cannot express them.
 //
-// It reports nothing by construction: the returned map is empty whatever the
-// operation did, so an audit of a redaction pass reads as "nothing was
-// redacted" with a nil error (T-09). See Redact for the rest, and
-// docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md for the detail.
-func RedactWithResult[T any](input T, opts ...interface{}) (T, RedactResult, error) {
+// It returned an empty map for every input until OP-503, whatever the operation
+// had done, so an audit of a redaction pass read as "nothing was redacted" with
+// a nil error. That is worth knowing when reading old output: an empty report
+// from a released version before that is not evidence of anything.
+func RedactWithResult[T any](input T, opts ...RedactOptions) (T, RedactResult, error) {
 	result := RedactResult{
 		Redacted: make(map[string][]string),
 		Metadata: make(map[string]any),
@@ -640,10 +638,71 @@ func jumbleBasic(input string, r *rand.Rand) string {
 	return string(runes)
 }
 
-// jumbleSmart preserves some structure (vowels, consonants)
+// jumbleSmart replaces each character with another of the same class, so the
+// result reads like the same kind of thing without being a rearrangement of it.
+//
+// It was documented as preserving vowel and consonant structure and implemented
+// as a call to jumbleBasic, which preserves neither -- the doc comment described
+// a function nobody had written (T-12).
+//
+// Substitution rather than permutation is also the safer of the two. A shuffle
+// keeps the exact multiset of characters, so the original is a rearrangement
+// away and the character counts are a fingerprint; drawing a fresh character
+// per position keeps only the shape. That is the same lesson OP-505 recorded
+// about JumbleSeed, applied to the transform itself. It is still obfuscation,
+// not anonymisation: length and layout survive on purpose, because that is what
+// "preserve some structure" means.
 func jumbleSmart(input string, r *rand.Rand) string {
-	// Simple implementation - could be more sophisticated
-	return jumbleBasic(input, r)
+	const (
+		lowerVowels     = "aeiou"
+		lowerConsonants = "bcdfghjklmnpqrstvwxyz"
+		digits          = "0123456789"
+	)
+
+	pick := func(set string) rune {
+		return rune(set[r.Intn(len(set))])
+	}
+
+	out := make([]rune, 0, len(input))
+	for _, char := range input {
+		switch {
+		case char >= '0' && char <= '9':
+			out = append(out, pick(digits))
+		case isVowel(char):
+			replacement := pick(lowerVowels)
+			out = append(out, matchCase(char, replacement))
+		case isASCIILetter(char):
+			replacement := pick(lowerConsonants)
+			out = append(out, matchCase(char, replacement))
+		default:
+			// Punctuation, spaces, and any non-ASCII letter are left alone:
+			// they are the structure this mode exists to preserve, and
+			// substituting a rune outside ASCII risks producing something that
+			// is not a letter at all.
+			out = append(out, char)
+		}
+	}
+	return string(out)
+}
+
+func isVowel(char rune) bool {
+	switch char {
+	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
+		return true
+	}
+	return false
+}
+
+func isASCIILetter(char rune) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+}
+
+// matchCase returns the replacement in the same case as the original.
+func matchCase(original, replacement rune) rune {
+	if original >= 'A' && original <= 'Z' {
+		return replacement - 'a' + 'A'
+	}
+	return replacement
 }
 
 // jumbleTypeAware uses data type-specific scrambling rules
