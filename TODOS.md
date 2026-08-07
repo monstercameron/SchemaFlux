@@ -2,17 +2,34 @@
 
 Authority: this file answers **in what order**. `AGENTS.md` answers **how**.
 `docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md` answers **why** — every task below
-cites the finding or gap ID it closes.
+cites the finding or gap ID it closes. `docs/engineering/plans/to-production.md` answers
+**what the end state is** — the target architecture, its gap register (`ARC`, `PRD`, `API`,
+`EXE`, `TRU`), its delivery gates, and its v1 acceptance criteria.
 
 Goal: production-ready, stable, tested. That means three things concretely — no operation
 fails open, every result is verified against a declared contract, and every claim in the
 README is backed by a test that runs in CI.
 
+The review and the specification are not the same kind of input. The review is a list of
+defects in code that exists; the specification is a description of a library that does not
+exist yet. M01–M10 close the review. M11–M17 build the specification. Where the two
+disagree, see **Reconciliation with `to-production.md`** near the end of this file — every
+disagreement is ruled on there, not left for the next agent to rediscover.
+
 ## How to read this
 
-- **Milestones (`M00`–`M10`) are ordered by dependency**, not by importance. Do not start
+- **Milestones (`M00`–`M17`) are ordered by dependency**, not by importance. `M00`–`M10`
+  close the adversarial review; `M11`–`M17` build the target architecture and are scheduled
+  but not yet committed — see the reconciliation section. Do not start
   a milestone whose predecessors are open unless the task says otherwise.
 - **Task IDs are stable.** Never renumber. A dropped task becomes `WONTFIX` with a reason.
+- **Citations.** A task cites review findings (`I-01`, `D-15`, `Gap-06`) and specification
+  gaps (`ARC-01`, `PRD-05`, `API-04`, `EXE-13`, `TRU-10`). Cite a specification *decision*
+  by its ADR number (`ADR-003`), never by its `D-00x` label: `.audit/traceability.py` reads
+  `D-002` as one of the review's `D-xx` schema findings and reports it dangling.
+- **A `Revised:` line supersedes the task body above it.** It records what
+  `to-production.md` changed about the task's scope, bar, or verification — the original
+  wording is kept so the change is visible rather than silently rewritten.
 - **Every task carries a Verify line.** A task is not complete until that verification
   passes and its evidence is recorded beneath the item.
 - `[BLOCKED]` marks work that cannot proceed for an external reason, named inline.
@@ -29,7 +46,8 @@ README is backed by a test that runs in CI.
 Nothing in M02 or M07 can be verified end to end until B-01 clears. Everything else in this
 file proceeds without it.
 
-- [!] **B-01** — OpenAI account has no credits. `POST /v1/responses` returns
+- [x] **B-01** — *(Cleared 2026-08-05; the box lagged the evidence row by two days.)*
+  OpenAI account has no credits. `POST /v1/responses` returns
   `insufficient_quota` / `credit_balance_exhausted`; `GET /v1/models` still works, which is
   why model discovery succeeded. Every `[LIVE]` task below is blocked on this.
   *Verify:* a 1-token `/v1/responses` call returns HTTP 200.
@@ -260,13 +278,29 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   route to a server holding the prefix. Depends on **CA-002**.
   *Verify:* recorded request contains a stable key across two identical calls and a different
   key across different ops.
-- [ ] **P-010** — Update the tier mapping to the 5.6 family confirmed live:
+  **Revised (TRU-10, PRD-14):** `(op, T, tier)` is not enough identity. The key must cover
+  operation name *and version*, prompt template version, schema hash, resolved model, and
+  the normalized options that change the stable prefix. A key that omits the prompt version
+  routes a request to a server holding a prefix a previous release wrote — the cache is
+  keyed on something coarser than the thing being cached.
+  *Verify (added):* editing a prompt literal changes the key; changing only steering does
+  not, because steering is volatile and lives outside the stable prefix (**CA-002**).
+- [x] **P-010** — Update the tier mapping to the 5.6 family confirmed live:
   `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` (`internal/config/config.go:194-203`).
   Assign Smart/Fast/Quick by measured capability and price, not by guessing from the names —
   **P-013** produces that evidence. Until then, leave the mapping behind a constant with a
   TODO rather than picking arbitrarily.
   *Verify:* `GetModel` returns 5.6 IDs for the OpenAI provider; pricing table has an entry for
   each (**PR-002**).
+  **Done** — the mapping is measured rather than guessed, which is what the task asked for:
+  `Quick` takes terra (fastest, 4/4 correct on both benchmark tasks), and Smart and Fast both
+  stay on luna because nothing in the evidence separates luna from sol. The comment in
+  `config.go` carries the latency and accuracy table. `TestGetModelUsesGPT56FamilyForOpenAI`,
+  `TestExplicitModelOverrideBeatsTierDefault`, `internal/config/model_defaults_test.go`.
+  The verify line's second clause is **withdrawn**, not met: **PR-002** was downgraded to
+  opportunistic because populating rates from a guess is the failure **PR-001** removed, and
+  with PR-001 and PR-007 in place the 5.6 family reports *unpriced* rather than a wrong
+  figure. Splitting Smart from Fast is **P-017**, which needs a discriminating benchmark.
 - [x] **P-011** — Revisit `supportsTemperature()` and `supportsReasoningControls()`
   (`provider.go:122`, `136-141`) for the 5.6 family. Both currently pattern-match on model
   name prefixes and will silently misclassify the new IDs.
@@ -286,13 +320,37 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
 
 ## Other providers
 
-- [ ] **P-015** — `GetModel` falls through to OpenAI model IDs for `deepseek`, `qwen`, `zai`,
+- [x] **P-015** — `GetModel` falls through to OpenAI model IDs for `deepseek`, `qwen`, `zai`,
   and any custom provider (`config.go:194-203`), so the README's `WithProvider("deepseek")`
   sends `model: "gpt-5.4"` to `api.deepseek.com` and 400s. The Anthropic provider defends
   itself (`provider.go:366`); the OpenAI-compatible path does not. Add a per-provider default
   map and validate at construction. Closes **I-03**.
   *Verify:* table test per provider asserts a plausible model ID; construction with an unknown
   provider/model pair returns an error.
+  **Revised (ARC-09):** the model map is the first half. Provider modules own credential
+  resolution, endpoint defaults, model mapping, schema adaptation, retry classification, and
+  usage normalization — none of which belong in the generic client. FL-001 landed the map;
+  what remains is moving the rest of the per-provider knowledge behind the provider
+  boundary so `internal/config` stops knowing vendor names. Feeds **CP-001**.
+  **Done** — **FL-001** built the per-provider map and made an unmapped provider resolve to
+  nothing; this closes the validation half. `config.ValidateModelResolution` checks **all
+  three tiers**, because a caller who sets only `SCHEMAFLUX_MODEL_SMART` has one working path
+  and two broken ones, and the operation that discovers it is whichever runs first — most
+  default to Fast. `WithProviderConfig` and `Init` now report it: `Init` returns the error it
+  always had a return value for, and a builder chain puts it on `Err()`. The provider is
+  still attached, because the fix is an environment variable and dropping their provider
+  would cost the caller the rest of their configuration.
+  Unit: `internal/config/model_resolution_test.go` — 8 tests, 30 leaf cases, including
+  `TestValidateModelResolutionAgreesWithGetModel`, which fails if the check and `GetModel`
+  ever disagree about which pairs resolve. Integration: `client_model_resolution_test.go` —
+  9 tests through the exported API covering construction, `Init`, override rescue, provider
+  switching, and `WithProviderInstance` (exempt: it carries its own model decisions, and
+  asserting that keeps a later change from breaking `schemafluxtest.Install`).
+  Found while here: an entirely unknown provider name fails earlier, in
+  `llm.CreateProvider`, and the two failures read differently — `TestUnknownProviderNameFailsAtConstruction`
+  pins that one too. **Not closed by this:** `ErrNoModelMapping` lives in `internal/config`,
+  so an external consumer can match the message but not the sentinel. That is **A-007**'s
+  taxonomy, not a second sentinel here.
 - [ ] **P-016** — The Anthropic provider hardcodes `max_tokens: 1024` before conditionally
   overriding it (`provider.go:383`, `394-396`) and never sends `cache_control`. Wire the real
   ceiling and add prompt-cache breakpoints. Depends on **CA-003**. Addresses **Gap-10**.
@@ -319,6 +377,12 @@ to test code that uses this library without paying a provider.
   CI. Redact keys on write.
   *Verify:* a recorded suite replays with `SCHEMAFLUX_LIVE_TESTS` unset; a cassette containing
   a key fails the redaction check.
+  **Revised (PRD-13):** a cassette records more than the two bodies. It carries provider and
+  model, operation/prompt/schema versions, the request body, the response headers that
+  change behaviour (`Retry-After`, request ID), usage, the expected decoded result, and the
+  expected failure classification — otherwise a replay proves the parser works and nothing
+  about whether the runtime classified the failure the same way. Replay drives the real
+  adapter and the real executor path, not a shortcut through the parser.
 - [ ] **TI-004** — Golden-prompt tests: for each operation, snapshot the exact rendered system
   and user prompt for a fixed input. Prompt changes then become reviewable diffs instead of
   silent behavior changes for every downstream user. Closes the testing half of **Gap-13**.
@@ -335,11 +399,23 @@ to test code that uses this library without paying a provider.
   output is a member of input, `Cluster` output partitions input exactly once.
   *Verify:* each property fails against today's implementation and passes after **OP-101**–
   **OP-105**.
+  **Revised (EXE-13, ARC-16):** the property set is the operation's declared batch algebra,
+  not a hand-picked list. Appendix C of `to-production.md` assigns every family a class —
+  independent, subset, permutation, partition, graph, hierarchical, sequential — and the
+  property test is generated from the declaration, so an operation cannot acquire a
+  batchability class without acquiring its check. Depends on **PL-006**.
 - [ ] **TI-008** — Concurrency tests under `-race` for the package globals: `defaultClient`
   (`client.go:192-236`), `ops.defaultProvider`, `ops.customLLMCaller`, and `pricing`'s
   package state. Closes **I-14**.
   *Verify:* `go test -race` is green; the review notes `-race` cannot run on the current
   Windows/arm64 machine, so this requires **CI-002**.
+  **Revised (ARC-01, ARC-07):** race-freedom is the weaker half. The specification's exit
+  criterion for a safe core is *isolation*: two clients with different providers, budgets,
+  and data policies running concurrently must not observe each other's configuration. A
+  mutex around a package global passes `-race` and still fails that test. Add the isolation
+  case alongside the race case; it is the one that fails today by construction.
+  *Verify (added):* two clients with different fake providers and different budgets run
+  concurrently and each sees only its own.
 - [ ] **TI-009** — UTF-8 corpus fixtures (CJK, emoji, combining marks, RTL) used by every
   truncation, slicing, and redaction test. Closes the test half of **T-06**.
 - [ ] **TI-010** — Cost-accounting tests: assert an unpriced model reports "unpriced" rather
@@ -354,6 +430,16 @@ port nothing yet except one operation as the proof.
 
 - [ ] **A-001** — `Op[In, Out]` descriptor: `Name`, `Prompt`, `Format`, `Schema`, `Decode`,
   `Invariants`. Closes the structural half of **D-15**.
+  **Revised (ARC-04, ARC-16, API-09):** the descriptor is wider than six fields and it is
+  *public*. `OperationID{Name, Version}` — a version, because a prompt edit is a behaviour
+  change and **PS-007** needs something to hang it on; `Semantics` (category, whether
+  inference is permitted, whether evidence is required, identity/order preservation,
+  stability tier); `OutputContract` (schema, decoder, invariants, evidence policy,
+  normalizers); `BatchAlgebra` (class, encode, merge, global validation); `DefaultPolicy`.
+  It holds no context and no provider — it is data plus pure functions, which is what makes
+  planning, recipes, loop fusion, and middleware possible without a second execution path.
+  *Verify (added):* a caller outside the module can construct an `Op`, inspect it, and run
+  it; a stable operation with no declared batch class fails a build-time check.
 - [x] **A-002** — `Run[In, Out](ctx, client, op, in, opts...)` owning context propagation,
   response-format selection, provider dispatch, retry, decoding, invariant checking, repair,
   usage accounting, and telemetry. Closes **X-01** at one call site instead of thirty-one.
@@ -368,6 +454,15 @@ port nothing yet except one operation as the proof.
   order-dependence trap in `Client.With*`.
   *Verify:* `option.Model(...)` on one call does not leak into the next; setting timeout after
   provider construction takes effect.
+  **Revised (ARC-08, API-07, API-08):** "per-call precedence" is too blunt a rule. Every
+  setting declares exactly one scope — process, client, operation descriptor, invocation,
+  request context, provider request — and precedence is deterministic within it: a deadline
+  always wins, an invocation may make a limit *stricter* but may never weaken a locked
+  client or data-policy constraint. The resolved value and its source must be printable,
+  because a caller debugging why their model pin was ignored currently has no way to ask.
+  Builders get `With(opts...)` so the fluent surface never needs a method per policy.
+  *Verify (added):* a plan explanation prints effective value and source for every material
+  setting; an invocation attempting to weaken a locked policy is rejected, not applied.
 - [ ] **A-005** — Renumber `Mode` and `Speed` so zero means unset (`ModeUnset`, `TierUnset`),
   and add `Opt[T]` for numerics that must be settable to zero. Today `Strict == Mode(0)` and
   `Smart == Speed(0)`, so every `mergeXOptions` guard of the form `if user.Mode != 0` makes
@@ -377,10 +472,33 @@ port nothing yet except one operation as the proof.
 - [ ] **A-006** — `Result[T]` + `Meta`: request and correlation IDs, provider, model, usage,
   cost with `Estimated` and `PricingSource`, attempts, repairs, strategy, elapsed. No
   `Confidence` field. Closes **D-09** structurally and makes **I-02** expressible.
+  **Revised (ARC-13, ARC-24, API-11, TRU-22):** `Meta` is the first slice of the execution
+  envelope, so give it the envelope's shape now rather than renaming it later. Four
+  compartments that never mix: the value; model claims; deterministic verification results;
+  runtime facts. Two fields the current list omits and the specification treats as v1
+  gates — **requested versus delivered contract level**, so a degradation cannot be
+  invisible (ARC-24), and a **usage/cost tree** rather than a flat total, because a figure
+  that cannot attribute spend to a repair or an escalation cannot explain a bill (TRU-22).
+  The envelope is constructed for every logical request including failures; `Run` may drop
+  it, but must not skip building it, or the two return paths diverge.
 - [ ] **A-007** — Error taxonomy: `ErrNoProvider`, `ErrAuth`, `ErrRateLimited`,
   `ErrTruncated`, `ErrDecode`, `ErrInvariant`, `ErrBudgetExceeded`, plus `APIError` and
   `InvariantError`. Closes **Gap-12**.
   *Verify:* every provider maps its failures onto the taxonomy; `errors.Is` table test.
+  **Revised (PRD-08, EXE-06, Appendix B):** seven kinds do not separate the failures that
+  need different recovery. The taxonomy the recovery machine needs distinguishes at least:
+  configuration, authentication, permission, invalid request, rate limited, provider
+  unavailable, timeout, canceled, context too large, output truncated, malformed output,
+  schema violation, batch protocol violation, invariant violation, evidence violation,
+  unsupported capability, policy violation, budget exceeded, circuit open, admission
+  rejected, repair exhausted, review required, shutdown. The error carries structured
+  context — operation, provider, model, request and attempt IDs, affected item IDs,
+  `RetryAfter`, and an `Ambiguous` flag for a timeout that may have been served — and
+  `Error()` prints sanitized metadata only. This is what **P-007** started; it is the
+  control protocol every later milestone branches on, so widen it here rather than growing
+  it a kind at a time.
+  *Verify (added):* Appendix B's disposition table is a test — every kind asserts its
+  retry, repair, fallback, and terminal behaviour.
 - [ ] **A-008** — Reclassify retries on typed errors and status codes instead of substring
   matching on message text (`llm_helper.go:205-263`), and add jitter to the backoff
   (`retryDelay:265`). Closes **I-12**. Depends on **A-007**.
@@ -391,6 +509,13 @@ port nothing yet except one operation as the proof.
   `ExcludesValues`, `CategoryIn`, `OneOf`, `Satisfies`. Closes **X-05** mechanically.
   *Verify:* each invariant has a unit test for pass, fail, and the error message the repair
   loop will feed back.
+  **Revised (TRU-25, ARC-11):** the shipped library is the floor, not the surface. A caller
+  must be able to register their own normalizer, invariant, evidence check, and repair
+  policy and have it run *inside* the kernel — so a domain rule participates in recovery,
+  budgets, telemetry, provenance, and batch isolation instead of being a check the caller
+  writes after `Run` returns and pays for twice.
+  *Verify (added):* a caller-supplied invariant failing on the first attempt and passing on
+  the second is visible in the envelope as a repair, with both attempts billed.
 - [x] **A-010** — Repair loop: a decode or invariant failure feeds the error back and retries
   within the existing budget, aggregating usage across attempts into `Meta`. Closes **CF-01**.
   Depends on **A-009**.
@@ -399,12 +524,28 @@ port nothing yet except one operation as the proof.
 - [ ] **A-011** — Move errors and log records off raw payloads: no request body in an error
   string by default, no `Input` field on error types. Closes **X-03**.
   *Verify:* an error from a payload containing a marker string does not contain that marker.
+  **Revised (PRD-05, PRD-09):** removing content from errors leaves debugging with nothing,
+  which is why **P-007** kept the vendor's structured message. The specification's answer is
+  a second channel: a caller-provided diagnostic sink that is off by default, bounded,
+  redacted, retention-controlled, and referenced from the ordinary error by ID and content
+  digest. Add the sink interface with this task so "no payload in errors" stops costing
+  what it currently costs.
+  *Verify (added):* with no sink configured nothing is captured; with one, the error carries
+  a reference and the captured body is truncated and scrubbed of credentials.
 - [ ] **A-012** — Port `Extract` to the core as the proof, keeping `Extracting[T]` working
   unchanged.
   *Verify:* existing extract tests pass untouched against the new path.
 - [ ] **A-013** — `Run(ctx)` on the fluent builders. There is no way to honor cancellation
   otherwise, and the builder is where the context naturally arrives. Breaking change.
   *Verify:* `Extracting[T](x).Run(ctx)` cancels.
+  **Revised (API-04, API-05, API-11):** three things ship with it. `RunResult(ctx)` beside
+  `Run(ctx)`, executing identically and returning the envelope (API-11). Value receivers and
+  copy-on-write option storage, so `base.Strict()` and `base.Fast()` are siblings rather
+  than two views of one mutated builder (API-05). And a documented read-at-run contract for
+  inputs holding maps, slices, or pointers, enforced by a race test — a deferred builder
+  that observes a caller's later mutation is a bug nobody can see (TRU-16).
+  *Verify (added):* branching a builder does not affect its sibling; mutating an input
+  concurrently with `Run` is caught under `-race`.
 
 ---
 
@@ -420,6 +561,13 @@ tests.
   and `Batch`; `collection.go` documents the switch away from it as deliberate (lines 77, 196,
   318). Reverting fixes identity **and** removes most of the size ceiling, because output
   length stops scaling with item size. Closes **C-08**.
+  **Revised (EXE-03, EXE-12):** use stable invocation-local IDs, not positional indices. An
+  index is only meaningful if the model returns every element in order; the failure this
+  guards against — an omitted or reordered item — is exactly the case where it does not.
+  Duplicate input values also make index reconciliation ambiguous, and equality-based
+  matching cannot resolve it. Assign `i-000001`-style IDs at encode time, validate exact
+  coverage on return, and reconstruct the caller's order in Go. This is the same protocol
+  **PL-003** defines for batching, so define it once here and reuse it.
 - [x] **OP-102** — `Choose`: attach `MemberOf`. Today the returned object is whatever the
   model emitted, never compared to the input list (`collection.go:112-131`). Closes **C-01**.
 - [x] **OP-103** — `Filter`: attach `SubsetOf`, and fix the contradiction where the system
@@ -470,6 +618,13 @@ tests.
   result shape. Five vocabularies for one operation shape (verdict + issues + summary) with
   different field names is the verb-explosion problem in its clearest form. Closes **A-08**.
   Coordinate with **PS-002**.
+  **Revised (ARC-22, TRU-30):** the shared shape is `JudgmentResult` — subject, verdict,
+  issues, evidence, and model-reported confidence kept out of the deterministic section —
+  and it is one of four result families (judgment, transformation, collection, text) that
+  every stable operation draws from. The naming half matters as much as the shape: a
+  model-assisted review must not be spelled the same as a deterministic check. `Validate`
+  becomes `ValidateDeterministically` and `ValidateHybrid`; `Verify`, `Audit`, and
+  `Critique` become model-assisted review and say so in the name.
 
 ## Structured data
 
@@ -482,6 +637,13 @@ tests.
   field set against the produced output, instead of accepting the model's self-report as an
   audit trail (`project.go:258-283`, and the same shape in `pivot.go`, `enrich.go`,
   `normalize.go`). Closes **D-09** behaviorally.
+  **Revised (ARC-12, ARC-13):** the rule generalizes past these four operations —
+  membership, ordering, field presence, input/output diff, cardinality, and reconstruction
+  are computed in Go wherever Go can compute them, and a model stage is justified only when
+  the judgment is irreducibly probabilistic. Where a model claim survives, it is labelled a
+  claim and kept out of the verification section of the envelope (**A-006**).
+  *Verify (added):* an operation that asks the model for something Go already knows fails
+  review; the deterministic and model-claimed halves of a result are separately addressable.
 - [ ] **OP-303** — `NormalizeInput`: prefer JSON marshalling over `fmt.Stringer`
   (`utils.go:99-113`). Any type with a `String()` method — including `time.Time` — is sent as
   prose while the generated schema simultaneously tells the model the format is RFC3339.
@@ -541,6 +703,11 @@ tests.
   bounds-checked only (`redact_llm.go:232-269`) and compared against `len()` in bytes while
   models count characters. Reject a span whose sliced text does not match the reported
   original. Closes **T-13**.
+  **Revised (TRU-02):** a matched substring is a weak evidence reference; make it the real
+  one. A span is `{SourceID, StartByte, EndByte, SourceDigest}` validated in bounds against
+  the digest of the source it claims to come from, which is the same structure the evidence
+  contract needs in **TC-002**. Building it here means redaction is the first consumer of
+  evidence rather than a parallel mechanism that has to be replaced later.
 - [ ] **OP-508** — Lift the redaction not-production-ready markers from **F-021** once
   OP-501–OP-507 are green.
 
@@ -558,9 +725,22 @@ tests.
 - [ ] **S-002** — Emit real JSON Schema from the same reflection pass, and keep a compact
   rendering for the prompt path (full JSON Schema is token-expensive).
   *Verify:* the emitted schema validates against a JSON Schema meta-schema.
+  **Revised (TRU-05):** the schema needs an identity, not just a body:
+  `{Name, Version, Hash, Dialect, TypePolicy}`. Everything downstream keys on it — prompt
+  bytes, cache keys (**P-009**), replay fixtures, stored results, semantic baselines — and
+  a schema that changes without changing its hash silently invalidates all four. An
+  anonymous type gets a deterministic content-derived name and a warning that persisting
+  results against one is a bad idea.
 - [ ] **S-003** — Express requiredness explicitly rather than inferring it from the absence of
   `omitempty` (`utils.go:42-47`), which is a serialization directive, not a validation one.
   Closes **D-03**.
+  **Revised (TRU-06):** requiredness is only half of it — Go's zero value cannot say whether
+  a field was absent, explicitly null, or explicitly `0`. Strict mode must evaluate
+  requiredness against *presence*, which means shipping at least one first-class presence
+  strategy (`Optional[T]{Value, Present, Null}`, pointer fields, or a sidecar
+  `FieldPresence` map keyed by JSON pointer) and documenting the others.
+  *Verify (added):* an explicit `0`, `false`, or `""` satisfies a required field; an absent
+  one does not; the two are distinguishable in the result.
 - [x] **S-004** — Make `Strict()` mean something: with strict schema enforcement plus declared
   requiredness, replace `ValidateExtractedData` — which takes a `threshold` and never reads
   it, checking only non-nil (`utils.go:180-198`). Closes **D-05**.
@@ -579,6 +759,44 @@ tests.
   It prepends a fixed instruction block to every request, JSON or not, billed on every call.
   Closes **I-18**.
   *Verify:* an A/B over the golden corpus recording the measured difference; if none, delete.
+
+## Added from `to-production.md`
+
+- [ ] **S-008** — Exact decoding in strict mode: reject unknown properties, duplicate keys,
+  and trailing data after the top-level value; enforce maximum nesting depth, string size,
+  array length, and total decoded bytes; report the smallest failing JSON pointer.
+  `encoding/json` discards unknown fields, which is how a hallucinated field becomes
+  invisible — **F-035** caught the "answer about something else" case with a weak
+  field-name rule, but overproduction inside a well-shaped answer still passes. Closes
+  **TRU-08**; completes what F-035 started.
+  *Verify:* a response carrying one extra field fails in strict mode and names it; a
+  deliberately deep or oversized body is refused before allocation.
+- [ ] **S-009** — Exact numeric handling. `float64` is the wrong default for money,
+  identifiers, and large integers: 16-digit account numbers lose precision, leading zeros
+  vanish, and a postal code becomes a number. Support `json.Number` for deferred parsing,
+  registered decimal types, integer bounds with overflow detection, string schemas for
+  identifiers that must keep their shape, and registered encoders for `time.Time`,
+  `time.Duration`, and UUIDs. A conversion that would lose information is
+  `ErrSchemaViolation`, not a silent zero. Closes **TRU-07**.
+  *Verify:* a 19-digit identifier and a two-decimal currency amount survive a round trip
+  byte-exact; a value exceeding the declared range is refused.
+- [ ] **S-010** — Type support matrix, enforced at preflight rather than discovered at
+  runtime. Four levels: full (structs, slices, arrays, pointers, scalars, enums, registered
+  time/decimal types), restricted (string-keyed maps, bounded recursion, embedded fields,
+  custom marshalers — documented limits or a registered adapter), opaque (blob wrappers,
+  no field-level evidence), rejected (unbounded cycles, non-string map keys, unconstrained
+  `any`, funcs, channels, unsafe pointers). A rejected shape fails before it costs a call.
+  Closes **TRU-09**. Depends on **S-001**, which already caps depth and names cycles.
+  *Verify:* one case per level; a rejected type produces an error naming the field and the
+  reason, and makes no provider call.
+- [ ] **S-011** — Schema evolution rules and migrations. Adding an optional field is
+  decode-compatible but changes prompt behaviour and cache identity; adding a required
+  field, changing a type, enum, precision, or evidence requirement is a new contract
+  version; renaming a JSON field is breaking without an explicit alias. Stored results keep
+  the schema version and hash that produced them. Closes **TRU-05** behaviourally;
+  **S-002** supplies the identity this operates on.
+  *Verify:* a compatibility test per rule; a stored result decoded under a newer schema
+  reports the version it was written with rather than silently re-interpreting.
 
 ---
 
@@ -606,6 +824,14 @@ tests.
   and nothing is ever blocked. Closes **I-11**.
   *Verify:* one notification per threshold crossing; enforcing mode returns
   `ErrBudgetExceeded` before the call is made.
+  **Revised (PRD-06, EXE-17):** a process-wide spend total is the wrong unit. The budget is
+  per logical request and hierarchical — provider calls, input/output/total tokens, cost,
+  elapsed time, chunk attempts, item attempts, escalations — and retry, repair, split,
+  fallback, escalation, and review all draw from the same ledger, with children unable to
+  exceed a parent's ceiling. Without this, every recovery mechanism M08 adds multiplies the
+  worst case and nothing bounds the product.
+  *Verify (added):* a request whose repairs would exceed its call ceiling stops at the
+  ceiling and returns validated partials; the envelope's attempt tree sums to the ledger.
 - [ ] **PR-006** — Delete the duplicated `MatchesFilters` / `matchesFilters` pair
   (`pricing.go:451`, `499`), one of which is exported by accident. Closes **I-17**.
 
@@ -617,11 +843,31 @@ tests.
 - [ ] **MW-003** — `mw.Retry` wrapping **A-008**.
 - [ ] **MW-004** — `mw.Cache`: response cache keyed on a hash of model, tier, mode, prompt
   bytes, and schema, so exact-duplicate calls cost zero. Closes **Gap-07**.
+  **Revised (TRU-10):** the key must carry the complete semantic execution identity —
+  operation and prompt versions, schema hash, normalized options, input digest, provider and
+  *resolved* model, temperature/seed, required contract level, data-policy partition, and
+  decoder version — or a cache hit answers a question nobody asked. Exact result caching is
+  opt-in and partitioned by tenant and data policy; caching on *similar* inputs stays off by
+  default and is not a v1 feature. A cache hit appears in provenance and in cost accounting
+  as a hit, never as a zero-cost call.
 - [ ] **MW-005** — `mw.Budget` enforcing **PR-005**. Closes **CF-08**.
 - [ ] **MW-006** — `mw.RedactEgress` so payloads can be scrubbed before they leave.
 - [ ] **MW-007** — `mw.Metrics` exporting to OpenTelemetry, already a direct dependency.
   Closes the export half of the metrics gap.
+  **Revised (ARC-17, ARC-18):** the direction is wrong as stated. Core defines small observer
+  interfaces and emits through them; the OpenTelemetry adapter lives in a separate package
+  (`telemetry/otel`) and uses the *host's* provider. The library never initializes a global
+  SDK, an exporter, an endpoint, or a sampler, and never owns their shutdown — a library
+  that configures the host's telemetry stack cannot be embedded twice. That also means OTel
+  leaves the core's dependency set. See **OB-001**.
 - [ ] **MW-008** — `mw.Fallback` for provider failover. Closes the rest of **Gap-09**.
+  **Revised (TRU-12, ARC-24):** failover is not free substitution. A fallback route must
+  meet the same minimum capabilities and the same data policy as the route it replaces — a
+  private-region failure may not fall back to a public provider — and it may not silently
+  downgrade the requested contract. A named degradation (native schema → JSON mode plus
+  deterministic validation) is allowed only by explicit policy and is recorded as delivered.
+  A fallback's own failure is classified on its own terms, not hidden behind the original.
+  Depends on **CP-001** for the capability data this decision needs.
 
 ## Prompt caching
 
@@ -657,6 +903,12 @@ tests.
   Responses API. Closes **Gap-01**.
 - [ ] **ST-002** — Expose streaming on text operations, with the non-streaming path
   implemented in terms of it. Addresses **Gap-01**.
+  **Revised (TRU-13, TRU-14):** three streaming modes, kept apart because they promise
+  different things: raw text, provider events, and *validated items* — a token stream is not
+  a partial typed result, and presenting one as the other is the same fail-open the whole
+  list is about. The caller-facing iterator owns a bounded buffer, is cancelable, and
+  documents whether items arrive in input or completion order; stopping iteration cancels
+  the remaining work unless the caller explicitly detaches it.
 - [ ] **ST-003** — Remove the hardcoded output ceilings (4000/2000/1000 by tier,
   `config.go:206-218`) in favor of a per-call option, and make truncation return
   `ErrTruncated` rather than surfacing as a parse error. Closes **I-09**.
@@ -672,6 +924,19 @@ tests.
   `WithProviderConfig` / `WithProviderInstance` mutate a package global as a side effect, so
   constructing a second client silently reconfigures the first. Either give it real operation
   methods or delete it and document the global model honestly. Closes **I-06**.
+  **Revised — the choice is made (ARC-01, ARC-02, ARC-19, ADR-003, ADR-020):** the client
+  becomes the real execution boundary and the package globals leave the core. Documenting
+  the global model honestly is no longer an option: it is the thing that makes two clients
+  impossible, makes the library unusable in a multi-tenant process, and makes **TI-002**
+  and **TI-008** unverifiable. Concretely — the client owns an immutable snapshot of
+  provider registry, route policy, budgets, scheduler, observer, and cache policy;
+  `WithX` after construction is not part of the stable API (a new snapshot is built and
+  swapped by the application); `ops.defaultProvider`, `ops.customLLMCaller`, and
+  `defaultClient` move behind a compatibility adapter that core does not import; `.env`
+  loading and any other process-level mutation move to bootstrap or to a `quick` package
+  for scripts and examples. `IN-001`'s mutexes are the stopgap, not the destination.
+  *Verify:* two clients with different providers, budgets, and policies run concurrently
+  and independently; core compiles with no reference to a package-level provider.
 
 ---
 
@@ -684,6 +949,12 @@ results, `Escalate` needs a failure signal that is not "the model said something
 - [ ] **CF-001** — `flux.Escalate(op, from, to)`. Closes **CF-02**.
 - [ ] **CF-002** — `flux.Vote(op, n, rule)` — and the first honest confidence number in the
   library, derived from sample agreement. Closes **CF-03**.
+  **Revised (TRU-27):** agreement is a policy, not a proof — correlated models share
+  hallucinations, so three samples agreeing on an invented figure is three samples wrong.
+  Reconciliation is pluggable (exact agreement, field-level voting, deterministic validation
+  then selection, evidence-weighted comparison, adjudicator model) and **must be able to
+  abstain**, returning `ErrReviewRequired` rather than the majority answer. Evidence and
+  invariants still apply to the winner; a vote does not substitute for them.
 - [ ] **CF-003** — `flux.Until(op, pred, max)`. Closes **CF-05**.
 - [x] **CF-004** — `flux.MapReduce(op, chunk, merge)` with bounded concurrency. Closes
   **CF-04**; unblocks **OP-108**. **Done `debaf6e`.**
@@ -691,6 +962,13 @@ results, `Escalate` needs a failure signal that is not "the model said something
   declared-but-unimplemented `PipelineOptions.SaveProgress`.
 - [ ] **CF-006** — `flux.Approve(gate)`. Closes **CF-07**; required before **F-025**'s shell
   tool may be enabled.
+  **Revised (TRU-26):** approval is one use of a more general terminal outcome. Automated
+  recovery stops — with `ErrReviewRequired` and a `ReviewPacket{Candidate, InputRefs,
+  Evidence, FailedChecks, Attempts, SuggestedAction}` — when evidence is contradictory,
+  an invariant survives its budgeted regenerations, eligible providers disagree materially,
+  or policy requires a human. That is a successful safety outcome, not a failure, and it is
+  the alternative to looping the model until it says something acceptable. The library
+  supplies the structure and the callback; it does not build an approval workflow.
 - [ ] **CF-007** — `flux.Fallback(a, b)`.
 - [ ] **CF-008** — Retire or reimplement `Decide`, `Guard`, `Match`, and `Pipeline` on the
   combinators. `Guard` currently issues an unannounced LLM call with a hardcoded 2-second
@@ -716,6 +994,17 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   `Arbitrate`, `Negotiate`, `Resolve`, `Conform`, `Derive`, and `Pivot`. Ship those as a
   `recipes` package built on the core. Closes **A-08**, and reduces the cost of every other
   task in this file.
+  **Revised (ARC-03, PRD-16):** the specification supplies the catalogue, so this stops
+  being an open question and becomes a migration. Eight stable categories — extraction,
+  transformation, generation, classification, selection, ordering, review, validation —
+  and everything else (`Negotiate`, `Arbitrate`, `Predict`, `Resolve`, `Interpolate`,
+  `Synthesize`, `Assemble`, …) moves to `recipes` or an experimental namespace. Their
+  existence was never the problem; giving them the same compatibility and correctness
+  promise as `Extract` without a defined semantic contract is. Ship stability tiers
+  (stable / beta / experimental) in the package layout, the doc comments, and the
+  compatibility policy at the same time, so "experimental" is a marker rather than a claim.
+  *Verify:* every operation carries a tier; a stable one without a documented semantic
+  contract, batch algebra, and invariants fails a check.
 - [ ] **PS-003** — Pick one public spelling. Mark the other `// Deprecated:` so tooling says
   so — there is not a single deprecation marker in the repo today. Expose `Deduplicate`
   (implemented, exported nowhere) or delete it; document or delete `Format` and `Merge`.
@@ -727,6 +1016,11 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   user string, with no message history. `Asking`, `Negotiating`, and
   `NegotiatingAdversarially` are naturally multi-turn operations implemented as one round
   trip. Closes **Gap-03**.
+  **Revised (ARC-20):** either outcome closes it, and the cheaper one is legitimate. Build a
+  session/message abstraction, **or** rename these operations for the single-shot work they
+  actually do. What is not allowed is keeping a conversational name on a one-round-trip
+  implementation. If a session lands, it is a sequential stateful execution shape with
+  transcript invariants — not generic MDSP (Appendix C).
 - [ ] **PS-006** — Embeddings. Their absence forces LLM round trips for `Similar`,
   `CheckingSimilarity`, `Clustering`, `Deduplicate`, and `Matching`, all of which have cheap
   deterministic vector implementations. Closes **Gap-05**.
@@ -737,17 +1031,40 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   `SCHEMAFLUXDSLSPEC.md`, which describe a durable workflow engine this repo does not
   implement and which M08 is a deliberate decision not to build. Scope them into the roadmap
   or move them out of `plans/`.
+  **Revised — decided (API-12, §1.3 non-goals):** `to-production.md` names a general-purpose
+  workflow/orchestration language an explicit non-goal for v1 and forbids builders growing
+  a branching DSL. So the two documents are out of scope, not unscheduled: move them out of
+  `plans/` into an ideas or archive location with a line saying which decision retired them.
+  While there: `to-production.md` references nine figures under
+  `docs/engineering/plans/figures/` that do not exist, so the document renders with nine
+  broken images. Generate them or drop the references. `plans/` should also state its own
+  ordering — `to-production.md` is the target architecture; `REFACTOR_PLAN.md`,
+  `GO_TYPE_NATIVE_PRIMITIVES.md`, `NEW_PRIMITIVES_ANALYSIS.md`, and `PRACTICAL_LLM_OPS.md`
+  predate it and need the same in-scope / superseded ruling.
 - [ ] **PS-009** — Reconcile `AGENTS.md` with this repository. It is CodeFlux's file, copied
   verbatim: it declares itself scoped to Codeflux, mandates `docs/plan.md`, `CHANGELOG`,
   `DEVLOG`, `.claude/`, `.artifacts/`, `cmd/codeflux-dev`, atoms, SQLite migrations, a
   frontend, and a `dev`-branch model that does not exist here — while forbidding the
   `git add -A` and direct `main` pushes already used in this repository's history.
+  **Revised (PRD-25):** the same task covers the rest of the adoption contract, which is
+  missing beside it: `LICENSE`, `SECURITY.md` with a threat model and supported-version
+  policy (**SEC-001**), `CONTRIBUTING.md`, issue templates that ask for sanitized envelope
+  metadata rather than raw payloads, an ADR directory to hold the twenty decisions
+  `to-production.md` records, and a generated provider support matrix (**CP-003**).
 
 ---
 
 # M10 — Release gates
 
 - [ ] **CI-001** — Run `go build`, `go vet`, `gofmt -l`, and the full suite on every push.
+  **Revised (PRD-01, PRD-17):** the required gate is wider, and each addition catches a
+  class the others miss: `go test -race`, `go test -shuffle=on -count=10` (order-dependent
+  tests and the package globals they hide), `staticcheck`, `govulncheck`, a fuzz smoke
+  corpus (**SEC-003**), an examples-compile step, a generated-artifacts-are-fresh check
+  (schemas and golden prompts), and a clean-working-tree assertion. The matrix is the
+  platform contract, not a convenience: supported Go versions across Linux, macOS, and
+  Windows on amd64 and arm64 — published as a support matrix, since this repository's own
+  history contains a defect that only reproduces where `-race` cannot run.
 - [ ] **CI-002** — Add a Linux AMD64 job for `go test -race`, which cannot run on the current
   Windows/arm64 machine. Unblocks **TI-008**.
 - [ ] **CI-003** — Normalize line endings (`.gitattributes`) so `gofmt -l` stops reporting
@@ -770,8 +1087,523 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   parameter, and the `SCHEMAFLOW_*` to `SCHEMAFLUX_*` environment rename already shipped.
 - [ ] **DOC-003** — Update `docs/engineering/backlog/PRODUCTION_TODO.md` to point here, or
   fold it in and delete it.
+  **Revised:** fold it in. It is dated 2026-03-06 and most of it is now false or already
+  scheduled — the mock-provider complaint is **TI-001** and **CI-004**, the metrics
+  complaint is **MW-007** and **OB-001**, the `.env` loaders are **B-03**, the stub tool
+  families are **PS-001**, and the `-race` line is **CI-002**. The one item it holds that
+  this list does not is the per-example pass/fail inventory; keep that inside **CI-004**
+  and delete the file rather than maintaining a second backlog that drifts.
 - [ ] **REL-001** — Tag v0.2.0 at the end of M02 (provider correctness), v0.3.0 at the end of
   M05 (operations verified), v1.0.0 only after M10.
+  **Revised:** M10 is no longer the last gate. With M11–M17 scheduled, v1.0.0 means the §19
+  acceptance criteria pass (**RC-003**), not that the review is closed. Restated ladder:
+  v0.2.0 after M02, v0.3.0 after M05, **v0.4.0 after M07** (operational claims true),
+  **v0.5.0 after M12** (safe core, planner, scheduler), **v0.9.0-rc after M16**, and v1.0.0
+  only when every §19 box is checked or carries an ADR saying why it is not.
+
+---
+
+# M11 — Execution planning and shapes
+
+Everything above treats one call as the unit of work. `to-production.md` §8–9 says the unit
+is a *logical request* that may fan out into chunks, stages, and recovery attempts, and that
+the shape of that fan-out must be chosen deliberately, recorded, and inspectable before it is
+paid for. Nothing in M01–M10 covers this; **CF-004**/**OP-109** built the one primitive that
+exists. Corresponds to delivery Gate 2. Depends on M04.
+
+- [ ] **PL-001** — Separate `Plan` from `Execute`, and expose both. A plan is immutable,
+  serializable without sensitive content, and deterministic given the same input, policy
+  snapshot, capability snapshot, and estimator version. `Preflight` returns it — eligibility,
+  chunking, maximum call count, budget, and estimated cost — **without generating anything**.
+  Closes **EXE-20**, **TRU-29**, and the preflight half of **PRD-22**.
+  *Verify:* preflighting a 240-item batch makes zero provider calls and reports a call
+  ceiling the subsequent run does not exceed; a plan built twice from the same inputs is
+  byte-identical.
+- [ ] **PL-002** — Explicit execution shapes: atomic, MDSP, SDMP, global. The planner selects
+  one, records it in the plan and the envelope, and the caller can force it — `Atomic()`,
+  `Batched()`, `Adaptive()` — because forcing atomicity for risk reasons and forcing batching
+  for cost reasons are both legitimate. Closes **EXE-01**, **EXE-14**.
+  *Verify:* each mode is observable in the envelope; a forced mode that is illegal for the
+  operation is refused at plan time, not silently ignored.
+- [ ] **PL-003** — MDSP batch protocol: stable invocation-local item IDs on the way out,
+  deterministic validation on the way back — exact ID coverage, no duplicates, no unknown
+  IDs, per-item schema and invariants — and caller order reconstructed in Go. Output
+  position is never trusted. Closes **EXE-03**, **TRU-17**. Shares its implementation with
+  **OP-101**.
+  *Verify:* responses that omit an item, duplicate one, invent one, and reorder all of them
+  each produce the right classification and the right unresolved set.
+- [ ] **PL-004** — Token-aware chunk packing. The chunk is bounded by the earliest of item
+  count, input tokens, output reserve, context limit, per-call cost, and provider payload
+  bytes — accounting for system policy, operation prompt, schema, protocol overhead,
+  serialized items, expected output per item, and a safety margin. An item too large for any
+  chunk is routed atomically or refused; it is never silently truncated. Closes **EXE-04**
+  and the estimation half of **PRD-22**. **OP-108**'s refusal is the degenerate case.
+  *Verify:* packing respects each bound in isolation; an oversized single item is refused
+  with a message naming which bound it broke.
+- [ ] **PL-005** — Adaptive chunk sizing, bounded. Grow on sustained compliance, halve on
+  truncation, omissions, duplicate IDs, malformed protocol, or repair above threshold; reduce
+  concurrency separately from chunk size under rate pressure; never exceed the operation
+  maximum or the budget; record the reason for each change. History is advisory — a
+  deterministic per-request limit always wins — and is not shared across tenants.
+  Closes **EXE-05**.
+  *Verify:* a provider that truncates above 20 items converges to a stable size and stays
+  there; the plan explains why.
+- [ ] **PL-006** — Every stable operation declares its batch algebra: class (independent,
+  subset, permutation, partition, graph, hierarchical, sequential), item encoder, merger,
+  and global validation. Appendix C of `to-production.md` is the starting assignment.
+  A generic map/reduce may execute a declared algebra; it may not invent one.
+  Closes **EXE-13**, **ARC-16**, and the batching half of **TRU-24**. Feeds **TI-007**.
+  *Verify:* a stable operation with no declared class fails a build-time check; the declared
+  class generates the property test.
+- [ ] **PL-007** — Plural APIs: `ExtractMany`, `ClassifyMany`, and their fluent twins, with
+  batching, ordering, item identity, partial success, and scheduler policy as *stated*
+  semantics. A singular function never reinterprets a slice, and a caller looping a singular
+  call is no longer the supported way to process a collection. Closes **EXE-15**, **EXE-02**;
+  supersedes the loop pattern the README currently documents.
+  *Verify:* 500 inputs through the plural API make bounded batched calls; the singular API
+  over a slice is a compile error or a documented single-item call, not a hidden loop.
+- [ ] **PL-008** — Partial success and failure policies. `BatchResult[T]` with per-item
+  status, attempts, mode, and evidence; `BatchSummary`; and the five policies — `FailFast`,
+  `CollectFailures`, `RetryFailedItems`, `RetryThenCollect` (the default for long batches),
+  `RequireAll` — each defining scheduling, cancellation, retry, and return behaviour.
+  `([]T, error)` cannot express any of this. Closes **EXE-07**, **EXE-08**.
+  *Verify:* one table per policy asserting what ran, what was cancelled, and what came back
+  when item 3 of 10 fails terminally.
+- [ ] **PL-009** — Progressive recovery cascade: preferred MDSP → keep valid items → isolate
+  only unresolved IDs → smaller MDSP → atomic → escalate model or provider only if the
+  minimum contract and data policy survive → review packet or terminal item failure at
+  budget exhaustion. A valid item is never replayed because a sibling failed, unless the
+  operation's global algebra requires recomputation. Closes **EXE-18**; it is also a §19.3
+  acceptance criterion.
+  *Verify:* a batch where two of twenty items fail spends recovery calls on two items, and
+  the eighteen valid results are byte-identical to their first-attempt values.
+- [ ] **PL-010** — SDMP staged plans over one datum, with reuse. Pass structured
+  intermediates instead of resending the source, reuse deterministic preprocessing and
+  schema artifacts, run independent checks concurrently under one budget, and **skip the
+  model stage entirely when deterministic checks already establish the required contract**.
+  Each stage carries its own operation ID and parent lineage. Closes **EXE-10**, **EXE-11**.
+  *Verify:* a two-stage extract-then-verify plan sends the source once; a case where the
+  deterministic check suffices makes one provider call, not two.
+- [ ] **PL-011** — Global and hierarchical operation algebras, written per operation because
+  no generic chunker can derive them: ranking (score within chunks, keep a candidate
+  frontier, rerank globally, validate IDs and pairwise constraints), clustering (features →
+  cluster in Go → optional model labels → exact coverage), deduplication (candidate pairs by
+  hash or embedding → model judges likely pairs only → connected components in Go), global
+  synthesis (chunk summaries with evidence → synthesize → verify claims against accumulated
+  evidence). Closes **ARC-16** for the global classes and finishes what **OP-109** deferred:
+  `Sort` refuses today because its merge was unknown, and this is where it becomes known.
+  *Verify:* a 500-item `Sort` at the Quick tier returns a permutation of the input; a
+  clustering covers every input exactly once; deduplication makes O(candidates) model calls,
+  not O(n²).
+- [ ] **PL-012** — Optional batch group for loop fusion: a caller keeps a natural Go loop,
+  builders defer, and compatible work fuses into MDSP plans. Fusion is legal only when
+  operation ID and version, schema hash, route policy, steering, contract level, data policy,
+  and budget settings all match; otherwise the group partitions. Fusion is an optimization
+  and must not change results relative to running each builder alone. Closes **EXE-16**.
+  *Verify:* fused and unfused runs of the same fifty builders produce identical values;
+  builders differing only in steering land in separate partitions.
+- [ ] **PL-013** — Per-item metrics. HTTP 200 hides omissions and invalid output, so measure
+  valid-item ratio, omissions, repairs, atomic fallbacks, and **cost per accepted item** —
+  the number that actually says whether a batch strategy is working. Closes **EXE-19**.
+  Feeds **OB-002**.
+- [ ] **PL-014** — Planner explainability: a human-readable pre-execution plan explanation
+  (mode, chunking, parallelism, recovery ladder, call ceiling, cost range, minimum contract,
+  data policy) and a post-execution decision ledger recording every adaptive choice and its
+  reason. Adaptive routing that cannot explain itself is unauditable. Closes **TRU-28**.
+  *Verify:* the §8.6 example renders for a real 240-item classification; every adaptive
+  decision in a run appears in the ledger with a reason.
+
+---
+
+# M12 — Bounded scheduler and resilience
+
+M11 decides *what* to run; this decides *how much at once*, and what happens when the
+provider pushes back. Also Gate 2. `CF-009` shipped bounded concurrency inside `MapReduce`;
+this is the process-wide version with admission control.
+
+- [ ] **SC-001** — Bounded scheduler: max concurrent calls, max queued nodes, in-flight
+  tokens, in-flight cost, per-provider and per-tenant limits. Admission weighs estimated
+  tokens, cost, quota, and priority; queues are bounded; a full queue or an unmeetable
+  deadline returns `ErrAdmissionRejected` rather than allocating goroutines. The scheduler
+  owns no semantics — it schedules plan nodes and propagates cancellation.
+  Closes **EXE-09**, **PRD-23**, and the buffer half of **TRU-14**.
+  *Verify:* 10,000 queued items hold flat goroutine and memory counts; rejection is
+  observable, not a hang.
+- [ ] **SC-002** — Rate limits, per-provider bulkheads, circuit breakers keyed by endpoint
+  and optionally model, decorrelated jitter, and `Retry-After` honoured within the logical
+  deadline. **CB-03** proved the failure mode: a retry ladder that expires inside the same
+  closed rate-limit window buys latency and nothing else. Closes **PRD-07**.
+  *Verify:* a provider returning 429 for 60s is not hammered; a breaker opens, sheds, and
+  recovers; concurrent retries do not align.
+- [ ] **SC-003** — Fairness: weighted fair queuing with per-tenant concurrency, token, and
+  cost buckets; bounded priority classes rather than arbitrary integers; no starvation, and
+  no bypassing locked provider or data-policy limits by claiming urgency. Tenant keys are
+  bounded workload identifiers, never end-user PII. Closes **TRU-15**.
+  *Verify:* a 10,000-item tenant and a 10-item tenant submitted together both progress; the
+  small one is not stuck behind the large one.
+- [ ] **SC-004** — Idempotency and ambiguity. Stable logical request IDs across every
+  attempt, a unique attempt ID per provider call, provider idempotency keys where supported,
+  and an `Ambiguous` marker on a timeout that may already have been served — the library
+  performs no side effects itself, but its callers do, and they cannot tell today.
+  Closes **PRD-10**.
+  *Verify:* a timeout followed by a retry is reported as one logical request with two
+  attempts, the first marked ambiguous.
+- [ ] **SC-005** — Cancellation coverage at every blocking boundary: queues, backoff waits,
+  HTTP, streams, workers, stores, exporters. On cancel — stop scheduling, drop queued nodes,
+  cancel in flight, finalize verified items, mark the rest canceled, return the typed error
+  *with* the partial result. No goroutine outlives its request. Closes **PRD-11**,
+  **TRU-18**. **A-002** made the context reach the call; this makes it reach everything else.
+  *Verify:* a leak test across all boundaries; cancelling a 200-item batch at item 50 returns
+  50 verified items and 150 marked canceled.
+- [ ] **SC-006** — `Client.Close()`: stop accepting work, cancel owned workers, honour a
+  grace period, flush owned buffers and stores, close owned idle connections, **never** close
+  caller-owned transports or exporters, return a joined error, and stay safe under repeated
+  and concurrent calls. Closes **PRD-20**.
+  *Verify:* double-close is a no-op; an in-flight request either finishes inside the grace
+  period or returns a typed shutdown error with its partials; zero goroutines survive.
+- [ ] **SC-007** — Caller-owned HTTP. Every provider accepts an `*http.Client` or transport
+  with documented ownership, because enterprise deployments need their own proxies, mTLS,
+  and instrumentation, and tests need a transport that fails on dial. Closes **PRD-21**.
+  **P-006** made the client per-provider; this makes it injectable.
+- [ ] **SC-008** — `ValidateConfiguration(ctx)` — non-billable readiness: provider
+  registration, credential presence without revealing values, model maps, endpoint scheme
+  and host policy, HTTP client presence, capability assumptions, scheduler limits, store
+  readiness, and contradictory settings. Contradictions are rejected at construction rather
+  than surviving to production. A separate `ProbeProviders` may make real calls and must say
+  that it bills. Closes **PRD-18**, **PRD-19**.
+  *Verify:* every configuration defect the review found is caught by the report without a
+  provider call; a billable probe is labelled as one.
+
+---
+
+# M13 — Trust, evidence, and provenance
+
+Gate 3. This is the milestone that makes the library's central claim honest: typed output
+constrains form, and nothing more. M01 stopped operations lying about success; this stops
+the *contract* being read as stronger than what was actually enforced.
+
+- [ ] **TC-001** — Prompt segments carry a role and a trust level (trusted policy, trusted
+  developer instruction, untrusted application data, untrusted retrieved data, untrusted
+  model output). Untrusted content is delimited and never interpolated into system policy
+  text; model output is untrusted until it crosses the contract layer. This reduces prompt
+  injection; it does not eliminate it, and the documentation must say so. Closes **TRU-01**.
+  *Verify:* an adversarial corpus of inputs containing instructions; injection attempts
+  reach the model as data, and the operation's invariants still hold.
+- [ ] **TC-002** — Evidence contract: `EvidenceRef{SourceID, JSONPointer, StartByte, EndByte,
+  SourceDigest}` and `ClaimProvenance{FieldPath, Evidence, Inferred, Method}`, with four
+  modes — none, material fields only, all model-derived fields, and `NoInference` (an
+  unsupported field stays absent rather than being guessed). The runtime validates that
+  references are in bounds and match the source digest; it does not claim the cited text
+  entails the claim. Closes **TRU-02**. **OP-507** builds the first spans.
+  *Verify:* a fabricated field with no supporting span fails `StrictEvidence`; an
+  out-of-bounds or wrong-digest reference is rejected.
+- [ ] **TC-003** — Provenance through pipelines: result IDs, parent links, input and schema
+  digests, operation and prompt versions, resolved model, normalizers applied, item recovery
+  path, cache usage, and library and adapter versions. A summary built from an extraction
+  traces back to the original evidence; where lineage breaks, the delivered contract cannot
+  be `FullyGoverned`. Closes **TRU-03**.
+  *Verify:* a three-stage pipeline's final claim resolves to a span in the original source.
+- [ ] **TC-004** — Contract levels, requested and delivered:
+  `PromptOnly < JSONWellFormed < SchemaConstrained < SchemaAndInvariantChecked <
+  EvidenceChecked < FullyGoverned`. Every detailed result states which level was asked for
+  and which was actually delivered, and any degradation requires policy approval rather than
+  a log line. Native provider structured output improves the *mechanism*; deterministic
+  post-validation is still required. Closes **ARC-11**, **ARC-24**.
+  *Verify:* a run that falls back from strict `json_schema` to prompt-only reports a lower
+  delivered level; with degradation disallowed, it returns an error instead.
+- [ ] **TC-005** — Model drift: record requested tier or pin, resolved provider and model
+  identifier, and provider model revision where exposed. `Tier(Smart)` is documented as
+  floating; `Model(...)` is a pin request that the provider may not fully honour, and the
+  envelope says so. Closes **TRU-04**. This is what makes **P-017**'s benchmark reproducible
+  six months from now.
+- [ ] **TC-006** — Repair safety and repair regression. Strategy is chosen by failure class:
+  syntax damage may include the prior response, bounded and delimited; missing fields may be
+  patched; **invariant and evidence failures regenerate from source**, because feeding a
+  fabricated answer back reinforces it. After any repair the original schema, invariant,
+  evidence, and cardinality contracts are reapplied, and previously valid fields are compared
+  for unrelated loss or mutation — "valid JSON" is not repair success. Closes **TRU-19**,
+  **TRU-20**; hardens **A-010**, which currently feeds the failure back for every class.
+  *Verify:* a repair that fixes the flagged field while dropping a valid unrelated one is
+  rejected; an invariant failure produces a regeneration, not an edit.
+
+---
+
+# M14 — Provider capability, routing, and data policy
+
+Gate 4. Today "supported provider" means an adapter compiles. **CB-01** is the cost of that:
+the same `Extract[T]` was schema-enforced on one provider and an unconstrained guess on five
+others, with nothing at the call site to tell them apart.
+
+- [ ] **CP-001** — Machine-readable provider capabilities — native JSON schema, JSON mode,
+  supported schema keywords, streaming, tool calling, multi-turn, prompt caching, idempotency
+  keys, seed, usage-reporting quality, model-revision reporting, regions, retention modes,
+  context and output ceilings — and planner negotiation that intersects operation
+  requirements, invocation requirements, data policy, capability snapshot, budget, and
+  breaker state before execution. Keyword stripping is permitted only when the remaining
+  mechanism plus deterministic validation still delivers the requested contract, and the plan
+  discloses it. **CB-02**'s Cerebras keyword stripping becomes declared behaviour rather than
+  a transport-layer workaround. Closes **ARC-10**, **ARC-09** routing half, **ARC-24**.
+  *Verify:* a provider that cannot deliver the minimum contract is not selected; a plan
+  built against a stale capability snapshot returns `ErrPlanStale` rather than executing.
+- [ ] **CP-002** — `DataPolicy`: classification, allowed providers and regions, retention,
+  training use, content logging, result caching, and minimum contract — locked at the client
+  or tenant boundary, strictenable by an invocation, never weakenable. A failure on a private
+  route may not fall back to a public one. Closes **TRU-11**; **P-008**'s `store: false`
+  default is the first instance of it.
+  *Verify:* a us-only, no-retention policy makes an ineligible provider unselectable, and
+  the refusal names the constraint.
+- [ ] **CP-003** — Provider conformance suite and generated support matrix, with four
+  distinct labels: integrated, conformant, live-verified, production-supported. The suite
+  covers auth and permission classification, timeouts, cancellation, ambiguous completion,
+  429 with valid, invalid, and missing `Retry-After`, 5xx behaviour, empty, malformed,
+  truncated, and refused output, supported and unsupported schema keywords, request-ID and
+  usage extraction, reasoning and cached-token normalization, Unicode and large payloads,
+  streaming termination, caller-supplied endpoint and HTTP client, credential redaction, and
+  capability-declaration consistency. Documentation may not collapse the four labels into
+  "supported". Closes **PRD-02**.
+  *Verify:* the matrix is generated from suite results, not hand-written; a provider failing
+  a declared capability loses the label automatically.
+
+---
+
+# M15 — Security, privacy, and caching
+
+- [ ] **SEC-001** — Publish `SECURITY.md`: threat model, supported versions, disclosure
+  process, and response targets. The assets are credentials, prompts, source data, outputs,
+  schemas, tenant identity, diagnostics, and routes; the actors include malicious input
+  authors, compromised endpoints, other tenants, and the model's own output.
+  Closes **PRD-04**. Coordinate with **PS-009**.
+- [ ] **SEC-002** — Content logging policy: `LogNoContent`, `LogMetadataOnly` (the production
+  default), `LogRedactedContent`, `LogFullContent` (explicit, policy-gated). **Debug changes
+  verbosity, not content policy** — that inversion is how prompts end up in log aggregators.
+  Authorization headers, keys, cookies, and raw bodies are always scrubbed; captured buffers
+  are bounded and retention-limited; diagnostic files get restrictive permissions.
+  Closes **PRD-05**. **F-033**/**F-034** removed payloads from errors; this covers logs.
+  *Verify:* a log-capture test asserts no prompt, completion, or credential fragment at any
+  level with the default policy.
+- [ ] **SEC-003** — Fuzz targets with allocation and depth limits: recursive and deeply
+  nested types, embedded fields and tags, maps, pointers, nils, custom marshalers, malformed
+  UTF-8, huge numbers and exponents, duplicate keys, trailing data, JSON bombs, schema
+  keyword adaptation, fence and JSON extraction (**A-003**), batch IDs with duplicates,
+  omissions, and adversarial ordering, repair parsing, and redaction scrubbing.
+  Closes **PRD-12**.
+  *Verify:* the corpus runs in CI as a smoke gate; each target has a seed corpus drawn from
+  real defects this list already found.
+- [ ] **SEC-004** — Custom endpoint policy: scheme and host allowlists and a private-address
+  rule, so a caller-supplied or configuration-supplied base URL cannot be pointed at internal
+  infrastructure. The library already accepts custom endpoints for OpenAI-compatible
+  providers and validates nothing about them.
+  *Verify:* loopback, link-local, and metadata-service URLs are refused unless explicitly
+  allowed; the refusal is a typed configuration error.
+- [ ] **SEC-005** — Retention and deletion for every store the library owns — result caches,
+  diagnostic captures, pricing and usage records, replay fixtures. User content is never
+  retained merely because cost accounting is on: cost records keep token counts, model IDs,
+  request IDs, and money. Tenant-scoped deletion hooks where the adapter supports them.
+  *Verify:* a tenant deletion removes its cache and diagnostic entries; the pricing store
+  contains no prompt text by construction.
+
+---
+
+# M16 — Observability and operations
+
+- [ ] **OB-001** — Observer interfaces in core (logger, tracer, metric sink, clock, ID
+  generator, diagnostic sink) with no-op defaults, and the OpenTelemetry implementation in
+  `telemetry/otel` using the host's provider. Core stops importing OTel, exporters, and the
+  SQLite pricing store; optional adapters may. Closes **ARC-17**, **ARC-18**.
+  *Verify:* core's dependency list is asserted by a test; the library initializes no global
+  SDK and closes nothing it did not create.
+- [ ] **OB-002** — Metrics catalog per §15.2: requests, duration, plan nodes, provider
+  attempts and duration, queue duration, in-flight gauge, circuit state, item outcomes, batch
+  size, batch compliance ratio, repairs, atomic fallbacks, tokens, cost, budget exhaustion,
+  and review-required counts. High-cardinality identifiers stay out of metric labels and live
+  in the envelope. Depends on **PL-013**.
+- [ ] **OB-003** — Cost tree: logical request → stage → chunk → attempt → item attribution,
+  with provider-reported usage preferred, estimates marked, and pricing quality recorded as
+  `Exact`, `Estimated`, `Unknown`, or `Free`. Historical cost is never recomputed with
+  current rates without keeping both versions. Closes **TRU-22** and the drift half of
+  **TRU-23**. **PR-001** established that zero never means unknown; this makes the same
+  distinction hold across a fan-out.
+- [ ] **OB-004** — Operational SLOs as tests, per §15.4: zero panics from valid API use, zero
+  goroutine leaks after cancel or completion, zero client-isolation failures, zero unknown or
+  duplicate batch IDs accepted, zero secrets in logs, zero calls exceeding a declared budget,
+  and validated-item completeness at or above 99.5% on the conformance corpus.
+  *Verify:* each SLO has a named test; the leak and isolation ones run in CI on a platform
+  where `-race` works (**CI-002**).
+- [ ] **OB-005** — Runbooks and dashboards for the incident classes that will actually
+  happen: 429 surge, provider latency or outage, malformed or truncated output spike, batch
+  omission or repair-rate spike, cost anomaly, model alias or revision change, capability or
+  schema enforcement regression, stuck breaker, cache or pricing-store failure, telemetry
+  exporter failure, suspected content or credential leak, deprecated endpoint. Each names its
+  signal, mitigation, safe fallback, evidence to capture, and recovery criterion.
+  Closes **PRD-24**.
+
+---
+
+# M17 — Release engineering and v1 acceptance
+
+- [ ] **RC-001** — Release contents per §17.2: tagged and checksummed artifacts, generated
+  changelog, Go API changes **and semantic behaviour changes**, operation, prompt, and schema
+  version changes, provider capability and live-verification matrix, platform support matrix,
+  known degradations, migration steps, SBOM, vulnerability scan, and the release-candidate
+  semantic benchmark comparison. A prompt edit with no Go signature change is a behaviour
+  change and belongs in the notes. Closes **PRD-03**, **ARC-23**.
+- [ ] **RC-002** — Semantic regression suite for release candidates, on pinned operation
+  versions and as-pinned-as-available models: extraction accuracy and hallucination,
+  missing-field and evidence-reference validity, classification accuracy and abstention,
+  choose/filter precision and recall, ranking agreement and ID coverage, repair success and
+  regression rate, valid-item ratio by batch size, latency, tokens, and cost per accepted
+  item, and prompt-injection resistance. Results are statistical, with repeated trials and
+  intervals — a single exact-output assertion is not a stable live test. Closes **PRD-15**,
+  **TRU-21**. This suite spends money: it runs only on a protected release-candidate
+  workflow with an explicit spend ceiling, never on `go test ./...` (**B-04**).
+- [ ] **RC-003** — Track §19's acceptance criteria as a checklist in this file, and require
+  every unchecked box at v1.0.0 to carry an ADR saying why it ships unmet. Twenty-nine boxes
+  across core architecture, correctness and trust, execution and resilience, security and
+  governance, and verification and operations.
+- [ ] **RC-004** — Compatibility and deprecation policy: at least one documented window for a
+  deprecated stable API, deprecation notices that name a mechanical replacement, global and
+  default-client APIs routed to `quick` or a compatibility adapter, and removal only at a
+  major version. There is not one `// Deprecated:` marker in the repository today
+  (**PS-003**).
+- [ ] **RC-005** — Load and chaos suites: large item streams, provider slowdown and 429
+  bursts, mixed tenants and priorities, cancellation storms, large schemas and near-limit
+  chunks, partial MDSP failures forcing atomic fallback, and failing telemetry and stores.
+  The outcome metrics are cost and latency per valid item, not calls per second.
+- [ ] **TR-002** — Extend `.audit/traceability.py` to `to-production.md`'s gap register the
+  way **TR-001** covers the review: parse `ARC`, `PRD`, `API`, `EXE`, and `TRU` rows, map
+  each to the tasks citing it, and fail on an untraced gap or a dangling citation. The
+  coverage table below is the first run, done by hand; it will drift within a week if
+  nothing checks it. Note the existing collision: the specification labels its decisions with
+  a `D-` prefix and three digits, while the review numbers schema findings `D-01` through
+  `D-15` with two — near enough that the script reads one as the other, which is why tasks
+  cite decisions as `ADR-nnn` instead.
+  *Verify:* the script fails when a gap's only task is deleted, and when a task cites a gap
+  ID that does not exist.
+
+---
+
+## Reconciliation with `to-production.md`
+
+The specification was written after this list and does not supersede it wholesale — it is a
+target architecture, and this list is a defect ledger with evidence attached. Where they meet,
+these are the rulings. Where they conflict, the ruling says which one won and why.
+
+**Scale, first, because it changes what "production-ready" means here.** M01–M10 finish a
+library that does not lie about its results. M11–M17 build the one the specification
+describes: a planner, a scheduler, a trust model, a capability model, and a governance
+envelope. That is roughly three times the remaining work, and much of it is only worth
+building for multi-tenant or consequential deployments. **This is a scoping decision, not a
+technical one, and it is not made yet.** A defensible smaller v1 is M01–M10 plus M13
+(trust), **SC-005**/**SC-006** (cancellation and shutdown), **CP-001** (capability
+negotiation), and **SEC-002** (logging), with the planner and scheduler deferred to v2 under
+an ADR. Until that decision is recorded, M11–M17 are scheduled but not committed.
+
+**Rulings.**
+
+1. **`Client`'s fate is decided** — see **IN-004**. ARC-01 and ADR-003 remove the option of
+   documenting the global model honestly.
+2. **`Meta` is the execution envelope** — see **A-006**. Build it with requested-versus-
+   delivered contract and a cost tree from the start rather than renaming it at M13.
+3. **The verb catalogue is decided** — see **PS-002**. §6.2's eight categories are the stable
+   core; everything else becomes a recipe or is marked experimental.
+4. **Batch alignment is by ID, not index** — see **OP-101** and **PL-003**. The review
+   proposed indices to fix identity; indices fail under exactly the omission and reordering
+   they are meant to catch.
+5. **`Sort`'s refusal is a stopgap, not the answer.** **OP-109** deliberately kept refusing
+   because a sort merge is an interleave the library could not guess. ADR-019 agrees it
+   cannot be guessed generically and requires it be *declared* per operation — so **PL-011**
+   owns it, and the original "500-item `Sort` returns 500 items" bar comes back.
+6. **The workflow-engine documents are out of scope, not unscheduled** — see **PS-008**.
+   API-12 and §1.3 make a workflow DSL an explicit non-goal.
+7. **The error taxonomy widens now, not incrementally** — see **A-007**. Every recovery
+   decision in M11–M14 branches on failure class; adding kinds later means rewriting those
+   branches.
+8. **Tool calling (`PS-004`), embeddings (`PS-006`), and multi-turn (`PS-005`) are product
+   decisions, not v1 gates.** The specification requires only that capabilities be
+   *declared* (CP-001) and that conversational names not sit on single-shot implementations
+   (ARC-20). None of the three blocks v1.
+9. **`P-007`'s deviation stands and needs an ADR.** §10.1 says `Error()` carries sanitized
+   metadata only; the shipped implementation keeps the vendor's structured message because
+   withholding "exceeds maximum nesting depth" moves the debugging cost onto the caller. The
+   compromise — vendor message capped at 400 characters, raw body retained on the value and
+   never printed, `SCHEMAFLUX_ERROR_DETAIL=1` for the rest — is a reasonable reading of
+   PRD-09, but it is a documented departure and should be recorded as one under **PS-009**'s
+   ADR directory rather than left as a note in an evidence row.
+10. **Delivery gates map onto milestones**, so the specification's exit criteria can be used
+    as-is: Gate 0 ≈ M00–M03, Gate 1 ≈ M04 + M06 + **IN-004**, Gate 2 ≈ M11 + M12, Gate 3 ≈
+    M13 + M05's invariant work, Gate 4 ≈ M14 + M02, Gate 5 ≈ M15–M17.
+11. **Live cost stays gated.** The specification's semantic suites (§16.6) assume spend that
+    **B-04** exists to prevent by accident. `RC-002` runs on a protected workflow with a
+    ceiling; a plain `go test ./...` still reaches nothing billable, ever.
+12. **Three ID collisions fixed while reconciling.** `OP-104`, `P-014`, and `P-015` were each
+    carrying two different tasks — one open in a milestone, one filed later under "Added
+    during the work" — so an ID could be simultaneously open and closed and no script could
+    tell which. The later of each pair is renumbered `OP-110`, `P-017`, and `P-018` with a
+    note in place, and the two cross-references to the old `P-014` now point at `P-017`.
+    Nothing else moved: the no-renumbering rule protects identifiers that mean one thing,
+    which these did not.
+
+**Gap coverage.** Every gap in the specification's register maps to at least one task. Done
+by hand; **TR-002** makes it checkable.
+
+| Gap | Task(s) | Gap | Task(s) |
+| --- | --- | --- | --- |
+| ARC-01 | IN-004, TI-002, TI-008 | PRD-13 | TI-003 |
+| ARC-02 | IN-004, TI-002, A-002 | PRD-14 | A-001, PS-007, P-009 |
+| ARC-03 | PS-002 | PRD-15 | RC-002 |
+| ARC-04 | A-001 | PRD-16 | PS-002 |
+| ARC-05 | FL-003, FL-005 | PRD-17 | CI-001, CI-002 |
+| ARC-06 | A-013, A-002 | PRD-18 | SC-008 |
+| ARC-07 | A-013, IN-004 | PRD-19 | SC-008 |
+| ARC-08 | A-004 | PRD-20 | SC-006 |
+| ARC-09 | P-015, CP-001 | PRD-21 | SC-007 |
+| ARC-10 | CP-001 | PRD-22 | PL-001, PL-004 |
+| ARC-11 | TC-004, A-009 | PRD-23 | SC-001 |
+| ARC-12 | OP-205, OP-302, PL-010 | PRD-24 | OB-005 |
+| ARC-13 | A-006, OP-302, TC-003 | PRD-25 | PS-009 |
+| ARC-14 | A-010, PL-009, PR-005 | API-01 | FL-003, FL-005 |
+| ARC-15 | A-007 | API-02 | A-012, PL-007 |
+| ARC-16 | PL-006, PL-011 | API-03 | FL-003 |
+| ARC-17 | OB-001 | API-04 | A-013 |
+| ARC-18 | OB-001, MW-007 | API-05 | A-013 |
+| ARC-19 | IN-004, F-014 | API-06 | PS-003, A-005 |
+| ARC-20 | PS-005 | API-07 | A-004 |
+| ARC-21 | CF-008, PS-002 | API-08 | A-004 |
+| ARC-22 | OP-206 | API-09 | A-001 |
+| ARC-23 | PS-007, TI-004, RC-001 | API-10 | FL-005 |
+| ARC-24 | TC-004, MW-008, CP-001 | API-11 | A-006, A-013 |
+| PRD-01 | CI-001–CI-006 | API-12 | PS-008, CF-008 |
+| PRD-02 | CP-003 | EXE-01 | PL-002 |
+| PRD-03 | RC-001 | EXE-02 | PL-007, OP-304 |
+| PRD-04 | SEC-001 | EXE-03 | PL-003, OP-101 |
+| PRD-05 | SEC-002, A-011 | EXE-04 | PL-004 |
+| PRD-06 | PR-005 | EXE-05 | PL-005 |
+| PRD-07 | SC-002 | EXE-06 | A-007, TI-006 |
+| PRD-08 | A-007 | EXE-07 | PL-008 |
+| PRD-09 | A-011 | EXE-08 | PL-008 |
+| PRD-10 | SC-004 | EXE-09 | SC-001, CF-009 |
+| PRD-11 | SC-005 | EXE-10 | PL-010 |
+| PRD-12 | SEC-003 | EXE-11 | PL-010, OP-205 |
+| EXE-12 | OP-101 | TRU-08 | S-008 |
+| EXE-13 | PL-006, TI-007 | TRU-09 | S-010 |
+| EXE-14 | PL-002 | TRU-10 | MW-004, P-009 |
+| EXE-15 | PL-007 | TRU-11 | CP-002 |
+| EXE-16 | PL-012 | TRU-12 | MW-008 |
+| EXE-17 | PR-005 | TRU-13 | ST-002 |
+| EXE-18 | PL-009 | TRU-14 | ST-002, SC-001 |
+| EXE-19 | PL-013 | TRU-15 | SC-003 |
+| EXE-20 | PL-001 | TRU-16 | A-013 |
+| TRU-01 | TC-001 | TRU-17 | PL-003, OP-101 |
+| TRU-02 | TC-002, OP-507 | TRU-18 | SC-005 |
+| TRU-03 | TC-003 | TRU-19 | TC-006 |
+| TRU-04 | TC-005 | TRU-20 | TC-006 |
+| TRU-05 | S-002, S-011 | TRU-21 | RC-002, TI-003 |
+| TRU-06 | S-003 | TRU-22 | OB-003, A-006 |
+| TRU-07 | S-009 | TRU-23 | PR-002, OB-003 |
+| TRU-24 | PS-002, PL-006 | TRU-28 | PL-014 |
+| TRU-25 | A-009 | TRU-29 | PL-001 |
+| TRU-26 | CF-006 | TRU-30 | OP-206, OP-201 |
+| TRU-27 | CF-002 | | |
 
 ---
 
@@ -786,6 +1618,19 @@ A-009 ──> A-010 ──> OP-1xx invariants
 S-001 ──> P-005 ──> S-004
 CF-004 ──> OP-108
 PS-004 ──> PS-001
+
+Added with M11–M17:
+A-001 ──> PL-001 ──> PL-002, PL-004 ──> PL-005      (no plan, no shape, no packing)
+A-007 ──> PL-009, SC-002, TC-006                     (recovery branches on failure class)
+PL-003 ──> PL-006 ──> PL-011, TI-007                 (IDs, then algebra, then properties)
+PL-001 ──> SC-001 ──> SC-003                         (schedule plan nodes, then fairly)
+IN-004 ──> TI-002, TI-008, SC-006                    (isolation before lifecycle)
+S-002 ──> S-011, P-009, MW-004                       (schema identity keys everything)
+CP-001 ──> MW-008, CP-002, CP-003                    (no routing without capabilities)
+TC-002 ──> TC-003 ──> TC-004                         (evidence, lineage, delivered level)
+PL-013 ──> OB-002 ──> OB-004                         (measure items before asserting SLOs)
+CI-002 ──> TI-008, OB-004                            (-race needs a Linux amd64 runner)
+B-04 ──> RC-002                                      (the spend gate outlives the credits gate)
 ```
 
 ## Completed — evidence
@@ -871,7 +1716,7 @@ commit and the test that proves it.
 | **X-03 (retry)** | `ca9d236` | **Found while closing P-007, and a real bug.** `isRetryableLLMError` matched substrings against the whole error message *including the vendor's body*, and the non-retryable list contains `invalid_request_error`, `unauthorized`, and `forbidden`. So a transient **500 whose body carried `invalid_request_error`**, or a **503 whose message said `unauthorized upstream`**, was classified permanent and the caller lost every retry they were entitled to. The decision now comes from `APIError.Retryable()` — the status, not the prose — which also survives the body being redacted out of the message. Substring matching remains as the fallback for errors that carry no status. Witnessed: three cases fail against the old classifier. |
 | **B-01/B-04** | `9474687` | **Unblocked 2026-08-05: the account has credits.** `GET /v1/models` returns the gpt-5.6 family and `POST /v1/responses` returns 200. `live_provider_test.go` is the gate: six tests behind `SCHEMAFLUX_LIVE_TESTS=1`, skipped by a plain `go test ./...` so no run bills the operator by accident. All six pass against `gpt-5.6-luna`. |
 | **P-012** | `9474687` | The provider's request is one the live Responses API accepts and its response is one this library parses, end to end: `Extract` returned `{Number:INV-4417 Total:1284.5 Vendor:Northwind Traders}` and `Validate` returned two correctly-attributed issues. The observed live response body is pinned as a fixture in `TestOpenAIResponsesParsesTheObservedLiveShape`, so the parser is checked against a real response rather than one we wrote to suit ourselves. |
-| **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-014**. |
+| **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
 
@@ -906,7 +1751,9 @@ commit and the test that proves it.
   struct now. (Filed as S-006 at first, which collided with the existing S-006 and silently
   un-traced **D-07** — the traceability check caught it on the next run.)
 
-- [x] **OP-104** — Both collection errors embedded the whole model response in their `Reason`
+- [x] **OP-110** — *(Filed as OP-104, which was already taken by the open `Filter`
+  single-object fallback task in M05. Renumbered here; the work below is unchanged.)*
+  Both collection errors embedded the whole model response in their `Reason`
   (`"failed to parse: %v (response: %s)"`), which is **X-03** in two more places: the response is
   the caller's data reshaped, and every caller logs the error. Removed, and the cause is wrapped
   instead so `errors.Is` reaches it.
@@ -957,14 +1804,16 @@ commit and the test that proves it.
 - [ ] **FL-007** — **CF-09**: composition is linear and untyped. Fold into the **M08** combinator
   work rather than patching the current shape. Depends on CF-008.
 
-- [ ] **P-014** — Split `Smart` and `Fast` across the gpt-5.6 family, or record that they should
+- [ ] **P-017** — *(Filed as P-014, which was already taken by the open cassette task in M02.
+  Renumbered here.)* Split `Smart` and `Fast` across the gpt-5.6 family, or record that they should
   not be split. The P-013 benchmark did not discriminate: all three models were 4/4 correct on
   both a typed extraction and a proration with a distractor, so the only measurable difference
   was latency. A discriminating task set is needed — long-context recall, multi-step tool
   reasoning, adversarial instruction-following — before Smart means anything other than Fast.
   *Verify:* a benchmark in `.audit/live/` where the models score differently, and a tier
   assignment justified by it in `config.go`.
-- [x] **P-015** — The live `usage.input_tokens_details` carries `cache_write_tokens` alongside
+- [x] **P-018** — *(Filed as P-015, which was already taken by the open per-provider model-map
+  task in M02. Renumbered here.)* The live `usage.input_tokens_details` carries `cache_write_tokens` alongside
   `cached_tokens`, which the provider did not parse. They bill differently, so cost accounting
   that reads only one under-reports the first call of a cached prefix — the call that pays to
   build the cache. Found by inspecting a real response rather than the docs.

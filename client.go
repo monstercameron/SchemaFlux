@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	cfg "github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
@@ -152,6 +153,20 @@ func (client *Client) WithProviderConfig(providerName string, config llm.Provide
 	client.providerName = providerName
 	client.provider = provider
 	ops.SetDefaultProvider(provider)
+
+	// A provider this library has no model for is configured, not usable: every
+	// operation will fail at its first call with a message the caller reads long
+	// after they set this up. Say so now, while they are looking at the
+	// configuration. The provider is still installed -- the caller may be about
+	// to set SCHEMAFLUX_MODEL, and refusing to attach it would lose the rest of
+	// the configuration to a problem they can fix.
+	if err := cfg.ValidateModelResolution(providerName); err != nil {
+		client.configErr = err
+		client.logger.Warn("Provider configured with no resolvable model",
+			"provider", providerName, "error", err)
+		return client
+	}
+
 	client.logger.Info("Provider configured", "provider", providerName)
 
 	return client
@@ -250,11 +265,17 @@ func Init(key string) error {
 		return nil
 	}
 
-	defaultClient = NewClient(apiKey).
+	client := NewClient(apiKey).
 		WithTimeout(timeout).
 		WithProvider(provider).
 		WithDebug(debugMode)
-	return nil
+	defaultClient = client
+
+	// Init has an error return and a configuration failure to report, so report
+	// it. The client is still installed: the failure is "no model for this
+	// provider", which a caller can fix with an environment variable without
+	// rebuilding anything, and discarding their provider would help nobody.
+	return client.Err()
 }
 
 // SetDefaultClient replaces the default client, or clears it when given nil.

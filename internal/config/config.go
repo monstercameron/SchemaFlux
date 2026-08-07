@@ -214,7 +214,7 @@ func GetModel(intelligence types.Speed, provider string) string {
 // slowest on the harder task without being more accurate, and assuming slower
 // means smarter is the kind of guess this library is trying to stop making.
 // Both stay on luna until a task that actually discriminates says otherwise —
-// see TODOS.md P-014. A caller who wants a specific model sets it with
+// see TODOS.md P-017. A caller who wants a specific model sets it with
 // SCHEMAFLUX_MODEL_* or a per-call option.
 const (
 	ModelDefaultSmart = "gpt-5.6-luna"

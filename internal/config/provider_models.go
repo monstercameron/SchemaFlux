@@ -1,11 +1,21 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+// ErrNoModelMapping reports that a provider has no model for at least one tier
+// and no environment override supplying one.
+//
+// It exists so the failure can be recognised rather than string-matched:
+// GetModel returns the empty string in that case, and the empty string had to be
+// turned back into a sentence at every call site that cared.
+var ErrNoModelMapping = errors.New("provider has no model mapping")
 
 // providerModels maps a provider to the model it should use at each tier.
 //
@@ -96,4 +106,45 @@ func HasModelMapping(provider string) bool {
 	}
 	_, known := providerModels[normaliseProviderName(provider)]
 	return known
+}
+
+// ValidateModelResolution reports whether every tier resolves to a model for
+// this provider, counting environment overrides.
+//
+// GetModel already fails closed, but it fails at the first call — after the
+// client is built, after the caller believes they are configured, and inside
+// whatever operation happened to run first. The same check at construction says
+// so while the caller is still looking at their configuration.
+//
+// All three tiers must resolve, not just one. A caller who sets only
+// SCHEMAFLUX_MODEL_SMART has a working Smart path and two broken ones, and the
+// point of checking early is to find that before an operation defaulting to Fast
+// discovers it in production.
+func ValidateModelResolution(provider string) error {
+	var missing []string
+	for _, tier := range []types.Speed{types.Smart, types.Fast, types.Quick} {
+		if GetModel(tier, provider) == "" {
+			missing = append(missing, tierName(tier))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%w: provider %q resolves no model for %s; set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK. Providers with a built-in mapping: %s",
+		ErrNoModelMapping, provider, strings.Join(missing, ", "), strings.Join(KnownProviders(), ", "))
+}
+
+func tierName(tier types.Speed) string {
+	switch tier {
+	case types.Smart:
+		return "Smart"
+	case types.Fast:
+		return "Fast"
+	case types.Quick:
+		return "Quick"
+	default:
+		return "unknown tier"
+	}
 }
