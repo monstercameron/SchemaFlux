@@ -61,7 +61,8 @@ func NewBatchProcessor(provider llm.Provider) *BatchProcessor {
 
 // Global Batch function for backward compatibility
 func Batch() *BatchProcessor {
-	return NewBatchProcessor(defaultProvider)
+	_, provider := currentHooks()
+	return NewBatchProcessor(provider)
 }
 
 // WithMode sets the batch processing mode

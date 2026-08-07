@@ -239,6 +239,31 @@ func (l *Logger) SetLevelString(level string) {
 	l.SetLevel(parseLogLevel(level))
 }
 
+// Level reports the current logger level.
+//
+// It exists so a caller who raises verbosity can put it back. Client.WithDebug
+// used to switch the logger to debug and had no way to undo it, so
+// WithDebug(false) left every subsequent request logging at debug -- the
+// opposite of what it says.
+//
+// FatalLevel does not survive the round trip: it shares slog.LevelError, so a
+// logger set to fatal reports error. Nothing in this library sets fatal.
+func (l *Logger) Level() LogLevel {
+	if l == nil || l.level == nil {
+		return InfoLevel
+	}
+	switch l.level.Level() {
+	case slog.LevelDebug:
+		return DebugLevel
+	case slog.LevelWarn:
+		return WarnLevel
+	case slog.LevelError:
+		return ErrorLevel
+	default:
+		return InfoLevel
+	}
+}
+
 // Config returns the logger configuration.
 func (l *Logger) Config() LoggerConfig {
 	if l == nil {

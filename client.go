@@ -14,12 +14,10 @@ import (
 	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
 	"github.com/monstercameron/schemaflux/internal/telemetry"
-	openai "github.com/sashabaranov/go-openai"
 )
 
 // Client represents a configured schemaflux client instance.
 type Client struct {
-	openaiClient *openai.Client // Legacy OpenAI client
 	apiKey       string
 	provider     llm.Provider
 	providerName string
@@ -28,6 +26,12 @@ type Client struct {
 	retryBackoff time.Duration
 	logger       *telemetry.Logger
 	debugMode    bool
+
+	// levelBeforeDebug is the logger level WithDebug(true) raised from, so
+	// WithDebug(false) can put it back. Without it, turning debug off left the
+	// logger at debug forever -- the option had exactly one direction.
+	levelBeforeDebug    telemetry.LogLevel
+	hasLevelBeforeDebug bool
 
 	// configErr records the last configuration failure, so a builder chain that
 	// could not do what it was asked is not silently indistinguishable from one
@@ -62,7 +66,6 @@ func NewClient(apiKey string) *Client {
 	// returned "Mock response for: ..." and the caller had no way to notice.
 	// Ask for the mock deliberately with WithMockProvider.
 	if apiKey != "" {
-		client.openaiClient = openai.NewClient(apiKey)
 		provider, err := llm.CreateProvider("openai", client.providerConfig("openai", llm.ProviderConfig{}))
 		if err == nil {
 			client.provider = provider
@@ -194,8 +197,21 @@ func (client *Client) WithDebug(enabled bool) *Client {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	client.debugMode = enabled
+
 	if enabled {
+		// Record the level once. Two WithDebug(true) calls must not make the
+		// remembered level "debug", or the restore becomes a no-op.
+		if !client.hasLevelBeforeDebug {
+			client.levelBeforeDebug = client.logger.Level()
+			client.hasLevelBeforeDebug = true
+		}
 		client.logger.SetLevel(telemetry.DebugLevel)
+		return client
+	}
+
+	if client.hasLevelBeforeDebug {
+		client.logger.SetLevel(client.levelBeforeDebug)
+		client.hasLevelBeforeDebug = false
 	}
 	return client
 }

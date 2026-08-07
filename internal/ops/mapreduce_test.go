@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -331,5 +332,113 @@ func TestChunkErrorMessage(t *testing.T) {
 	}
 	if !errors.Is(err, err.Err) {
 		t.Error("ChunkError does not unwrap to its cause")
+	}
+}
+
+// Concurrency: 1 is documented as making the run sequential, and a caller asks
+// for it because their provider is rate-limited. The semaphore version was
+// serialized but not ordered -- it dispatched in whatever order the scheduler
+// woke ten goroutines, so chunk 7 could run before chunk 0 -- and the ordering
+// is the part that matters to the caller who asked.
+func TestMapReduceSequentialRunsChunksInOrder(t *testing.T) {
+	items := make([]int, 40)
+	for i := range items {
+		items[i] = i
+	}
+
+	var mu sync.Mutex
+	var seen []int
+
+	_, summary, err := MapReduce(context.Background(), items,
+		MapReduceOptions{ChunkSize: 4, Concurrency: 1},
+		func(_ context.Context, chunk []int) (int, error) {
+			mu.Lock()
+			seen = append(seen, chunk[0])
+			mu.Unlock()
+			return chunk[0], nil
+		})
+	if err != nil {
+		t.Fatalf("MapReduce: %v", err)
+	}
+	if !summary.Complete() {
+		t.Fatalf("summary reports failures: %+v", summary.Failed)
+	}
+
+	for i, first := range seen {
+		if want := i * 4; first != want {
+			t.Fatalf("chunk %d started with item %d, want %d -- dispatch order is not the input order: %v",
+				i, first, want, seen)
+		}
+	}
+}
+
+// The cancellation this test guards is only meaningful if the failing chunk is
+// reached before the rest. Under the old dispatch, a failure in the last
+// scheduled chunk cancelled nothing and every chunk was paid for.
+func TestMapReduceSequentialFailureStopsTheRest(t *testing.T) {
+	items := make([]int, 40)
+	for i := range items {
+		items[i] = i
+	}
+
+	for _, failAt := range []int{0, 1, 5} {
+		t.Run(fmt.Sprintf("chunk_%d_fails", failAt), func(t *testing.T) {
+			var started int32
+
+			_, summary, err := MapReduce(context.Background(), items,
+				MapReduceOptions{ChunkSize: 4, Concurrency: 1},
+				func(_ context.Context, chunk []int) (int, error) {
+					atomic.AddInt32(&started, 1)
+					if chunk[0]/4 == failAt {
+						return 0, errors.New("this chunk failed")
+					}
+					return 0, nil
+				})
+
+			if err == nil {
+				t.Fatal("a failing chunk must fail the call")
+			}
+			if summary.Complete() {
+				t.Error("the summary reports a complete run after a failure")
+			}
+
+			// Sequential dispatch means the run stops at the failing chunk:
+			// every chunk up to and including it ran, and nothing after it did.
+			if got, want := int(atomic.LoadInt32(&started)), failAt+1; got != want {
+				t.Errorf("%d chunks ran, want %d -- the failure did not stop the run", got, want)
+			}
+		})
+	}
+}
+
+// A chunk the run never reached is reported as cancelled, not as a successful
+// empty result. Reporting it as success is the failure this library exists to
+// remove, one layer down.
+func TestMapReduceUnreachedChunksAreNotReportedAsSuccess(t *testing.T) {
+	items := make([]int, 40)
+	for i := range items {
+		items[i] = i
+	}
+
+	values, summary, err := MapReduce(context.Background(), items,
+		MapReduceOptions{ChunkSize: 4, Concurrency: 1, ContinueOnError: true},
+		func(ctx context.Context, chunk []int) (int, error) {
+			if chunk[0] == 0 {
+				return 0, errors.New("first chunk failed")
+			}
+			return chunk[0], nil
+		})
+	if err != nil {
+		t.Fatalf("ContinueOnError should not fail the call: %v", err)
+	}
+	if summary.Complete() {
+		t.Fatal("a failed chunk must be reported")
+	}
+	if len(summary.Failed) != 1 {
+		t.Fatalf("Failed = %+v, want exactly the one chunk that failed", summary.Failed)
+	}
+	// ContinueOnError runs everything, so the other nine results are real.
+	if len(values) != 9 {
+		t.Errorf("got %d results, want 9", len(values))
 	}
 }

@@ -28,13 +28,13 @@ func GetRequestCosts(since time.Time, filters map[string]string) []CostRecord {
 	costMutex.RLock()
 	defer costMutex.RUnlock()
 
-	records := make([]CostRecord, 0, len(costHistory))
-	for _, record := range costHistory {
+	records := make([]CostRecord, 0, costCount)
+	forEachCostRecord(func(record CostRecord) {
 		if record.Timestamp.Before(since) || !matchesFilters(record, filters) {
-			continue
+			return
 		}
 		records = append(records, cloneCostRecord(record))
-	}
+	})
 
 	return records
 }
@@ -44,13 +44,12 @@ func GetRequestCost(requestID string) (CostRecord, bool) {
 	costMutex.RLock()
 	defer costMutex.RUnlock()
 
-	for _, record := range costHistory {
-		if record.RequestID == requestID {
-			return cloneCostRecord(record), true
-		}
+	slot, ok := costIndex[requestID]
+	if !ok || slot >= len(costHistory) {
+		return CostRecord{}, false
 	}
 
-	return CostRecord{}, false
+	return cloneCostRecord(costHistory[slot]), true
 }
 
 // GetCostSummary returns aggregate totals and averages for a time range.
@@ -60,9 +59,9 @@ func GetCostSummary(since time.Time, filters map[string]string) CostSummary {
 
 	var summary CostSummary
 
-	for _, record := range costHistory {
+	forEachCostRecord(func(record CostRecord) {
 		if record.Timestamp.Before(since) || !matchesFilters(record, filters) {
-			continue
+			return
 		}
 
 		summary.RequestCount++
@@ -76,7 +75,7 @@ func GetCostSummary(since time.Time, filters map[string]string) CostSummary {
 		summary.AverageCompletionCost += record.Cost.CompletionCost
 		summary.AverageCachedCost += record.Cost.CachedCost
 		summary.AverageReasoningCost += record.Cost.ReasoningCost
-	}
+	})
 
 	if summary.RequestCount == 0 {
 		return summary
@@ -97,15 +96,25 @@ func GetCostSummary(since time.Time, filters map[string]string) CostSummary {
 	return summary
 }
 
-// ResetCostTracking clears all accumulated cost state.
+// ResetCostTracking clears the recorded history and the running totals.
+//
+// It deliberately leaves the budget configuration alone. It used to null
+// budgetLimits and budgetCallback too, so clearing history -- which tests do
+// between cases and services do on a schedule -- silently switched off budget
+// alerting. Use ResetBudget for that.
 func ResetCostTracking() {
 	costMutex.Lock()
 	defer costMutex.Unlock()
 
 	totalCosts = nil
 	costHistory = nil
-	budgetLimits = nil
-	budgetCallback = nil
+	costIndex = nil
+	costStart = 0
+	costCount = 0
+
+	// The notification state belongs to the totals, not to the limits: once
+	// spend is back at zero, a later crossing is a new edge and must alert.
+	budgetNotified = nil
 }
 
 func cloneCostRecord(record CostRecord) CostRecord {

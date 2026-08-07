@@ -812,14 +812,31 @@ tests.
   by construction.
 - [ ] **PR-002** — Add `RegisterPricingModel` and populate the 5.6 family. The price table is
   a private package var with hardcoded 2024 effective dates and no override path.
-- [ ] **PR-003** — Bound `costHistory` (a package-level slice appended per call and never
+- [x] **PR-003** — Bound `costHistory` (a package-level slice appended per call and never
   evicted, `pricing.go:301`) with a ring buffer and a request-ID index; `GetRequestCost`,
   `GetCostSummary`, and `GetTotalCost` all linear-scan it under a lock. Closes **I-10**.
   *Verify:* memory is flat across 100k tracked calls; lookup is O(1).
-- [ ] **PR-004** — Separate history reset from budget configuration: `ResetCostTracking`
+  **Done** — a ring buffer of `DefaultCostHistoryLimit` (10,000) records with
+  `SetCostHistoryLimit` to change it, plus `costIndex` mapping request ID to slot so
+  `GetRequestCost` is a lookup rather than a scan under a lock. An evicted record's index
+  entry is removed with it — without that, a lookup returns the slot its replacement now
+  occupies, which is somebody else's request reported as yours. Every other reader
+  (`GetTotalCost`, `GetCostSummary`, `GetCostBreakdown`, `GetRequestCosts`, `ExportCostReport`)
+  walks the ring oldest-first through one helper, so order is preserved.
+  *Verify:* `pricing/history_budget_test.go` — 5,000 records retained as 100 with the backing
+  slice not growing; eviction oldest-first; evicted IDs no longer resolving; a retried request
+  ID resolving to its latest record; and the aggregates agreeing with the retained history
+  rather than silently reporting a total for records that no longer exist.
+- [x] **PR-004** — Separate history reset from budget configuration: `ResetCostTracking`
   currently nulls `budgetLimits` and `budgetCallback` too, so clearing history silently
   disables budget alerting. Closes the side-effect half of **I-10**.
-- [ ] **PR-005** — Make budgets edge-triggered and optionally enforcing. `SetBudget` fires its
+  **Done** — `ResetCostTracking` clears history and totals; the new `ResetBudget` clears
+  limits, callback, and notification state. Clearing history is something tests do between
+  cases and services do on a schedule, and it was silently switching off spend alerting.
+  The notification state goes with the *totals*, not the limits: once spend is back to zero, a
+  later crossing is a new edge and has to alert again.
+  *Verify:* `TestResetCostTrackingKeepsTheBudget`, `TestResetBudgetKeepsTheHistory`.
+- [x] **PR-005** — Make budgets edge-triggered and optionally enforcing. `SetBudget` fires its
   callback on every request once spend passes 80% of a limit, with no debounce and no state,
   and nothing is ever blocked. Closes **I-11**.
   *Verify:* one notification per threshold crossing; enforcing mode returns
@@ -832,11 +849,27 @@ tests.
   worst case and nothing bounds the product.
   *Verify (added):* a request whose repairs would exceed its call ceiling stops at the
   ceiling and returns validated partials; the envelope's attempt tree sums to the ledger.
-- [ ] **PR-006** — Delete the duplicated `MatchesFilters` / `matchesFilters` pair
+  **Done for the review's I-11**; the specification's hierarchical per-request budget stays
+  open as the Revised note above describes, and belongs with **M12**.
+  Alerts are edge-triggered at 80% and 100%, keyed by *period instance* so tomorrow's budget
+  alerts again rather than staying silent because yesterday's fired. Before this, twenty
+  requests past the threshold meant twenty callbacks — which is how an alert becomes a filter
+  rule and then becomes nothing.
+  Enforcement is opt-in via `SetBudgetEnforcement(true)`, and `CallLLM` asks `CheckBudget()`
+  **before** building the request, so an exhausted budget refuses rather than reports. The
+  default is off: budgets have been advisory in this library since it shipped, and quietly
+  starting to refuse calls mid-run would be a worse surprise than the noise it replaces.
+  *Verify:* `pricing/history_budget_test.go` — one callback for twenty crossings, a second for
+  the limit itself, none after; enforcement off by default; zero meaning unlimited. Integration:
+  `internal/ops/budget_enforcement_test.go` asserts the provider is called **zero** times when
+  the budget is exhausted, which is the whole point of checking before rather than after.
+- [x] **PR-006** — Delete the duplicated `MatchesFilters` / `matchesFilters` pair
   (`pricing.go:451`, `499`), one of which is exported by accident. Closes **I-17**.
 
 ## Middleware
 
+  **Done** — `MatchesFilters` had no caller inside the module or outside it; the comment
+  claiming it was "exported for testing" was the only thing keeping it. Deleted.
 - [ ] **MW-001** — `Handler` / `Middleware` chain applied at client construction. Closes
   **Gap-11**.
 - [ ] **MW-002** — `mw.RateLimit`. Closes part of **Gap-09**.
@@ -915,11 +948,35 @@ tests.
 
 ## Infrastructure papercuts
 
-- [ ] **IN-001** — Guard `defaultClient` behind its mutex in `GetDefaultClient`, `GetLogger`,
+- [x] **IN-001** — Guard `defaultClient` behind its mutex in `GetDefaultClient`, `GetLogger`,
   `ConfigureLogging`, and `SetLogLevel`, and protect `ops.defaultProvider` and
   `ops.customLLMCaller`. Closes **I-14**. Verified by **TI-008**.
-- [ ] **IN-002** — Delete the unused `Client.openaiClient` field. Closes **I-15**.
-- [ ] **IN-003** — Make `WithDebug(false)` restore the prior log level. Closes **I-16**.
+  **Done** — `defaultClient`'s accessors were already locked by **F-031**; this closes the
+  other half, `internal/ops`. `defaultProvider` and `customLLMCaller` are written by every
+  client construction and every `schemafluxtest.Install` and read by every operation, and both
+  were unguarded. They sit behind `providerMu` now, read together through `currentHooks()` so
+  an operation cannot see the caller from one installation and the provider from the next —
+  `Batch()` had its own unguarded read and uses it too.
+  *Verify:* `internal/ops/provider_globals_test.go` — 8 writers swapping providers against 8
+  readers dispatching, plus a group swapping the test caller, plus the same for `Batch()`, and
+  the no-provider path under concurrency. **Caveat, unchanged from F-031:** `-race` does not
+  run on windows/arm64, so locally these exercise the interleaving without the detector.
+  **CI-002** now runs them under it on three platforms.
+  **This is a stopgap and the file says so.** A lock makes concurrent access safe; it does not
+  make two clients possible, because there is still one variable. That is **IN-004**.
+- [x] **IN-002** — Delete the unused `Client.openaiClient` field. Closes **I-15**.
+  **Done** — the field was written in `NewClient` and never read. Deleted, along with the
+  `go-openai` import it was the last user of in this file.
+- [x] **IN-003** — Make `WithDebug(false)` restore the prior log level. Closes **I-16**.
+  **Done** — `WithDebug(true)` records the level it is raising from and `WithDebug(false)`
+  puts it back. The option had exactly one direction before: a caller who turned debug on for
+  one operation kept debug logging, and everything debug records, for the rest of the process.
+  Two enables remember only the original level, or the restore would be a no-op.
+  Needed a `telemetry.Logger.Level()` getter, which did not exist — `SetLevel` had no
+  counterpart, so nothing could put a level back.
+  *Verify:* `client_debug_test.go` — 6 tests: restore from info, warn, and error; repeated
+  enables; disabling something never enabled; the flag itself; a level round trip; and a nil
+  logger reporting info rather than panicking.
 - [ ] **IN-004** — Decide `Client`'s fate: it has no method that runs an operation, and
   `WithProviderConfig` / `WithProviderInstance` mutate a package global as a side effect, so
   constructing a second client silently reconfigures the first. Either give it real operation
@@ -1762,6 +1819,24 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
+
+- [x] **CF-010** — **`MapReduce` dispatched chunks in random order, so `Concurrency: 1` was
+  serialized but not sequential — and cancelling on the first failure saved nothing.** Found
+  by a flaky test: `TestMapReduceStopsOnTheFirstFailure` failed roughly one run in ten, and
+  under **CI-001**'s `-count=10` it would have failed most builds. The flake was real. The old
+  implementation started one goroutine per chunk and had them race for a semaphore, so
+  dispatch order was whatever the scheduler chose. Two consequences: `Concurrency: 1` — which
+  the doc comment offers to callers whose provider is rate-limited — could run chunk 7 before
+  chunk 0; and when the failing chunk happened to be scheduled last, every other chunk had
+  already been paid for before `cancel()` did anything. The test was asserting the second one
+  and only passed when the scheduler was kind.
+  Replaced with a worker pool fed in index order. Chunks the feeder never reaches are marked
+  cancelled rather than left with a nil error and a zero value, which would have reported them
+  as successful empty chunks — the same fail-open this list exists to remove, one layer down.
+  *Verify:* `TestMapReduceSequentialRunsChunksInOrder`, `TestMapReduceSequentialFailureStopsTheRest`
+  (three failure positions, each asserting exactly `failAt+1` chunks ran),
+  `TestMapReduceUnreachedChunksAreNotReportedAsSuccess`. The whole MapReduce set passes
+  `-count=10`; the original test now passes deterministically rather than usually.
 
 - [x] **OP-109** — Chunk the collection operations with a merge step, so a batch larger than the
   output budget succeeds rather than being refused. **OP-108** closed the half that matters for

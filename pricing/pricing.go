@@ -3,6 +3,7 @@ package pricing
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -202,12 +203,46 @@ var (
 	}
 
 	// Cost tracking state
-	costMutex      sync.RWMutex
-	totalCosts     map[string]float64 // Track costs by dimension (e.g., "daily", "weekly", "monthly")
-	costHistory    []CostRecord
+	costMutex   sync.RWMutex
+	totalCosts  map[string]float64 // Track costs by dimension (e.g., "daily", "weekly", "monthly")
+	costHistory []CostRecord
+
+	// costStart and costCount turn costHistory into a ring buffer. It used to be
+	// an unbounded slice appended to on every call and never evicted, in a
+	// library whose whole purpose is to be called in a loop: a long-running
+	// process leaked a record per request forever, and GetRequestCost,
+	// GetCostSummary, and GetTotalCost each linear-scanned the leak under a lock.
+	costStart int
+	costCount int
+	costLimit = DefaultCostHistoryLimit
+
+	// costIndex maps a request ID to its slot, so GetRequestCost is a lookup
+	// rather than a scan. Entries are removed as their records are evicted.
+	costIndex map[string]int
+
 	budgetLimits   map[string]float64
 	budgetCallback func(current, limit float64, period string)
+
+	// budgetNotified remembers which period keys have already fired, so the
+	// callback is edge-triggered. It used to fire on every request once spend
+	// passed 80% of a limit -- with no debounce and no state, an alerting
+	// integration got one notification per call for the rest of the day.
+	budgetNotified map[string]bool
+
+	// budgetEnforce turns the alert into a limit. The default is false: budgets
+	// have always been advisory here, and silently starting to refuse calls
+	// would be a worse surprise than the noise it replaces.
+	budgetEnforce bool
 )
+
+// DefaultCostHistoryLimit bounds the in-memory cost history. Ten thousand
+// records is a few megabytes and covers any interactive session; a service that
+// wants more should export the records, not retain them here.
+const DefaultCostHistoryLimit = 10000
+
+// ErrBudgetExceeded reports that a configured budget is exhausted and enforcing
+// mode is on. It is returned before the provider call, not after.
+var ErrBudgetExceeded = errors.New("cost budget exceeded")
 
 // CostRecord represents a single cost entry
 type CostRecord struct {
@@ -283,9 +318,6 @@ func TrackCost(cost *types.CostInfo, metadata *types.ResultMetadata) {
 	if totalCosts == nil {
 		totalCosts = make(map[string]float64)
 	}
-	if costHistory == nil {
-		costHistory = make([]CostRecord, 0)
-	}
 
 	// Create cost record
 	record := CostRecord{
@@ -313,7 +345,7 @@ func TrackCost(cost *types.CostInfo, metadata *types.ResultMetadata) {
 	}
 
 	// Add to history
-	costHistory = append(costHistory, record)
+	pushCostRecord(record)
 
 	// Update totals
 	now := time.Now()
@@ -347,18 +379,12 @@ func GetTotalCost(since time.Time, filters map[string]string) float64 {
 	defer costMutex.RUnlock()
 
 	var total float64
-	for _, record := range costHistory {
-		if record.Timestamp.Before(since) {
-			continue
+	forEachCostRecord(func(record CostRecord) {
+		if record.Timestamp.Before(since) || !matchesFilters(record, filters) {
+			return
 		}
-
-		// Apply filters
-		if !matchesFilters(record, filters) {
-			continue
-		}
-
 		total += record.Cost.TotalCost
-	}
+	})
 
 	return total
 }
@@ -391,9 +417,9 @@ func GetCostBreakdown(since time.Time) map[string]float64 {
 
 	breakdown := make(map[string]float64)
 
-	for _, record := range costHistory {
+	forEachCostRecord(func(record CostRecord) {
 		if record.Timestamp.Before(since) {
-			continue
+			return
 		}
 
 		// By model
@@ -410,7 +436,7 @@ func GetCostBreakdown(since time.Time) map[string]float64 {
 
 		// Total
 		breakdown["total"] += record.Cost.TotalCost
-	}
+	})
 
 	return breakdown
 }
@@ -425,9 +451,9 @@ func ExportCostReport(since time.Time, format string) (string, error) {
 	switch format {
 	case "csv":
 		report = "Timestamp,RequestID,CorrelationID,Operation,Model,Provider,PromptTokens,CompletionTokens,TotalTokens,Cost\n"
-		for _, record := range costHistory {
+		forEachCostRecord(func(record CostRecord) {
 			if record.Timestamp.Before(since) {
-				continue
+				return
 			}
 			report += fmt.Sprintf("%s,%s,%s,%s,%s,%s,%d,%d,%d,%.4f\n",
 				record.Timestamp.Format(time.RFC3339),
@@ -441,15 +467,15 @@ func ExportCostReport(since time.Time, format string) (string, error) {
 				record.TokenUsage.TotalTokens,
 				record.Cost.TotalCost,
 			)
-		}
+		})
 	case "json":
-		records := make([]CostRecord, 0, len(costHistory))
-		for _, record := range costHistory {
+		records := make([]CostRecord, 0, costCount)
+		forEachCostRecord(func(record CostRecord) {
 			if record.Timestamp.Before(since) {
-				continue
+				return
 			}
 			records = append(records, cloneCostRecord(record))
-		}
+		})
 		data, err := json.MarshalIndent(records, "", "  ")
 		if err != nil {
 			return "", fmt.Errorf("failed to marshal cost report: %w", err)
@@ -460,11 +486,6 @@ func ExportCostReport(since time.Time, format string) (string, error) {
 	}
 
 	return report, nil
-}
-
-// MatchesFilters checks if a record matches the given filters. Exported for testing.
-func MatchesFilters(record CostRecord, filters map[string]string) bool {
-	return matchesFilters(record, filters)
 }
 
 // Helper functions
@@ -548,34 +569,201 @@ func matchesFilters(record CostRecord, filters map[string]string) bool {
 	return true
 }
 
+// budgetThresholds are the fractions of a limit worth telling somebody about.
+//
+// The old check fired above 80% and had no memory, so an integration that pages
+// on the callback got paged once per request for the rest of the period --
+// which is how a budget alert becomes a filter rule, and then becomes nothing.
+var budgetThresholds = []float64{0.8, 1.0}
+
 func checkBudgetLimits() {
 	if budgetCallback == nil || budgetLimits == nil {
 		return
 	}
 
+	if budgetNotified == nil {
+		budgetNotified = make(map[string]bool)
+	}
+
 	now := time.Now()
+	periods := []struct {
+		name string
+		key  string
+	}{
+		{"daily", fmt.Sprintf("daily_%s", now.Format("2006-01-02"))},
+		{"weekly", fmt.Sprintf("weekly_%s", getWeekKey(now))},
+		{"monthly", fmt.Sprintf("monthly_%s", now.Format("2006-01"))},
+	}
 
-	// Check daily budget
-	if limit, exists := budgetLimits["daily"]; exists && limit > 0 {
-		dailyKey := fmt.Sprintf("daily_%s", now.Format("2006-01-02"))
-		if current, ok := totalCosts[dailyKey]; ok && current > limit*0.8 {
-			budgetCallback(current, limit, "daily")
+	for _, period := range periods {
+		limit, exists := budgetLimits[period.name]
+		if !exists || limit <= 0 {
+			continue
+		}
+
+		current, ok := totalCosts[period.key]
+		if !ok {
+			continue
+		}
+
+		for _, fraction := range budgetThresholds {
+			if current < limit*fraction {
+				continue
+			}
+			// The key carries the period instance, so tomorrow's budget alerts
+			// again rather than staying silent because yesterday's fired.
+			seen := fmt.Sprintf("%s@%.2f", period.key, fraction)
+			if budgetNotified[seen] {
+				continue
+			}
+			budgetNotified[seen] = true
+			budgetCallback(current, limit, period.name)
+		}
+	}
+}
+
+// pushCostRecord appends a record to the bounded history, evicting the oldest
+// when the ring is full. The caller holds costMutex.
+func pushCostRecord(record CostRecord) {
+	if costLimit <= 0 {
+		costLimit = DefaultCostHistoryLimit
+	}
+	if costIndex == nil {
+		costIndex = make(map[string]int, costLimit)
+	}
+	if costHistory == nil {
+		costHistory = make([]CostRecord, 0, min(costLimit, 1024))
+	}
+
+	if costCount < costLimit {
+		slot := (costStart + costCount) % costLimit
+		if slot < len(costHistory) {
+			costHistory[slot] = record
+		} else {
+			costHistory = append(costHistory, record)
+			slot = len(costHistory) - 1
+		}
+		costCount++
+		indexCostRecord(record, slot)
+		return
+	}
+
+	// Full: overwrite the oldest and move the window forward. The evicted
+	// record's index entry goes with it, or GetRequestCost would return a slot
+	// now holding somebody else's request.
+	slot := costStart
+	evicted := costHistory[slot]
+	if existing, ok := costIndex[evicted.RequestID]; ok && existing == slot {
+		delete(costIndex, evicted.RequestID)
+	}
+	costHistory[slot] = record
+	costStart = (costStart + 1) % costLimit
+	indexCostRecord(record, slot)
+}
+
+func indexCostRecord(record CostRecord, slot int) {
+	if record.RequestID == "" {
+		return
+	}
+	// A repeated request ID resolves to its most recent record, which is what a
+	// caller asking "what did this request cost" means after a retry.
+	costIndex[record.RequestID] = slot
+}
+
+// forEachCostRecord walks the history oldest-first. The caller holds costMutex.
+func forEachCostRecord(visit func(CostRecord)) {
+	if costLimit <= 0 {
+		return
+	}
+	for i := 0; i < costCount; i++ {
+		visit(costHistory[(costStart+i)%costLimit])
+	}
+}
+
+// SetCostHistoryLimit bounds how many cost records are retained in memory.
+//
+// Changing the limit discards the existing history rather than resizing it: the
+// alternative is a partial copy whose contents depend on the old and new sizes,
+// and a caller setting this is configuring a process, not curating a dataset.
+// A limit of zero or less restores the default.
+func SetCostHistoryLimit(limit int) {
+	costMutex.Lock()
+	defer costMutex.Unlock()
+
+	if limit <= 0 {
+		limit = DefaultCostHistoryLimit
+	}
+	costLimit = limit
+	costHistory = nil
+	costIndex = nil
+	costStart = 0
+	costCount = 0
+}
+
+// CostHistoryLen reports how many records are currently retained.
+func CostHistoryLen() int {
+	costMutex.RLock()
+	defer costMutex.RUnlock()
+	return costCount
+}
+
+// SetBudgetEnforcement controls whether an exhausted budget refuses calls.
+//
+// Off by default. Budgets in this library have always been advisory, and a
+// release that quietly started returning errors mid-run would be a worse
+// surprise than the alert noise it replaces.
+func SetBudgetEnforcement(enforce bool) {
+	costMutex.Lock()
+	defer costMutex.Unlock()
+	budgetEnforce = enforce
+}
+
+// CheckBudget reports whether a call may proceed, so the caller can refuse
+// before spending rather than discovering the overrun in the invoice.
+//
+// It returns ErrBudgetExceeded only when enforcement is on. With enforcement
+// off it always allows the call, and the callback does the talking.
+func CheckBudget() error {
+	costMutex.RLock()
+	defer costMutex.RUnlock()
+
+	if !budgetEnforce || budgetLimits == nil {
+		return nil
+	}
+
+	now := time.Now()
+	for period, key := range map[string]string{
+		"daily":   fmt.Sprintf("daily_%s", now.Format("2006-01-02")),
+		"weekly":  fmt.Sprintf("weekly_%s", getWeekKey(now)),
+		"monthly": fmt.Sprintf("monthly_%s", now.Format("2006-01")),
+	} {
+		limit, ok := budgetLimits[period]
+		if !ok || limit <= 0 {
+			continue
+		}
+		if totalCosts[key] >= limit {
+			return fmt.Errorf("%w: %s spend $%.4f has reached the $%.2f limit",
+				ErrBudgetExceeded, period, totalCosts[key], limit)
 		}
 	}
 
-	// Check weekly budget
-	if limit, exists := budgetLimits["weekly"]; exists && limit > 0 {
-		weeklyKey := fmt.Sprintf("weekly_%s", getWeekKey(now))
-		if current, ok := totalCosts[weeklyKey]; ok && current > limit*0.8 {
-			budgetCallback(current, limit, "weekly")
-		}
-	}
+	return nil
+}
 
-	// Check monthly budget
-	if limit, exists := budgetLimits["monthly"]; exists && limit > 0 {
-		monthlyKey := fmt.Sprintf("monthly_%s", now.Format("2006-01"))
-		if current, ok := totalCosts[monthlyKey]; ok && current > limit*0.8 {
-			budgetCallback(current, limit, "monthly")
-		}
-	}
+// ResetBudget clears the configured limits, the callback, and the notification
+// state, leaving the recorded history alone.
+//
+// It is separate from ResetCostTracking on purpose. That function used to null
+// budgetLimits and budgetCallback as well, so a test or a service clearing its
+// history silently disabled budget alerting -- the two operations have nothing
+// to do with each other, and the one people call routinely was the one with the
+// side effect.
+func ResetBudget() {
+	costMutex.Lock()
+	defer costMutex.Unlock()
+
+	budgetLimits = nil
+	budgetCallback = nil
+	budgetNotified = nil
+	budgetEnforce = false
 }

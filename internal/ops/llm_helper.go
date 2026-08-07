@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/monstercameron/schemaflux/internal/config"
@@ -15,6 +16,18 @@ import (
 	"github.com/monstercameron/schemaflux/pricing"
 	"github.com/monstercameron/schemaflux/telemetry"
 )
+
+// providerMu guards the two package-level hooks below.
+//
+// They are written by SetDefaultProvider (which every client construction and
+// every schemafluxtest.Install calls) and read by every operation in the
+// library, so a test that installs a fake while another goroutine runs an
+// operation is a data race — one the race detector could not see on the machine
+// this was written on, because -race does not run on windows/arm64 (CI-002).
+//
+// The lock is a stopgap, not the design. Two clients still cannot hold
+// different providers, because there is only one of these. That is IN-004.
+var providerMu sync.RWMutex
 
 var defaultProvider llm.Provider
 
@@ -34,28 +47,42 @@ var customLLMCaller LLMCaller
 
 // setLLMCaller sets a custom LLM caller (for testing)
 func setLLMCaller(caller LLMCaller) {
+	providerMu.Lock()
+	defer providerMu.Unlock()
 	customLLMCaller = caller
 }
 
 // SetDefaultProvider sets the default LLM provider for operations
 func SetDefaultProvider(p llm.Provider) {
+	providerMu.Lock()
+	defer providerMu.Unlock()
 	defaultProvider = p
+}
+
+// currentHooks reads both globals under one lock, so an operation cannot see a
+// caller from one installation and a provider from the next.
+func currentHooks() (LLMCaller, llm.Provider) {
+	providerMu.RLock()
+	defer providerMu.RUnlock()
+	return customLLMCaller, defaultProvider
 }
 
 // callLLM executes an LLM request using the default provider
 func callLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.OpOptions) (string, error) {
+	caller, provider := currentHooks()
+
 	// Use custom caller if set (for testing)
-	if customLLMCaller != nil {
-		return customLLMCaller(ctx, systemPrompt, userPrompt, opts)
+	if caller != nil {
+		return caller(ctx, systemPrompt, userPrompt, opts)
 	}
 
-	if defaultProvider == nil {
+	if provider == nil {
 		// Name the way out. "no LLM provider configured" is true but leaves the
 		// caller nowhere to go, and it is what they see when Init returned an
 		// error they discarded.
 		return "", ErrNoProvider
 	}
-	return CallLLM(ctx, defaultProvider, systemPrompt, userPrompt, opts)
+	return CallLLM(ctx, provider, systemPrompt, userPrompt, opts)
 }
 
 // CallLLM executes an LLM request using the provided provider
@@ -70,6 +97,15 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		return "", fmt.Errorf(
 			"no default model for provider %q; set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK. Providers with a built-in mapping: %s",
 			provider.Name(), strings.Join(config.KnownProviders(), ", "))
+	}
+
+	// Budgets are checked before the request, not after the invoice. With
+	// enforcement off -- the default -- this always allows the call and the
+	// alert callback does the talking.
+	if err := pricing.CheckBudget(); err != nil {
+		log.Error("Refusing the request: budget exhausted",
+			"provider", provider.Name(), "model", model, "error", err)
+		return "", err
 	}
 
 	maxTokens := config.GetMaxTokens(opts.Intelligence)

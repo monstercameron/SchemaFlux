@@ -120,40 +120,81 @@ func MapReduce[T any, R any](
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	semaphore := make(chan struct{}, concurrency)
+	// Every chunk starts as "not run". A chunk the feeder never dispatches --
+	// because an earlier one failed and cancelled the run -- must not fall out
+	// of the loop below with a nil error and a zero-valued result, which would
+	// report it as a successful empty chunk.
+	errNotRun := errors.New("chunk was not run: an earlier chunk failed")
+	for i := range errs {
+		errs[i] = errNotRun
+	}
+
+	// A bounded worker pool fed in index order, rather than one goroutine per
+	// chunk racing for a semaphore.
+	//
+	// The semaphore version dispatched in whatever order the scheduler woke the
+	// goroutines, so `Concurrency: 1` was serialized but not sequential, and the
+	// documented reason for asking for it -- a rate-limited provider -- got
+	// chunk 7 before chunk 0. Worse, cancelling on the first failure saved
+	// nothing when the failing chunk happened to be scheduled last: every other
+	// chunk had already been paid for. That is what the test that caught this
+	// was asserting, and it only passed when the scheduler was kind.
+	workers := concurrency
+	if workers > len(chunks) {
+		workers = len(chunks)
+	}
+
+	indices := make(chan int)
 	var wg sync.WaitGroup
 
-	for i, chunk := range chunks {
-		wg.Add(1)
-		go func(index int, chunk []T) {
-			defer wg.Done()
-
+	go func() {
+		defer close(indices)
+		for i := range chunks {
 			select {
-			case semaphore <- struct{}{}:
-				defer func() { <-semaphore }()
+			case indices <- i:
 			case <-runCtx.Done():
-				errs[index] = runCtx.Err()
 				return
 			}
+		}
+	}()
 
-			if runCtx.Err() != nil {
-				errs[index] = runCtx.Err()
-				return
-			}
-
-			result, err := operation(runCtx, chunk)
-			if err != nil {
-				errs[index] = err
-				if !opts.ContinueOnError {
-					cancel()
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range indices {
+				if runCtx.Err() != nil {
+					return
 				}
-				return
+
+				result, err := operation(runCtx, chunks[index])
+				if err != nil {
+					errs[index] = err
+					if !opts.ContinueOnError {
+						cancel()
+						return
+					}
+					continue
+				}
+				results[index] = result
+				errs[index] = nil
 			}
-			results[index] = result
-		}(i, chunk)
+		}()
 	}
 
 	wg.Wait()
+
+	// Whatever the feeder did not reach is reported as cancelled rather than as
+	// the sentinel, which is an implementation detail.
+	for i, err := range errs {
+		if errors.Is(err, errNotRun) {
+			if runCtx.Err() != nil {
+				errs[i] = runCtx.Err()
+			} else {
+				errs[i] = context.Canceled
+			}
+		}
+	}
 
 	var successful []R
 	for i, err := range errs {
