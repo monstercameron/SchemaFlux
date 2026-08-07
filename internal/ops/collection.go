@@ -109,18 +109,6 @@ Rules:
 		}
 	}
 
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse the selected option directly
 	if err := ParseJSONStrict(response, &result); err != nil {
 		return zeroOf[T](), types.ChooseError{
@@ -324,18 +312,6 @@ Examples:
 		}
 	}
 
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse the filtered objects directly. There used to be a fallback here
 	// that parsed the body as a single item and returned a one-element slice,
 	// so a malformed array silently collapsed a filter to one result (C-03).
@@ -465,18 +441,6 @@ Examples:
 			Reason:    err.Error(),
 			Err:       err,
 		}
-	}
-
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
 	}
 
 	// Parse the sorted objects directly

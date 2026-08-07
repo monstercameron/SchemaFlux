@@ -161,18 +161,6 @@ Return a JSON object with these fields:
 		}
 	}
 
-	// Clean up response - handle potential markdown code blocks
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse the structured response
 	var llmResult struct {
 		Category        string  `json:"category"`
@@ -395,18 +383,6 @@ Return a JSON object with these fields:
 		}
 	}
 
-	// Clean up response - handle potential markdown code blocks
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse the structured response
 	var llmResult struct {
 		Value      float64            `json:"value"`
@@ -585,18 +561,6 @@ Return a JSON object with these fields:
 			Reason: err.Error(),
 			Err:    err,
 		}
-	}
-
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
 	}
 
 	// Parse the structured response
@@ -803,18 +767,6 @@ Return a JSON object with these fields:
 	if err != nil {
 		log.Error("Similar operation failed", "error", err)
 		return result, fmt.Errorf("similarity check failed: %w", err)
-	}
-
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
 	}
 
 	// Parse the structured response

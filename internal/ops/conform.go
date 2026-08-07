@@ -243,18 +243,6 @@ Rules:
 		return result, fmt.Errorf("conformance failed: %w", err)
 	}
 
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse response
 	var parsed struct {
 		Conformed   json.RawMessage `json:"conformed"`

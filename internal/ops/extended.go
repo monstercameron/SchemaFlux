@@ -290,18 +290,6 @@ Against these rules:
 		return result, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse the response into a flexible structure first
 	var llmResult struct {
 		Valid           bool              `json:"valid"`
@@ -542,18 +530,6 @@ Into this format:
 		return FormatResult{}, fmt.Errorf("formatting failed: %w", err)
 	}
 
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	}
-
 	// Parse JSON response
 	var parsed struct {
 		Text                string   `json:"text"`
@@ -745,18 +721,6 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 	if err != nil {
 		log.Error("MergeWithMetadata operation LLM call failed", "error", err)
 		return result, fmt.Errorf("merge failed: %w", err)
-	}
-
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
 	}
 
 	// Parse JSON response
@@ -1001,18 +965,6 @@ Question: %s`, string(dataJSON), opts.Question)
 	if err != nil {
 		log.Error("Question operation LLM call failed", "error", err)
 		return result, fmt.Errorf("question answering failed: %w", err)
-	}
-
-	// Clean up response
-	response = strings.TrimSpace(response)
-	if strings.HasPrefix(response, "```json") {
-		response = strings.TrimPrefix(response, "```json")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
-	} else if strings.HasPrefix(response, "```") {
-		response = strings.TrimPrefix(response, "```")
-		response = strings.TrimSuffix(response, "```")
-		response = strings.TrimSpace(response)
 	}
 
 	// Parse the response into a flexible structure

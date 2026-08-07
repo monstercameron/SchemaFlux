@@ -444,11 +444,30 @@ port nothing yet except one operation as the proof.
   response-format selection, provider dispatch, retry, decoding, invariant checking, repair,
   usage accounting, and telemetry. Closes **X-01** at one call site instead of thirty-one.
   *Verify:* cancelling the context aborts the call; assert with the fake provider's slow mode.
-- [ ] **A-003** — Single JSON extraction path, hardened once: fenced blocks anywhere, leading
+- [x] **A-003** — Single JSON extraction path, hardened once: fenced blocks anywhere, leading
   and trailing prose, and a brace-matching scan. Replaces the 16 hand-rolled fence strippers
   and the parallel `cleanJSON`. Closes **X-02**.
   *Verify:* corpus test of malformed-but-recoverable bodies; each of the 16 old sites is
   deleted, not left behind.
+  **Done — 22 sites, not 16.** `internal/ops/jsonextract.go` is the one path: a fenced block
+  anywhere in the response (with the info string checked, so a ```python block in an
+  explanation is not mistaken for the payload), then a brace-matching scan that is string- and
+  escape-aware, so a `}` inside a string value cannot end it early. `cleanJSON` is a one-line
+  call through to it and every operation reaches it via `ParseJSON`.
+  The old strip handled one shape: a response that is *nothing but* a fence, opening at the
+  first character and closing at the last. Models do not reliably produce that — they produce
+  "Here is the JSON you asked for:" and then a fence, or a fence and then an explanation, or
+  an unfenced object after a sentence. Every one of those was an error whose message blamed
+  the JSON for being malformed when the JSON was fine.
+  *Verify:* `internal/ops/jsonextract_test.go` — a 15-case corpus, plus the parse path over
+  it, plus truncation reaching the decoder rather than being disguised, plus prose and error
+  pages still failing, plus F-033's no-payload rule still holding.
+  **`TestTheOldStripHandledAlmostNoneOfIt` is the witness and states the number:** the old
+  implementation is kept in the test file and scored against the corpus — **2 of 8 recovered,
+  against 8 of 8**. If a later change makes the new extractor no better, that test fails.
+  Integration: `jsonextract_integration_test.go` drives `Extract[invoice]` through all eight
+  packagings at the public boundary, plus prose, an HTML error page, an empty body, and a
+  truncated one.
 - [ ] **A-004** — `RequestOption` applied at both client construction and per call, with
   per-call precedence. Closes **I-07**, **I-08**, **I-09**, **Gap-14**, and the
   order-dependence trap in `Client.With*`.

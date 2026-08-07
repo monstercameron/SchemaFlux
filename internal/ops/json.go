@@ -178,18 +178,8 @@ func describeShape(s string) string {
 	}
 }
 
-// cleanJSON removes markdown code blocks and extra whitespace
+// cleanJSON is the one extraction path. It used to strip a leading fence and
+// nothing else; see extractJSON in jsonextract.go for what it does now and why.
 func cleanJSON(input string) string {
-	input = strings.TrimSpace(input)
-
-	// Remove markdown code blocks if present
-	if strings.HasPrefix(input, "```json") {
-		input = strings.TrimPrefix(input, "```json")
-		input = strings.TrimSuffix(input, "```")
-	} else if strings.HasPrefix(input, "```") {
-		input = strings.TrimPrefix(input, "```")
-		input = strings.TrimSuffix(input, "```")
-	}
-
-	return strings.TrimSpace(input)
+	return extractJSON(input)
 }
