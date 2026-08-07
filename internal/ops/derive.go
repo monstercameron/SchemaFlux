@@ -243,8 +243,25 @@ Rules:
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Derive operation failed: parse error", "error", err, "response", response)
+		// The response is the caller's record derived from; it does not belong
+		// in a log line (X-03).
+		log.Error("Derive operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse derivation result: %w", err)
+	}
+
+	// The option is documented as "the minimum acceptable confidence per field",
+	// and it was a sentence in the prompt. Per-field first, then the overall
+	// claim: a derivation whose one weak field is the one the caller cares about
+	// should not pass because the average carried it.
+	for field, reported := range parsed.FieldConfidence {
+		if err := AtLeastConfidence(reported, opt.MinConfidence); err != nil {
+			log.Error("Derived field is below the configured confidence floor", "field", field, "error", err)
+			return result, fmt.Errorf("derivation rejected for field %q: %w", field, err)
+		}
+	}
+	if err := AtLeastConfidence(parsed.ModelOverallConfidence, opt.MinConfidence); err != nil {
+		log.Error("Derivation is below the configured confidence floor", "error", err)
+		return result, fmt.Errorf("derivation rejected: %w", err)
 	}
 
 	// Parse derived data

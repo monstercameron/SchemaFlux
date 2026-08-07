@@ -371,6 +371,16 @@ Return a JSON object with:
 		return result, fmt.Errorf("failed to parse verification result: %w", err)
 	}
 
+	// MinConfidence defaults to 0.7 here and was prompt-only, so a caller who
+	// read the field name and believed a floor was active got verifications the
+	// model itself scored below it, reported as success. Enforcing it does not
+	// turn a model claim into a measurement -- it makes the option mean what its
+	// name says.
+	if err := AtLeastConfidence(result.ModelOverallConfidence, opts.MinConfidence); err != nil {
+		log.Error("Verification is below the configured confidence floor", "error", err)
+		return result, fmt.Errorf("verification rejected: %w", err)
+	}
+
 	log.Debug("Verify operation succeeded",
 		"overallVerdict", result.OverallVerdict,
 		"claimCount", len(result.Claims),

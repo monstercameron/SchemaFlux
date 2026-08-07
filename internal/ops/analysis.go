@@ -173,27 +173,40 @@ Return a JSON object with these fields:
 	}
 
 	if err := ParseJSONStrict(response, &llmResult); err != nil {
-		log.Error("Classify failed to parse response", "error", err, "response", response)
+		// No response body in the log. Every operator ships their logs
+		// somewhere, and the body is the caller's record classified -- X-03.
+		log.Error("Classify failed to parse response", "error", err)
 		return result, fmt.Errorf("failed to parse classification response: %w", err)
 	}
 
-	// Validate the returned category
-	found := false
-	for _, cat := range categories {
-		if strings.EqualFold(llmResult.Category, cat) {
-			found = true
-			llmResult.Category = cat // normalize case
-			break
-		}
-	}
-
-	if !found {
-		log.Error("Classify returned invalid category", "category", llmResult.Category, "valid", categories)
+	// Validate the returned category through the shared invariant. This check
+	// was the only one of its kind in the library; it is the template now.
+	canonical, err := CategoryIn(categories, llmResult.Category)
+	if err != nil {
+		log.Error("Classify returned a category outside the allowed set", "error", err)
 		return result, types.ClassifyError{
 			InputShape:      types.DescribeValue(inputStr),
 			Categories:      categories,
-			Reason:          fmt.Sprintf("invalid category returned: %s", llmResult.Category),
+			Reason:          err.Error(),
 			ModelConfidence: llmResult.ModelConfidence,
+			Err:             err,
+		}
+	}
+	llmResult.Category = canonical
+
+	// MinConfidence was interpolated into the prompt and never read back, so a
+	// caller who set 0.8 -- or who accepted the non-zero default -- received
+	// results the model itself scored at 0.2 and had no way to notice. The
+	// number is still a model claim, and enforcing it does not make it a
+	// measurement; it makes the option mean what it says.
+	if err := AtLeastConfidence(llmResult.ModelConfidence, opts.MinConfidence); err != nil {
+		log.Error("Classify result is below the configured confidence floor", "error", err)
+		return result, types.ClassifyError{
+			InputShape:      types.DescribeValue(inputStr),
+			Categories:      categories,
+			Reason:          err.Error(),
+			ModelConfidence: llmResult.ModelConfidence,
+			Err:             err,
 		}
 	}
 

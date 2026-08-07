@@ -172,3 +172,42 @@ func MemberOf[T any](offered []T, chosen T) error {
 	}
 	return fmt.Errorf("the selection was not one of the %d items offered", len(offered))
 }
+
+// CategoryIn resolves the model's answer to one of the allowed categories,
+// folding case, and reports an error when it is not one of them.
+//
+// Classify was the only operation in the library that checked the model's
+// answer against the set it was offered. It should have been the template, not
+// the exception -- returning the canonical spelling is what makes it reusable,
+// because a caller comparing against their own constants needs "urgent" and
+// "Urgent" to be the same answer.
+func CategoryIn(allowed []string, answer string) (string, error) {
+	for _, candidate := range allowed {
+		if strings.EqualFold(answer, candidate) {
+			return candidate, nil
+		}
+	}
+	// The answer is the model's, not the caller's data, and naming it is what
+	// makes the error actionable -- a category that is nearly right reads very
+	// differently from one that is nothing like the set.
+	return "", fmt.Errorf("the model answered %q, which is not one of the %d allowed categories %v",
+		answer, len(allowed), allowed)
+}
+
+// AtLeastConfidence reports whether a model-reported confidence meets the
+// caller's floor.
+//
+// The number being checked is a model claim, not a measurement, and this does
+// not make it one. What it does is make the option mean something: MinConfidence
+// was interpolated into the prompt and never read back, so an operation with a
+// default of 0.7 returned results the model itself scored at 0.2 and reported
+// them as success.
+func AtLeastConfidence(reported, minimum float64) error {
+	if minimum <= 0 {
+		return nil
+	}
+	if reported >= minimum {
+		return nil
+	}
+	return fmt.Errorf("the model reported confidence %.2f, below the %.2f floor this operation was configured with", reported, minimum)
+}

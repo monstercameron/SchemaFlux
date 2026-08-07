@@ -673,14 +673,43 @@ tests.
 
 ## Analysis and validation
 
-- [ ] **OP-201** — Enforce `MinConfidence` in `Classify`, `Filter`, `Verify`, and `Derive`.
+- [x] **OP-201** — Enforce `MinConfidence` in `Classify`, `Filter`, `Verify`, and `Derive`.
   It is enforced in exactly one operation today (`annotate.go:287`) and is prompt-only in the
   other four, with non-zero defaults (0.5, 0.7, 0.7) that make users believe a threshold is
   active. In `Classify` the value sits in a local variable one line above where it is copied
   to the result. Closes **A-02**.
-- [ ] **OP-202** — Generalize `Classify`'s category-membership check (`analysis.go:178-196`)
+  **Done for the three that can be enforced, and honest about the fourth.**
+  `AtLeastConfidence` joins the invariant library and runs in `Classify` (default 0.5),
+  `Verify` (0.7, on the overall confidence), and `Derive` (0.6, **per field first** and then
+  overall — a derivation whose one weak field is the one the caller cares about should not
+  pass because the average carried it). A result the model itself scored below the floor is
+  now an error rather than a value.
+  `Filter` is **not** enforced and its field says why: the response is the kept items and
+  nothing else, so there is no per-item score to check the instruction against. Deleting it
+  was the alternative; it stays because asking the model is a real if weaker effect, and what
+  was wrong was the name implying a guarantee the protocol cannot support. If `Filter` ever
+  returns per-item scores this becomes enforceable and should be enforced.
+  The number is still a model claim and enforcing it does not make it a measurement — what it
+  buys is that the option means what its name says.
+  Found while here: `ClassifyOptions.MinConfidence` had **no setter at all**, so the only way
+  to change the 0.5 default was a struct literal. `WithMinConfidence` added. **F-024**'s dead
+  options check could not see it: it looks for a field with a setter and no reader, and this
+  was the mirror image.
+  *Verify:* `TestAtLeastConfidence` (8 cases). Integration: `confidence_integration_test.go`
+  — Classify below, at, and above the floor; a zero floor accepting anything; and Verify's
+  0.7 default refusing a verification the model scored at 0.3.
+- [x] **OP-202** — Generalize `Classify`'s category-membership check (`analysis.go:178-196`)
   into the shared `CategoryIn` invariant. It is the only operation that validates the model's
   answer against the allowed set; it should be the template, not the exception.
+  **Done** — `CategoryIn` is in `internal/ops/invariants.go` and `Classify` calls it. It
+  returns the *canonical* spelling rather than a boolean, which is what makes it reusable: a
+  caller comparing against their own constants needs "Billing" and "billing" to be one
+  answer, and every future user of this invariant will want the same.
+  Found while here: the parse-failure branch logged the whole response — **X-03**, in
+  `Classify` and again in `Derive`. Both removed.
+  *Verify:* `TestCategoryIn` (7 cases, including a near-miss and a sentence instead of a
+  category). Integration: `TestIntegrationClassifyRefusesACategoryItWasNotOffered` (4 bodies)
+  and `TestIntegrationClassifyNormalisesCase`.
 - [ ] **OP-203** — `Classify`: either give `ClassifyResult[C]` a real multi-label field or
   delete `MultiLabel` and `MaxCategories`. They change the prompt and cannot change the
   result. Closes **A-03**.

@@ -850,6 +850,17 @@ func (c ClassifyOptions) WithCategories(categories []string) ClassifyOptions {
 }
 
 // WithMultiLabel enables multi-label classification
+// WithMinConfidence sets the floor below which a classification is refused.
+//
+// The number checked against it is the model's own claim, not a measurement.
+// What the floor guarantees is that a result the model itself scored below it
+// is an error rather than a value -- which is what the field name has always
+// implied and, until OP-201, did not do.
+func (c ClassifyOptions) WithMinConfidence(confidence float64) ClassifyOptions {
+	c.MinConfidence = confidence
+	return c
+}
+
 func (c ClassifyOptions) WithMultiLabel(multi bool) ClassifyOptions {
 	c.MultiLabel = multi
 	return c
@@ -1171,7 +1182,19 @@ type FilterOptions struct {
 	// Keep matching items (true) or remove them (false)
 	KeepMatching bool
 
-	// Minimum confidence for filtering decision
+	// MinConfidence asks the model to keep only items it is at least this sure
+	// about.
+	//
+	// It is an instruction, not a threshold this library enforces, and the
+	// distinction is load-bearing: Filter's response is the kept items and
+	// nothing else, so there is no per-item score to check the instruction
+	// against. Classify, Verify, and Derive do enforce theirs, because their
+	// responses report a confidence — see OP-201.
+	//
+	// The alternative was to delete it. It stays because asking the model is a
+	// real, if weaker, effect; what was wrong was the name implying a guarantee
+	// the response cannot support. If Filter ever returns per-item scores, this
+	// becomes enforceable and should be enforced.
 	MinConfidence float64
 
 	// Return reasons for each filtering decision
