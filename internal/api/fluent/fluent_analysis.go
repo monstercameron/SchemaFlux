@@ -3,12 +3,12 @@ package fluent
 import "github.com/monstercameron/schemaflux/internal/types"
 
 // ClassifyRequest is a fluent builder for Classify.
-type ClassifyRequest[T any, C any] struct {
+type ClassifyRequest[T any, C ~string] struct {
 	commonRequest[ClassifyRequest[T, C], ClassifyOptions]
 	input T
 }
 
-func newClassifyRequest[T any, C any](input T, opts ClassifyOptions) ClassifyRequest[T, C] {
+func newClassifyRequest[T any, C ~string](input T, opts ClassifyOptions) ClassifyRequest[T, C] {
 	return ClassifyRequest[T, C]{
 		commonRequest: commonRequest[ClassifyRequest[T, C], ClassifyOptions]{
 			opts: opts,
@@ -25,7 +25,7 @@ func newClassifyRequest[T any, C any](input T, opts ClassifyOptions) ClassifyReq
 }
 
 // Classifying starts a fluent Classify request.
-func Classifying[T any, C any](input T) ClassifyRequest[T, C] {
+func Classifying[T any, C ~string](input T) ClassifyRequest[T, C] {
 	return newClassifyRequest[T, C](input, NewClassifyOptions())
 }
 

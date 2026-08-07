@@ -736,13 +736,37 @@ tests.
   *Verify:* `TestCategoryIn` (7 cases, including a near-miss and a sentence instead of a
   category). Integration: `TestIntegrationClassifyRefusesACategoryItWasNotOffered` (4 bodies)
   and `TestIntegrationClassifyNormalisesCase`.
-- [ ] **OP-203** — `Classify`: either give `ClassifyResult[C]` a real multi-label field or
+- [x] **OP-203** — `Classify`: either give `ClassifyResult[C]` a real multi-label field or
   delete `MultiLabel` and `MaxCategories`. They change the prompt and cannot change the
   result. Closes **A-03**.
-- [ ] **OP-204** — `Classify[T, C]`: the category is produced as a string and converted via a
+  **Done — the field exists now.** `Categories []C` carries every label the model assigned,
+  and a single-label answer populates it too, so a caller reads one field regardless of the
+  mode. `Category` stays the primary one (the first assigned) for callers who do not care
+  about the distinction.
+  Both options are enforced rather than requested: every entry is checked against the offered
+  set through `CategoryIn`, duplicates collapse case-insensitively, and **MaxCategories** is a
+  limit — a model that returns five labels when asked for at most two has not done what was
+  asked, and silently keeping all five is the class of failure this list exists to remove.
+  Stray *alternatives* outside the set are dropped with a warning rather than failing the
+  call: the primary answer is the contract, and a bad suggestion beside a good answer is not
+  worth discarding the answer over.
+  *Verify:* `internal/ops/classify_labels_test.go` — multi-label reaching the result,
+  single-label populating it, an unoffered label failing, MaxCategories at and above the
+  limit, and duplicates collapsing.
+- [x] **OP-204** — `Classify[T, C]`: the category is produced as a string and converted via a
   JSON round trip, so only string-kinded `C` survives and `Classify[Ticket, Priority]` with
   `type Priority int` compiles and fails at runtime. Constrain `C` or map explicitly.
   Closes **A-04**.
+  **Done — constrained rather than mapped.** `C` is `~string`, so
+  `Classify[Ticket, Priority]` with `type Priority int` is a compile error instead of code
+  that builds cleanly and fails at run time with a JSON error naming a type the caller never
+  wrote. The round trip is gone with it: the conversion is `C(canonical)`, which also means
+  the *canonical* spelling reaches the caller rather than the model's casing.
+  The constraint propagates through `ClassifyResult`, `ClassifyAlternative`,
+  `ClassifyRequest`, and `Classifying`. **Breaking change** for **DOC-002** — for callers
+  whose code does not work today.
+  *Verify:* `TestNamedStringTypesAreSupported` asserts a named string type round-trips and
+  keeps its type; the int case is checked by the compiler, which is the point.
 - [ ] **OP-205** — `Validate`: add a deterministic rule path ahead of the model call. Every
   rule in the README's own example ("email must be valid, country must be ISO alpha-2, age at
   least 18") is checkable in Go, and `Parse` already demonstrates the deterministic-first

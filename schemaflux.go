@@ -198,8 +198,8 @@ type (
 	VerifyResult              = ops.VerifyResult
 
 	// Analysis operation result types (refactored for Go-native generics)
-	ClassifyResult[C any]      = ops.ClassifyResult[C]
-	ClassifyAlternative[C any] = ops.ClassifyAlternative[C]
+	ClassifyResult[C ~string]      = ops.ClassifyResult[C]
+	ClassifyAlternative[C ~string] = ops.ClassifyAlternative[C]
 	ScoreResult                = ops.ScoreResult
 	CompareResult[T any]       = ops.CompareResult[T]
 	ComparisonPoint            = ops.ComparisonPoint
@@ -469,7 +469,7 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 //	result, err := schemaflux.Classify[string, string]("Great product!",
 //	    schemaflux.NewClassifyOptions().WithCategories([]string{"positive", "negative", "neutral"}))
 //	fmt.Printf("Category: %s (%.0f%% confidence)\n", result.Category, result.ModelConfidence*100)
-func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
+func Classify[T any, C ~string](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
 	return ops.Classify[T, C](input, opts)
 }
 

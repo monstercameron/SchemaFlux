@@ -20,7 +20,7 @@ type (
 	FilterOptions              = ops.FilterOptions
 	SortOptions                = ops.SortOptions
 	ClassifyOptions            = ops.ClassifyOptions
-	ClassifyResult[C any]      = ops.ClassifyResult[C]
+	ClassifyResult[C ~string]      = ops.ClassifyResult[C]
 	ScoreOptions               = ops.ScoreOptions
 	ScoreResult                = ops.ScoreResult
 	CompareOptions             = ops.CompareOptions
@@ -184,7 +184,7 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 	return ops.Sort(items, opts)
 }
 
-func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
+func Classify[T any, C ~string](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
 	return ops.Classify[T, C](input, opts)
 }
 

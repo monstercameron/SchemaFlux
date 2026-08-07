@@ -14,9 +14,21 @@ import (
 
 // ClassifyResult contains the results of classification.
 // Type parameter C specifies the category type (typically string or a custom enum type).
-type ClassifyResult[C any] struct {
-	// Category is the primary classification result
+type ClassifyResult[C ~string] struct {
+	// Category is the primary classification result. With MultiLabel set it is
+	// the first of Categories, so a caller who does not care about the
+	// distinction reads the same field either way.
 	Category C `json:"category"`
+
+	// Categories holds every category the model assigned when MultiLabel is
+	// set, and just the primary one otherwise.
+	//
+	// It exists because MultiLabel and MaxCategories changed the prompt and had
+	// nowhere to put an answer: the result carried exactly one category, so a
+	// caller who asked for multi-label classification got the same shape back
+	// and no way to tell whether the option had done anything. Every entry is
+	// checked against the offered set.
+	Categories []C `json:"categories,omitempty"`
 
 	// ModelConfidence score for the classification (0.0-1.0)
 	ModelConfidence float64 `json:"confidence"`
@@ -32,7 +44,7 @@ type ClassifyResult[C any] struct {
 }
 
 // ClassifyAlternative represents an alternative classification with confidence
-type ClassifyAlternative[C any] struct {
+type ClassifyAlternative[C ~string] struct {
 	Category C `json:"category"`
 	// ModelConfidence is the model's own claim about this result, not a measurement.
 	// It is not calibrated and is not comparable across models or prompts.
@@ -65,7 +77,7 @@ type ClassifyAlternative[C any] struct {
 //	    WithCategories([]string{"tech", "business", "sports"}).
 //	    WithMultiLabel(true).
 //	    WithMaxCategories(2))
-func Classify[T any, C any](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
+func Classify[T any, C ~string](input T, opts ClassifyOptions) (ClassifyResult[C], error) {
 	log := logger.GetLogger()
 	log.Debug("Starting classify operation")
 
@@ -163,8 +175,11 @@ Return a JSON object with these fields:
 
 	// Parse the structured response
 	var llmResult struct {
-		Category        string  `json:"category"`
-		ModelConfidence float64 `json:"confidence"`
+		Category string `json:"category"`
+		// Categories is the multi-label answer. It is optional so a
+		// single-label response parses unchanged.
+		Categories      []string `json:"categories,omitempty"`
+		ModelConfidence float64  `json:"confidence"`
 		Alternatives    []struct {
 			Category        string  `json:"category"`
 			ModelConfidence float64 `json:"confidence"`
@@ -177,6 +192,13 @@ Return a JSON object with these fields:
 		// somewhere, and the body is the caller's record classified -- X-03.
 		log.Error("Classify failed to parse response", "error", err)
 		return result, fmt.Errorf("failed to parse classification response: %w", err)
+	}
+
+	// A multi-label answer may name its categories in the array and leave the
+	// singular field empty. Taking the first keeps Category meaningful for a
+	// caller who does not care about the distinction.
+	if llmResult.Category == "" && len(llmResult.Categories) > 0 {
+		llmResult.Category = llmResult.Categories[0]
 	}
 
 	// Validate the returned category through the shared invariant. This check
@@ -210,27 +232,73 @@ Return a JSON object with these fields:
 		}
 	}
 
-	// Convert category string to type C via JSON round-trip
-	var category C
-	catJSON, _ := json.Marshal(llmResult.Category)
-	if err := json.Unmarshal(catJSON, &category); err != nil {
-		return result, fmt.Errorf("failed to convert category to type: %w", err)
-	}
-
-	result.Category = category
+	// A direct conversion, which C's ~string constraint guarantees.
+	//
+	// This used to be a JSON round trip: marshal the string, unmarshal into C.
+	// That only worked for string-kinded types, so Classify[Ticket, Priority]
+	// with `type Priority int` compiled cleanly and failed at run time with a
+	// JSON error about a type the caller never mentioned. The constraint moves
+	// that to compile time, where the caller can see it.
+	result.Category = C(canonical)
 	result.ModelConfidence = llmResult.ModelConfidence
 	result.Reasoning = llmResult.Reasoning
 
+	// Every assigned category, checked against the offered set the same way the
+	// primary one is. MultiLabel and MaxCategories changed the prompt and had
+	// nowhere to put an answer before this; now they do, and the answer is
+	// verified rather than reported.
+	assigned := llmResult.Categories
+	if len(assigned) == 0 {
+		assigned = []string{llmResult.Category}
+	}
+	seen := make(map[string]struct{}, len(assigned))
+	for _, raw := range assigned {
+		canonicalLabel, err := CategoryIn(categories, raw)
+		if err != nil {
+			log.Error("Classify returned a category outside the allowed set", "error", err)
+			return ClassifyResult[C]{}, types.ClassifyError{
+				InputShape: types.DescribeValue(inputStr),
+				Categories: categories,
+				Reason:     err.Error(),
+				Err:        err,
+			}
+		}
+		if _, duplicate := seen[canonicalLabel]; duplicate {
+			continue
+		}
+		seen[canonicalLabel] = struct{}{}
+		result.Categories = append(result.Categories, C(canonicalLabel))
+	}
+
+	// MaxCategories was an instruction with no consequence. A model that
+	// returns five labels when asked for at most two has not done what was
+	// asked, and silently keeping all five is the failure this list is about.
+	if opts.MultiLabel && opts.MaxCategories > 0 && len(result.Categories) > opts.MaxCategories {
+		err := fmt.Errorf("the model returned %d categories, above the %d requested",
+			len(result.Categories), opts.MaxCategories)
+		log.Error("Classify returned too many categories", "error", err)
+		return ClassifyResult[C]{}, types.ClassifyError{
+			InputShape: types.DescribeValue(inputStr),
+			Categories: categories,
+			Reason:     err.Error(),
+			Err:        err,
+		}
+	}
+
 	// Convert alternatives
 	for _, alt := range llmResult.Alternatives {
-		var altCat C
-		altJSON, _ := json.Marshal(alt.Category)
-		if err := json.Unmarshal(altJSON, &altCat); err == nil {
-			result.Alternatives = append(result.Alternatives, ClassifyAlternative[C]{
-				Category:        altCat,
-				ModelConfidence: alt.ModelConfidence,
-			})
+		// An alternative outside the offered set is dropped rather than
+		// failing the call: the primary answer is the contract, and a stray
+		// suggestion alongside it is not worth discarding a good result over.
+		canonicalAlt, err := CategoryIn(categories, alt.Category)
+		if err != nil {
+			log.Warn("Classify suggested an alternative outside the allowed set", "error", err)
+			continue
 		}
+		result.Alternatives = append(result.Alternatives, ClassifyAlternative[C]{
+			Category:        C(canonicalAlt),
+			ModelConfidence: alt.ModelConfidence,
+		})
 	}
 
 	log.Debug("Classify operation completed", "category", llmResult.Category, "confidence", result.ModelConfidence)
