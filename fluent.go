@@ -16,7 +16,7 @@ type (
 	ChooseRequest[T any]                 = builder.ChooseRequest[T]
 	FilterRequest[T any]                 = builder.FilterRequest[T]
 	SortRequest[T any]                   = builder.SortRequest[T]
-	ClassifyRequest[T any, C ~string]        = builder.ClassifyRequest[T, C]
+	ClassifyRequest[T any, C ~string]    = builder.ClassifyRequest[T, C]
 	ScoreRequest[T any]                  = builder.ScoreRequest[T]
 	CompareRequest[T any]                = builder.CompareRequest[T]
 	SimilarRequest[T any]                = builder.SimilarRequest[T]

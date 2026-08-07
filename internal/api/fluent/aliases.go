@@ -20,7 +20,7 @@ type (
 	FilterOptions              = ops.FilterOptions
 	SortOptions                = ops.SortOptions
 	ClassifyOptions            = ops.ClassifyOptions
-	ClassifyResult[C ~string]      = ops.ClassifyResult[C]
+	ClassifyResult[C ~string]  = ops.ClassifyResult[C]
 	ScoreOptions               = ops.ScoreOptions
 	ScoreResult                = ops.ScoreResult
 	CompareOptions             = ops.CompareOptions
