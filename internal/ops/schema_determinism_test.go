@@ -333,7 +333,7 @@ func TestCompleteReportsNoInventedConfidence(t *testing.T) {
 			restore := stubLLM("Hello " + body)
 			defer restore()
 
-			result, err := Complete(context.Background(), nil, "Hello", NewCompleteOptions())
+			result, err := Complete(context.Background(), "Hello", NewCompleteOptions())
 			if err != nil {
 				t.Fatalf("Complete: %v", err)
 			}

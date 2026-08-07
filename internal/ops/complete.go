@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/telemetry"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -122,12 +121,16 @@ func (opts CompleteOptions) toOpOptions() types.OpOptions {
 
 // Complete intelligently completes partial text using LLM intelligence.
 // It uses context from previous messages/text to generate coherent completions.
-// Note: This function requires a provider to be passed.
-func Complete(ctx context.Context, provider llm.Provider, partialText string, opts CompleteOptions) (CompleteResult, error) {
-	return completeImpl(ctx, provider, partialText, opts)
+// It takes no provider argument. It used to, and it was the only operation in
+// the library that did -- which leaked internal/llm into a public signature and
+// made Complete the one call a caller had to configure differently from every
+// other one. A caller who needs a specific provider installs it on the client;
+// that is what the client is.
+func Complete(ctx context.Context, partialText string, opts CompleteOptions) (CompleteResult, error) {
+	return completeImpl(ctx, partialText, opts)
 }
 
-func completeImpl(ctx context.Context, provider llm.Provider, partialText string, opts CompleteOptions) (CompleteResult, error) {
+func completeImpl(ctx context.Context, partialText string, opts CompleteOptions) (CompleteResult, error) {
 	logger := telemetry.GetLogger()
 	logger.Debug("Starting complete operation", "requestID", opts.RequestID, "partialLength", len(partialText))
 
@@ -159,15 +162,9 @@ func completeImpl(ctx context.Context, provider llm.Provider, partialText string
 	systemPrompt := buildCompleteSystemPrompt(opts)
 	userPrompt := buildCompleteUserPrompt(partialText, opts)
 
-	// Call LLM - use default provider if none provided
+	// Call the LLM through the same path as every other operation.
 	opOpts := opts.toOpOptions()
-	var response string
-	var err error
-	if provider != nil {
-		response, err = CallLLM(ctx, provider, systemPrompt, userPrompt, opOpts)
-	} else {
-		response, err = callLLM(ctx, systemPrompt, userPrompt, opOpts)
-	}
+	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
 		logger.Error("Complete operation LLM call failed", "requestID", opts.RequestID, "error", err)
 		return result, fmt.Errorf("completion failed: %w", err)
@@ -350,7 +347,7 @@ func (opts CompleteFieldOptions) WithMode(mode types.Mode) CompleteFieldOptions 
 //	post := BlogPost{Title: "AI in Healthcare", Body: "Artificial intelligence is transforming"}
 //	result, err := CompleteField[BlogPost](post, NewCompleteFieldOptions("Body"))
 //	// result.Data.Body now contains the completed text
-func CompleteField[T any](ctx context.Context, provider llm.Provider, data T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
+func CompleteField[T any](ctx context.Context, data T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
 	logger := telemetry.GetLogger()
 	logger.Debug("Starting complete field operation", "requestID", opts.RequestID, "field", opts.FieldName)
 
@@ -398,7 +395,7 @@ func CompleteField[T any](ctx context.Context, provider llm.Provider, data T, op
 	}
 
 	// Complete the field value
-	completeResult, err := completeImpl(ctx, provider, originalValue, opts.CompleteOptions)
+	completeResult, err := completeImpl(ctx, originalValue, opts.CompleteOptions)
 	if err != nil {
 		logger.Error("Complete field operation failed", "requestID", opts.RequestID, "error", err)
 		return result, fmt.Errorf("failed to complete field: %w", err)

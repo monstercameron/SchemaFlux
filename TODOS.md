@@ -792,8 +792,17 @@ tests.
   `encoding/json` skips unexported fields, so a struct whose only channel is unexported
   marshals cleanly to `{}` and never reaches the fallback — the test says so, because the
   first version of it was testing nothing.
-- [ ] **OP-304** — `NormalizeBatch`: replace the serial per-item loop (`normalize.go:347-364`)
+- [x] **OP-304** — `NormalizeBatch`: replace the serial per-item loop (`normalize.go:347-364`)
   with the batch processor plus bounded concurrency. Closes **D-14**, **Gap-08**.
+  **Done** — a bounded worker pool, `NormalizeOptions.Concurrency` (default 4, modest because
+  the limit that matters is the provider's rate limit rather than the machine's). Results stay
+  in input order whichever item finishes first, and the reported failure is the
+  lowest-indexed one, so the error does not depend on scheduling. An empty batch makes no
+  calls.
+  *Verify:* `internal/ops/normalize_batch_test.go` — a peak-concurrency test that parks every
+  worker and asserts the peak is above one and at or below the configured bound; an ordering
+  test where later items answer first; the failing index named in the error; and the empty
+  case.
 - [x] **OP-305** — `Parse`: match CSV headers on the `json` tag before the Go field name, and
   return an error (or a populated `Unmapped`) when no column maps. Today
   `capitalizeFirst(header)` is compared to Go field names, unmapped columns are skipped
@@ -843,12 +852,20 @@ tests.
   fail differently if characters meant bytes) and `TestMeasureLength` (12 cases).
 - [x] **OP-403** — Replace byte slicing with rune-safe truncation in `complete.go:269-276`
   and `redact_llm.go:305-336`. Closes **T-06**. Depends on **TI-009**.
-- [ ] **OP-404** — `Complete` and `CompleteField`: drop the `provider llm.Provider` parameter
+- [x] **OP-404** — `Complete` and `CompleteField`: drop the `provider llm.Provider` parameter
   that no other operation takes and that leaks `internal/llm` into the signature. Closes
   **T-04**.
 
 ## Redaction — rebuild
 
+  **Done** — both signatures lose it, along with the `internal/llm` import it dragged into a
+  public one. They were the only operations in the library taking a provider, so `Complete`
+  was the single call a caller had to configure differently from every other; a caller who
+  needs a specific provider installs it on the client, which is what the client is for.
+  The `if provider != nil` fork inside `completeImpl` is gone with it, so there is one path
+  rather than two.
+  *Verify:* `TestCompleteUsesTheConfiguredProviderLikeEveryOtherOperation` and
+  `TestCompleteFieldUsesTheConfiguredProvider`. **Breaking change** for **DOC-002**.
 - [x] **OP-501** — Replace the field-name substring matcher (`redact.go:359-387`), whose
   sensitive list includes `"name"`, `"key"`, `"first"`, `"last"`, `"card"`, `"address"`, and
   `"full"`, so `Filename`, `Username`, `Keywords`, `LastUpdated`, and `CardCount` are all
@@ -975,10 +992,23 @@ tests.
   silently disable enforcement. Use the `Format` field on the descriptor. Closes **I-04**.
   *Verify:* a user input containing the phrase "json object" does not change the request's
   response format.
-- [ ] **S-006** — Reconsider `Creative` mode on `Extract`, which instructs "Generate plausible
+- [x] **S-006** — Reconsider `Creative` mode on `Extract`, which instructs "Generate plausible
   values for missing fields / Prioritize completeness over strict accuracy"
   (`utils.go:141-146`) on an operation whose purpose is faithfulness. Rename it for what it
   does or remove it from `Extracting`. Closes **D-07**.
+  **Renamed in meaning rather than removed.** The prompt said "Generate plausible values for
+  missing fields" and "Prioritize completeness over strict accuracy" — an instruction to
+  fabricate, on the operation whose entire purpose is faithfulness to a source, reachable by
+  a caller who thought they were asking for flexibility.
+  Creative now means the most permissive *reading* of the source: interpret loose wording
+  generously, use context elsewhere in the input, accept clearly implied values — and leave a
+  field null when the input does not support one, stated explicitly, because silence on the
+  point is how a model fills it in anyway. Inference stays; invention goes.
+  Removing the mode was the alternative and would have been worse: callers reaching for it
+  want the permissive reading, and deleting it sends them to `Transform` with no way to ask.
+  *Verify:* `internal/ops/prompt_mode_test.go` — the fabrication phrases are gone, the
+  refusal is present, the three modes still differ from each other, and `ModeUnset` produces a
+  usable prompt without inheriting any of it.
 - [ ] **S-007** — Make `strengthenSystemPrompt` opt-out and measure whether it still helps.
   It prepends a fixed instruction block to every request, JSON or not, billed on every call.
   Closes **I-18**.

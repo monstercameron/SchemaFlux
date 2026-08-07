@@ -252,11 +252,21 @@ Rules:
 - Preserve as much information as possible`
 
 	case types.Creative:
+		// Creative on an extraction used to say "Generate plausible values for
+		// missing fields" and "Prioritize completeness over strict accuracy" --
+		// which is an instruction to fabricate, on the one operation whose
+		// entire purpose is faithfulness to a source. A caller reaching for
+		// Creative wants flexible *interpretation* of what is there, not
+		// invention of what is not, and nothing in the name told them the
+		// difference.
+		//
+		// It now means the most permissive reading of the source. Inference is
+		// still allowed and still marked; invention is not.
 		return base + `
-- Creatively interpret ambiguous data
-- Generate plausible values for missing fields
-- Use context to enrich extracted data
-- Prioritize completeness over strict accuracy`
+- Interpret ambiguous or loosely-worded data generously
+- Use context elsewhere in the input to resolve what a field refers to
+- Accept values that are implied rather than stated, where the implication is clear
+- Leave a field null when the input does not support a value: do NOT invent one`
 
 	default:
 		return base

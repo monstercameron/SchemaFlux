@@ -193,7 +193,7 @@ func TestNoConfidenceIsInventedFromTextShape(t *testing.T) {
 			restore := stubLLM("Hello " + tc.body)
 			defer restore()
 
-			result, err := Complete(context.Background(), nil, "Hello", NewCompleteOptions())
+			result, err := Complete(context.Background(), "Hello", NewCompleteOptions())
 			if err != nil {
 				// An empty completion is a legitimate error; what matters is
 				// that no confidence was invented on the way out.

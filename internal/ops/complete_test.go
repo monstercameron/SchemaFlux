@@ -118,7 +118,7 @@ func TestComplete_OptionsValidation(t *testing.T) {
 func TestComplete_EmptyInput(t *testing.T) {
 	opts := NewCompleteOptions()
 	ctx := context.Background()
-	_, err := Complete(ctx, nil, "", opts)
+	_, err := Complete(ctx, "", opts)
 	if err == nil {
 		t.Error("Expected error for empty input")
 	}
@@ -127,7 +127,7 @@ func TestComplete_EmptyInput(t *testing.T) {
 func TestComplete_WhitespaceOnlyInput(t *testing.T) {
 	opts := NewCompleteOptions()
 	ctx := context.Background()
-	_, err := Complete(ctx, nil, "   ", opts)
+	_, err := Complete(ctx, "   ", opts)
 	if err == nil {
 		t.Error("Expected error for whitespace-only input")
 	}
@@ -296,5 +296,55 @@ func TestCompleteResult_Structure(t *testing.T) {
 	}
 	if result.Metadata["test"] != "value" {
 		t.Errorf("Expected metadata test=value, got %v", result.Metadata["test"])
+	}
+}
+
+// OP-404. Complete and CompleteField took a provider argument that no other
+// operation took, which leaked internal/llm into a public signature and made
+// them the one call a caller had to configure differently from every other.
+func TestCompleteUsesTheConfiguredProviderLikeEveryOtherOperation(t *testing.T) {
+	var sawCall bool
+	previousCaller, previousProvider := currentHooks()
+	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+		sawCall = true
+		return "the completed text", nil
+	})
+	t.Cleanup(func() {
+		setLLMCaller(previousCaller)
+		SetDefaultProvider(previousProvider)
+	})
+
+	result, err := Complete(context.Background(), "the beginning of", NewCompleteOptions())
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !sawCall {
+		t.Error("Complete did not reach the configured caller")
+	}
+	if result.Text == "" {
+		t.Error("Complete returned no completed text")
+	}
+}
+
+// The same for CompleteField, which delegated to it.
+func TestCompleteFieldUsesTheConfiguredProvider(t *testing.T) {
+	type record struct {
+		Bio string `json:"bio"`
+	}
+	// The field is named by its Go name; the json tag is the wire form.
+
+	previousCaller, previousProvider := currentHooks()
+	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+		return "a filled-in biography", nil
+	})
+	t.Cleanup(func() {
+		setLLMCaller(previousCaller)
+		SetDefaultProvider(previousProvider)
+	})
+
+	_, err := CompleteField(context.Background(), record{Bio: "born in"},
+		NewCompleteFieldOptions("Bio"))
+	if err != nil {
+		t.Fatalf("CompleteField: %v", err)
 	}
 }

@@ -700,7 +700,7 @@ type CompleteFieldOptions = ops.CompleteFieldOptions
 //
 //	result, err := schemaflux.Complete(partialText, schemaflux.NewCompleteOptions())
 func Complete(partialText string, opts CompleteOptions) (CompleteResult, error) {
-	return ops.Complete(context.Background(), nil, partialText, opts)
+	return ops.Complete(context.Background(), partialText, opts)
 }
 
 // CompleteField completes a specific string field in a struct and returns a new copy
@@ -716,7 +716,7 @@ func Complete(partialText string, opts CompleteOptions) (CompleteResult, error) 
 //	result, err := schemaflux.CompleteField[BlogPost](post, schemaflux.NewCompleteFieldOptions("Body"))
 //	// result.Data.Body now contains the completed text
 func CompleteField[T any](data T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
-	return ops.CompleteField[T](context.Background(), nil, data, opts)
+	return ops.CompleteField[T](context.Background(), data, opts)
 }
 
 // Validate checks if data meets specified validation rules with rich result.

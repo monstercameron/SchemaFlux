@@ -261,11 +261,11 @@ func RedactLLM(input string, opts RedactLLMOptions) (RedactLLMResult, error) {
 }
 
 func Complete(input string, opts CompleteOptions) (CompleteResult, error) {
-	return ops.Complete(context.Background(), nil, input, opts)
+	return ops.Complete(context.Background(), input, opts)
 }
 
 func CompleteField[T any](input T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
-	return ops.CompleteField[T](context.Background(), nil, input, opts)
+	return ops.CompleteField[T](context.Background(), input, opts)
 }
 
 func Validate[T any](input T, opts ValidateOptions) (ValidateResult[T], error) {

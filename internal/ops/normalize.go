@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
@@ -35,6 +36,11 @@ type NormalizeOptions struct {
 
 	// Canonical mappings (e.g., {"USA": "United States", "UK": "United Kingdom"})
 	CanonicalMappings map[string]string
+
+	// Concurrency bounds how many items NormalizeBatch has in flight at once.
+	// Zero means DefaultConcurrency. The limit that matters is the provider's
+	// rate limit, not the machine's, which is why the default is modest.
+	Concurrency int
 
 	// Fields to normalize (empty = all)
 	Fields []string
@@ -107,6 +113,12 @@ func (n NormalizeOptions) WithNormalizeWhitespace(normalize bool) NormalizeOptio
 // WithCanonicalMappings sets canonical value mappings
 func (n NormalizeOptions) WithCanonicalMappings(mappings map[string]string) NormalizeOptions {
 	n.CanonicalMappings = mappings
+	return n
+}
+
+// WithConcurrency bounds how many items NormalizeBatch has in flight.
+func (n NormalizeOptions) WithConcurrency(concurrency int) NormalizeOptions {
+	n.Concurrency = concurrency
 	return n
 }
 
@@ -346,20 +358,70 @@ func NormalizeText(input string, opts NormalizeOptions) (string, error) {
 	return fmt.Sprintf("%v", result.Normalized), nil
 }
 
-// NormalizeBatch normalizes a slice of items
+// NormalizeBatch normalizes a slice of items with bounded concurrency.
+//
+// It was a serial loop: one blocking provider call per item, so normalizing two
+// hundred records took two hundred round trips end to end and the caller had no
+// way to say otherwise. The concurrency is bounded rather than unlimited
+// because the limit that matters here is the provider's rate limit, not the
+// machine's.
+//
+// Results stay in input order regardless of which item finishes first, and the
+// first failure names the item's index -- a caller who gets an error needs to
+// know which of their records is missing.
 func NormalizeBatch[T any](items []T, opts NormalizeOptions) ([]NormalizeResult[T], error) {
 	log := logger.GetLogger()
 	log.Debug("Starting normalize batch operation", "itemCount", len(items))
 
-	results := make([]NormalizeResult[T], len(items))
+	if len(items) == 0 {
+		return nil, nil
+	}
 
-	for i, item := range items {
-		result, err := Normalize(item, opts)
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultConcurrency
+	}
+
+	results := make([]NormalizeResult[T], len(items))
+	errs := make([]error, len(items))
+
+	var wg sync.WaitGroup
+	indices := make(chan int)
+
+	go func() {
+		defer close(indices)
+		for i := range items {
+			indices <- i
+		}
+	}()
+
+	workers := concurrency
+	if workers > len(items) {
+		workers = len(items)
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range indices {
+				result, err := Normalize(items[i], opts)
+				if err != nil {
+					errs[i] = err
+					continue
+				}
+				results[i] = result
+			}
+		}()
+	}
+	wg.Wait()
+
+	// The lowest-indexed failure is reported, so the error is the same whichever
+	// order the workers happened to finish in.
+	for i, err := range errs {
 		if err != nil {
 			log.Error("NormalizeBatch failed for item", "index", i, "error", err)
 			return nil, fmt.Errorf("failed to normalize item %d: %w", i, err)
 		}
-		results[i] = result
 	}
 
 	log.Debug("NormalizeBatch succeeded", "itemCount", len(items))
