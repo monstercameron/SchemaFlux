@@ -512,20 +512,6 @@ func mapCSVRowToStruct(row []string, headers []string, target reflect.Value) (in
 	return mapped, nil
 }
 
-// unmappedHeaders names the columns that reached no field, for an error a
-// caller can act on.
-func unmappedHeaders(headers []string, structType reflect.Type) []string {
-	index := csvFieldIndex(structType)
-
-	var unmapped []string
-	for _, header := range headers {
-		if _, found := index[foldCSVName(header)]; !found {
-			unmapped = append(unmapped, header)
-		}
-	}
-	return unmapped
-}
-
 // mapDelimitedFieldsToStruct maps delimited fields to struct
 func mapDelimitedFieldsToStruct(fields []string, target reflect.Value, hints []string) error {
 	if target.Kind() != reflect.Struct {

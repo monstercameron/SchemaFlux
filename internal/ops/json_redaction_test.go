@@ -17,6 +17,9 @@ func TestParseJSONErrorDoesNotLeakThePayload(t *testing.T) {
 		{"ssn", `{"ssn": "123-45-6789", broken`, "123-45-6789"},
 		{"email", `not json at all, from alice@example.com`, "alice@example.com"},
 		{"card", `{"card":"4111111111111111"`, "4111111111111111"},
+		// This is the payload the test proves does NOT reach an error string.
+		// It has to look like a credential to be worth asserting about.
+		// secret-scan: allow
 		{"bearer", `Bearer sk-live-abcdefghijklmnop`, "sk-live-abcdefghijklmnop"},
 		{"prose_with_name", `I could not process the record for Jane Q. Public.`, "Jane Q. Public"},
 		{"html_with_path", `<html>error at /home/mreca/secrets/db.sqlite</html>`, "/home/mreca/secrets/db.sqlite"},

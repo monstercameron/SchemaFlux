@@ -97,32 +97,3 @@ func runeSlice(text string, start, end int) (string, error) {
 
 	return text[startByte:endByte], nil
 }
-
-// runeByteOffsets converts a rune range into the byte offsets that slice it,
-// so a caller building a string can splice around the range.
-func runeByteOffsets(text string, start, end int) (int, int, error) {
-	if _, err := runeSlice(text, start, end); err != nil {
-		return 0, 0, err
-	}
-
-	startByte, endByte := len(text), len(text)
-	count := 0
-	for offset := range text {
-		if count == start {
-			startByte = offset
-		}
-		if count == end {
-			endByte = offset
-			break
-		}
-		count++
-	}
-	if start == 0 {
-		startByte = 0
-	}
-	if end >= utf8.RuneCountInString(text) {
-		endByte = len(text)
-	}
-
-	return startByte, endByte, nil
-}

@@ -1,5 +1,7 @@
 package ops
 
+//lint:file-ignore U1000 unexported fields are here to prove the generator skips them
+
 import (
 	"encoding/json"
 	"reflect"

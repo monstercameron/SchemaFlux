@@ -1,5 +1,11 @@
 package ops
 
+// The unexported fields and the `json:"-,"` tag in this file are the subject,
+// not an oversight: they exist to prove the strict parser and the schema
+// generator follow the encoding/json grammar. See F-015 and F-035.
+//lint:file-ignore U1000 fixtures are unexported on purpose
+//lint:file-ignore SA5008 `json:"-,"` names the field "-"; that is the case under test
+
 import (
 	"reflect"
 	"strings"

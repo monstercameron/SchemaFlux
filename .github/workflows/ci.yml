@@ -1,0 +1,143 @@
+name: ci
+
+# The required gate. TODOS.md CI-001 and CI-002.
+#
+# Every job here is deterministic and offline. SCHEMAFLUX_LIVE_TESTS is never
+# set, so the provider-backed tests compile and skip -- see B-04. Nothing in
+# this file may reach a paid endpoint.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The platform contract. This repository already carries a defect class that
+  # only reproduces where -race cannot run (see F-031), which is the argument
+  # for testing somewhere other than the maintainer's machine.
+  test:
+    name: test ${{ matrix.os }} / go ${{ matrix.go }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        go: [stable, oldstable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+      # -race is the reason the Linux jobs exist: it does not run on
+      # windows/arm64, which is where this library is developed, so the package
+      # globals it would catch go unchecked locally. TI-008.
+      - name: Test with the race detector
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+
+      # Order dependence and shared package state hide from a single ordered
+      # run. Ten shuffled runs is cheap and has found real bugs in this kind of
+      # library.
+      - name: Test shuffled
+        run: go test -shuffle=on -count=10 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # gofmt is only a gate now that CI-003 normalized line endings. Before
+      # that it reported 179 files, 162 of which differed by nothing but CRLF.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # The examples are documentation that compiles. CI-004 makes them a
+      # behavioural gate; this is the cheaper half that catches an API change
+      # breaking every example.
+      - name: Examples build
+        run: go build ./examples/...
+
+      # A dirty tree after a build means something generated a file nobody
+      # committed.
+      - name: Working tree is clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "the working tree is dirty after building:"
+            git status --porcelain
+            exit 1
+          fi
+
+  # CI-006. A fixture is the most likely place for a real key to be pasted by
+  # accident, and this repository ships one.
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scanner self-test
+        run: python3 scripts/secret_scan.py --self-test
+      - name: Scan for credentials
+        run: python3 scripts/secret_scan.py
+
+  # The review is the input to TODOS.md, and that relationship is only worth
+  # anything if it is checkable. TR-001.
+  traceability:
+    name: traceability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every finding traces to a task
+        run: python3 .audit/traceability.py
+
+  smarttodo:
+    name: smarttodo module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build
+        working-directory: examples/smarttodo
+        run: go build ./...
+      - name: Test
+        working-directory: examples/smarttodo
+        run: go test ./...

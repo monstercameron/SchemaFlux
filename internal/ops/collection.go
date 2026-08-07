@@ -575,11 +575,3 @@ Rules:
 	}
 	return result, nil
 }
-
-func interfaceSlice[T any](items []T) []any {
-	result := make([]any, len(items))
-	for i, item := range items {
-		result[i] = item
-	}
-	return result
-}

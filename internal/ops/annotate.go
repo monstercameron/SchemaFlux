@@ -343,9 +343,7 @@ func AnnotateStruct[T any, U any](input T, opts AnnotateOptions) (U, error) {
 
 	// Build annotation descriptions
 	var annotationDesc []string
-	for _, aType := range opts.AnnotationTypes {
-		annotationDesc = append(annotationDesc, aType)
-	}
+	annotationDesc = append(annotationDesc, opts.AnnotationTypes...)
 	for key := range opts.CustomSchema {
 		annotationDesc = append(annotationDesc, key)
 	}

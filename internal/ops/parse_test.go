@@ -260,10 +260,6 @@ func TestParse_UnsupportedFormat(t *testing.T) {
 }
 
 func TestParse_OptionsValidation(t *testing.T) {
-	type Person struct {
-		Name string
-	}
-
 	opts := NewParseOptions()
 	if err := opts.Validate(); err != nil {
 		t.Errorf("Options validation failed: %v", err)

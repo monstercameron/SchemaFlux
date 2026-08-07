@@ -1,5 +1,9 @@
 package ops
 
+// `json:"-,"` below names a field "-" rather than excluding it. That
+// distinction is exactly what F-015 got wrong, so the tag is the test.
+//lint:file-ignore SA5008 the malformed-looking tag is the case under test
+
 import (
 	"context"
 	"errors"

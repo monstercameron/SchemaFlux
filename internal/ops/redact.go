@@ -500,31 +500,6 @@ func redactMap[T any](input T, opts RedactOptions) (T, error) {
 	return newMap.Interface().(T), nil
 }
 
-// shouldRedactField determines if a struct field should be redacted
-func shouldRedactField(fieldName string, fieldType reflect.StructField, fieldValue reflect.Value, opts RedactOptions) bool {
-	// Check struct tags
-	if tag := fieldType.Tag.Get("redact"); tag != "" {
-		return stringSliceContains(opts.Categories, tag)
-	}
-
-	// The field name has to name the thing, not merely contain a word that
-	// appears in it. Substring matching here destroyed Filename, Username,
-	// Keywords, KeyMetrics, APIKeyLabel, FirstSeen, LastUpdated, CardCount,
-	// and AddressBookSize, and RedactWithResult would not tell you which.
-	if fieldNameIsSensitive(fieldName) {
-		return true
-	}
-
-	// Check content patterns for string fields
-	if fieldValue.Kind() == reflect.String {
-		if valueIsSensitive(fieldValue.String(), opts.Categories, opts.CustomPatterns) {
-			return true
-		}
-	}
-
-	return false
-}
-
 // generateMaskText creates mask text based on the options
 func generateMaskText(originalValue string, opts RedactOptions) string {
 	// If custom mask text is provided, use it
@@ -738,14 +713,4 @@ func jumbleName(name string, r *rand.Rand) string {
 		parts[i] = jumbleBasic(part, r)
 	}
 	return strings.Join(parts, " ")
-}
-
-// stringSliceContains checks if a slice contains a string
-func stringSliceContains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

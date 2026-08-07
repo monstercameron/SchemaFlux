@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -103,7 +104,7 @@ func (opts CompleteOptions) Validate() error {
 		return fmt.Errorf("MaxLength must be positive")
 	}
 	if opts.Temperature < 0 || opts.Temperature > 2.0 {
-		return fmt.Errorf("Temperature must be between 0.0 and 2.0")
+		return errors.New("temperature must be between 0.0 and 2.0")
 	}
 	if opts.TopP <= 0 || opts.TopP > 1.0 {
 		return fmt.Errorf("TopP must be between 0.0 and 1.0")

@@ -176,6 +176,10 @@ func TestControlFlowOperationsHonourTheirContext(t *testing.T) {
 // operationContext is the mechanism.
 func TestOperationContext(t *testing.T) {
 	t.Run("nil_caller_is_usable", func(t *testing.T) {
+		// Passing nil is the case: operationContext has to tolerate a caller
+		// who has no context to give, because thirty-one operations used to
+		// have none.
+		//lint:ignore SA1012 nil is the input under test
 		ctx, cancel := operationContext(nil, time.Second)
 		defer cancel()
 		if ctx == nil || ctx.Err() != nil {

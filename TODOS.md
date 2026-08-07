@@ -1056,7 +1056,7 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
 
 # M10 — Release gates
 
-- [ ] **CI-001** — Run `go build`, `go vet`, `gofmt -l`, and the full suite on every push.
+- [x] **CI-001** — Run `go build`, `go vet`, `gofmt -l`, and the full suite on every push.
   **Revised (PRD-01, PRD-17):** the required gate is wider, and each addition catches a
   class the others miss: `go test -race`, `go test -shuffle=on -count=10` (order-dependent
   tests and the package globals they hide), `staticcheck`, `govulncheck`, a fuzz smoke
@@ -1065,8 +1065,25 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   platform contract, not a convenience: supported Go versions across Linux, macOS, and
   Windows on amd64 and arm64 — published as a support matrix, since this repository's own
   history contains a defect that only reproduces where `-race` cannot run.
-- [ ] **CI-002** — Add a Linux AMD64 job for `go test -race`, which cannot run on the current
+  **Done** — `.github/workflows/ci.yml`. Five jobs: `test` (build, test, `-race` off Windows,
+  `-shuffle=on -count=10`, vet) across ubuntu / ubuntu-arm / macos / windows on `stable` and
+  `oldstable`; `quality` (gofmt, staticcheck, govulncheck, examples build, clean-tree check);
+  `secrets`; `traceability`; and the smarttodo module. `SCHEMAFLUX_LIVE_TESTS` is never set,
+  so **B-04** still holds and no job can bill the operator.
+  Every step was run locally before the file was written, and three of them were red:
+  **staticcheck reported 23 findings**, **govulncheck reported 6 reachable vulnerabilities**,
+  and **`examples/smarttodo` did not build at all** — its `go.sum` never gained the
+  `godotenv` entry that B-03 added to the root module, so the nested module had been broken
+  since that commit and nothing noticed. All three are fixed in this commit; see below.
+  *Verify:* `go build ./...`, `go vet ./...`, `gofmt -l .` (empty), `staticcheck ./...`
+  (clean), `go test -shuffle=on -count=10 ./...` (13 packages, no failures),
+  `go build ./examples/...`, and the smarttodo module's build and test.
+- [x] **CI-002** — Add a Linux AMD64 job for `go test -race`, which cannot run on the current
   Windows/arm64 machine. Unblocks **TI-008**.
+  **Done** — the `test` job runs `-race` on every runner except Windows, so the detector now
+  sees this code on linux/amd64, linux/arm64, and darwin/arm64. **TI-008** is unblocked but
+  not closed: the isolation half of it is a test nobody has written yet, and a green race
+  detector says nothing about two clients sharing a package global.
 - [x] **CI-003** — Normalize line endings (`.gitattributes`) so `gofmt -l` stops reporting
   ~180 files that differ only by CRLF, which currently masks real formatting drift.
   **Done** — and the masking was real, not theoretical. `gofmt -l` reported **179** files;
@@ -1084,7 +1101,23 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   contracts of `Rank`, `Enrich`, `Predict`, `Verify`, and `Question`. Depends on **TI-001**.
 - [ ] **CI-005** — Coverage floor, ratcheted from the current measured value rather than set
   aspirationally.
-- [ ] **CI-006** — Secret scanning on push; assert no cassette or fixture carries a key.
+- [x] **CI-006** — Secret scanning on push; assert no cassette or fixture carries a key.
+  **Done** — `scripts/secret_scan.py`, run by the `secrets` job over every tracked text file
+  (485 of them). Seven vendor key shapes plus a credential-shaped-assignment heuristic, with
+  a placeholder list so fixtures that must *look* like credentials do not keep it red, and a
+  `secret-scan: allow` waiver honoured on the line or the line above it.
+  **The first version was wrong in the way that matters, and the test caught it.** Planting a
+  real-shaped OpenAI key in `testdata/` did not fail the scan: `1234` was on the placeholder
+  list, the check was a substring match, and the planted key contained `123456789`. A scanner
+  a real key can silence by coincidence is worse than none, because it reports success.
+  Entropy now overrides the placeholder list — a run of 16+ alphanumerics carrying upper,
+  lower, and digits is treated as issued no matter what words it contains.
+  *Verify:* `python scripts/secret_scan.py --self-test` — 14 cases, seven that must be caught
+  (including the one that escaped) and seven that must not (the shipped `testdata/sample.env`,
+  a `t.Setenv` input, an `os.Getenv` call, a JS expression, a demo password, an explicit
+  placeholder, a waived line). Both the self-test and the repository scan run in CI. One real
+  waiver was added: `internal/ops/json_redaction_test.go` carries a bearer token as the
+  payload it proves does *not* reach an error string.
 - [ ] **CI-007** — Public API surface test: snapshot the exported symbols so an unintended
   addition or removal fails review. Depends on **PS-003**.
 - [ ] **DOC-001** — Rewrite the README against what the code does. Today it advertises
@@ -1983,6 +2016,14 @@ and, where the boundary mattered, integration coverage; they do not all have exa
 - **F-024** — widen the static check from dead options to dead unexported helpers as well.
   `getDefaultPricing` sat unused-but-harmful for exactly the same reason a dead option does,
   and the same check would have surfaced it.
+  **Done, by adopting staticcheck rather than writing a second checker** (`CI-001`). Its
+  U1000 does exactly what this refinement asked for, and its first run found five dead
+  helpers: `interfaceSlice` (collection.go), `unmappedHeaders` (parse.go — written for
+  **OP-305** and never wired), `shouldRedactField` and `stringSliceContains` (redact.go —
+  orphaned by **OP-501**'s rewrite), and `runeByteOffsets` (runes.go). All deleted. The
+  hand-rolled `dead_options_test.go` stays: it checks a narrower property staticcheck does
+  not — an exported field with a setter and no *reader*, which is live code as far as U1000
+  is concerned.
 - **CI-006** — call out `testdata/*.env` explicitly. This repository now ships a fixture env
   file, and a fixture is the most likely place for a real key to be pasted by accident.
 - **DOC-002** — add `Init` to the breaking-change list. It gained an `error` return; that is

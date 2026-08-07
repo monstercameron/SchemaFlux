@@ -547,13 +547,13 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("Anthropic request failed: %w", err)
+		return CompletionResponse{}, fmt.Errorf("anthropic request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return CompletionResponse{}, fmt.Errorf("Anthropic API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+		return CompletionResponse{}, fmt.Errorf("anthropic API error (status %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse response
@@ -706,7 +706,7 @@ type CerebrasProvider struct {
 // NewCerebrasProvider creates a new Cerebras provider
 func NewCerebrasProvider(config ProviderConfig) (*CerebrasProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("Cerebras API key is required")
+		return nil, errors.New("cerebras API key is required")
 	}
 	compatible, err := newOpenAICompatibleProvider("cerebras", config, "https://api.cerebras.ai/v1")
 	if err != nil {
@@ -740,7 +740,7 @@ type QwenProvider struct {
 // NewQwenProvider creates a new Qwen provider.
 func NewQwenProvider(config ProviderConfig) (*QwenProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("Qwen API key is required")
+		return nil, errors.New("qwen API key is required")
 	}
 	compatible, err := newOpenAICompatibleProvider("qwen", config, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
 	if err != nil {
@@ -757,7 +757,7 @@ type ZAIProvider struct {
 // NewZAIProvider creates a new Z.ai provider.
 func NewZAIProvider(config ProviderConfig) (*ZAIProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("Z.ai API key is required")
+		return nil, errors.New("z.ai API key is required")
 	}
 	compatible, err := newOpenAICompatibleProvider("zai", config, "https://api.z.ai/api/paas/v4")
 	if err != nil {

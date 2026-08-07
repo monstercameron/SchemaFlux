@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -88,17 +87,20 @@ func InitTracing(serviceName string) error {
 		}
 	}
 
-	// Jaeger exporter
+	// The Jaeger exporter is gone. OpenTelemetry dropped support for it in July
+	// 2023 and Jaeger itself accepts OTLP natively, so the module this used was
+	// deprecated upstream and would have carried a permanent SA1019 into the
+	// quality gate. Point SCHEMAFLUX_JAEGER_ENDPOINT at a Jaeger collector's
+	// OTLP port instead.
+	//
+	// This says so loudly rather than ignoring the variable: silently dropping
+	// every span from a deployment that still sets it is the failure mode this
+	// library spends most of its task list removing.
 	if endpoint := os.Getenv("SCHEMAFLUX_JAEGER_ENDPOINT"); endpoint != "" {
-		jaegerExporter, err := jaeger.New(
-			jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(endpoint)),
-		)
-		if err != nil {
-			logger.GetLogger().Error("Failed to create Jaeger exporter", "error", err, "endpoint", endpoint)
-		} else {
-			exporters = append(exporters, jaegerExporter)
-			logger.GetLogger().Info("Jaeger trace exporter enabled", "endpoint", endpoint)
-		}
+		logger.GetLogger().Error(
+			"SCHEMAFLUX_JAEGER_ENDPOINT is no longer supported; no spans are being exported to it. "+
+				"Jaeger accepts OTLP directly -- set SCHEMAFLUX_OTLP_ENDPOINT to the collector's OTLP port (4317).",
+			"endpoint", endpoint)
 	}
 
 	// OTLP exporter
