@@ -200,11 +200,11 @@ type (
 	// Analysis operation result types (refactored for Go-native generics)
 	ClassifyResult[C ~string]      = ops.ClassifyResult[C]
 	ClassifyAlternative[C ~string] = ops.ClassifyAlternative[C]
-	ScoreResult                = ops.ScoreResult
-	CompareResult[T any]       = ops.CompareResult[T]
-	ComparisonPoint            = ops.ComparisonPoint
-	SimilarResult              = ops.SimilarResult
-	AspectMatch                = ops.AspectMatch
+	ScoreResult                    = ops.ScoreResult
+	CompareResult[T any]           = ops.CompareResult[T]
+	ComparisonPoint                = ops.ComparisonPoint
+	SimilarResult                  = ops.SimilarResult
+	AspectMatch                    = ops.AspectMatch
 
 	// Data-centric LLM operations (v3)
 	NegotiateOptions       = ops.NegotiateOptions
