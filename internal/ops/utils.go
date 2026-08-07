@@ -202,14 +202,26 @@ func NormalizeInput(input any) (string, error) {
 		return inputValue, nil
 	case []byte:
 		return string(inputValue), nil
-	case fmt.Stringer:
-		return inputValue.String(), nil
 	default:
-		// Try JSON marshaling for complex types
+		// JSON before Stringer, which is the reverse of what this used to do.
+		//
+		// Any type with a String() method took the Stringer branch, and
+		// time.Time has one -- so a timestamp was sent to the model as
+		// "2026-08-07 18:04:05.999 -0400 EDT" while the generated schema told
+		// it, in the same request, that the format was RFC3339. The model was
+		// asked to reconcile two descriptions of the same value and the library
+		// had given it no way to.
+		//
+		// A json.Marshaler is a type's own statement about its wire form, and
+		// that is the form the schema describes, so it wins. Stringer is a
+		// display format and stays as the fallback for types JSON cannot
+		// render.
 		if b, err := json.Marshal(input); err == nil {
 			return string(b), nil
 		}
-		// Fallback to fmt.Sprint
+		if stringer, ok := input.(fmt.Stringer); ok {
+			return stringer.String(), nil
+		}
 		return fmt.Sprint(input), nil
 	}
 }

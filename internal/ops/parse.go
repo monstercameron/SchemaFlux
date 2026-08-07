@@ -221,20 +221,124 @@ func detectFormat(input string, hints []string) string {
 			}
 		}
 	}
-	if (strings.Contains(input, ": ") || strings.Contains(input, ":\n")) &&
-		!strings.Contains(input, "{") {
+	// YAML and pipe-delimited used to be decided by a substring: any input
+	// containing ": " was YAML, and any input containing "|" was
+	// pipe-delimited. So "Dear Alice: please review the attached" was routed to
+	// a YAML parser, and any sentence with a vertical bar in it to a delimited
+	// one. Both then failed with an error about the syntax of a format the
+	// input never claimed to be in.
+	//
+	// The rule now is structural: the shape has to hold across lines, which is
+	// what distinguishes a document from a sentence that happens to contain a
+	// character.
+	if looksLikeYAML(input) {
 		return "yaml"
 	}
-
-	// Check for custom delimiters
-	if strings.Contains(input, "|") && !strings.Contains(input, "{") {
+	if looksLikeDelimited(input, "|") {
 		return "pipe-delimited"
 	}
-	if strings.Contains(input, "\t") {
+	if looksLikeDelimited(input, "\t") {
 		return "tsv"
 	}
 
 	return "unknown"
+}
+
+// looksLikeYAML requires most non-empty lines to be `key: value` or a list
+// item. One colon in a paragraph is not a document.
+func looksLikeYAML(input string) bool {
+	if strings.Contains(input, "{") || strings.Contains(input, "<") {
+		return false
+	}
+
+	lines := strings.Split(input, "\n")
+	var considered, matched int
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		considered++
+
+		if strings.HasPrefix(trimmed, "- ") {
+			matched++
+			continue
+		}
+
+		colon := strings.Index(trimmed, ":")
+		if colon <= 0 {
+			continue
+		}
+		key := trimmed[:colon]
+		// A YAML key is one token. "Dear Alice: please review" has a space in
+		// what would have to be the key, and prose almost always does.
+		if strings.ContainsAny(key, " \t") {
+			continue
+		}
+		matched++
+	}
+
+	// A single line is not a document. "Note: the invoice was paid" satisfies
+	// key: value and is a sentence; requiring the shape to repeat is what
+	// separates the two, and a one-pair YAML document is rare enough that
+	// misreading prose is the worse error.
+	if considered < 2 {
+		return false
+	}
+	return matched == considered
+}
+
+// looksLikeDelimited requires the separator to appear on most lines and to
+// produce the same number of fields on each -- a table, not a sentence with a
+// bar in it.
+func looksLikeDelimited(input, separator string) bool {
+	if strings.Contains(input, "{") || strings.Contains(input, "<") {
+		return false
+	}
+
+	lines := strings.Split(input, "\n")
+	var rows []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		rows = append(rows, line)
+	}
+	if len(rows) == 0 {
+		return false
+	}
+
+	fields := strings.Split(rows[0], separator)
+	if len(fields) < 2 {
+		return false
+	}
+
+	// A single row is a legitimate delimited record -- "Alice|28|Developer" is
+	// the documented example -- so it is judged on its fields rather than
+	// rejected for being alone. Prose split on a bar produces long fields; a
+	// record produces short ones. That is the difference between
+	// "Alice|28|Developer" and "See the attached report | it needs review".
+	if len(rows) == 1 {
+		for _, field := range fields {
+			trimmed := strings.TrimSpace(field)
+			// A record field is a value: short, and a word or two. A prose
+			// fragment is neither. "Alice", "28", and "John Smith" pass; "Use
+			// the staging server" and "the production one is locked" do not.
+			if trimmed == "" || len(trimmed) > 32 || len(strings.Fields(trimmed)) > 3 {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Several rows: the shape has to hold across them, which is a much stronger
+	// signal than any single line can give.
+	for _, row := range rows[1:] {
+		if len(strings.Split(row, separator)) != len(fields) {
+			return false
+		}
+	}
+	return true
 }
 
 // parseWithAlgorithm uses traditional parsing algorithms for standard formats
@@ -297,8 +401,16 @@ func parseCSV[T any](input string) (T, error) {
 	headers := records[0]
 	data := records[1:]
 
-	// Handle slice types
+	// reflect.TypeOf on a nil interface returns nil, and Kind() on a nil Type
+	// panics. Parse[any] produces exactly that: T is an interface, result is its
+	// zero value, and a library that panics on a type parameter a caller is
+	// allowed to write is not one they can defend against.
 	resultType := reflect.TypeOf(result)
+	if resultType == nil {
+		return result, fmt.Errorf("cannot parse CSV into %s: the target type is not concrete, so there are no fields to map columns onto -- use Parse[YourStruct] or Parse[[]YourStruct]", describeParseTarget[T]())
+	}
+
+	// Handle slice types
 	if resultType.Kind() == reflect.Slice {
 		elemType := resultType.Elem()
 		slice := reflect.MakeSlice(resultType, len(data), len(data))
@@ -391,8 +503,13 @@ func parseDelimited[T any](input string, delimiter string, opts ParseOptions) (T
 		delimiter = opts.CustomDelimiters[0]
 	}
 
-	// Handle slice types
+	// Same nil-type guard as parseCSV: Parse[any] has no concrete target.
 	resultType := reflect.TypeOf(result)
+	if resultType == nil {
+		return result, fmt.Errorf("cannot parse delimited text into %s: the target type is not concrete, so there are no fields to map columns onto -- use Parse[YourStruct] or Parse[[]YourStruct]", describeParseTarget[T]())
+	}
+
+	// Handle slice types
 	if resultType.Kind() == reflect.Slice {
 		elemType := resultType.Elem()
 		slice := reflect.MakeSlice(resultType, len(lines), len(lines))
@@ -681,4 +798,17 @@ func capitalizeFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
+}
+
+// describeParseTarget names the type parameter for an error message, without
+// needing a value of it.
+func describeParseTarget[T any]() string {
+	targetType := reflect.TypeOf((*T)(nil)).Elem()
+	if targetType == nil {
+		return "an unnamed type"
+	}
+	if name := targetType.String(); name != "" {
+		return name
+	}
+	return targetType.Kind().String()
 }

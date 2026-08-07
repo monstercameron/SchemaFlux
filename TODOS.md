@@ -722,10 +722,21 @@ tests.
   claim and kept out of the verification section of the envelope (**A-006**).
   *Verify (added):* an operation that asks the model for something Go already knows fails
   review; the deterministic and model-claimed halves of a result are separately addressable.
-- [ ] **OP-303** — `NormalizeInput`: prefer JSON marshalling over `fmt.Stringer`
+- [x] **OP-303** — `NormalizeInput`: prefer JSON marshalling over `fmt.Stringer`
   (`utils.go:99-113`). Any type with a `String()` method — including `time.Time` — is sent as
   prose while the generated schema simultaneously tells the model the format is RFC3339.
   Closes **D-04**.
+  **Done** — JSON first, `Stringer` as the fallback for types JSON cannot render. A
+  `json.Marshaler` is a type's own statement about its wire form, and the wire form is what
+  the generated schema describes; `String()` is a display format. The old order sent a
+  timestamp as `2026-08-07 18:04:05.999 -0400 EDT` while the schema in the *same request*
+  said RFC3339, so the model was asked to reconcile two descriptions of one value.
+  *Verify:* `internal/ops/parse_detect_test.go` — a bare `time.Time`, a struct carrying one
+  (the shape extraction actually sees), the Stringer fallback for an unmarshalable type, and
+  strings and byte slices still passing through untouched. Found while writing it:
+  `encoding/json` skips unexported fields, so a struct whose only channel is unexported
+  marshals cleanly to `{}` and never reaches the fallback — the test says so, because the
+  first version of it was testing nothing.
 - [ ] **OP-304** — `NormalizeBatch`: replace the serial per-item loop (`normalize.go:347-364`)
   with the batch processor plus bounded concurrency. Closes **D-14**, **Gap-08**.
 - [x] **OP-305** — `Parse`: match CSV headers on the `json` tag before the Go field name, and
@@ -733,14 +744,33 @@ tests.
   `capitalizeFirst(header)` is compared to Go field names, unmapped columns are skipped
   silently, and a single-struct target with zero matching headers returns a zero value with
   `err == nil`. Closes **D-11**.
-- [ ] **OP-306** — `Parse`: guard `reflect.TypeOf(result)` against a nil type so
+- [x] **OP-306** — `Parse`: guard `reflect.TypeOf(result)` against a nil type so
   `Parse[any]` cannot panic (`parse.go:301`, `344`). Closes **D-12**.
-- [ ] **OP-307** — `Parse`: strengthen `detectFormat` (`parse.go:188-238`), where any input
+  **Done** — both sites (`parseCSV` and `parseDelimited`). `reflect.TypeOf` on a nil
+  interface returns nil and `Kind()` on a nil `Type` panics, so `Parse[any]` over CSV or
+  delimited text took the process down. It now returns an error naming the target and saying
+  what to write instead.
+  *Verify:* `TestParseIntoAnyReportsRatherThanPanicking` — three input formats, each with a
+  `recover` that fails the test if the panic comes back — plus
+  `TestParseIntoAConcreteTypeStillWorks`.
+- [x] **OP-307** — `Parse`: strengthen `detectFormat` (`parse.go:188-238`), where any input
   containing `": "` and no `{` is classified YAML and any input containing `|` is
   pipe-delimited, so ordinary prose is routed to the wrong parser and fails. Closes **D-13**.
 
 ## Text
 
+  **Done** — both rules are structural now instead of substring searches.
+  YAML requires **at least two** non-empty lines, each a `key: value` with a single-token key
+  or a list item. A single line is not a document: "Note: the invoice was paid" has exactly
+  the shape a one-pair YAML file has, and misreading prose is the worse error, so a lone pair
+  now reports unknown — recorded in the test rather than left implicit.
+  Delimited requires either a consistent field count across rows, or — for the single-record
+  case the docs use, `Alice|28|Developer` — every field short and at most three words.
+  "Use the staging server | the production one is locked" fails that; "John Smith|30" passes.
+  *Verify:* `TestDetectFormatDoesNotRouteProseToAParser` (7 sentences, five of which were
+  misrouted before) and `TestDetectFormatStillRecognisesRealDocuments` (11 cases), plus
+  `TestFormatHintsWinOverDetection` — an explicit hint still overrides every structural rule,
+  because the caller knows what they have.
 - [ ] **OP-401** — Collapse the `X` / `XWithMetadata` twins into one operation returning
   `Result[T]` (`text.go:95/166`, `269/353`, `467/547`, `659/733`), each pair duplicating ~40
   identical lines. Closes **T-01**.
