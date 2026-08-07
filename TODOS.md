@@ -463,12 +463,34 @@ port nothing yet except one operation as the proof.
   Builders get `With(opts...)` so the fluent surface never needs a method per policy.
   *Verify (added):* a plan explanation prints effective value and source for every material
   setting; an invocation attempting to weaken a locked policy is rejected, not applied.
-- [ ] **A-005** — Renumber `Mode` and `Speed` so zero means unset (`ModeUnset`, `TierUnset`),
+- [x] **A-005** — Renumber `Mode` and `Speed` so zero means unset (`ModeUnset`, `TierUnset`),
   and add `Opt[T]` for numerics that must be settable to zero. Today `Strict == Mode(0)` and
   `Smart == Speed(0)`, so every `mergeXOptions` guard of the form `if user.Mode != 0` makes
   `.Strict()` and `.Smart()` unrepresentable on roughly ten operations. Closes **F-01**.
   *Verify:* test asserts `Negotiating[T](c).Strict().Smart()` produces Strict and Smart, not
   the operation defaults. Breaking change — record in the release notes.
+  **Done.** `ModeUnset` and `TierUnset` take zero; Strict/Transform/Creative and
+  Smart/Fast/Quick shift up by one. The twenty `if user.Mode != 0` guards are now correct
+  as written — the constants moved, the merges did not — and both new constants are exported
+  from the root package and the fluent aliases so a caller can say "no opinion" explicitly.
+  Unset resolves to a usable request at the point of use rather than moving the defect into
+  the request builder: `GetTemperature`, `GetMaxTokens`, and `GetModel` all answer for it.
+  *Verify:* `internal/ops/zero_value_options_test.go` — the merge for eight operations, each
+  with deliberately non-Strict, non-Smart defaults so the caller's choice and the default
+  disagree; the unset direction still taking the operation default; the zero values reporting
+  themselves as unset; and unset resolving to a real temperature, token budget, and model.
+  The witness is `TestTheOldZeroValuedChoiceIsReadAsSilence`, which passes a literal `0` —
+  what Strict and Smart *were* — through the unchanged merge and asserts it is dropped. A
+  full revert could not be compiled as a witness, because the tests name constants that did
+  not exist before.
+  **`Opt[T]` shipped separately** (`internal/types/opt.go`, 6 tests): the same defect for
+  numerics, where there is no spare zero to renumber into. `MinConfidence`, `Threshold`,
+  `MinSatisfaction`, and `ConflictThreshold` are still guarded with `> 0`, so a caller cannot
+  set them to zero to mean "accept anything". Those fields change type when **OP-201** wires
+  enforcement — the same lines, one commit — rather than being churned twice.
+  **Breaking change**, for **DOC-002**: any caller comparing a `Mode` or `Speed` to an
+  untyped `0`, or relying on `types.OpOptions{}` meaning Strict/Smart, changes behaviour. The
+  new behaviour is the documented one: an unset field takes the operation's default.
 - [ ] **A-006** — `Result[T]` + `Meta`: request and correlation IDs, provider, model, usage,
   cost with `Estimated` and `PricingSource`, attempts, repairs, strategy, elapsed. No
   `Confidence` field. Closes **D-09** structurally and makes **I-02** expressible.

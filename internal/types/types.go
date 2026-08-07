@@ -10,9 +10,18 @@ import (
 type Mode int
 
 const (
+	// ModeUnset means the caller did not choose a mode, and the operation's own
+	// default applies.
+	//
+	// It occupies zero deliberately. Strict used to, which made every merge
+	// guard of the form `if user.Mode != 0` treat "the caller asked for Strict"
+	// and "the caller said nothing" as the same thing -- so .Strict() was
+	// unrepresentable on roughly ten operations. Closes half of F-01.
+	ModeUnset Mode = iota
+
 	// Strict enforces exact schema matching and validation.
 	// Use for structured data extraction where accuracy is critical.
-	Strict Mode = iota
+	Strict
 
 	// TransformMode enables semantic mapping between related concepts.
 	// Default mode for most operations, balances flexibility and accuracy.
@@ -26,6 +35,8 @@ const (
 // String returns the string representation of a Mode
 func (m Mode) String() string {
 	switch m {
+	case ModeUnset:
+		return "unset"
 	case Strict:
 		return "strict"
 	case TransformMode:
@@ -42,9 +53,15 @@ func (m Mode) String() string {
 type Speed int
 
 const (
+	// TierUnset means the caller did not choose a tier, and the operation's own
+	// default applies. Zero for the same reason as ModeUnset: Smart used to sit
+	// here, so `.Smart()` was indistinguishable from silence. The other half of
+	// F-01.
+	TierUnset Speed = iota
+
 	// Smart uses the highest quality model (GPT-4 class).
 	// ~2-5s latency, best for complex reasoning and critical decisions.
-	Smart Speed = iota
+	Smart
 
 	// Fast uses balanced performance models (GPT-3.5 Turbo).
 	// ~1-2s latency, default for most operations.
@@ -58,6 +75,8 @@ const (
 // String returns the string representation of a Speed
 func (s Speed) String() string {
 	switch s {
+	case TierUnset:
+		return "unset"
 	case Smart:
 		return "smart"
 	case Fast:

@@ -109,13 +109,15 @@ type (
 )
 
 const (
+	ModeUnset     = types.ModeUnset
 	Strict        = types.Strict
 	TransformMode = types.TransformMode
 	Creative      = types.Creative
 
-	Smart = types.Smart
-	Fast  = types.Fast
-	Quick = types.Quick
+	TierUnset = types.TierUnset
+	Smart     = types.Smart
+	Fast      = types.Fast
+	Quick     = types.Quick
 )
 
 var (

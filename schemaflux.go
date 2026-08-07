@@ -265,6 +265,10 @@ type (
 
 // Mode constants
 const (
+	// ModeUnset means no mode was chosen and the operation's default applies.
+	// It is the zero value, so a Mode field a caller never touched says so.
+	ModeUnset = types.ModeUnset
+
 	// Strict enforces exact schema matching and validation.
 	Strict = types.Strict
 
@@ -277,6 +281,9 @@ const (
 
 // Speed constants (Intelligence levels)
 const (
+	// TierUnset means no tier was chosen and the operation's default applies.
+	TierUnset = types.TierUnset
+
 	// Smart uses the highest quality model (GPT-4 class).
 	Smart = types.Smart
 
