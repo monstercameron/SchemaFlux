@@ -450,20 +450,29 @@ Examples:
 		if fallbackErr == nil {
 			return fallback, nil
 		}
+		// No response body in the Reason. Every caller logs this error and the
+		// body is their data reshaped -- the same X-03 that OP-110 removed from
+		// the two Filter errors, surviving here.
 		return nil, types.SortError{
 			ItemCount: len(items),
-			Reason:    fmt.Sprintf("failed to parse sorted items: %v (response: %s)", err, response),
+			Reason:    fmt.Sprintf("failed to parse sorted items: %v", err),
+			Err:       err,
 		}
 	}
 
-	if len(result) != len(items) {
+	// A sort returns a permutation, and a count does not check for one. Equal
+	// length is satisfied by a model that returned item 1 twice and dropped
+	// item 2 -- which corrupts the result quietly, where a short answer at
+	// least breaks obviously.
+	if err := SameMultiset(items, result); err != nil {
 		fallback, fallbackErr := sortByScoringFallback(items, opts, opOptions)
 		if fallbackErr == nil {
 			return fallback, nil
 		}
 		return nil, types.SortError{
 			ItemCount: len(items),
-			Reason:    fmt.Sprintf("received %d items for %d input items", len(result), len(items)),
+			Reason:    err.Error(),
+			Err:       err,
 		}
 	}
 

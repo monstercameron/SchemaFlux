@@ -250,3 +250,132 @@ func (p *chunkEchoProvider) Complete(_ context.Context, req schemaflux.Completio
 func (p *chunkEchoProvider) Name() string                                      { return "local" }
 func (p *chunkEchoProvider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
 func (p *chunkEchoProvider) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
+
+// A sort returns a permutation. The check was a count, which is satisfied by a
+// model that returned one line twice and dropped another — and that corrupts a
+// result quietly, where a short answer at least breaks obviously.
+//
+// Sort falls back to per-item scoring when the whole-list answer is rejected,
+// so these cases use a provider that fails the fallback too; what is being
+// asserted is that the whole-list answer is not accepted.
+func TestIntegrationSortRefusesAResultThatIsNotAPermutation(t *testing.T) {
+	lines := invoiceLines()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"one line duplicated, one dropped — same length",
+			encode(t, []lineItem{lines[0], lines[0], lines[2]}),
+		},
+		{
+			"a line edited in place",
+			encode(t, []lineItem{lines[1], {SKU: "A-100", Name: "Widget", UnitCost: 12.00}, lines[2]}),
+		},
+		{
+			"an invented line",
+			encode(t, []lineItem{lines[1], lines[0], {SKU: "Z-999", Name: "Invented", UnitCost: 1}}),
+		},
+		{
+			"a line dropped",
+			encode(t, []lineItem{lines[1], lines[0]}),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The scoring fallback asks for {"rank_score": ...}; a body shaped
+			// like the sorted list answers neither, so both paths refuse and
+			// the operation reports rather than silently degrading.
+			withScriptedProvider(t, tc.body, nil)
+
+			sorted, err := schemaflux.Sort(lines,
+				schemaflux.NewSortOptions().WithCriteria("most expensive first"))
+			if err == nil {
+				t.Fatalf("a result that is not a permutation must be refused; got %+v", sorted)
+			}
+		})
+	}
+}
+
+// The faithful case still works, and the values come back as the caller's own.
+func TestIntegrationSortAcceptsAPermutation(t *testing.T) {
+	lines := invoiceLines()
+	withScriptedProvider(t, encode(t, []lineItem{lines[1], lines[0], lines[2]}), nil)
+
+	sorted, err := schemaflux.Sort(lines, schemaflux.NewSortOptions().WithCriteria("most expensive first"))
+	if err != nil {
+		t.Fatalf("Sort: %v", err)
+	}
+	if len(sorted) != 3 || sorted[0] != lines[1] || sorted[1] != lines[0] || sorted[2] != lines[2] {
+		t.Errorf("sorted = %+v", sorted)
+	}
+}
+
+// A clustering is a partition. Overlapping groups make a caller iterating the
+// clusters process an item twice; missing indices drop items silently; and Size
+// used to count the raw indices, so it disagreed with Items exactly when the
+// model misbehaved.
+func TestIntegrationClusterRequiresAPartition(t *testing.T) {
+	lines := invoiceLines()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"an item in two clusters",
+			`{"clusters":[{"name":"a","indices":[0,1]},{"name":"b","indices":[1,2]}],"outlier_indices":[],"quality":0.9}`,
+		},
+		{
+			"an item in no cluster",
+			`{"clusters":[{"name":"a","indices":[0]},{"name":"b","indices":[1]}],"outlier_indices":[],"quality":0.9}`,
+		},
+		{
+			"an index past the end",
+			`{"clusters":[{"name":"a","indices":[0,1,2,7]}],"outlier_indices":[],"quality":0.9}`,
+		},
+		{
+			"a negative index",
+			`{"clusters":[{"name":"a","indices":[0,1,2,-1]}],"outlier_indices":[],"quality":0.9}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withScriptedProvider(t, tc.body, nil)
+
+			result, err := schemaflux.Cluster(lines, schemaflux.NewClusterOptions())
+			if err == nil {
+				t.Fatalf("a clustering that is not a partition must be refused; got %d clusters", result.NumClusters)
+			}
+		})
+	}
+}
+
+// A real partition is accepted, outliers count as placed, and Size agrees with
+// Items because it is derived from them.
+func TestIntegrationClusterAcceptsAPartitionAndSizeAgrees(t *testing.T) {
+	lines := invoiceLines()
+	withScriptedProvider(t,
+		`{"clusters":[{"name":"cheap","indices":[0,2]}],"outlier_indices":[1],"quality":0.8}`, nil)
+
+	result, err := schemaflux.Cluster(lines, schemaflux.NewClusterOptions())
+	if err != nil {
+		t.Fatalf("Cluster: %v", err)
+	}
+	if result.NumClusters != 1 {
+		t.Fatalf("NumClusters = %d, want 1", result.NumClusters)
+	}
+	cluster := result.Clusters[0]
+	if cluster.Size != len(cluster.Items) {
+		t.Errorf("Size = %d but Items has %d; the two must agree", cluster.Size, len(cluster.Items))
+	}
+	if len(cluster.Items) != 2 {
+		t.Errorf("Items = %+v, want two", cluster.Items)
+	}
+	if len(result.Outliers) != 1 || result.Outliers[0] != lines[1] {
+		t.Errorf("Outliers = %+v, want the caller's own second line", result.Outliers)
+	}
+}

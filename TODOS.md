@@ -550,6 +550,14 @@ port nothing yet except one operation as the proof.
   `ExcludesValues`, `CategoryIn`, `OneOf`, `Satisfies`. Closes **X-05** mechanically.
   *Verify:* each invariant has a unit test for pass, fail, and the error message the repair
   loop will feed back.
+  **Started** (`internal/ops/invariants.go`): `SameMultiset`, `SubsetOf`, `CoversExactlyOnce`,
+  and `MemberOf` ship with 30 unit cases, built because **OP-105** and **OP-107** needed them.
+  Values compare by canonical JSON, so an item echoed back with one field changed fails —
+  which is the failure that happens, rather than the invented item people imagine.
+  Errors report *how many* items went wrong, never which: these are the caller's records
+  (**F-034**). Remaining: `AtMost`, `WithinLength`, `AtLeastConfidence`, `ExcludesValues`,
+  `CategoryIn`, `OneOf`, `Satisfies`, and the `Invariant[In, Out]` type itself, which needs
+  **A-001**'s descriptor to hang on.
   **Revised (TRU-25, ARC-11):** the shipped library is the floor, not the surface. A caller
   must be able to register their own normalizer, invariant, evidence check, and repair
   policy and have it run *inside* the kernel — so a domain rule participates in recovery,
@@ -614,10 +622,27 @@ tests.
 - [x] **OP-103** — `Filter`: attach `SubsetOf`, and fix the contradiction where the system
   prompt says "Include items that match" (line 201) while `KeepMatching: false` steers "Remove
   items that match" (line 168). Closes **C-02**.
-- [ ] **OP-104** — `Filter`: delete the single-object fallback that collapses a failed array
+- [x] **OP-104** — `Filter`: delete the single-object fallback that collapses a failed array
   parse into a one-element result with `err == nil` (`collection.go:236-245`). Closes **C-03**.
-- [ ] **OP-105** — `Sort`: upgrade the count check to `SameMultiset` (`collection.go:371-380`).
+  **Done, with OP-103** (`09f93eb`). A malformed array used to collapse into a one-element
+  result reported as success, so a filter over twenty items could return one and no caller
+  could tell it from a genuine single match. `collection.go` now says so where the fallback
+  used to be, and the parse failure is returned. Verified by `TestIntegrationFilterReturnsASubset`
+  and the fault-injection suite's malformed-body arm.
+- [x] **OP-105** — `Sort`: upgrade the count check to `SameMultiset` (`collection.go:371-380`).
   Equal length does not mean equal contents. Closes **C-04**.
+  **Done** — `SameMultiset` is the first entry in the shared invariant library (**A-009**),
+  in `internal/ops/invariants.go`, and `Sort` uses it. The count it replaces is satisfied by
+  a model that returns one item twice and drops another, which corrupts a result quietly
+  where a short answer at least breaks obviously. Values are compared by canonical JSON, so
+  an item echoed back with a changed price fails too — the failure that actually happens.
+  Found while here: the parse-failure branch still embedded the whole response in its
+  `Reason` — **X-03** in a third place, after **OP-110** removed the two in `Filter`. Removed,
+  and the cause is wrapped so `errors.Is` reaches it.
+  *Verify:* `internal/ops/invariants_test.go` — 8 multiset cases including the duplicate-plus-drop
+  that a count misses, plus a no-payload assertion. Integration:
+  `TestIntegrationSortRefusesAResultThatIsNotAPermutation` (4 bodies at the public API) and
+  `TestIntegrationSortAcceptsAPermutation`.
 - [ ] **OP-106** — Promote `sortByScoringFallback` (`collection.go:385-453`) from fallback to
   the primary strategy above a size threshold: it scores items independently, keeps the
   caller's own objects, and sorts in Go, so items cannot be lost, duplicated, or edited — and
@@ -625,9 +650,21 @@ tests.
   Closes **C-05**.
   *Verify:* a 200-item sort makes bounded concurrent calls, returns a permutation, and reports
   its strategy.
-- [ ] **OP-107** — `Cluster`: attach `CoversExactlyOnce`; fix `Size` being computed from raw
+- [x] **OP-107** — `Cluster`: attach `CoversExactlyOnce`; fix `Size` being computed from raw
   indices including out-of-range ones while `Items` holds only valid ones (`cluster.go:310-327`),
   so the two disagree exactly when the model misbehaved. Closes **C-07**.
+  **Done** — `CoversExactlyOnce` runs before anything is built, over the cluster indices and
+  the outlier indices together (an item the model called an outlier is placed, not missing).
+  A response with an item in two clusters, an item in none, or an index out of range is
+  refused rather than half-applied: a caller iterating overlapping clusters processes an item
+  twice, and one iterating an incomplete partition drops items silently.
+  `Size` is now derived from the items actually placed rather than from the raw index count,
+  so it cannot disagree with `Items` — which it did *exactly* when the model misbehaved, the
+  one case a caller checking `Size` needed them to agree.
+  *Verify:* `TestCoversExactlyOnce` (10 cases). Integration:
+  `TestIntegrationClusterRequiresAPartition` (4 bodies) and
+  `TestIntegrationClusterAcceptsAPartitionAndSizeAgrees`, which asserts `Size == len(Items)`
+  and that the outlier comes back as the caller's own record.
 - [x] **OP-108** — Token-estimate before dispatch and refuse or chunk oversized collections.
   Today every collection op marshals the whole slice into one prompt with no size guard, while
   output is capped at 1000–4000 tokens by tier, so `Sorting` a few hundred objects cannot

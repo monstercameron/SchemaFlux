@@ -316,6 +316,24 @@ Return a JSON object with:
 		return result, fmt.Errorf("failed to parse clustering result: %w", err)
 	}
 
+	// A clustering is a partition: every input in exactly one group, no index
+	// out of range, none in two groups. The check runs before anything is built,
+	// because a caller iterating clusters that overlap processes an item twice,
+	// and one that leaves items out drops them silently.
+	//
+	// Outliers count as a group. An item the model called an outlier is placed,
+	// not missing.
+	groups := make([][]int, 0, len(parsed.Clusters)+1)
+	for _, c := range parsed.Clusters {
+		groups = append(groups, c.Indices)
+	}
+	groups = append(groups, parsed.OutlierIndices)
+
+	if err := CoversExactlyOnce(len(items), groups); err != nil {
+		log.Error("Cluster operation failed: the clusters do not partition the input", "error", err)
+		return result, fmt.Errorf("clustering failed: %w", err)
+	}
+
 	// Build cluster result
 	for _, c := range parsed.Clusters {
 		cluster := ClusterInfo[T]{
@@ -324,7 +342,13 @@ Return a JSON object with:
 			Indices:     c.Indices,
 			Keywords:    c.Keywords,
 			Items:       make([]T, 0, len(c.Indices)),
-			Size:        len(c.Indices),
+			// Size counts the items in the cluster, not the indices the model
+			// claimed. It used to count the raw indices including out-of-range
+			// ones, so Size and Items disagreed exactly when the model
+			// misbehaved -- the one case a caller checking Size needed them to
+			// agree. The partition check above now rejects that response
+			// outright, and Size is derived rather than reported.
+			Size: 0,
 		}
 
 		for _, idx := range c.Indices {
@@ -332,6 +356,7 @@ Return a JSON object with:
 				cluster.Items = append(cluster.Items, items[idx])
 			}
 		}
+		cluster.Size = len(cluster.Items)
 
 		result.Clusters = append(result.Clusters, cluster)
 	}
