@@ -3,21 +3,23 @@
 // Operation: Extract[T] - Converts unstructured data into strongly-typed Go structs
 //
 // Input: Raw email text (unstructured string)
-//   From: john.smith@example.com
-//   To: sarah.jones@company.com
-//   Subject: Project Update - Q4 Results
-//   ...body text...
-//   Sent: December 15, 2024
+//
+//	From: john.smith@example.com
+//	To: sarah.jones@company.com
+//	Subject: Project Update - Q4 Results
+//	...body text...
+//	Sent: December 15, 2024
 //
 // Expected Output:
-//   Email{
-//       From:    "john.smith@example.com",
-//       To:      "sarah.jones@company.com",
-//       Subject: "Project Update - Q4 Results",
-//       Date:    2024-12-15T00:00:00Z,
-//       Tags:    ["Project", "Update", "Q4", "Results", "productivity", ...],
-//       Body:    "Hi Sarah, I wanted to share the Q4 results...",
-//   }
+//
+//	Email{
+//	    From:    "john.smith@example.com",
+//	    To:      "sarah.jones@company.com",
+//	    Subject: "Project Update - Q4 Results",
+//	    Date:    2024-12-15T00:00:00Z,
+//	    Tags:    ["Project", "Update", "Q4", "Results", "productivity", ...],
+//	    Body:    "Hi Sarah, I wanted to share the Q4 results...",
+//	}
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
 // Expected Duration: ~500-800ms

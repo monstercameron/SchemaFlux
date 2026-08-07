@@ -87,4 +87,3 @@ func ConsoleFromFile(f File) (Console, error) {
 	}
 	return newMaster(f)
 }
-

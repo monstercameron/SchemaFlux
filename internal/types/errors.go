@@ -53,9 +53,9 @@ func describeText(text string) string {
 // ClassifyError represents an error during classification
 type ClassifyError struct {
 	// InputShape describes the input without reproducing it.
-	InputShape string
-	Categories []string
-	Reason     string
+	InputShape      string
+	Categories      []string
+	Reason          string
 	ModelConfidence float64
 
 	// Err is the underlying cause, so errors.Is and errors.As reach it.
@@ -172,13 +172,13 @@ func (e ExtractError) Unwrap() error { return e.Err }
 
 // TransformError represents an error during transformation
 type TransformError struct {
-	InputShape string
-	FromType   string
-	ToType     string
-	Reason     string
+	InputShape      string
+	FromType        string
+	ToType          string
+	Reason          string
 	ModelConfidence float64
-	RequestID  string
-	Timestamp  any
+	RequestID       string
+	Timestamp       any
 
 	// Err is the underlying cause, so errors.Is and errors.As reach it.
 	Err error

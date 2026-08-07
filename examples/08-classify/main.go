@@ -39,7 +39,7 @@ type Review struct {
 // ClassifiedReview extends Review with classification results
 type ClassifiedReview struct {
 	Review
-	Sentiment  string
+	Sentiment       string
 	ModelConfidence float64
 }
 
@@ -137,8 +137,8 @@ func main() {
 		}
 
 		classified := ClassifiedReview{
-			Review:     review,
-			Sentiment:  result.Category,
+			Review:          review,
+			Sentiment:       result.Category,
 			ModelConfidence: result.ModelConfidence,
 		}
 		results[result.Category] = append(results[result.Category], classified)

@@ -100,11 +100,11 @@ type SurveyResponse struct {
 
 // RespondentSurvey - one row per respondent
 type RespondentSurvey struct {
-	RespondentID   string `json:"respondent_id"`
-	Satisfaction   string `json:"satisfaction"`
-	Recommendation string `json:"would_recommend"`
-	Feedback       string `json:"open_feedback"`
-	ModelOverallScore   string `json:"overall_score"`
+	RespondentID      string `json:"respondent_id"`
+	Satisfaction      string `json:"satisfaction"`
+	Recommendation    string `json:"would_recommend"`
+	Feedback          string `json:"open_feedback"`
+	ModelOverallScore string `json:"overall_score"`
 }
 
 func main() {

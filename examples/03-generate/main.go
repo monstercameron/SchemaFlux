@@ -3,24 +3,26 @@
 // Operation: Generate[T] - Creates new structured data from typed specifications
 //
 // Input: TestUserSpec (typed specification with constraints)
-//   TestUserSpec{
-//       Application: "social media",
-//       Diversity:   Diversity{Names: "from different cultures", Ages: "18-65", Countries: "worldwide"},
-//       Roles:       ["user", "moderator", "admin"],
-//       DateRange:   "within last 2 years",
-//       ActiveMix:   "mix of active and inactive",
-//   }
+//
+//	TestUserSpec{
+//	    Application: "social media",
+//	    Diversity:   Diversity{Names: "from different cultures", Ages: "18-65", Countries: "worldwide"},
+//	    Roles:       ["user", "moderator", "admin"],
+//	    DateRange:   "within last 2 years",
+//	    ActiveMix:   "mix of active and inactive",
+//	}
 //
 // Expected Output: GeneratedUsers with 5 diverse users (all fields populated)
-//   GeneratedUsers{
-//       Users: [
-//           {ID: 1, Name: "Aisha Patel", Email: "aisha.patel@example.com", Age: 27, Country: "India", Role: "user", JoinDate: "2023-07-12", Active: true},
-//           {ID: 2, Name: "Liam O'Connor", Email: "liam.oconnor@example.com", Age: 34, Country: "Ireland", Role: "moderator", JoinDate: "2024-02-05", Active: false},
-//           {ID: 3, Name: "Yara Silva", Email: "yara.silva@example.com", Age: 22, Country: "Brazil", Role: "user", JoinDate: "2023-11-23", Active: true},
-//           {ID: 4, Name: "Kwame Mensah", Email: "kwame.mensah@example.com", Age: 45, Country: "Ghana", Role: "admin", JoinDate: "2024-01-18", Active: false},
-//           {ID: 5, Name: "Sofia Rossi", Email: "sofia.rossi@example.com", Age: 31, Country: "Italy", Role: "moderator", JoinDate: "2023-09-30", Active: true},
-//       ],
-//   }
+//
+//	GeneratedUsers{
+//	    Users: [
+//	        {ID: 1, Name: "Aisha Patel", Email: "aisha.patel@example.com", Age: 27, Country: "India", Role: "user", JoinDate: "2023-07-12", Active: true},
+//	        {ID: 2, Name: "Liam O'Connor", Email: "liam.oconnor@example.com", Age: 34, Country: "Ireland", Role: "moderator", JoinDate: "2024-02-05", Active: false},
+//	        {ID: 3, Name: "Yara Silva", Email: "yara.silva@example.com", Age: 22, Country: "Brazil", Role: "user", JoinDate: "2023-11-23", Active: true},
+//	        {ID: 4, Name: "Kwame Mensah", Email: "kwame.mensah@example.com", Age: 45, Country: "Ghana", Role: "admin", JoinDate: "2024-01-18", Active: false},
+//	        {ID: 5, Name: "Sofia Rossi", Email: "sofia.rossi@example.com", Age: 31, Country: "Italy", Role: "moderator", JoinDate: "2023-09-30", Active: true},
+//	    ],
+//	}
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
 // Expected Duration: ~2-3s

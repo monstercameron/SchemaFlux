@@ -3,19 +3,21 @@
 // Operation: Transform[T, U] - Converts data from one type to another using LLM intelligence
 //
 // Input: Structured Resume data
-//   Resume{
-//       Name:  "Jane Developer",
-//       Email: "jane.dev@email.com",
-//       Phone: "+1-555-0123",
-//       Skills: ["Go", "Python", "JavaScript", "Docker", "Kubernetes", "AWS"],
-//       Experience: [{Company: "Tech Corp", Position: "Senior Engineer", Years: "2020-2024"}, ...],
-//       Education: "BS Computer Science, MIT, 2018",
-//   }
+//
+//	Resume{
+//	    Name:  "Jane Developer",
+//	    Email: "jane.dev@email.com",
+//	    Phone: "+1-555-0123",
+//	    Skills: ["Go", "Python", "JavaScript", "Docker", "Kubernetes", "AWS"],
+//	    Experience: [{Company: "Tech Corp", Position: "Senior Engineer", Years: "2020-2024"}, ...],
+//	    Education: "BS Computer Science, MIT, 2018",
+//	}
 //
 // Expected Output: MarkdownCV with professionally formatted content
-//   MarkdownCV{
-//       Content: "# Jane Developer\n\n**Contact:** jane.dev@email.com | +1-555-0123\n\n## Skills\n- Go, Python, JavaScript...\n\n## Experience\n### Senior Engineer at Tech Corp (2020-2024)\n..."
-//   }
+//
+//	MarkdownCV{
+//	    Content: "# Jane Developer\n\n**Contact:** jane.dev@email.com | +1-555-0123\n\n## Skills\n- Go, Python, JavaScript...\n\n## Experience\n### Senior Engineer at Tech Corp (2020-2024)\n..."
+//	}
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
 // Expected Duration: ~500-1000ms

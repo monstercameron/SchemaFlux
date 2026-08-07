@@ -3,15 +3,17 @@
 // Operation: Choose[T] - Picks the best option from a list based on criteria
 //
 // Input: []Product (4 products) + Customer Query
-//   Products: [UltraBook Pro $1299, PowerStation Desktop $1899, BudgetBook $499, CreatorPro $2499]
-//   Query: "College student, CS major, portable for coding, budget $500-600"
+//
+//	Products: [UltraBook Pro $1299, PowerStation Desktop $1899, BudgetBook $499, CreatorPro $2499]
+//	Query: "College student, CS major, portable for coding, budget $500-600"
 //
 // Expected Output: BudgetBook (best match for budget + portability + use case)
-//   Product{
-//       ID: 3, Name: "BudgetBook", Category: "Laptop", Price: 499.99,
-//       Features: ["8GB RAM", "256GB SSD", "14-inch display", "8hr battery"],
-//       Description: "Affordable laptop for students and basic computing",
-//   }
+//
+//	Product{
+//	    ID: 3, Name: "BudgetBook", Category: "Laptop", Price: 499.99,
+//	    Features: ["8GB RAM", "256GB SSD", "14-inch display", "8hr battery"],
+//	    Description: "Affordable laptop for students and basic computing",
+//	}
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
 // Expected Duration: ~500-1000ms

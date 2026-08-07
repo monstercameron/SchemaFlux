@@ -1067,8 +1067,18 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   history contains a defect that only reproduces where `-race` cannot run.
 - [ ] **CI-002** — Add a Linux AMD64 job for `go test -race`, which cannot run on the current
   Windows/arm64 machine. Unblocks **TI-008**.
-- [ ] **CI-003** — Normalize line endings (`.gitattributes`) so `gofmt -l` stops reporting
+- [x] **CI-003** — Normalize line endings (`.gitattributes`) so `gofmt -l` stops reporting
   ~180 files that differ only by CRLF, which currently masks real formatting drift.
+  **Done** — and the masking was real, not theoretical. `gofmt -l` reported **179** files;
+  converting a copy of each to LF and re-checking showed **162 of them differed by nothing
+  but the line terminator, and 17 carried genuine drift** — eight numbered examples,
+  `internal/tools/exec.go`, `internal/types/errors.go`, and six files under
+  `examples/smarttodo`. Those 17 are formatted now and `gofmt -l .` returns nothing, so the
+  check can become a gate (**CI-001**). `.gitattributes` pins `eol=lf` rather than
+  `eol=native`: Go tooling writes LF, so a native checkout re-dirties every file gofmt
+  touches. 268 tracked files were converted in the working tree.
+  *Verify:* `gofmt -l .` is empty; `go build ./...`, `go vet ./...`, and `go test ./...`
+  (13 packages) are green after the conversion.
 - [ ] **CI-004** — Make the numbered examples a release gate. 19 of 45 fail under the local
   provider today because the mock returns `Mock response for: ...`, incompatible with the JSON
   contracts of `Rank`, `Enrich`, `Predict`, `Verify`, and `Question`. Depends on **TI-001**.

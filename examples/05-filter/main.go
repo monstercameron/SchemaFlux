@@ -3,13 +3,14 @@
 // Operation: Filter[T] - Semantically filter items based on criteria
 //
 // Input: []SupportTicket (6 tickets with various urgency levels)
-//   Tickets:
-//   - #1: "Website is completely down" (urgent - service outage)
-//   - #2: "How to change password?" (routine request)
-//   - #3: "Payment processing failure" (urgent - blocking transactions)
-//   - #4: "Feature request: dark mode" (low priority)
-//   - #5: "Data breach suspected" (urgent - security issue)
-//   - #6: "Invoice copy request" (routine request)
+//
+//	Tickets:
+//	- #1: "Website is completely down" (urgent - service outage)
+//	- #2: "How to change password?" (routine request)
+//	- #3: "Payment processing failure" (urgent - blocking transactions)
+//	- #4: "Feature request: dark mode" (low priority)
+//	- #5: "Data breach suspected" (urgent - security issue)
+//	- #6: "Invoice copy request" (routine request)
 //
 // Expected Output: 3 urgent tickets (IDs: 1, 3, 5)
 //   - #1: Website outage (affects business)

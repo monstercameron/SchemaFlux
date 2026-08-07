@@ -73,7 +73,7 @@ func (m Model) closingViewRender() string {
 
 	body := lipgloss.JoinVertical(
 		lipgloss.Center,
-		lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("Closing " + localization.AppName),
+		lipgloss.NewStyle().Foreground(textColor).Bold(true).Render("Closing "+localization.AppName),
 		lipgloss.NewStyle().Foreground(mutedColor).Render(messages[idx]),
 		"",
 		renderProgressBar(m.closingProgress),

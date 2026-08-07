@@ -99,7 +99,6 @@ func checkShellCommand(policy *ShellPolicy, command, dir string) error {
 		return errors.New("command is required")
 	}
 
-
 	if index := strings.IndexAny(trimmed, shellMetacharacters); index >= 0 {
 		return fmt.Errorf("refused: the command contains the shell metacharacter %q, which could chain a command the policy does not allow", trimmed[index:index+1])
 	}

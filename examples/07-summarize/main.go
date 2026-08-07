@@ -3,15 +3,16 @@
 // Operation: Summarize / SummarizeWithMetadata - Condense text with insights
 //
 // Input: Long article about AI in Healthcare (~2000 characters)
-//   Topics: AI diagnostics, drug discovery, patient care, challenges
+//
+//	Topics: AI diagnostics, drug discovery, patient care, challenges
 //
 // Expected Output:
-//   1. Simple Summary: 3-sentence condensed version
-//   2. Summary with Metadata:
-//      - Text: Condensed summary
-//      - CompressionRatio: ~0.10-0.20 (10-20% of original)
-//      - ModelConfidence: 0.85+ (high confidence)
-//      - KeyPoints: 3-5 main takeaways
+//  1. Simple Summary: 3-sentence condensed version
+//  2. Summary with Metadata:
+//     - Text: Condensed summary
+//     - CompressionRatio: ~0.10-0.20 (10-20% of original)
+//     - ModelConfidence: 0.85+ (high confidence)
+//     - KeyPoints: 3-5 main takeaways
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
 // Expected Duration: ~800-1500ms

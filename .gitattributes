@@ -1,0 +1,28 @@
+# Line endings are normalized to LF in the repository and in the working tree.
+#
+# Without this, every file written on Windows carried CRLF, and `gofmt -l`
+# reported 179 files as unformatted. 162 of those differed from gofmt's output
+# by nothing but the line terminator -- which meant the 17 files with real
+# formatting drift were indistinguishable from the noise, and the check was
+# useless as a gate. See TODOS.md CI-003.
+#
+# eol=lf rather than eol=native on purpose: Go tooling writes LF, so a native
+# checkout re-dirties every file gofmt touches.
+* text=auto eol=lf
+
+*.go text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.env text eol=lf
+
+# Binary, or content whose bytes are the point.
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary

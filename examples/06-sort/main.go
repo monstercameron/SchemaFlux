@@ -10,11 +10,11 @@
 //   - #5: "Refactor payment module" (Q2 2025, low, 1 week)
 //
 // Expected Output: Sorted by priority (urgency + impact + effort)
-//   1. #2 - Security vulnerability (critical, today)
-//   2. #4 - Database backup (high impact, ASAP, quick fix)
-//   3. #1 - Documentation (next week, quick)
-//   4. #3 - Dark mode (medium, next month)
-//   5. #5 - Refactor (low, Q2 2025)
+//  1. #2 - Security vulnerability (critical, today)
+//  2. #4 - Database backup (high impact, ASAP, quick fix)
+//  3. #1 - Documentation (next week, quick)
+//  4. #3 - Dark mode (medium, next month)
+//  5. #5 - Refactor (low, Q2 2025)
 //
 // Provider: Cerebras (gpt-oss-120b via Fast intelligence)
 // Expected Duration: ~500-1000ms
