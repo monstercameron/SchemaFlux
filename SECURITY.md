@@ -114,8 +114,11 @@ Recorded here rather than left to be discovered, and tracked in `TODOS.md`:
   and **not** `mw.Cache`, whose key derivation is irreversible by construction.
   Deletion against that one returns an explicit unsupported error rather than a
   false success (SEC-005).
-- Client isolation is partial: a per-call provider seam exists, but budgets and
-  other execution state remain process-wide (IN-004).
+- Client isolation is partial. A client now owns an immutable snapshot —
+  provider, budget, scheduler, and data policy — carried per call, so two
+  clients no longer share those. But `ops.defaultProvider` and
+  `ops.customLLMCaller` still exist for callers with no client, and the
+  observer and cache policy remain process-wide (IN-004).
 - The fluent shorthand helpers — `ChooseBy`, `FilterBy`, `SortBy` — take no
   `context.Context`, so `Client.Context(ctx)` cannot reach them and they always
   resolve the process-wide provider. An application running two clients gets

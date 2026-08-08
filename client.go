@@ -14,6 +14,7 @@ import (
 	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
 	"github.com/monstercameron/schemaflux/internal/telemetry"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // Client represents a configured schemaflux client instance.
@@ -38,7 +39,77 @@ type Client struct {
 	// that could. Read it with Err.
 	configErr error
 
+	// budget is this client's own spend ledger (IN-004). Nil means the
+	// process-wide pricing budget applies, which is what every caller who never
+	// asked for one gets, unchanged.
+	budget ops.BudgetChecker
+
+	// scheduler bounds this client's concurrency. Nil means unscheduled.
+	scheduler *ops.Scheduler
+
+	// dataPolicy constrains where this client's calls may be routed.
+	dataPolicy types.DataPolicy
+
 	mu sync.RWMutex
+}
+
+// WithBudget gives this client its own spend ceiling, separate from the
+// process-wide one and from every other client's.
+//
+// This is the field IN-004 is actually about. Before it, two clients in one
+// process shared a single budget, so a tenant that exhausted its allowance
+// stopped calls belonging to a tenant that had not — and there was no way to
+// express "this client may spend $5" at all.
+//
+// A ceiling of zero or less clears the budget and returns the client to the
+// process-wide one, rather than pinning it to a ceiling it can never spend
+// under, which is what an unguarded assignment would do.
+func (client *Client) WithBudget(ceilingUSD float64) *Client {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if ceilingUSD <= 0 {
+		client.budget = nil
+		return client
+	}
+	client.budget = ops.NewClientBudget(ceilingUSD)
+	return client
+}
+
+// WithScheduler bounds this client's concurrency independently of any other
+// client's.
+func (client *Client) WithScheduler(scheduler *ops.Scheduler) *Client {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.scheduler = scheduler
+	return client
+}
+
+// WithDataPolicy constrains where this client's calls may be routed.
+func (client *Client) WithDataPolicy(policy types.DataPolicy) *Client {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.dataPolicy = policy
+	return client
+}
+
+// Spent reports what this client has recorded spending, and whether that figure
+// is complete. It is false when any call used an unpriced model, in which case
+// the number is a floor rather than a total — a distinction that matters
+// precisely when somebody is deciding whether they are near a ceiling.
+//
+// A client with no budget of its own reports (0, false): it has no ledger, so
+// it has no figure, and reporting a confident zero would be a lie about the
+// process-wide spend it is actually contributing to.
+func (client *Client) Spent() (usd float64, complete bool) {
+	client.mu.RLock()
+	budget := client.budget
+	client.mu.RUnlock()
+
+	ledger, ok := budget.(*ops.ClientBudget)
+	if !ok || ledger == nil {
+		return 0, false
+	}
+	return ledger.Spent()
 }
 
 // Err reports the last configuration failure, or nil. The builder methods
@@ -244,9 +315,25 @@ func (client *Client) WithRequestTracking(cfg requesttracking.Config) *Client {
 // applies and nothing that works today stops working.
 func (client *Client) Context(ctx context.Context) context.Context {
 	client.mu.RLock()
-	provider := client.provider
+	snapshot := ops.ExecConfig{
+		Provider:   client.provider,
+		Budget:     client.budget,
+		Scheduler:  client.scheduler,
+		DataPolicy: client.dataPolicy,
+	}
 	client.mu.RUnlock()
-	return ops.WithProvider(ctx, provider)
+
+	// IN-004: the snapshot is taken under the lock and copied into the context,
+	// so a call already in flight keeps the configuration it started with even
+	// if this client is reconfigured afterwards. That is what makes the
+	// snapshot immutable in the sense that matters — not that the struct has no
+	// setters, but that nothing can change a call's configuration mid-call.
+	//
+	// WithProvider is still applied, because it is the narrower seam that
+	// existing tests and callers already use and it costs nothing to keep both
+	// readers satisfied by one call to this method.
+	ctx = ops.WithExecConfig(ctx, &snapshot)
+	return ops.WithProvider(ctx, snapshot.Provider)
 }
 
 // Global configuration

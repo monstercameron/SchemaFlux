@@ -272,6 +272,9 @@ func WithRequestID
 func WithRequestTrackingMetadata
 method *Client.Context
 method *Client.Err
+method *Client.Spent
+method *Client.WithBudget
+method *Client.WithDataPolicy
 method *Client.WithDebug
 method *Client.WithMockProvider
 method *Client.WithProvider
@@ -280,6 +283,7 @@ method *Client.WithProviderInstance
 method *Client.WithRequestTracking
 method *Client.WithRetries
 method *Client.WithRetryBackoff
+method *Client.WithScheduler
 method *Client.WithTimeout
 type APIError
 type Adjustment

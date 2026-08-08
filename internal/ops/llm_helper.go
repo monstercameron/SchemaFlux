@@ -131,6 +131,12 @@ func providerFromContext(ctx context.Context) llm.Provider {
 // WithProvider over the package-level default -- see providerContextKey's
 // comment for why the per-call path has to win.
 func callLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.OpOptions) (string, error) {
+	// IN-004: a client's own snapshot wins over everything process-wide, and is
+	// consulted before the narrower WithProvider seam so that a client which set
+	// both does not get whichever one this function happened to read first.
+	if p := ExecProvider(ctx); p != nil {
+		return CallLLM(ctx, p, systemPrompt, userPrompt, opts)
+	}
 	if p := providerFromContext(ctx); p != nil {
 		return CallLLM(ctx, p, systemPrompt, userPrompt, opts)
 	}
@@ -179,7 +185,19 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// Budgets are checked before the request, not after the invoice. With
 	// enforcement off -- the default -- this always allows the call and the
 	// alert callback does the talking.
-	if err := pricing.CheckBudget(); err != nil {
+	//
+	// IN-004: a client's own ledger replaces the process-wide one entirely
+	// rather than being checked in addition to it. Checking both would mean a
+	// client could be refused by a budget belonging to a different tenant, which
+	// is the multi-tenancy failure this seam exists to remove -- and a client
+	// that declared its own ceiling has said what it wants enforced.
+	if budget := ExecBudget(ctx); budget != nil {
+		if err := budget.Check(); err != nil {
+			log.Error("Refusing the request: client budget exhausted",
+				"provider", provider.Name(), "model", model, "error", err)
+			return "", err
+		}
+	} else if err := pricing.CheckBudget(); err != nil {
 		log.Error("Refusing the request: budget exhausted",
 			"provider", provider.Name(), "model", model, "error", err)
 		return "", err
@@ -389,6 +407,15 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	usage := resp.Usage
 	noteCacheReads(req.PromptCacheKey, usage)
 	cost := pricing.CalculateCost(&usage, actualModel, actualProvider)
+
+	// IN-004: a client's ledger records what its own calls cost. The `priced`
+	// flag is passed through rather than letting a zero speak for itself --
+	// an unpriced model reports zero, and a ledger that accumulates those keeps
+	// reporting a spend of nothing while real money is being spent.
+	if budget := ExecBudget(ctx); budget != nil && cost != nil {
+		budget.Record(cost.TotalCost, cost.Priced)
+	}
+
 	metadata := &types.ResultMetadata{
 		RequestID:     requestID,
 		CorrelationID: correlationID,

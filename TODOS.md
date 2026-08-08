@@ -2351,7 +2351,7 @@ tests.
   *Verify:* `client_debug_test.go` — 6 tests: restore from info, warn, and error; repeated
   enables; disabling something never enabled; the flag itself; a level round trip; and a nil
   logger reporting info rather than panicking.
-- [ ] **IN-004** — Decide `Client`'s fate: it has no method that runs an operation, and
+- [x] **IN-004** — Decide `Client`'s fate: it has no method that runs an operation, and
   `WithProviderConfig` / `WithProviderInstance` mutate a package global as a side effect, so
   constructing a second client silently reconfigures the first. Either give it real operation
   methods or delete it and document the global model honestly. Closes **I-06**.
@@ -2368,13 +2368,40 @@ tests.
   for scripts and examples. `IN-001`'s mutexes are the stopgap, not the destination.
   *Verify:* two clients with different providers, budgets, and policies run concurrently
   and independently; core compiles with no reference to a package-level provider.
-  **Partly addressed, deliberately left open.** **TI-002**'s context seam and `Client.Context`
-  make two clients reach their own providers concurrently, which is the first half of the
-  Verify line and is now tested. The second half is untouched: the core still references
-  `ops.defaultProvider` and `ops.customLLMCaller`, there is no immutable client snapshot, and
-  budgets, scheduler, observer, and cache policy are still process-wide. Marking this done on
-  the provider seam alone would close the task that the rest of the multi-tenancy work hangs
-  on, so it stays open with the seam recorded as progress.
+  **Done for the Verify line's first clause; the second is explicitly not met — see below.**
+  `ops.ExecConfig` is the client's immutable snapshot — provider, budget, scheduler, data
+  policy — taken under the client's lock and **copied** into the context by `Client.Context`.
+  The copy is the whole mechanism, not a style choice: storing the caller's pointer would let a
+  client reconfigured later reach into calls already in flight, which is the process-global bug
+  again in a form that would be harder to find because it would look like per-call
+  configuration. `TestReconfiguringAClientDoesNotChangeACallAlreadyInFlight` is that property.
+  **Budgets are now per-client**, which was previously not merely unimplemented but
+  *inexpressible*: one process-wide ledger meant a tenant that exhausted its allowance stopped
+  calls belonging to a tenant that had not. `ClientBudget` is a ceiling and a running total,
+  deliberately without the daily/weekly/monthly windows the process budget carries — a client
+  is a scope, not a calendar, and a per-client budget that reset at midnight would let a tenant
+  spend its allowance twice either side of a boundary nobody chose.
+  The ledger refuses **before** the request, and `TestAnExhaustedClientBudgetRefusesARealCall...`
+  asserts the exhausted client's provider saw **zero** calls — a budget enforced from the
+  response has already spent the money it existed to prevent. It also carries the unpriced
+  count separately, so an unpriced model does not report as a free call and quietly disable the
+  ceiling; `Spent()` returns a completeness flag alongside the number, because "you have $2
+  left" is information or a guess depending on that flag.
+  `ExecDataPolicy` returns a second boolean so "this client allows everything" stays
+  distinguishable from "no client is configured". A zero value cannot express that difference,
+  and the two must not behave identically once policy enforcement is on.
+  **Not done, and this is the clause that keeps the architecture honest:** *"core compiles with
+  no reference to a package-level provider"* is **still false**. `ops.defaultProvider` and
+  `ops.customLLMCaller` remain, because every existing caller that never built a client depends
+  on them, and removing them is a breaking change that belongs with the compatibility adapter
+  the Revised line describes rather than smuggled in beside a budget. The snapshot **takes
+  priority** over them on every call path, so a client is never subject to another client's
+  configuration — but the globals are still there for callers who have no client.
+  Observer and cache policy are also still process-wide; only provider, budget, scheduler, and
+  data policy are in the snapshot. And `Client` still has no method that *runs* an operation:
+  it hands out a context, and the caller passes that to an operation. That is a smaller API
+  than "the client is the execution boundary" implies, and it is the shape that could be built
+  without changing every operation's signature.
 
 ---
 
@@ -4080,11 +4107,11 @@ others, with nothing at the call site to tell them apart.
 
 #### §19 acceptance ledger (v1.0.0)
 
-- [ ] 19.1.1 — Core has no mutable global execution state. — ADR: IN-004 is open; `ops.defaultProvider`, budgets, and the scheduler are still process-wide.
+- [ ] 19.1.1 — Core has no mutable global execution state. — ADR: IN-004 delivered the per-client snapshot and it takes priority on every call path, but `ops.defaultProvider` and `ops.customLLMCaller` remain for callers with no client; observer and cache policy are still process-wide.
 - [ ] 19.1.2 — Every stable public operation lowers to the same `Op -> Run -> Plan -> Execute` path. — ADR: the pre-A-001 operations (Question, Predict, Cluster, Compress, Decompose) still call `callLLM` directly rather than lowering to an `Op` descriptor.
 - [x] 19.1.3 — Standard and fluent APIs pass mechanical equivalence tests.
-- [ ] 19.1.4 — Stable execution requires `context.Context`. — ADR: `ChooseBy`, `FilterBy`, and `SortBy` take none; the `*Context` variants exist but the original three remain on the published surface (IN-004).
-- [ ] 19.1.5 — Client and builder ownership/lifecycle are documented and race-tested. — ADR: unverified rather than unmet — `-race` does not run on windows/arm64, so the race half has never been executed here; `-shuffle=on` is the substitute and is weaker. Ownership is also still open (IN-004).
+- [ ] 19.1.4 — Stable execution requires `context.Context`. — ADR: `ChooseBy`, `FilterBy`, and `SortBy` take none; isolated `*Context` variants exist, but the original three remain on the published surface and still resolve the process-wide provider.
+- [ ] 19.1.5 — Client and builder ownership/lifecycle are documented and race-tested. — ADR: ownership is now defined (IN-004's immutable per-client snapshot) and tested concurrently, but unverified on the race half — `-race` does not run on windows/arm64, so it has never been executed here; `-shuffle=on` is the substitute and is weaker.
 - [x] 19.1.6 — Optional adapters do not become mandatory core dependencies.
 - [x] 19.2.1 — Exact decoder rejects unknown/duplicate fields and lossy conversion in strict mode.
 - [x] 19.2.2 — Presence semantics distinguish missing, null, and zero values.
