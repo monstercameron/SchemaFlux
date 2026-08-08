@@ -3,6 +3,7 @@ package ops
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
@@ -273,6 +274,10 @@ Rules:
 	}
 
 	result := strings.TrimSpace(response)
+	if err := checkRewriteWordConstraints(result, opts); err != nil {
+		log.Error("Rewrite operation failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", err
+	}
 	log.Debug("Rewrite operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
 
 	return result, nil
@@ -345,6 +350,11 @@ Rules:
 		ChangesMade:     parsed.ChangesMade,
 		ToneAchieved:    parsed.ToneAchieved,
 		ModelConfidence: parsed.ModelConfidence,
+	}
+
+	if err := checkRewriteWordConstraints(result.Text, opts); err != nil {
+		log.Error("RewriteWithMetadata failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return Rewritten{}, err
 	}
 
 	log.Debug("RewriteWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "changesMade", len(result.ChangesMade))
@@ -764,4 +774,81 @@ func expandInstructions(opts ExpandOptions) []string {
 	}
 
 	return instructions
+}
+
+// checkRewriteWordConstraints holds the rewritten text to AvoidWords and
+// IncludeWords, which reached the prompt as "Avoid: ..." / "Include: ..." and
+// were checked nowhere.
+//
+// Both are decidable against the answer without asking the model anything: the
+// word is either in the text or it is not. ExcludesValues already existed in
+// invariants.go for the "must not contain" half and was never called from here.
+//
+// The match is on word boundaries, case-insensitively. Substring matching would
+// make AvoidWords("cat") refuse the word "category", which is not what a caller
+// banning a word means; and a caller who writes "Bob" does not want "bob" to
+// slip through. A multi-word phrase is matched as a phrase.
+//
+// The offending word IS named in the error. It is the caller's own option
+// value, not the caller's payload -- the distinction ExcludesValues's counting
+// exists to protect, which does not apply to a list the caller wrote.
+func checkRewriteWordConstraints(text string, opts RewriteOptions) error {
+	for _, word := range opts.AvoidWords {
+		if containsWholeWord(text, word) {
+			return fmt.Errorf("rewrite: the rewritten text contains %q, which AvoidWords ruled out", word)
+		}
+	}
+	for _, word := range opts.IncludeWords {
+		if !containsWholeWord(text, word) {
+			return fmt.Errorf("rewrite: the rewritten text omits %q, which IncludeWords required", word)
+		}
+	}
+	return nil
+}
+
+// containsWholeWord reports whether word appears in text delimited by something
+// other than a letter or digit, case-insensitively.
+//
+// It does not use a regexp: the words come from the caller, and a caller who
+// happens to ban "C++" or "$5" should get a literal match rather than a regexp
+// compile error or an accidental metacharacter.
+func containsWholeWord(text, word string) bool {
+	if word == "" {
+		return false
+	}
+
+	lowerText := []rune(strings.ToLower(text))
+	lowerWord := []rune(strings.ToLower(word))
+
+	for start := 0; start+len(lowerWord) <= len(lowerText); start++ {
+		if !runesEqualAt(lowerText, lowerWord, start) {
+			continue
+		}
+		// A boundary is anything that is not a letter or a digit, including the
+		// ends of the text. This treats the word's own leading/trailing
+		// punctuation as part of the word, which is what a caller banning "C++"
+		// expects.
+		if start > 0 && isWordRune(lowerText[start-1]) && isWordRune(lowerWord[0]) {
+			continue
+		}
+		end := start + len(lowerWord)
+		if end < len(lowerText) && isWordRune(lowerText[end]) && isWordRune(lowerWord[len(lowerWord)-1]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func runesEqualAt(text, word []rune, start int) bool {
+	for i, r := range word {
+		if text[start+i] != r {
+			return false
+		}
+	}
+	return true
+}
+
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }

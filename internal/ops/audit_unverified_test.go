@@ -479,12 +479,11 @@ func TestChoose_RefusesATopNItCannotReturn(t *testing.T) {
 	}
 }
 
-// TransformOptions.PreserveFields is stated in the prompt as an instruction
-// ("Preserve these fields: %s", core.go:324-326), but Transform decodes
-// straight from ParseJSONStrict into the target type with no comparison
-// back to the corresponding field on the source (core.go:454-469). A field
-// named as "preserved" can come back changed and Transform still succeeds.
-func TestAudit_Transform_PreserveFieldsNeverChecked(t *testing.T) {
+// Transform's PreserveFields reached the prompt as "Preserve these fields: ..."
+// and was checked nowhere, so a field the caller pinned could come back changed
+// with a nil error. The case that motivates this option is an id, and a
+// silently regenerated id is a corrupted record.
+func TestTransform_RefusesAChangeToAPreservedField(t *testing.T) {
 	type source struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
@@ -497,34 +496,129 @@ func TestAudit_Transform_PreserveFieldsNeverChecked(t *testing.T) {
 
 	opts := NewTransformOptions()
 	opts.PreserveFields = []string{"id"}
-	result, err := Transform[source, target](source{ID: "abc123", Name: "Alice"}, opts)
-	if err != nil {
-		t.Fatalf("Transform returned an error for a response that merely changed a field named in PreserveFields: %v", err)
+	_, err := Transform[source, target](source{ID: "abc123", Name: "Alice"}, opts)
+	if err == nil {
+		t.Fatal("Transform accepted a changed id despite PreserveFields naming it")
 	}
-	if result.ID != "generated-999" {
-		t.Fatalf("test setup broken: expected the 'preserved' id to have actually changed, got %q", result.ID)
+	if !strings.Contains(err.Error(), "id") {
+		t.Fatalf("the error does not name the field: %v", err)
 	}
-	t.Logf("PreserveFields named %q; the source's id %q came back as %q, and Transform reported success", opts.PreserveFields, "abc123", result.ID)
 }
 
-// RewriteOptions.AvoidWords/IncludeWords are stated in the prompt
-// ("Avoid: %s" / "Include: %s", text.go:678-684), but Rewrite returns
-// strings.TrimSpace(response) directly with no check (text.go:275-278).
-// ExcludesValues already exists in invariants.go for exactly the "must not
-// contain" half of this shape and is not called here.
-func TestAudit_Rewrite_AvoidWordsNeverChecked(t *testing.T) {
+// The companion case: the same field, preserved. Without it the check above is
+// indistinguishable from refusing every transform that names PreserveFields.
+func TestTransform_AcceptsAnUnchangedPreservedField(t *testing.T) {
+	type source struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	type target struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	withResponse(t, `{"id":"abc123","name":"ALICE"}`)
+
+	opts := NewTransformOptions()
+	opts.PreserveFields = []string{"id"}
+	got, err := Transform[source, target](source{ID: "abc123", Name: "Alice"}, opts)
+	if err != nil {
+		t.Fatalf("Transform refused an unchanged preserved field: %v", err)
+	}
+	if got.ID != "abc123" || got.Name != "ALICE" {
+		t.Fatalf("Transform = %+v, want the id preserved and the name reshaped", got)
+	}
+}
+
+// A named field the target type does not carry is not a violation. Transform's
+// whole job is reshaping, and a field that does not survive the target type is
+// the caller's schema speaking, not the model ignoring an instruction.
+func TestTransform_PreservedFieldAbsentFromTheTargetTypeIsNotAViolation(t *testing.T) {
+	type source struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	type target struct {
+		Name string `json:"name"`
+	}
+	withResponse(t, `{"name":"Alice"}`)
+
+	opts := NewTransformOptions()
+	opts.PreserveFields = []string{"id"}
+	if _, err := Transform[source, target](source{ID: "abc123", Name: "Alice"}, opts); err != nil {
+		t.Fatalf("Transform refused a target type that simply has no id field: %v", err)
+	}
+}
+
+// Rewrite's AvoidWords and IncludeWords reached the prompt as "Avoid: ..." and
+// "Include: ..." and were checked nowhere -- even though ExcludesValues already
+// existed in invariants.go for the first half. Both are decidable against the
+// answer without asking the model anything: the word is either in the text or
+// it is not.
+func TestRewrite_RefusesTextContainingAnAvoidedWord(t *testing.T) {
 	withResponse(t, "This is a cheap solution.")
 
 	opts := NewRewriteOptions()
 	opts.AvoidWords = []string{"cheap"}
-	result, err := Rewrite("Describe this product.", opts)
+	_, err := Rewrite("Describe this product.", opts)
+	if err == nil {
+		t.Fatal("Rewrite accepted text containing a word AvoidWords ruled out")
+	}
+	if !strings.Contains(err.Error(), "cheap") {
+		t.Fatalf("the error does not name the offending word: %v", err)
+	}
+}
+
+func TestRewrite_RefusesTextOmittingARequiredWord(t *testing.T) {
+	withResponse(t, "This is a low-cost solution.")
+
+	opts := NewRewriteOptions()
+	opts.IncludeWords = []string{"affordable"}
+	_, err := Rewrite("Describe this product.", opts)
+	if err == nil {
+		t.Fatal("Rewrite accepted text omitting a word IncludeWords required")
+	}
+	if !strings.Contains(err.Error(), "affordable") {
+		t.Fatalf("the error does not name the missing word: %v", err)
+	}
+}
+
+// The match is on word boundaries, not substrings. A caller banning "cat" is
+// banning the word; refusing "category" would make the option unusable.
+func TestRewrite_AvoidWordsMatchesWholeWordsNotSubstrings(t *testing.T) {
+	withResponse(t, "sorted into a category")
+
+	opts := NewRewriteOptions()
+	opts.AvoidWords = []string{"cat"}
+	got, err := Rewrite("sorted into a group", opts)
 	if err != nil {
-		t.Fatalf("Rewrite returned an error for a response that merely used a word AvoidWords excluded: %v", err)
+		t.Fatalf("Rewrite refused \"category\" for containing the substring \"cat\": %v", err)
 	}
-	if !strings.Contains(result, "cheap") {
-		t.Fatalf("test setup broken: expected the forbidden word to be present, got %q", result)
+	if got != "sorted into a category" {
+		t.Fatalf("Rewrite = %q", got)
 	}
-	t.Logf("AvoidWords named %q; Rewrite returned %q containing it, with no error", opts.AvoidWords, result)
+}
+
+// Case is not an escape hatch: a caller who bans "Bob" does not want "bob".
+func TestRewrite_AvoidWordsIsCaseInsensitive(t *testing.T) {
+	withResponse(t, "ask bob about it")
+
+	opts := NewRewriteOptions()
+	opts.AvoidWords = []string{"Bob"}
+	if _, err := Rewrite("ask someone about it", opts); err == nil {
+		t.Fatal("Rewrite accepted a differently-cased spelling of an avoided word")
+	}
+}
+
+// RewriteWithMetadata decodes through a different path than Rewrite and had to
+// grow the same check. Without this, half the operation is uncovered.
+func TestRewriteWithMetadata_RefusesTextContainingAnAvoidedWord(t *testing.T) {
+	withResponse(t, `{"text": "our cheap offering", "changes_made": [], "tone_achieved": "casual", "confidence": 0.9}`)
+
+	opts := NewRewriteOptions()
+	opts.AvoidWords = []string{"cheap"}
+	if _, err := RewriteWithMetadata("our low-cost offering", opts); err == nil {
+		t.Fatal("RewriteWithMetadata accepted text containing an avoided word")
+	}
 }
 
 // The "authoritative" strategy documents exactly one thing -- prefer the source

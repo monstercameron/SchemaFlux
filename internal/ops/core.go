@@ -468,6 +468,37 @@ Transformation rules:
 		return result, transformErr
 	}
 
+	// PreserveFields reached the prompt as "Preserve these fields: ..." and was
+	// checked nowhere, so a field the caller pinned could come back changed with
+	// a nil error -- the case that motivated this option in the first place is
+	// an id, and a silently regenerated id is a corrupted record.
+	//
+	// The comparison is on the JSON encodings because Transform's input and
+	// output are separate type parameters: there is no common Go type to walk,
+	// and the wire shape is what both sides agree on. A named field absent from
+	// either side is not checked here -- Transform's whole job is reshaping, and
+	// a field that does not survive the target type is the caller's schema
+	// speaking, not the model ignoring an instruction.
+	if len(opts.PreserveFields) > 0 {
+		before := jsonObjectOf(input)
+		after := jsonObjectOf(result)
+		if before != nil && after != nil {
+			for _, field := range opts.PreserveFields {
+				original, hadBefore := before[field]
+				produced, hasAfter := after[field]
+				if !hadBefore || !hasAfter {
+					continue
+				}
+				if !reflect.DeepEqual(original, produced) {
+					log.Error("Transform changed a field named in PreserveFields",
+						"requestID", opt.RequestID, "field", field)
+					return result, fmt.Errorf(
+						"transform: field %q is named in PreserveFields and was changed", field)
+				}
+			}
+		}
+	}
+
 	log.Info("Transform operation completed",
 		"requestID", opt.RequestID,
 		"duration", time.Since(startTime),
