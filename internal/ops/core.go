@@ -356,6 +356,20 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 	fromSchema := GenerateTypeSchema(fromType)
 	toSchema := GenerateTypeSchema(toType)
 
+	// Declare the target schema rather than only describing it in prose
+	// (S-002, CI-008). Transform embedded the target's shape in its system
+	// prompt and asked for "ONLY valid JSON matching the target schema", which
+	// is a request a model may honour and nothing verifies. Sending it as a
+	// schema means a provider that supports structured output enforces it, and
+	// the local shape-answering provider can answer the actual question rather
+	// than falling back to a shape no operation asks for -- which is why this
+	// example failed under `SCHEMAFLUX_PROVIDER=local`.
+	opt.ResponseFormat = "json"
+	if schema := GenerateJSONSchema(toType); schema != nil {
+		opt.JSONSchema = schema
+		opt.SchemaName = schemaNameFor(toType)
+	}
+
 	// Marshal input to JSON
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
@@ -618,6 +632,14 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 
 	// Handle structured type generation
 	typeSchema := GenerateTypeSchema(targetType)
+
+	// Same as Transform above: declare the shape, do not only describe it
+	// (S-002, CI-008).
+	opt.ResponseFormat = "json"
+	if schema := GenerateJSONSchema(targetType); schema != nil {
+		opt.JSONSchema = schema
+		opt.SchemaName = schemaNameFor(targetType)
+	}
 
 	systemPrompt := fmt.Sprintf(`You are a data generation expert. Generate structured data based on the prompt.
 

@@ -141,6 +141,28 @@ type Meta struct {
 
 	Checks []Check
 
+	// --- Model drift (TC-005, partial).
+	//
+	// RequestedTier is the caller's Speed at the time of the call --
+	// TierUnset when they expressed no opinion. Speed.String() already
+	// documents Smart/Fast/Quick as floating rather than a pin, so this
+	// field's honesty is inherited from an existing type, not invented
+	// here: it records what was asked for, not a guarantee about what
+	// answered.
+	//
+	// What TC-005 also asks for -- a caller's Model(...) pin, and the
+	// provider's own model-revision string where one is exposed -- has no
+	// carrier in this codebase to read from. There is no pin option on
+	// OpOptions (internal/types/types.go) and no revision field on
+	// llm.CompletionResponse (internal/llm/provider.go); both are out of
+	// this task's permitted files, and inventing a value for either would
+	// be exactly the fabricated-measurement failure AGENTS.md forbids. Model
+	// (below, pre-existing) already carries the resolved model identifier
+	// the provider echoed back, which is the "resolved provider and model
+	// identifier" half of TC-005 that this struct could satisfy without a
+	// new field.
+	RequestedTier Speed
+
 	// --- Model claims.
 
 	// ModelConfidence is the model's own score for its own answer, produced by

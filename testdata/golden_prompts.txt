@@ -269,7 +269,7 @@ Filter these items:
 
 === Generate
 --- response format: json
---- json schema: false
+--- json schema: true
 --- system
 Perform the semantic task faithfully using the provided input.
 Do not merely restate schemas, field names, or type descriptions.
@@ -389,7 +389,7 @@ The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30
 
 === Transform
 --- response format: json
---- json schema: false
+--- json schema: true
 --- system
 Perform the semantic task faithfully using the provided input.
 Do not merely restate schemas, field names, or type descriptions.

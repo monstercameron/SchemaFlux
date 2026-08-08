@@ -61,9 +61,25 @@ type OutputContract[Out any] struct {
 
 	// EvidenceRequired mirrors Semantics.EvidenceRequired at the contract
 	// level, for the case a single Op is instantiated once with the policy
-	// on and once with it off. Not enforced yet -- see the report's stub
-	// list.
+	// on and once with it off.
+	//
+	// TC-002: this is now read. RunOp enforces it whenever EvidencePolicy
+	// is left at its zero value (types.EvidenceNone) but EvidenceRequired
+	// is true -- treated as types.EvidenceAllModelDerived, the ordinary
+	// reading of "evidence is required" with no finer policy stated. Set
+	// EvidencePolicy explicitly for the other three modes; EvidenceRequired
+	// alone cannot express "material fields only" or "no inference".
 	EvidenceRequired bool
+
+	// EvidencePolicy is the finer-grained evidence contract TC-002 adds:
+	// which claims must resolve to a valid types.EvidenceRef before RunOp
+	// accepts a candidate. See types.EvidencePolicy's doc comment for what
+	// each of the four modes requires.
+	EvidencePolicy types.EvidencePolicy
+
+	// MaterialFields names the output fields that must carry evidence under
+	// EvidenceMaterialFields. Ignored by the other three policies.
+	MaterialFields []string
 
 	// Normalize runs once, after Invariants pass, and may not fail: it is
 	// for shape-preserving cleanup (trimming, canonical casing) that should
@@ -217,6 +233,14 @@ func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types
 
 	policy := RepairPolicy{Attempts: op.DefaultPolicy.RepairAttempts}
 
+	// TC-002: the effective policy is EvidencePolicy when the caller set one,
+	// or a plain EvidenceRequired=true read as "all model-derived fields
+	// need a reference" -- the ordinary reading with no finer policy stated.
+	evidencePolicy := op.Contract.EvidencePolicy
+	if evidencePolicy == types.EvidenceNone && op.Contract.EvidenceRequired {
+		evidencePolicy = types.EvidenceAllModelDerived
+	}
+
 	var candidate Out
 	var lastBody string
 	_, repair, err := withRepair(ctx, system, user, opt, policy, func(body string) error {
@@ -233,6 +257,28 @@ func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types
 		if op.Contract.Normalize != nil {
 			value = op.Contract.Normalize(value)
 		}
+
+		if evidencePolicy != types.EvidenceNone {
+			carrier, ok := any(value).(EvidenceCarrier)
+			if !ok {
+				return &types.OperationError{
+					Kind: types.KindEvidenceViolation,
+					Op:   op.ID.Name,
+					Message: fmt.Sprintf(
+						"%T declares no evidence claims (does not implement EvidenceCarrier) though this operation's evidence policy is %q",
+						value, evidencePolicy),
+				}
+			}
+			claims := carrier.EvidenceClaims()
+			var sources map[string]types.EvidenceSource
+			if sourced, ok := any(input).(EvidenceSourced); ok {
+				sources = sourced.EvidenceSources()
+			}
+			if evErr := StrictEvidence(op.ID.Name, evidencePolicy, op.Contract.MaterialFields, claims, sources); evErr != nil {
+				return evErr
+			}
+		}
+
 		candidate = value
 		return nil
 	})
@@ -249,6 +295,19 @@ func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types
 		// failure short-circuits before validate is ever called for that
 		// attempt, so the failure count trails the attempt count.
 		if repair.Attempts > 0 && len(repair.Failures) == repair.Attempts {
+			// TC-006: KindInvariantViolation and KindEvidenceViolation are
+			// not "we could not fix the shape" -- they are the runtime
+			// having positively determined the content was wrong or
+			// unsupported, which is a stronger, more specific fact than
+			// generic exhaustion. review.go's reviewableFailure already
+			// treats both kinds as directly reviewable without requiring
+			// KindRepairExhausted; collapsing them into it here made that
+			// branch unreachable from this path. Every other exhausted
+			// validation (malformed output, a schema shape that never
+			// converged) keeps reporting KindRepairExhausted, unchanged.
+			if kind := types.KindOf(err); kind == types.KindInvariantViolation || kind == types.KindEvidenceViolation {
+				return zero, repair, err
+			}
 			ref := captureDiagnostic(ctx, op.ID.String(), types.KindRepairExhausted, lastBody)
 			return zero, repair, &types.OperationError{
 				Kind:       types.KindRepairExhausted,
@@ -290,6 +349,21 @@ func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt
 	// from the one place that already knows.
 	if repair.Attempts > 1 {
 		meta.Repairs = repair.Attempts - 1
+	}
+
+	// TC-005, the piece this task's permitted files can carry: the tier the
+	// caller actually asked for, recorded regardless of outcome so a drift
+	// analysis can see "asked Smart" beside whatever Model ended up serving
+	// it.
+	meta.RequestedTier = opt.Intelligence
+
+	// TC-004: both fields come from the same declaration (contractlevel.go)
+	// on a success. A failure reports DeliveredContract at its zero value,
+	// ContractPromptOnly, because nothing was actually delivered -- see
+	// contractlevel.go's doc comment for what this does and does not track.
+	meta.RequestedContract = declaredContractLevel(op.Contract)
+	if err == nil {
+		meta.DeliveredContract = meta.RequestedContract
 	}
 
 	if err != nil {

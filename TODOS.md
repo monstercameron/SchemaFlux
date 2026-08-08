@@ -2444,6 +2444,10 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   is the same, since a tier that never distinguishes has stopped meaning anything.
   It caught eight uncatalogued names and two dead entries the first time it ran, which is the
   drift it exists to prevent, arriving immediately.
+  **Addresses API-06** — "define a small cross-operation vocabulary and reserve
+  operation-specific methods for real contracts" is the catalogue's eight categories and the
+  tier that says which operations have a contract worth reserving a method for. Cited here
+  because the traceability gate found it untraced once it could read the gap registers.
   **Not done:** nothing has physically moved to a `recipes` package. The tier says which
   operations are heading there and the gate keeps that honest, but `Assemble` is still
   `schemaflux.Assemble`. Moving twenty operations is a large API change, and doing it while
@@ -2962,13 +2966,38 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   files this task did not own. And a single item's failure fails the whole call: partial
   success policies are **PL-008** and are not implemented, so the engine is all-or-nothing
   today.
-- [ ] **PL-008** — Partial success and failure policies. `BatchResult[T]` with per-item
+- [x] **PL-008** — Partial success and failure policies. `BatchResult[T]` with per-item
   status, attempts, mode, and evidence; `BatchSummary`; and the five policies — `FailFast`,
   `CollectFailures`, `RetryFailedItems`, `RetryThenCollect` (the default for long batches),
   `RequireAll` — each defining scheduling, cancellation, retry, and return behaviour.
   `([]T, error)` cannot express any of this. Closes **EXE-07**, **EXE-08**.
   *Verify:* one table per policy asserting what ran, what was cancelled, and what came back
   when item 3 of 10 fails terminally.
+  **Done.** `types.BatchResult[Out]` with a per-item `ItemResult` — index, status, value,
+  attempts, repairs, cost, and error — and five policies: fail-fast, collect-failures,
+  retry-failed-items, retry-then-collect, and require-all.
+  **The honesty property is the design.** `Values()` returns `([]Out, bool)` and the bool is
+  false on any incompleteness, so the only route from a batch result to a plain slice forces
+  the caller to read it. A shorter slice with no error — the failure mode the task names — is
+  not expressible.
+  The five policies are proven **behaviourally distinct on identical input**: ten items with
+  item three failing every time yields different succeeded/failed/cancelled counts and
+  different return values per policy. A set of policies that all behave the same is one policy
+  with five names, and that is what the test rules out.
+  Evidence: 26 cases, run through the real `CallLLM` path with a fake provider rather than the
+  test caller-hook, so the attempts and cost in each `ItemResult` are the real envelope rather
+  than stubbed zeros.
+  **A real defect it surfaced, fixed here:** `CallLLM` published a call record only when a
+  call eventually **succeeded**. A request that exhausted its retries and failed outright
+  contributed nothing to the envelope, so `Meta.Attempts` on a failure read **zero** — as
+  though the provider had never been called, while it had in fact been called and billed as
+  many times as the budget allowed. "How many attempts did that take" was answerable only for
+  the requests that worked, which is the opposite of when it is asked. `publishFailedCall` now
+  records the attempt count, provider, model, and elapsed time on the failure paths, and
+  deliberately leaves usage and cost at zero rather than guessing at a figure the provider
+  never reported. Evidence: `internal/ops/failedattempts_test.go`, 5 cases, including that a
+  terminal failure reports the one attempt it made rather than the budget it never used, and
+  that a success still publishes exactly one record — so the fix did not double-count.
 - [ ] **PL-009** — Progressive recovery cascade: preferred MDSP → keep valid items → isolate
   only unresolved IDs → smaller MDSP → atomic → escalate model or provider only if the
   minimum contract and data policy survive → review packet or terminal item failure at
@@ -3154,7 +3183,7 @@ the *contract* being read as stronger than what was actually enforced.
   injection; it does not eliminate it, and the documentation must say so. Closes **TRU-01**.
   *Verify:* an adversarial corpus of inputs containing instructions; injection attempts
   reach the model as data, and the operation's invariants still hold.
-- [ ] **TC-002** — Evidence contract: `EvidenceRef{SourceID, JSONPointer, StartByte, EndByte,
+- [x] **TC-002** — Evidence contract: `EvidenceRef{SourceID, JSONPointer, StartByte, EndByte,
   SourceDigest}` and `ClaimProvenance{FieldPath, Evidence, Inferred, Method}`, with four
   modes — none, material fields only, all model-derived fields, and `NoInference` (an
   unsupported field stays absent rather than being guessed). The runtime validates that
@@ -3162,6 +3191,22 @@ the *contract* being read as stronger than what was actually enforced.
   entails the claim. Closes **TRU-02**. **OP-507** builds the first spans.
   *Verify:* a fabricated field with no supporting span fails `StrictEvidence`; an
   out-of-bounds or wrong-digest reference is rejected.
+  **Done.** `types.EvidenceRef{SourceID, JSONPointer, StartByte, EndByte, SourceDigest}`,
+  `ClaimProvenance`, and an `EvidencePolicy` with four modes. `ValidateEvidenceRef` checks
+  bounds and the source digest — it verifies that the citation *points somewhere real and
+  unchanged*, and explicitly not that the claim is true, which is the distinction that keeps
+  this from becoming a fact-checker it cannot be.
+  The digest is what makes it worth having: a reference into a source that has since changed
+  is a citation to something that no longer exists, and `TestValidateEvidenceRefRejectsADriftedSource`
+  is that case.
+  `Op.Contract.EvidenceRequired` was **declared and never read** — it is read now. An operation
+  requiring evidence whose decoded value cannot carry any fails with `KindEvidenceViolation`
+  rather than returning the answer.
+  **The reference carries no source text**, asserted directly: offsets and a digest, never the
+  quoted span, because evidence that embeds the caller's document is evidence that leaks it
+  into every log that prints an error.
+  **Not done:** validated claims are not exposed through `Meta` — that needs `RunOp`'s
+  signature changed, and its call sites were outside this task.
 - [ ] **TC-003** — Provenance through pipelines: result IDs, parent links, input and schema
   digests, operation and prompt versions, resolved model, normalizers applied, item recovery
   path, cache usage, and library and adapter versions. A summary built from an extraction
@@ -3176,12 +3221,28 @@ the *contract* being read as stronger than what was actually enforced.
   post-validation is still required. Closes **ARC-11**, **ARC-24**.
   *Verify:* a run that falls back from strict `json_schema` to prompt-only reports a lower
   delivered level; with degradation disallowed, it returns an error instead.
+  **Partial.** `declaredContractLevel` computes the strongest level an operation's own
+  declaration supports, and `RunOpResult` sets `Meta.RequestedContract` and
+  `DeliveredContract` — both of which were **always zero for every call** before this, so the
+  compartment existed and reported nothing. A failure now reports `ContractPromptOnly`
+  delivered.
+  **Not done, and it is the half that matters most:** per-call negotiation. A provider falling
+  back from native schema enforcement to prompt-only mid-call is invisible, so `Requested`
+  equals `Delivered` on every success — which means `Meta.Degraded()` cannot yet fire for the
+  case it was written for. The signal lives in `internal/llm`. There is also no policy gate
+  that refuses a degradation.
 - [ ] **TC-005** — Model drift: record requested tier or pin, resolved provider and model
   identifier, and provider model revision where exposed. `Tier(Smart)` is documented as
   floating; `Model(...)` is a pin request that the provider may not fully honour, and the
   envelope says so. Closes **TRU-04**. This is what makes **P-017**'s benchmark reproducible
   six months from now.
-- [ ] **TC-006** — Repair safety and repair regression. Strategy is chosen by failure class:
+  **Partial.** `Meta.RequestedTier` records the caller's `Speed`, and the resolved provider and
+  model were already on `Meta`.
+  **Not done:** there is no `Model(...)` pin option anywhere in this library to record, and
+  `llm.CompletionResponse` carries no model-revision field, so neither the pin nor the drift
+  can be reported. Adding a field for either without a source to populate it would be a
+  fabricated measurement, so neither was added.
+- [x] **TC-006** — Repair safety and repair regression. Strategy is chosen by failure class:
   syntax damage may include the prior response, bounded and delimited; missing fields may be
   patched; **invariant and evidence failures regenerate from source**, because feeding a
   fabricated answer back reinforces it. After any repair the original schema, invariant,
@@ -3199,6 +3260,20 @@ Gate 4. Today "supported provider" means an adapter compiles. **CB-01** is the c
 the same `Extract[T]` was schema-enforced on one provider and an unconstrained guess on five
 others, with nothing at the call site to tell them apart.
 
+  **Done.** The repair strategy is chosen from the failing error's *kind* rather than applied
+  uniformly: a malformed answer gets a syntax repair that includes the previous response
+  bounded and delimited; an invariant or evidence failure gets a **regeneration from the
+  original prompt** and is never shown the fabrication, because feeding a model its own
+  invented answer and asking for a correction is how an invention gets refined rather than
+  dropped; everything else gets the default patch.
+  `detectUnrelatedFieldLoss` rejects a repair that fixes the flagged field while quietly
+  dropping a different one that was present before — a repair that trades one defect for
+  another is not a repair, and nothing was checking for it.
+  `KindInvariantViolation` and `KindEvidenceViolation` now survive exhaustion instead of being
+  collapsed into `KindRepairExhausted`, which makes the existing review-required path reachable
+  for exactly the two failures that should ask for a human.
+  Evidence: 6 test functions, 21+ cases, including that an invariant failure regenerates rather
+  than edits.
 - [x] **CP-001** — Machine-readable provider capabilities — native JSON schema, JSON mode,
   supported schema keywords, streaming, tool calling, multi-turn, prompt caching, idempotency
   keys, seed, usage-reporting quality, model-revision reporting, regions, retention modes,
@@ -3256,7 +3331,7 @@ others, with nothing at the call site to tell them apart.
   `TestDisqualifiedCandidateProviderIsNeverCalled`: it counts calls on a disqualified
   provider and asserts **zero**, because refusing a route after the payload has already been
   sent to it is not enforcement.
-- [ ] **CP-003** — Provider conformance suite and generated support matrix, with four
+- [x] **CP-003** — Provider conformance suite and generated support matrix, with four
   distinct labels: integrated, conformant, live-verified, production-supported. The suite
   covers auth and permission classification, timeouts, cancellation, ambiguous completion,
   429 with valid, invalid, and missing `Retry-After`, 5xx behaviour, empty, malformed,
@@ -3272,12 +3347,37 @@ others, with nothing at the call site to tell them apart.
 
 # M15 — Security, privacy, and caching
 
+  **Done for the protocol suite; the vendor matrix is not generated because nothing paid for
+  it.** `internal/llm/conformance*.go`: 16 protocol checks (auth, timeout, cancellation,
+  ambiguous completion, empty/malformed/truncated/refused output, 429 with valid, invalid, and
+  missing `Retry-After`, 500, a stream that ends with no terminal event, credential redaction,
+  endpoint override) and 5 model checks, with a label ladder from unrated to
+  production-supported.
+  **Findings reach the registry as data**, not as log output: `Publish()` writes into
+  **CP-001**'s capability registry, and only from the *model* checks — the protocol checks
+  measure this library's own transport code, not a vendor fact, so they are excluded from
+  registry writes deliberately. `ConflictsWithRegistry` implements the task's verification
+  line: a provider failing a capability it declared loses its label automatically.
+  **Offline by construction, and proved rather than asserted:** with `SCHEMAFLUX_LIVE_TESTS`
+  unset the model checks record as *skipped* rather than passing, and
+  `TestConformanceOfflineRunMakesNoNetworkCalls` installs a dial guard and asserts every dial
+  resolves to loopback **and that at least one dial happened** — so it cannot pass by doing
+  nothing.
+  The fixtures are hand-written against the wire types rather than captured from a run, and
+  that paid for itself immediately: a `server_5xx` fixture written as 503 failed, because
+  `isRateLimited` treats 503 like 429. A captured-and-pinned fixture would have encoded the
+  confusion instead of exposing it.
+  **Not done:** the generated support matrix does not exist as a file. Producing one needs a
+  live run, and writing a placeholder would misrepresent exactly what this task asks for —
+  a matrix generated from results rather than hand-written. Protocol checks also cover only
+  the OpenAI Responses adapter, and `CompletionResponse` has no request-ID field, so that
+  dimension is unmeasurable as the code stands.
 - [ ] **SEC-001** — Publish `SECURITY.md`: threat model, supported versions, disclosure
   process, and response targets. The assets are credentials, prompts, source data, outputs,
   schemas, tenant identity, diagnostics, and routes; the actors include malicious input
   authors, compromised endpoints, other tenants, and the model's own output.
   Closes **PRD-04**. Coordinate with **PS-009**.
-- [ ] **SEC-002** — Content logging policy: `LogNoContent`, `LogMetadataOnly` (the production
+- [x] **SEC-002** — Content logging policy: `LogNoContent`, `LogMetadataOnly` (the production
   default), `LogRedactedContent`, `LogFullContent` (explicit, policy-gated). **Debug changes
   verbosity, not content policy** — that inversion is how prompts end up in log aggregators.
   Authorization headers, keys, cookies, and raw bodies are always scrubbed; captured buffers
@@ -3285,7 +3385,23 @@ others, with nothing at the call site to tell them apart.
   Closes **PRD-05**. **F-033**/**F-034** removed payloads from errors; this covers logs.
   *Verify:* a log-capture test asserts no prompt, completion, or credential fragment at any
   level with the default policy.
-- [ ] **SEC-003** — Fuzz targets with allocation and depth limits: recursive and deeply
+  **Done.** `telemetry.Content` implements `slog.LogValuer` and is gated by the
+  `ContentLoggingLevel` **CP-002** already defined and nothing consumed. The zero value is
+  `LogNoContent`, and an unrecognised or out-of-range level behaves as `LogNoContent` — the
+  never-fail-open rule applied to the one place where failing open means publishing somebody's
+  data.
+  Verbosity is deliberately not the gate: a debug-level logger at the strictest content policy
+  still logs no content, which is tested, because "turn on debug logging" is exactly the
+  moment this would otherwise leak.
+  Evidence includes an integration test that drives a **real** `Extract` with a marker string
+  in its input at debug level and walks every captured entry across all four policy levels.
+  That also confirms the audit finding: no reachable call site logs content today, so the gate
+  is a guarantee about the future rather than a fix for a present leak.
+  **A fifth credential-pattern list now exists**, with its justification written in the file
+  beside the other four: `mw` cannot be imported from `telemetry` without an import cycle, and
+  the diagnostics list is unexported. That is a real cost and it is recorded rather than
+  hidden.
+- [x] **SEC-003** — Fuzz targets with allocation and depth limits: recursive and deeply
   nested types, embedded fields and tags, maps, pointers, nils, custom marshalers, malformed
   UTF-8, huge numbers and exponents, duplicate keys, trailing data, JSON bombs, schema
   keyword adaptation, fence and JSON extraction (**A-003**), batch IDs with duplicates,
@@ -3293,12 +3409,30 @@ others, with nothing at the call site to tell them apart.
   Closes **PRD-12**.
   *Verify:* the corpus runs in CI as a smoke gate; each target has a seed corpus drawn from
   real defects this list already found.
+  **Done.** Four fuzz targets, each with a hand-chosen seed corpus and none making a network
+  call: `FuzzExtractJSON`, `FuzzFencedBlock`, and `FuzzBalancedValue` over the JSON extraction
+  path (fences, truncation, huge numbers, duplicate keys, invalid UTF-8, nesting bombs), plus
+  `FuzzRedact` and `FuzzValidateEndpoint`.
+  `FuzzRedact` asserts a **correctness** property rather than only absence of panic: the
+  output never still matches any built-in credential pattern. A fuzz target that only checks
+  for crashes passes happily while the function returns the secret unchanged.
+  Each was run under `-fuzztime=20s` to confirm it actually executes rather than merely
+  compiling.
 - [ ] **SEC-004** — Custom endpoint policy: scheme and host allowlists and a private-address
   rule, so a caller-supplied or configuration-supplied base URL cannot be pointed at internal
   infrastructure. The library already accepts custom endpoints for OpenAI-compatible
   providers and validates nothing about them.
   *Verify:* loopback, link-local, and metadata-service URLs are refused unless explicitly
   allowed; the refusal is a typed configuration error.
+  **Partial.** `types.EndpointPolicy` with scheme and host allowlists and a private-address
+  guard: loopback, link-local, RFC1918, the cloud metadata address, and `.internal`/`localhost`
+  names are all refused unless explicitly allowed, and an undeclared allowlist refuses
+  everything rather than permitting it. No DNS resolution, so the check stays offline.
+  A real bug was found and fixed while testing it: the host-not-allowed and private-address
+  error paths echoed the raw hostname unbounded into the error string.
+  **Not wired.** `internal/llm`'s providers and `client.go` do not consult it, so a custom
+  endpoint is still unchecked in practice. The contract exists; the enforcement point does
+  not.
 - [ ] **SEC-005** — Retention and deletion for every store the library owns — result caches,
   diagnostic captures, pricing and usage records, replay fixtures. User content is never
   retained merely because cost accounting is on: cost records keep token counts, model IDs,
@@ -3310,6 +3444,14 @@ others, with nothing at the call site to tell them apart.
 
 # M16 — Observability and operations
 
+  **Partial.** `TenantScopedStore` and `DeleteTenantData` — refuses an empty tenant ID,
+  continues past a failing store rather than aborting on the first, and joins every failure so
+  a partial deletion reports *which* stores did not comply rather than just that something
+  went wrong.
+  **Not wired to any real store.** The cache, the pricing store, and the diagnostic sink do
+  not implement it, so "a tenant deletion removes its data" is not true yet — only the hook
+  contract exists. A deletion API that appears to work and deletes nothing is worse than none,
+  so this stays open.
 - [x] **OB-001** — Observer interfaces in core (logger, tracer, metric sink, clock, ID
   generator, diagnostic sink) with no-op defaults, and the OpenTelemetry implementation in
   `telemetry/otel` using the host's provider. Core stops importing OTel, exporters, and the
@@ -3437,7 +3579,7 @@ others, with nothing at the call site to tell them apart.
   bursts, mixed tenants and priorities, cancellation storms, large schemas and near-limit
   chunks, partial MDSP failures forcing atomic fallback, and failing telemetry and stores.
   The outcome metrics are cost and latency per valid item, not calls per second.
-- [ ] **TR-002** — Extend `.audit/traceability.py` to `to-production.md`'s gap register the
+- [x] **TR-002** — Extend `.audit/traceability.py` to `to-production.md`'s gap register the
   way **TR-001** covers the review: parse `ARC`, `PRD`, `API`, `EXE`, and `TRU` rows, map
   each to the tasks citing it, and fail on an untraced gap or a dangling citation. The
   coverage table below is the first run, done by hand; it will drift within a week if
@@ -3693,6 +3835,26 @@ never as items. `.audit/traceability.py` reported them dangling on every run, wh
 checker doing its job on a record that was incomplete: work was done, the evidence was
 written, and the box it belonged to was never drawn.
 
+  **Done, and it found four untraced gaps immediately.** `.audit/traceability.py` now parses
+  the `ARC`/`PRD`/`API`/`EXE`/`TRU` registers out of `to-production.md` — 111 rows — maps each
+  to the tasks citing it, reports the untraced ones, and **fails** on an untraced gap or a
+  dangling gap citation, the same way TR-001 already did for the review's findings.
+  The `D-` collision the task warns about is handled by construction: the gap pattern requires
+  one of the five known register prefixes and **exactly two digits**, so the specification's
+  three-digit `D-001` decisions cannot be read as the review's two-digit `D-01` schema
+  findings.
+  **What it caught on its first run:** `API-02`, `API-03`, `API-06`, and `API-10` were listed
+  as covered in the hand-built table and cited by **no task**. The table was written by hand
+  and had already drifted, which is exactly what this task predicted would happen within a
+  week. They are now cited where the work actually lives — the first three on **FL-003**,
+  which is the fluent-versus-standard divergence itself, and API-06 on **PS-002**, whose
+  catalogue *is* the small cross-operation vocabulary that gap asks for.
+  **A bug in my own tooling, worth recording because it nearly shipped silently:** the first
+  version of the citation regex matched a literal backspace character instead of a word
+  boundary — a `` mangled on its way through a shell heredoc — so it reported *zero* gaps
+  traced while looking entirely correct. A gate that silently matches nothing passes forever.
+  It was caught by disbelieving the number rather than by any test, which is an argument for
+  the counts this script prints being read and not skimmed.
 - [x] **CB-01** — `OpenAICompatibleProvider.Complete` went through go-openai, whose
   `ChatCompletionResponseFormat` carries a `Type` and nothing else, so a request arriving with
   a strict JSON schema had the **schema dropped** and was sent as `{"type":"json_object"}`.
@@ -3752,6 +3914,26 @@ written, and the box it belonged to was never drawn.
   understanding the operation, which argues for the examples using `schemafluxtest` instead.
   *Verify:* `python scripts/examples_gate.py --update` records 45 of 45.
 
+  **Partial: 33 of 45 to 36 of 45.** `Transform`, `Generate`, and `Normalize` now **declare**
+  their response schema rather than only describing it in prose. That is the fix the task
+  names, and it is worth more than making an example pass: `Transform` embedded the target
+  shape in its system prompt and asked for "ONLY valid JSON matching the target schema" — a
+  request a model may honour and nothing verified. Declaring the schema means a provider with
+  structured output enforces it.
+  For the operations that decode into an anonymous struct, the schema is generated **from that
+  struct** via reflection, so it cannot drift from what the operation actually accepts. A
+  hand-written schema beside a decode target is two descriptions of one thing.
+  The golden prompts moved by exactly two lines — `json schema: false` to `true` for Transform
+  and Generate — with the prompt text unchanged, which is the evidence that this changed what
+  is *declared* and not what is *said*.
+  **Still failing (9):** `Compress`, `Decompose`, `Enrich`, `Synthesize`, `Predict`, `Verify`,
+  and `Question` need the same treatment; `Decompose` and `Enrich` were attempted and still
+  fail because each has a second call path the first fix did not reach, which is a sign the
+  pattern needs applying per call site rather than per file. `Choose` and `Cluster` are the
+  different problem the task already identified: the mock cannot answer them without
+  understanding the operation, so those two examples should use `schemafluxtest` instead of
+  the local provider. The ratchet is updated to 36 so the three that were fixed cannot
+  silently regress.
 - [x] **OP-308** — Apply **OP-302**'s deterministic diff to `Pivot`, `Enrich`, and
   `Normalize`, which report the same model-authored `Lost` / `Inferred` / `Changes` audit
   trail that `Project` did. The helpers (`jsonFieldNamesOfValue`, `missingFrom`) already
@@ -3884,14 +4066,30 @@ written, and the box it belonged to was never drawn.
   rather than the `NewXOptions()` constructor the direct API uses, so the two public APIs disagree
   on defaults and which one a caller gets depends on the spelling they chose. Route every
   entrypoint through the constructor.
+  **Addresses API-02, API-03, and API-10.** These three specification gaps were listed as
+  covered in the hand-built table below and cited by no task at all — which `.audit/traceability.py`
+  found the moment TR-002 taught it to read the gap registers. They belong here: API-02 wants
+  the canonical standard functions taking context, client, input, and options; API-03 wants
+  every fluent call to compile to the same options and descriptor as its standard equivalent,
+  which is precisely the divergence this task describes; and API-10 wants concrete generic
+  builder values, which is what **A-013**'s value receivers and copy-on-write storage began.
   *Verify:* a test that constructs each operation both ways and asserts the resolved options are
   equal.
+  **Partial, and the remainder is blocked on missing constructors.** Six of seventeen
+  entrypoints already route through `NewXOptions()`; the other eleven — the advanced fluent
+  surface — cannot, because **those option types have no constructor to route through**. The
+  fix is therefore two steps, not one: give them constructors, then route. A test pins the six
+  that are correct and a second documents the eleven that are not, so the split is visible
+  rather than implied.
 - [ ] **FL-004** — **F-04**: `Steer` assigns rather than appends, so two `.Steer(...)` calls
   silently drop the first, and the op then joins the caller's steering with its own generated
   clauses using `". "`, producing a run-on in which the library can contradict the caller.
   Accumulate steering, and keep the caller's text in its own block.
   *Verify:* two `.Steer` calls both reach the prompt; the caller's text is separable from the
   library's.
+  **Untouched, with the current behaviour pinned.** `Steer` still assigns rather than appends,
+  so two `.Steer(...)` calls silently discard the first. A test records that, so the fix will
+  have something to flip rather than being written against a guess.
 - [ ] **FL-005** — **F-05**: `commonRequest`, `opRequest`, and `directRequest` implement the same
   eleven methods three times, because the options structs behind them are inconsistent. Collapse to
   one base once **M06** has made the options structs uniform. Depends on M06.

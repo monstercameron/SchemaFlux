@@ -329,6 +329,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 				"duration_ms", time.Since(start).Milliseconds(),
 				"error", err,
 			)
+			publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
 			return "", err
 		}
 
@@ -347,6 +348,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		)
 
 		if sleepErr := waitForRetry(ctx, delay); sleepErr != nil {
+			publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
 			return "", sleepErr
 		}
 	}
@@ -799,4 +801,39 @@ func resetCacheReadTracking() {
 	defer cacheReadMu.Unlock()
 	cacheReadCounts = map[string]int{}
 	cacheReadWarned = map[string]bool{}
+}
+
+// publishFailedCall records a request that never produced an answer.
+//
+// Only successful calls used to publish a record, so a request that exhausted
+// its retries and failed outright contributed *nothing* to the envelope: a
+// caller reading Meta.Attempts on a failure saw zero, as though the provider
+// had never been called, while the provider had in fact been called and
+// billed as many times as the retry budget allowed. Every "how many attempts
+// did that take" question was therefore answerable only for the requests that
+// worked, which is the opposite of when it is asked.
+//
+// Found while building PL-008's per-item failure reporting, where a failed
+// item reported no attempts at all.
+//
+// Usage and cost are left zero rather than guessed: a failed call's token
+// consumption is not reported by the provider on most error paths, and
+// inventing a number here would be the PR-001 mistake. The attempt count is
+// measured and is what this exists to carry.
+func publishFailedCall(ctx context.Context, provider llm.Provider, model string,
+	opts types.OpOptions, start time.Time, providerCalls int,
+	requestID, correlationID string) {
+
+	publishCallRecord(ctx, &types.ResultMetadata{
+		RequestID:     requestID,
+		CorrelationID: correlationID,
+		RetryCount:    providerCalls - 1,
+		StartTime:     start,
+		EndTime:       time.Now(),
+		Duration:      time.Since(start),
+		Model:         model,
+		Provider:      provider.Name(),
+		Mode:          opts.Mode,
+		Intelligence:  opts.Intelligence,
+	})
 }

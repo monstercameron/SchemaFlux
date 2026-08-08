@@ -29,8 +29,14 @@ import (
 // item's or chunk's failure fails the whole call, the same way MapReduce's
 // default (ContinueOnError: false) already behaves everywhere else in this
 // package. A caller that needs "get me the 498 that worked" is asking for
-// PL-008, which is not part of this delivery -- said here rather than left
-// to be discovered.
+// PL-008, which RunOpManyPartial (partial.go) delivers as a separate,
+// additional entry point rather than a change to this function's contract:
+// RunOpMany's callers today rely on "any failure fails the call", and
+// changing that out from under them silently would be exactly the kind of
+// drift AGENTS.md warns about. RunOpManyPartial always runs ShapeAtomic
+// (one call per item); it does not give MDSP-chunk failures the same
+// per-item accounting -- that is PL-009's progressive recovery cascade and
+// is not built here either.
 func RunOpMany[In, Out any](ctx context.Context, op Op[In, Out], items []In, req types.PlanRequest) ([]types.Result[Out], types.Plan, error) {
 	plan, err := Preflight(op, items, req)
 	if err != nil {

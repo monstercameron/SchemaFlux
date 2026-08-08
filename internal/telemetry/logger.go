@@ -2,14 +2,18 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 var (
@@ -524,6 +528,153 @@ func toSlogLevel(level LogLevel) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// SEC-002. Content logging policy.
+//
+// AGENTS.md: "No request or response body in an error string or a log line.
+// Ever." An audit of every logger.Debug/Info/Warn/Error call site this task
+// is permitted to touch (client.go, internal/ops/complete.go,
+// internal/ops/redact_llm.go, internal/ops/llm_helper.go) found none that
+// logs a prompt, completion, or other caller-payload string today -- they
+// already log requestID, provider, counts, and error values only. That is
+// the right state, and this mechanism is the backstop for it, not a fix for
+// a leak that was found: a future call site that reaches for "log the
+// prompt for debugging" has an opt-in, policy-gated way to do it that cannot
+// regress into logging full content by accident, instead of a raw string
+// argument that always would.
+//
+// Content marks a string as caller-payload-shaped. Wrapping a value in
+// Content (e.g. slog.Any("prompt", telemetry.Content(userPrompt))) is the
+// only way a string reaches a log line under anything less than
+// LogFullContent; an unwrapped string argument is untouched by this
+// mechanism; the deliberate choice per the audit above is that no
+// production call site should need to.
+//
+// "Debug changes verbosity, not content policy" (SEC-002's own text): raising
+// the logger's Level to DebugLevel does not raise ContentLoggingPolicy. The
+// two are unrelated knobs on purpose -- SetLevel governs which severities
+// reach a handler at all; ContentLoggingPolicy governs, independently of
+// severity, how much of a Content value's text a handler is allowed to see.
+// A caller who wants deep debug output does not thereby get prompts in the
+// log.
+type Content string
+
+var (
+	contentPolicyMu sync.RWMutex
+	// contentPolicy's zero value is types.LogNoContent, the strictest level --
+	// a process that never calls SetContentLoggingPolicy logs no content,
+	// matching DataPolicy's own zero-value contract in internal/types/policy.go.
+	contentPolicy types.ContentLoggingLevel
+)
+
+// SetContentLoggingPolicy sets the maximum ContentLoggingLevel Content values
+// are allowed to reveal in a log line, process-wide. Call it with the
+// Tighten()-resolved DataPolicy.ContentLogging for the tenant/call in effect,
+// not with a value chosen ad hoc at the log call site -- the policy decision
+// belongs where DataPolicy already makes it.
+func SetContentLoggingPolicy(level types.ContentLoggingLevel) {
+	contentPolicyMu.Lock()
+	defer contentPolicyMu.Unlock()
+	contentPolicy = level
+}
+
+// ContentLoggingPolicy returns the level SetContentLoggingPolicy last set.
+func ContentLoggingPolicy() types.ContentLoggingLevel {
+	contentPolicyMu.RLock()
+	defer contentPolicyMu.RUnlock()
+	return contentPolicy
+}
+
+// contentSuppressedMarker is what a Content value resolves to at LogNoContent
+// and for any level this package does not recognise. It is a fixed literal,
+// never derived from the caller's text, so it cannot itself leak anything --
+// the property the "no content in any log line" verification checks.
+const contentSuppressedMarker = "[content suppressed by content-logging policy]"
+
+// LogValue implements slog.LogValuer. historyHandler.Handle and every
+// slog.Handler this package builds call attr.Value.Resolve() before touching
+// an attribute (see addAttr below), which is what invokes this -- a Content
+// value is never rendered any other way.
+func (c Content) LogValue() slog.Value {
+	switch ContentLoggingPolicy() {
+	case types.LogFullContent:
+		return slog.StringValue(string(c))
+	case types.LogRedactedContent:
+		return slog.StringValue(redactLogContent(string(c)))
+	case types.LogMetadataOnly:
+		// Shape, not value: length only, the same "describe, don't
+		// reproduce" contract types.DescribeValue uses for input.
+		return slog.StringValue(fmt.Sprintf("[content omitted by logging policy: %d bytes]", len(c)))
+	case types.LogNoContent:
+		return slog.StringValue(contentSuppressedMarker)
+	default:
+		// SEC-002 / AGENTS.md "never fail open": a ContentLoggingLevel this
+		// switch does not recognise (out-of-range, or a level added to
+		// internal/types/policy.go this file has not been taught about) is a
+		// policy that cannot determine an answer. Refuse -- behave exactly
+		// like LogNoContent -- rather than falling through to a case that
+		// might allow more than was ever actually granted.
+		return slog.StringValue(contentSuppressedMarker)
+	}
+}
+
+// logContentPatterns are the credential shapes redactLogContent scrubs at
+// LogRedactedContent. This is a fifth copy of the pattern list
+// mw/redact.go, schemafluxtest/cassette.go, scripts/secret_scan.py, and
+// internal/types/diagnostics.go's diagnosticPatterns already carry --
+// mw/redact.go's doc comment records why the first three do not share one,
+// and diagnostics.go's carries the reasoning for why a fourth was justified
+// rather than sharing across a layering boundary that cannot support it
+// (internal/types cannot import mw; mw cannot import schemafluxtest).
+//
+// This package adds a fifth rather than reusing any of those for the same
+// kind of reason, sharper here:
+//
+//   - Importing mw from internal/telemetry would be a straight import cycle:
+//     mw -> internal/ops -> internal/logger -> internal/telemetry (internal/
+//     ops/llm_helper.go and complete.go call logger.GetLogger(), and
+//     internal/logger is a thin re-export of this package's GetLogger). mw
+//     is therefore not reachable from here at all, not just undesirable to
+//     depend on.
+//   - schemafluxtest is test-support code; production log formatting must
+//     not depend on it (the same rule mw/redact.go's comment states for
+//     itself).
+//   - diagnostics.go's diagnosticPatterns is unexported, and internal/types/
+//     diagnostics.go is outside this task's edit scope (only policy.go and
+//     new files under internal/types/ are), so exporting it is not an option
+//     available here either.
+//
+// This guards a sixth distinct moment besides: an arbitrary structured log
+// line, emitted from anywhere in the process, at any verbosity level,
+// through a Content wrapper -- not an egress request, a cassette fixture, a
+// captured diagnostic body, or a committed file. Duplicating a handful of
+// regexes again costs less than any path that would avoid it.
+var logContentPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}`),
+	regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}`),
+	regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{30,}`),
+	regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
+	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`),
+	regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`),
+	regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----`),
+	regexp.MustCompile(`(?i)authorization"?\s*[:=]\s*"?bearer\s+\S+`),
+	regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
+}
+
+const logRedactedMarker = "[redacted]"
+
+// redactLogContent scrubs the credential/PII shapes logContentPatterns
+// recognises. It is not a general content filter -- ordinary text that
+// matches none of these shapes passes through unchanged, which is exactly
+// what LogRedactedContent (weaker than LogMetadataOnly, stronger than
+// LogFullContent only in that these shapes never survive it) promises and no
+// more.
+func redactLogContent(text string) string {
+	for _, pattern := range logContentPatterns {
+		text = pattern.ReplaceAllString(text, logRedactedMarker)
+	}
+	return text
 }
 
 func envEnabled(keys ...string) bool {

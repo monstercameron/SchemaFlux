@@ -283,6 +283,23 @@ Return a JSON object with:
 
 	userPrompt := fmt.Sprintf("Enrich this data:\n\n%s", string(inputJSON))
 
+	var parsed struct {
+		Enriched        U                  `json:"enriched"`
+		AddedFields     []string           `json:"added_fields"`
+		ModelConfidence map[string]float64 `json:"confidence"`
+		Derivations     map[string]string  `json:"derivations"`
+	}
+	// Declare the response shape rather than only describing it in prose
+	// (S-002, CI-008). The schema is generated from the very struct the answer
+	// is decoded into, so it cannot drift from what this operation actually
+	// accepts -- and a provider with structured output enforces it instead of
+	// being asked politely.
+	opt.ResponseFormat = "json"
+	if schema := GenerateJSONSchema(reflect.TypeOf(parsed)); schema != nil {
+		opt.JSONSchema = schema
+		opt.SchemaName = "enrich_response"
+	}
+
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("Enrich operation LLM call failed", "error", err)
@@ -290,12 +307,6 @@ Return a JSON object with:
 	}
 
 	// Parse the response
-	var parsed struct {
-		Enriched        U                  `json:"enriched"`
-		AddedFields     []string           `json:"added_fields"`
-		ModelConfidence map[string]float64 `json:"confidence"`
-		Derivations     map[string]string  `json:"derivations"`
-	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("Enrich operation failed: parse error", "error", err)
