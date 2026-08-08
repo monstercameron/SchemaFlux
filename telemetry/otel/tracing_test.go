@@ -76,22 +76,26 @@ func TestAddSpanTags(t *testing.T) {
 }
 
 func TestGetSpanID(t *testing.T) {
-	// StartSpan is the LEGACY path: it reads the package-level `tracer` and
-	// `tracingEnabled`, which only InitTracing sets. Install() wires the
-	// Observer seam instead and deliberately does not touch those globals, so a
-	// span started here is non-recording however the provider is configured.
+	// This test has been wrong twice, in opposite directions, and both times
+	// because of state it did not control.
 	//
-	// This test previously asserted GetSpanID returned something, and passed --
-	// not because a span existed, but because GetSpanID returned the all-zero
-	// placeholder for an untraced context. Non-empty, so the assertion held
-	// while measuring nothing at all.
+	// Originally it asserted GetSpanID returned something with tracing
+	// uninitialised, and passed -- not because a span existed, but because
+	// GetSpanID returned the all-zero placeholder for an untraced context.
+	// Then, once that was fixed, asserting "" made it depend on whether some
+	// EARLIER test in the package had left the `tracer` global set, because
+	// StartSpan reads it. Package globals plus test order is the whole problem.
 	//
-	// With that fixed, the honest assertion is the one that is actually true on
-	// this path: with tracing uninitialised, there is no span and therefore no
-	// ID, and both accessors say so rather than inventing a plausible-looking
-	// one. TestAnUntracedContextYieldsNoIDRatherThanAZeroOne covers the same
-	// property from the other direction, and otel_more_test.go covers the
-	// Install()/Observer path where IDs are real.
+	// So it now sets up the state it needs and asserts the interesting thing:
+	// after InitTracing, a span is real and carries real IDs.
+	resetTracingGlobals(t)
+	t.Setenv("SCHEMAFLUX_ENABLE_TRACING", "true")
+	t.Setenv("SCHEMAFLUX_TRACE_EXPORTER", "stdout")
+
+	if err := InitTracing("test-service"); err != nil {
+		t.Fatalf("InitTracing: %v", err)
+	}
+
 	ctx := context.Background()
 	opts := types.OpOptions{
 		Mode:         types.TransformMode,
@@ -101,11 +105,11 @@ func TestGetSpanID(t *testing.T) {
 	newCtx, span := StartSpan(ctx, "test-operation", opts)
 	defer span.End()
 
-	if spanID := GetSpanID(newCtx); spanID != "" {
-		t.Errorf("GetSpanID = %q with tracing uninitialised; StartSpan returned a non-recording span, so there is no ID to report", spanID)
+	if spanID := GetSpanID(newCtx); spanID == "" {
+		t.Error("GetSpanID returned nothing for a context carrying a recording span")
 	}
-	if traceID := GetTraceID(newCtx); traceID != "" {
-		t.Errorf("GetTraceID = %q with tracing uninitialised; want the empty string", traceID)
+	if traceID := GetTraceID(newCtx); traceID == "" {
+		t.Error("GetTraceID returned nothing for a context carrying a recording span")
 	}
 }
 

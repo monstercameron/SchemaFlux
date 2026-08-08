@@ -83,7 +83,7 @@ func TestInitTracing_DisabledByDefault(t *testing.T) {
 // rather than silently pass by accident, and so they will fail (as they
 // should) the day someone fixes the schema mismatch and forgets to update
 // them.
-func TestInitTracing_EnabledFailsOnResourceSchemaConflict(t *testing.T) {
+func TestInitTracingBuildsATracerWhenEnabledViaSCHEMAFLUX_TRACE(t *testing.T) {
 	resetTracingGlobals(t)
 	t.Setenv("SCHEMAFLUX_ENABLE_TRACING", "")
 	t.Setenv("SCHEMAFLUX_TRACE", "true")
@@ -92,29 +92,23 @@ func TestInitTracing_EnabledFailsOnResourceSchemaConflict(t *testing.T) {
 	t.Setenv("SCHEMAFLUX_OTLP_ENDPOINT", "")
 	t.Setenv("SCHEMAFLUX_JAEGER_ENDPOINT", "")
 
-	err := InitTracing("test-service")
-	if err == nil {
-		t.Fatal("InitTracing succeeded; expected the resource schema conflict documented above. " +
-			"If this now passes, telemetry/otel's dependencies were updated to fix the schema mismatch -- " +
-			"update this test (and re-check whether the exporter/provider paths need direct coverage) rather than deleting it.")
+	// This asserted the OPPOSITE until the semconv pin was fixed: InitTracing
+	// merged resource.Default() (schema 1.41.0) with a resource built from
+	// semconv/v1.17.0, which is an error, so every call bailed before creating
+	// an exporter, a sampler, or a tracer. The import is v1.41.0 now and the
+	// merge succeeds.
+	if err := InitTracing("test-service"); err != nil {
+		t.Fatalf("InitTracing: %v -- if this is a resource-schema error, the semconv import has drifted from the SDK again", err)
 	}
+
 	if traceSampleRate != 0.5 {
-		t.Errorf("traceSampleRate = %v, want 0.5 (SCHEMAFLUX_TRACE_SAMPLE_RATE is parsed before the resource is built)", traceSampleRate)
+		t.Errorf("traceSampleRate = %v, want 0.5", traceSampleRate)
 	}
-	// tracingEnabled is set to true (tracing.go:59) before the resource
-	// build that then fails -- InitTracing returns an error but leaves this
-	// global true. StartSpan still no-ops safely because tracer stays nil,
-	// but this is a second, smaller inconsistency worth flagging alongside
-	// the main one: an error return that does not roll back state it already
-	// mutated.
 	if !tracingEnabled {
-		t.Error("tracingEnabled = false after a failed InitTracing; expected it to remain true (tracing.go:59 runs before the failing resource build)")
+		t.Error("tracingEnabled = false after a successful InitTracing")
 	}
-	if tracer != nil {
-		t.Error("tracer was set despite InitTracing returning an error")
-	}
-	if traceProvider != nil {
-		t.Error("traceProvider was set despite InitTracing returning an error")
+	if tracer == nil {
+		t.Error("InitTracing succeeded but built no tracer, so every StartSpan would silently no-op")
 	}
 }
 

@@ -813,7 +813,7 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 //
 // Example:
 //
-//	redacted, err := schemaflux.Redact(sensitiveData, schemaflux.NewRedactOptions().WithPatterns([]string{"SSN", "email"}))
+//	redacted, err := schemaflux.Redact(sensitiveData, schemaflux.NewRedactOptions().WithCategories([]string{"PII"}))
 func Redact[T any](input T, opts RedactOptions) (T, error) {
 	return ops.Redact(input, opts)
 }

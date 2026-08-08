@@ -1017,6 +1017,28 @@ func Critiquing[T any](input T) CritiqueRequest[T] {
 	return newCritiqueRequest(input, NewCritiqueOptions())
 }
 
+// By sets the criteria to critique against.
+//
+// Without this, `Critiquing(x).Run()` could not succeed for ANY caller:
+// CritiqueOptions.Validate requires at least one criterion or rubric entry, and
+// the fluent builder exposed no way to supply either. Every call failed
+// validation before reaching a provider, and the only working spelling was the
+// non-fluent `Critique(input, opts)` — so the builder was decoration on an
+// operation it could not invoke.
+//
+// Named `By` to match ScoreRequest.By and ChooseRequest.By, which take criteria
+// the same way; a third spelling for the same idea is how a caller learns one
+// and guesses wrong at the next.
+func (r CritiqueRequest[T]) By(criteria ...string) CritiqueRequest[T] {
+	return r.lift(r.opts.WithCriteria(criteria))
+}
+
+// Rubric sets criteria with descriptions, as an alternative to By. Validate
+// accepts either, so a caller needs exactly one of the two.
+func (r CritiqueRequest[T]) Rubric(rubric map[string]string) CritiqueRequest[T] {
+	return r.lift(r.opts.WithRubric(rubric))
+}
+
 func (r CritiqueRequest[T]) Run(ctx ...context.Context) (CritiqueResult, error) {
 	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {

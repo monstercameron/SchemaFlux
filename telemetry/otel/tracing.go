@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -72,7 +72,7 @@ func InitTracing(serviceName string) error {
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceName(serviceName),
-			semconv.ServiceVersion("1.0.0"),
+			semconv.ServiceVersion(types.Version),
 			attribute.String("library", "schemaflux"),
 			attribute.String("environment", getEnvironment()),
 		),
