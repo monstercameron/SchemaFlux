@@ -28,8 +28,9 @@ type ExplainOptions struct {
 	Audience string // Target audience: "technical", "non-technical", "children", "executive", etc.
 	Depth    int    // Explanation depth: 1=high-level, 2=moderate, 3=detailed, 4=comprehensive
 	Format   string // Output format: "paragraph", "bullet-points", "step-by-step", "qa"
-	Context  string // Additional context about the data/code being explained
-	Focus    string // Specific aspect to focus on: "overview", "usage", "implementation", etc.
+	// Background is prose for the model, not a context.Context. X-06.
+	Background string
+	Focus      string // Specific aspect to focus on: "overview", "usage", "implementation", etc.
 }
 
 // NewExplainOptions creates ExplainOptions with defaults
@@ -64,9 +65,9 @@ func (opts ExplainOptions) WithFormat(format string) ExplainOptions {
 	return opts
 }
 
-// WithContext sets additional context
-func (opts ExplainOptions) WithContext(context string) ExplainOptions {
-	opts.Context = context
+// WithBackground sets prose for the explanation. Not a context.Context. X-06.
+func (opts ExplainOptions) WithBackground(background string) ExplainOptions {
+	opts.Background = background
 	return opts
 }
 
@@ -350,8 +351,8 @@ func buildUserPrompt(dataJSON []byte, analysis dataAnalysis, opts ExplainOptions
 	prompt.WriteString(fmt.Sprintf("DATA ANALYSIS:\n- Type: %s\n- Structure: %s\n- Fields/Items: %d\n- Estimated Complexity: %s\n\n",
 		analysis.DataType, analysis.Structure, analysis.FieldCount, analysis.Complexity))
 
-	if opts.Context != "" {
-		prompt.WriteString(fmt.Sprintf("ADDITIONAL CONTEXT: %s\n\n", opts.Context))
+	if opts.Background != "" {
+		prompt.WriteString(fmt.Sprintf("ADDITIONAL CONTEXT: %s\n\n", opts.Background))
 	}
 
 	prompt.WriteString(fmt.Sprintf("FOCUS AREA: %s\n", opts.Focus))

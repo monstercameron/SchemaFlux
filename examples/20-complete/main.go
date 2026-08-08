@@ -102,7 +102,7 @@ func main() {
 
 	result3, err := schemaflux.Complete(partial3,
 		schemaflux.NewCompleteOptions().
-			WithContext(context3).
+			WithBackground(context3).
 			WithMaxLength(150).
 			WithIntelligence(schemaflux.Fast))
 

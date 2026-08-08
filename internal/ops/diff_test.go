@@ -35,7 +35,7 @@ func TestDiff(t *testing.T) {
 		oldCust := Customer{ID: 1, Name: "John", Email: "john@example.com", Status: "active"}
 		newCust := Customer{ID: 1, Name: "John Doe", Email: "john.doe@example.com", Status: "inactive"}
 
-		result, err := Diff(oldCust, newCust, NewDiffOptions().WithContext("Customer management system"))
+		result, err := Diff(oldCust, newCust, NewDiffOptions().WithBackground("Customer management system"))
 
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -108,7 +108,7 @@ func TestDiff(t *testing.T) {
 			Tags:     []string{"bestseller", "new-arrival"},
 		}
 
-		result, err := Diff(oldProd, newProd, NewDiffOptions().WithContext("E-commerce product catalog"))
+		result, err := Diff(oldProd, newProd, NewDiffOptions().WithBackground("E-commerce product catalog"))
 
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)

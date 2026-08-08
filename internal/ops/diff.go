@@ -39,7 +39,9 @@ type DiffChange struct {
 // DiffOptions configures the Diff operation
 type DiffOptions struct {
 	types.OpOptions
-	Context      string   // Additional context about the data
+	// Background is prose about the data, not a context.Context. Same
+	// collision as CompleteOptions and InferOptions. X-06.
+	Background   string
 	IgnoreFields []string // Fields to skip in comparison
 	DeepCompare  bool     // Compare nested structures recursively
 }
@@ -55,9 +57,9 @@ func NewDiffOptions() DiffOptions {
 	}
 }
 
-// WithContext sets additional context for difference analysis
-func (opts DiffOptions) WithContext(context string) DiffOptions {
-	opts.Context = context
+// WithBackground sets prose about the data. Not a context.Context. X-06.
+func (opts DiffOptions) WithBackground(background string) DiffOptions {
+	opts.Background = background
 	return opts
 }
 
@@ -387,9 +389,9 @@ Keep the summary under 200 words and focus on actionable insights.`
 	promptBuilder.WriteString("\n\nDETECTED CHANGES:\n")
 	promptBuilder.Write(changesJSON)
 
-	if opts.Context != "" {
+	if opts.Background != "" {
 		promptBuilder.WriteString("\n\nCONTEXT: ")
-		promptBuilder.WriteString(opts.Context)
+		promptBuilder.WriteString(opts.Background)
 	}
 
 	userPrompt := promptBuilder.String()

@@ -2365,7 +2365,7 @@ commit and the test that proves it.
   therefore **not** met and was the wrong bar: a library-chosen sort merge would be guessing at
   the caller's ordering. Restated: *a 500-item `Filter` at the Quick tier returns a subset in
   input order*, which `TestIntegrationFilterChunksLargeCollections` drives through the public API.
-- [ ] **X-07** — A type embedding both `CommonOptions` and `types.OpOptions` has two `Intelligence`
+- [x] **X-07** — A type embedding both `CommonOptions` and `types.OpOptions` has two `Intelligence`
   fields and two `Mode` fields, and `mergeEmbeddedOpOptions` takes both from `CommonOptions`
   unconditionally — so `opts.OpOptions.Intelligence = Quick` is silently ignored, while
   `opts.OpOptions.Context` *is* honoured because Context falls back. A caller has no way to tell
@@ -2374,13 +2374,34 @@ commit and the test that proves it.
   *Verify:* one Intelligence and one Mode reachable per options type, or a documented precedence
   that is the same for every field.
 
-- [ ] **X-06** — `CompleteOptions.Context` is a `[]string` and `InferOptions.Context` is a `string`:
+  **Done — and it could only be done after A-005.** `Mode` and `Intelligence` were taken from
+  `CommonOptions` unconditionally *because* Strict was `Mode(0)` and Smart was `Speed(0)`:
+  with no way to tell "the caller chose Strict" from "the caller said nothing", falling back
+  would have made `.Strict()` unrepresentable. So the fix looked arbitrary and was not.
+  Now that both types have a real unset value, the rule is the same for every field: the
+  `CommonOptions` side wins when it says something, the embedded side is used when it does
+  not. A caller no longer has to know which fields fall back and which do not, because they
+  all do.
+  *Verify:* the existing `TestExplicitStrictAndSmartSurviveTheMerge` still passes — the
+  fallback must not resurrect the F-01 behaviour — and `TestUnsetOptionsStillTakeTheOperationDefault`
+  covers the other direction.
+- [x] **X-06** — `CompleteOptions.Context` is a `[]string` and `InferOptions.Context` is a `string`:
   both mean prose context for the prompt and collide with the embedded
   `types.OpOptions.Context`, which is a `context.Context`. Found while threading X-01, where the
   collision produced a compile error rather than silence — but a caller reading the field list
   has no such warning. Rename the prose fields to `Background` or `Notes`.
   *Verify:* no options struct has two fields named Context reachable from the same selector.
 
+  **Done, and it was four options structs rather than two.** `Complete`, `Infer`, `Diff`, and
+  `Explain` all carried a prose `Context` beside the embedded `types.OpOptions.Context`,
+  which is a `context.Context` — two different things reachable through one selector, one of
+  them a deadline and the other prompt material.
+  All four are `Background` now, with `WithBackground` setters. The doc comment on each says
+  what it is *not*, because the name is the thing that misled.
+  **Breaking change** for **DOC-002**: `WithContext` on those four options types is gone. The
+  collision produced a compile error when **A-002** threaded cancellation through, which is
+  more warning than a caller reading the field list ever got — and that is the argument for
+  renaming rather than documenting.
 - [x] **TEST-003** — A test used `types.OpOptions` as sample data with a hardcoded field count,
   so adding a field to a production type broke a test about counting fields. It owns its own
   struct now. (Filed as S-006 at first, which collided with the existing S-006 and silently

@@ -14,7 +14,10 @@ import (
 // InferOptions configures the Infer operation
 type InferOptions struct {
 	types.OpOptions
-	Context string // Additional context or known facts to aid inference
+	// Background is prose the model should take into account: known facts,
+	// surrounding detail. It was called Context and collided with the embedded
+	// context.Context, which is a deadline rather than prompt material. X-06.
+	Background string
 }
 
 // NewInferOptions creates InferOptions with defaults
@@ -27,9 +30,10 @@ func NewInferOptions() InferOptions {
 	}
 }
 
-// WithContext sets additional context for inference
-func (opts InferOptions) WithContext(context string) InferOptions {
-	opts.Context = context
+// WithBackground sets prose the model should take into account. Prompt
+// material, not a context.Context -- see InferOptions.Background.
+func (opts InferOptions) WithBackground(background string) InferOptions {
+	opts.Background = background
 	return opts
 }
 
@@ -55,11 +59,11 @@ func (opts InferOptions) toOpOptions() types.OpOptions {
 //
 //	// Infer missing fields in a person record
 //	complete, err := Infer[Person](Person{Name: "John", Age: 30},
-//	    NewInferOptions().WithContext("This person works in tech"))
+//	    NewInferOptions().WithBackground("This person works in tech"))
 //
 //	// Infer product details from partial information
 //	product, err := Infer[Product](Product{Name: "iPhone 15"},
-//	    NewInferOptions().WithContext("Latest Apple smartphone released in 2023"))
+//	    NewInferOptions().WithBackground("Latest Apple smartphone released in 2023"))
 func Infer[T any](partialData T, opts InferOptions) (T, error) {
 	return inferImpl(partialData, opts)
 }
@@ -107,8 +111,8 @@ Rules:
 	// Build user prompt
 	userPrompt := fmt.Sprintf("Complete this partial data by inferring missing fields:\n%s", string(partialJSON))
 
-	if opts.Context != "" {
-		userPrompt += fmt.Sprintf("\n\nAdditional context: %s", opts.Context)
+	if opts.Background != "" {
+		userPrompt += fmt.Sprintf("\n\nAdditional context: %s", opts.Background)
 	}
 
 	// Call LLM for inference

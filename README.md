@@ -750,5 +750,11 @@ variable logs an error rather than silently exporting nothing.
 always had the error return; it now uses it. `WithProvider("qwen")` without
 `SCHEMAFLUX_MODEL` reports at construction instead of failing on the first call.
 
+**`WithContext` is `WithBackground` on four options types.** `CompleteOptions`,
+`InferOptions`, `DiffOptions`, and `ExplainOptions` each carried a prose
+`Context` field beside the embedded `context.Context` — two different things
+through one selector, one a deadline and the other prompt material. Rename the
+call; the meaning is unchanged.
+
 **Cost history is bounded.** Ten thousand records by default, oldest evicted;
 `SetCostHistoryLimit` changes it. Aggregates describe the retained history.

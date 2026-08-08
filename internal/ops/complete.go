@@ -27,7 +27,18 @@ type CompleteResult struct {
 // CompleteOptions configures the Complete operation
 type CompleteOptions struct {
 	types.OpOptions
-	Context       []string // Previous context messages/text
+
+	// Background is prose the model should take into account: previous
+	// messages, surrounding text, known facts.
+	//
+	// It was called Context, which collided with the embedded
+	// types.OpOptions.Context -- a context.Context, for cancellation. Two
+	// different things reachable through the same selector, one of which
+	// carries a deadline and one of which is prompt material. The collision
+	// produced a compile error when X-01 threaded cancellation through, which
+	// is more warning than a caller reading the field list ever got. X-06.
+	Background []string
+
 	MaxLength     int      // Maximum length of completion
 	StopSequences []string // Sequences that stop generation
 	Temperature   float32  // Creativity level (0.0-2.0)
@@ -49,9 +60,10 @@ func NewCompleteOptions() CompleteOptions {
 	}
 }
 
-// WithContext provides previous messages/text for context
-func (opts CompleteOptions) WithContext(context []string) CompleteOptions {
-	opts.Context = context
+// WithBackground provides previous messages or surrounding text for the model
+// to take into account. It is prompt material, not a context.Context.
+func (opts CompleteOptions) WithBackground(background []string) CompleteOptions {
+	opts.Background = background
 	return opts
 }
 
@@ -180,7 +192,7 @@ func completeImpl(ctx context.Context, partialText string, opts CompleteOptions)
 	result.Metadata["model"] = "llm-completion"
 	result.Metadata["temperature"] = opts.Temperature
 	result.Metadata["max_length"] = opts.MaxLength
-	result.Metadata["context_messages"] = len(opts.Context)
+	result.Metadata["context_messages"] = len(opts.Background)
 
 	logger.Debug("Complete operation succeeded", "requestID", opts.RequestID, "completionLength", result.Length)
 
@@ -200,7 +212,7 @@ func buildCompleteSystemPrompt(opts CompleteOptions) string {
 		prompt += "Complete the text creatively and engagingly. Feel free to be imaginative while staying relevant.\n"
 	}
 
-	if len(opts.Context) > 0 {
+	if len(opts.Background) > 0 {
 		prompt += "Use the provided context to understand the conversation flow and maintain coherence.\n"
 	}
 
@@ -220,9 +232,9 @@ func buildCompleteUserPrompt(partialText string, opts CompleteOptions) string {
 	prompt := ""
 
 	// Add context if provided
-	if len(opts.Context) > 0 {
+	if len(opts.Background) > 0 {
 		prompt += "Context:\n"
-		for i, ctx := range opts.Context {
+		for i, ctx := range opts.Background {
 			prompt += fmt.Sprintf("%d. %s\n", i+1, ctx)
 		}
 		prompt += "\n"
@@ -305,9 +317,10 @@ func (opts CompleteFieldOptions) WithFieldName(fieldName string) CompleteFieldOp
 	return opts
 }
 
-// WithContext provides previous messages/text for context
-func (opts CompleteFieldOptions) WithContext(context []string) CompleteFieldOptions {
-	opts.CompleteOptions = opts.CompleteOptions.WithContext(context)
+// WithBackground provides previous messages or surrounding text. Prompt
+// material, not a context.Context -- see CompleteOptions.Background.
+func (opts CompleteFieldOptions) WithBackground(background []string) CompleteFieldOptions {
+	opts.CompleteOptions = opts.CompleteOptions.WithBackground(background)
 	return opts
 }
 
@@ -390,8 +403,8 @@ func CompleteField[T any](ctx context.Context, data T, opts CompleteFieldOptions
 	// Build context from other fields in the struct
 	structContext := buildStructContext(val, opts.FieldName)
 	if len(structContext) > 0 {
-		// Prepend struct context to user-provided context
-		opts.CompleteOptions.Context = append(structContext, opts.CompleteOptions.Context...)
+		// Prepend the struct's own fields to whatever background the caller gave.
+		opts.CompleteOptions.Background = append(structContext, opts.CompleteOptions.Background...)
 	}
 
 	// Complete the field value

@@ -22,7 +22,7 @@ func TestExplainOptions(t *testing.T) {
 				WithAudience("technical").
 				WithDepth(3).
 				WithFormat("bullet-points").
-				WithContext("test context").
+				WithBackground("test context").
 				WithFocus("implementation"),
 			wantErr: false,
 		},

@@ -277,8 +277,26 @@ func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) type
 	if common.Threshold != 0 {
 		merged.Threshold = common.Threshold
 	}
+	// Mode and Intelligence fall back like every other field now.
+	//
+	// They used to be taken from CommonOptions unconditionally, because Strict
+	// was Mode(0) and Smart was Speed(0): with no way to tell "the caller chose
+	// Strict" from "the caller said nothing", falling back would have made
+	// `.Strict()` unrepresentable. So `opts.OpOptions.Intelligence = Quick` was
+	// silently discarded while `opts.OpOptions.Context` was honoured, and a
+	// caller had no way to know which fields fell back and which did not.
+	//
+	// A-005 gave both types a real unset value, so the rule can be the same one
+	// everywhere: the CommonOptions side wins when it says something, and the
+	// embedded side is used when it does not. X-07.
 	merged.Mode = common.Mode
+	if common.Mode == types.ModeUnset {
+		merged.Mode = embedded.Mode
+	}
 	merged.Intelligence = common.Intelligence
+	if common.Intelligence == types.TierUnset {
+		merged.Intelligence = embedded.Intelligence
+	}
 
 	requestID := common.RequestID
 	if requestID == "" {

@@ -60,7 +60,7 @@ func main() {
 
 	fmt.Println("?? Analyzing differences...")
 	result, err := schemaflux.Diff(oldCustomer, newCustomer,
-		schemaflux.NewDiffOptions().WithContext("Customer management system"))
+		schemaflux.NewDiffOptions().WithBackground("Customer management system"))
 	if err != nil {
 		schemaflux.GetLogger().Error("Diff failed", "error", err)
 		return
@@ -114,7 +114,7 @@ func main() {
 
 	fmt.Println("?? Analyzing differences...")
 	productResult, err := schemaflux.Diff(oldProduct, newProduct,
-		schemaflux.NewDiffOptions().WithContext("E-commerce product catalog"))
+		schemaflux.NewDiffOptions().WithBackground("E-commerce product catalog"))
 	if err != nil {
 		schemaflux.GetLogger().Error("Diff failed", "error", err)
 		return
@@ -164,7 +164,7 @@ func main() {
 	fmt.Println("?? Analyzing differences (ignoring timestamps)...")
 	configResult, err := schemaflux.Diff(oldConfig, newConfig,
 		schemaflux.NewDiffOptions().
-			WithContext("Service configuration management").
+			WithBackground("Service configuration management").
 			WithIgnoreFields([]string{"LastUpdated"}))
 	if err != nil {
 		schemaflux.GetLogger().Error("Diff failed", "error", err)

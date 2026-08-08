@@ -90,7 +90,7 @@ func main() {
 			WithDepth(1).
 			WithFormat("bullet-points").
 			WithFocus("benefits").
-			WithContext("Business intelligence and user analytics data").
+			WithBackground("Business intelligence and user analytics data").
 			WithIntelligence(schemaflux.Fast))
 
 	if err != nil {

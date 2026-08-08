@@ -25,15 +25,15 @@ func TestComplete_Basic(t *testing.T) {
 
 func TestComplete_Options(t *testing.T) {
 	opts := NewCompleteOptions().
-		WithContext([]string{"Hello", "How are you?"}).
+		WithBackground([]string{"Hello", "How are you?"}).
 		WithMaxLength(200).
 		WithStopSequences([]string{".", "!"}).
 		WithTemperature(0.5).
 		WithTopP(0.8).
 		WithTopK(40)
 
-	if len(opts.Context) != 2 {
-		t.Errorf("Expected 2 context messages, got %d", len(opts.Context))
+	if len(opts.Background) != 2 {
+		t.Errorf("Expected 2 context messages, got %d", len(opts.Background))
 	}
 	if opts.MaxLength != 200 {
 		t.Errorf("Expected MaxLength 200, got %d", opts.MaxLength)
@@ -212,7 +212,7 @@ func TestBuildCompleteSystemPrompt(t *testing.T) {
 		},
 		{
 			name: "with context",
-			opts: NewCompleteOptions().WithContext([]string{"Hello"}),
+			opts: NewCompleteOptions().WithBackground([]string{"Hello"}),
 			contains: []string{
 				"provided context",
 				"conversation flow",
@@ -256,7 +256,7 @@ func TestBuildCompleteUserPrompt(t *testing.T) {
 		{
 			name:     "with context",
 			text:     "How can I help",
-			opts:     NewCompleteOptions().WithContext([]string{"User: I need help", "Assistant: Sure!"}),
+			opts:     NewCompleteOptions().WithBackground([]string{"User: I need help", "Assistant: Sure!"}),
 			contains: []string{"Context:", "1. User: I need help", "2. Assistant: Sure!", "How can I help"},
 		},
 	}

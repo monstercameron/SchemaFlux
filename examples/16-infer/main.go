@@ -64,7 +64,7 @@ func main() {
 
 	// Set timeout context on the options
 	opts := schemaflux.NewInferOptions().
-		WithContext("Tech professional working in San Francisco").
+		WithBackground("Tech professional working in San Francisco").
 		WithIntelligence(schemaflux.Fast)
 	opts.OpOptions.Context = ctx
 
@@ -97,7 +97,7 @@ func main() {
 
 	// Set timeout context on the options
 	productOpts := schemaflux.NewInferOptions().
-		WithContext("Latest Apple smartphone released in 2023 with premium pricing").
+		WithBackground("Latest Apple smartphone released in 2023 with premium pricing").
 		WithIntelligence(schemaflux.Fast)
 	productOpts.OpOptions.Context = ctx
 

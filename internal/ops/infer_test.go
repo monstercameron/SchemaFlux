@@ -43,7 +43,7 @@ func TestInfer(t *testing.T) {
 		}
 
 		partial := Person{Name: "John", Age: 30}
-		result, err := Infer(partial, NewInferOptions().WithContext("Tech professional"))
+		result, err := Infer(partial, NewInferOptions().WithBackground("Tech professional"))
 
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -75,7 +75,7 @@ func TestInfer(t *testing.T) {
 		}
 
 		partial := Product{Name: "iPhone 15"}
-		result, err := Infer(partial, NewInferOptions().WithContext("Latest Apple smartphone released in 2023"))
+		result, err := Infer(partial, NewInferOptions().WithBackground("Latest Apple smartphone released in 2023"))
 
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
@@ -114,7 +114,7 @@ func TestInfer(t *testing.T) {
 		}
 
 		partial := Person{Name: "John", Age: 30}
-		opts := NewInferOptions().WithContext("Lives in San Francisco")
+		opts := NewInferOptions().WithBackground("Lives in San Francisco")
 		result, err := Infer(partial, opts)
 
 		if err != nil {
