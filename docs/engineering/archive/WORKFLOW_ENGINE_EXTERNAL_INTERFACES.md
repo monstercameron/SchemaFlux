@@ -1,3 +1,6 @@
+> **Archived with the workflow-engine plan** it describes the interfaces for.
+> See TODOS.md PS-008.
+
 # Workflow Engine External Service Interface Specification
 
 ## Overview

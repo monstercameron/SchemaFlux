@@ -1,3 +1,6 @@
+> **Archived, not scheduled.** A no-code workflow DSL is the non-goal named in
+> `to-production.md` §1.3. See TODOS.md PS-008.
+
 Below is a **UI‑agnostic**, **simple‑but‑powerful** **Workflow DSL v1** that lets a SaaS vendor deliver highly customized workflows for many customers **without writing custom code**. It covers node types, edges (routing), branching, integrations, data transforms, and storage read/write—together with crisp execution semantics, idempotency, and policy controls.
 
 > **Design goals:**

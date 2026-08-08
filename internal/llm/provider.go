@@ -52,6 +52,20 @@ type CompletionRequest struct {
 
 	// SchemaName names the schema in the request. It is required by the API.
 	SchemaName string
+
+	// PromptCacheKey is sent as the Responses API's `prompt_cache_key`, a hint
+	// that tells OpenAI's routing layer which backend replica is likely to
+	// already hold this request's stable prefix in its prompt cache.
+	//
+	// It has to identify more than "which operation, at which tier" -- that
+	// tuple collides across every prompt revision and every schema change,
+	// because neither is part of it, and a collision here does not fail the
+	// request: it silently routes to a replica holding a DIFFERENT prefix, so
+	// the cache read misses and the call pays full price while looking like it
+	// should have been cheap. internal/ops computes this (CacheIdentity plus
+	// the resolved model and the rendered template) because internal/llm
+	// cannot import internal/ops -- ops already imports llm. P-009.
+	PromptCacheKey string
 }
 
 // CompletionResponse represents a unified response format
@@ -161,6 +175,10 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 
 	if req.MaxTokens > 0 {
 		requestBody["max_output_tokens"] = req.MaxTokens
+	}
+
+	if req.PromptCacheKey != "" {
+		requestBody["prompt_cache_key"] = req.PromptCacheKey
 	}
 
 	textConfig := map[string]interface{}{}
@@ -498,31 +516,79 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 		model = "claude-3-5-sonnet-20240620"
 	}
 
-	// Construct messages
-	messages := []map[string]string{
-		{
-			"role":    "user",
-			"content": req.UserPrompt,
-		},
+	// anthropicFallbackMaxTokens is used only when the caller never set a
+	// ceiling at all. It used to be sent unconditionally and then
+	// conditionally overridden -- which happened to work today because
+	// config.GetMaxTokens always returns a tier default, but it meant a
+	// request built outside that path (a direct CompletionRequest, a test, a
+	// future caller) silently got 1024 with no link to anything the caller
+	// configured. The real ceiling now always wins when it is set; this is
+	// only the floor for when it is not.
+	const anthropicFallbackMaxTokens = 1024
+
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = anthropicFallbackMaxTokens
+	}
+
+	// cacheBreakpoint marks the last block of the stable prefix so Anthropic's
+	// prompt cache can be written and read on repeat calls. Anthropic charges
+	// for a cache write on the block it is attached to and reads everything
+	// before it for free on a hit, so the mark has to sit at the END of
+	// whatever the caller will keep sending byte-for-byte -- putting it
+	// earlier caches less than could be cached, putting it on volatile content
+	// (the CA-002 split has not landed, so the system prompt today can still
+	// carry per-call steering) caches nothing because the block never repeats.
+	// Anthropic allows up to four of these; sending one is well inside that.
+	cacheBreakpoint := map[string]interface{}{"type": "ephemeral"}
+
+	// Construct messages. When there is a system prompt, it is the last stable
+	// block and gets the breakpoint. When there is not, the user message is
+	// the only block there is, so the breakpoint goes there instead -- an
+	// Anthropic request with no cache_control anywhere never reads or writes
+	// the cache at all, silently.
+	var messages []map[string]interface{}
+	if req.SystemPrompt != "" {
+		messages = []map[string]interface{}{
+			{
+				"role":    "user",
+				"content": req.UserPrompt,
+			},
+		}
+	} else {
+		messages = []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]interface{}{
+					{
+						"type":          "text",
+						"text":          req.UserPrompt,
+						"cache_control": cacheBreakpoint,
+					},
+				},
+			},
+		}
 	}
 
 	// Construct request body
 	requestBody := map[string]interface{}{
 		"model":      model,
 		"messages":   messages,
-		"max_tokens": 1024, // Default max tokens
+		"max_tokens": maxTokens,
 	}
 
 	if req.SystemPrompt != "" {
-		requestBody["system"] = req.SystemPrompt
+		requestBody["system"] = []map[string]interface{}{
+			{
+				"type":          "text",
+				"text":          req.SystemPrompt,
+				"cache_control": cacheBreakpoint,
+			},
+		}
 	}
 
 	if req.Temperature > 0 {
 		requestBody["temperature"] = req.Temperature
-	}
-
-	if req.MaxTokens > 0 {
-		requestBody["max_tokens"] = req.MaxTokens
 	}
 
 	jsonData, err := json.Marshal(requestBody)

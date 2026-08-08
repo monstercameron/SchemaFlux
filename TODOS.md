@@ -1660,7 +1660,7 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
 - [ ] **PS-007** — Prompts as versioned, overridable artifacts with golden tests, so a prompt
   edit is a reviewable change rather than a silent behavior change for every downstream user.
   Closes **Gap-13**. Depends on **TI-004**.
-- [ ] **PS-008** — Resolve `docs/engineering/plans/workflowengineplan.md` and
+- [x] **PS-008** — Resolve `docs/engineering/plans/workflowengineplan.md` and
   `SCHEMAFLUXDSLSPEC.md`, which describe a durable workflow engine this repo does not
   implement and which M08 is a deliberate decision not to build. Scope them into the roadmap
   or move them out of `plans/`.
@@ -1674,7 +1674,25 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   ordering — `to-production.md` is the target architecture; `REFACTOR_PLAN.md`,
   `GO_TYPE_NATIVE_PRIMITIVES.md`, `NEW_PRIMITIVES_ANALYSIS.md`, and `PRACTICAL_LLM_OPS.md`
   predate it and need the same in-scope / superseded ruling.
-- [ ] **PS-009** — Reconcile `AGENTS.md` with this repository. It is CodeFlux's file, copied
+  **Done — moved out, with the ruling written on each one.**
+  `workflowengineplan.md`, `WORKFLOW_ENGINE_TODO.md`, `SCHEMAFLUXDSLSPEC.md`, and
+  `WORKFLOW_ENGINE_EXTERNAL_INTERFACES.md` are now under `docs/engineering/archive/`, each
+  with a header saying which decision retired it: `to-production.md` §1.3 makes a
+  general-purpose workflow language an explicit non-goal and API-12 forbids builders growing
+  a branching DSL, so M08's combinators are a deliberate decision not to build this. They are
+  kept rather than deleted, because the thinking in them is real; what was wrong was their
+  location, which implied they were scheduled.
+  `ISSUES.md` had already flagged the three of them as "at least three different, conflicting
+  high-level designs" — that is what this resolves.
+  **The four surviving plans now say where they stand**, since a `plans/` directory whose
+  documents disagree is a directory nobody can act on: `REFACTOR_PLAN.md` largely delivered,
+  `GO_TYPE_NATIVE_PRIMITIVES.md` motivation rather than plan, `NEW_PRIMITIVES_ANALYSIS.md` and
+  `PRACTICAL_LLM_OPS.md` superseded by **PS-002**'s catalogue — adding primitives is the
+  opposite direction from a small stable core.
+  **Not done:** the nine missing figures. `to-production.md` references
+  `figures/*.png` that do not exist, so it renders with nine broken images. Its status block
+  now says so; generating architecture diagrams is not something to guess at.
+- [x] **PS-009** — Reconcile `AGENTS.md` with this repository. It is CodeFlux's file, copied
   verbatim: it declares itself scoped to Codeflux, mandates `docs/plan.md`, `CHANGELOG`,
   `DEVLOG`, `.claude/`, `.artifacts/`, `cmd/codeflux-dev`, atoms, SQLite migrations, a
   frontend, and a `dev`-branch model that does not exist here — while forbidding the
@@ -1689,6 +1707,23 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
 
 # M10 — Release gates
 
+  **Done for the reconciliation, which is what the task asked.** `AGENTS.md` is now this
+  repository's: 662 lines of CodeFlux instructions replaced with 146 describing what is
+  actually here. The old file mandated `docs/plan.md`, a `CHANGELOG`, a `DEVLOG`,
+  `.artifacts/`, `cmd/codeflux-dev`, atoms, SQLite migrations, and a frontend, and forbade the
+  `git add -A` and direct `main` commits this repository's history is made of. An instruction
+  file describing a different repository is worse than none: every rule in it is a coin flip
+  about whether it applies.
+  What replaces it is the discipline this list has actually been enforcing — never fail open,
+  check the answer against the question, decide locally what can be decided locally, never log
+  the caller's payload, never spend money by accident, one error classifier, the ten-case bar,
+  and the ratcheted gates with the rule that the coverage floor only goes up.
+  `CLAUDE.md` pointed at `docs/plan.md` §0 for the same inherited reason and now points at
+  `TODOS.md` and the reconciliation section.
+  **Not done, and needs your say-so:** the repository hygiene files the Revised note lists —
+  `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, issue templates, an ADR directory. Those are
+  new Markdown files, and the standing rule is that a new Markdown file needs you to ask for
+  it by name. Filed as **PS-010**.
 - [x] **CI-001** — Run `go build`, `go vet`, `gofmt -l`, and the full suite on every push.
   **Revised (PRD-01, PRD-17):** the required gate is wider, and each addition catches a
   class the others miss: `go test -race`, `go test -shuffle=on -count=10` (order-dependent
@@ -2490,6 +2525,15 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
+
+- [ ] **PS-010** — The repository hygiene files: `LICENSE`, `SECURITY.md` (threat model,
+  supported versions, disclosure process — **SEC-001**), `CONTRIBUTING.md`, issue templates
+  that ask for sanitized envelope metadata rather than raw payloads, and an ADR directory to
+  hold the twenty decisions `to-production.md` records plus the departures this list has
+  accumulated (**P-007**'s error-detail compromise is the first).
+  Split out of **PS-009** because each is a *new Markdown file*, and the standing rule is that
+  a new Markdown file needs to be asked for by name. Nothing here is hard; it needs
+  authorization rather than effort. Closes **PRD-25**.
 
 - [ ] **S-013** — Schema migrations: a deterministic function from one stored shape to
   another, with its own version and provenance, plus the registry that finds one.

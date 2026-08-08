@@ -1,3 +1,7 @@
+> **Status: superseded by PS-002's catalogue**, for the same reason as
+> `NEW_PRIMITIVES_ANALYSIS.md`. Kept for the use cases, which are the argument for
+> which operations earn a place.
+
 # Practical LLM Operations - Real-World Use Cases
 
 ## Philosophy

@@ -1,3 +1,6 @@
+> **Archived with `workflowengineplan.md`** — the same decision retires both.
+> See TODOS.md PS-008.
+
 # Workflow Engine Implementation Todo List
 
 ## Phase 0: Foundation & Setup

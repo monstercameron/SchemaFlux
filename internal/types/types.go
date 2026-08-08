@@ -140,6 +140,19 @@ type OpOptions struct {
 	// data — an injection-adjacent control path in a typed library. An
 	// operation knows statically what it needs; this is where it says so.
 	ResponseFormat string
+
+	// CacheIdentity is the operation-and-schema half of a provider prompt-cache
+	// key, built with ops.SchemaCacheKey(operationName, operationVersion,
+	// descriptor). It is separate from SchemaID: SchemaID is provenance for a
+	// stored result, this is an input to a routing decision, and the two
+	// happen to share a source but not a purpose.
+	//
+	// Only operations that know their schema identity set it (Extract does,
+	// today). It is empty for the rest, and CallLLM still derives a cache key
+	// for those from the resolved model and the rendered prompt template, so
+	// an unset CacheIdentity degrades the key's precision rather than losing
+	// caching entirely. P-009.
+	CacheIdentity string
 }
 
 // Case represents a pattern matching case for the Match function.

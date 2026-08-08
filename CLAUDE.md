@@ -3,13 +3,10 @@
 Before beginning work in this repository:
 
 1. read and follow [`AGENTS.md`](AGENTS.md);
-2. read §0, Linear Concept and Build Order, in [`docs/plan.md`](docs/plan.md);
-3. read the relevant detailed architecture and product sections in `docs/plan.md`;
-4. locate the governing milestone and atomic task IDs in [`TODOS.md`](TODOS.md);
-5. inspect the current source and tests before assuming planned components exist.
+2. find the governing task in [`TODOS.md`](TODOS.md), and read its whole entry — a **Revised** line supersedes the task body above it;
+3. read [`docs/engineering/plans/to-production.md`](docs/engineering/plans/to-production.md) when the work touches the target architecture, and `TODOS.md`'s "Reconciliation with `to-production.md`" section for where the two documents disagree;
+4. inspect the current source and tests before assuming planned components exist.
 
-`AGENTS.md` is the authoritative repository-wide agent instruction file. This file is intentionally a thin Claude Code compatibility entry point so the same rules are not duplicated and allowed to drift.
+`AGENTS.md` is the authoritative repository-wide agent instruction file. This file stays a thin entry point so the rules are not duplicated and allowed to drift.
 
-Everything a Claude Code session needs beyond that lives in `AGENTS.md` and is not repeated here: the branch model, the tracked configuration under `.claude/`, the subagents, and the vendored skills.
-
-The coding discipline is partly informed by the community-maintained [Karpathy-Inspired Claude Code Guidelines](https://github.com/multica-ai/andrej-karpathy-skills/tree/2c606141936f1eeef17fa3043a72095b4765b9c2), vendored and pinned at that commit. It is not an official Andrej Karpathy repository, and `AGENTS.md` takes precedence over it.
+It previously pointed at `docs/plan.md` §0, a file this repository does not have — inherited along with the rest of the CodeFlux instructions that `AGENTS.md` now replaces. See TODOS.md PS-009.

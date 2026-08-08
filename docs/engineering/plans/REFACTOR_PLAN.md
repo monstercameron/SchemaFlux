@@ -1,3 +1,8 @@
+> **Status: largely delivered, superseded in scope.** The single-import surface and
+> the `internal/` split it argues for exist. Where it and `to-production.md` differ
+> about the target architecture, the latter is the current intent — see TODOS.md,
+> "Reconciliation with to-production.md".
+
 # SchemaFlux Refactoring Plan
 
 ## Goal

@@ -1,3 +1,7 @@
+> **Status: motivation, not a plan.** The philosophy here is the library's, and it is
+> why `to-production.md` exists; the specific primitive proposals predate the
+> operation catalogue in that document's §6.2, which supersedes them (TODOS.md PS-002).
+
 # Go Type-Native LLM Primitives
 
 ## Philosophy

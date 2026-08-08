@@ -1,3 +1,9 @@
+> **Archived, not scheduled.** `to-production.md` §1.3 makes a general-purpose
+> workflow/orchestration language an explicit non-goal for v1, and API-12 forbids
+> operation builders growing a branching DSL. M08 builds execution combinators
+> (`Escalate`, `Vote`, `Until`, `MapReduce`) instead, which is a deliberate decision
+> not to build this. Kept for the thinking in it. See TODOS.md PS-008.
+
 Below is a **fully detailed, UI‑agnostic, world‑class** design document for an enterprise workflow engine. It incorporates all prior decisions, removes UI layer guidance (you’ll use n8n or a custom UI), and deepens implementation details, behaviors, invariants, edge cases, and acceptance criteria. **No code** is included.
 
 ---

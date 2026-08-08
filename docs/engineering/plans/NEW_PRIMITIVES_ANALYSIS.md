@@ -1,3 +1,7 @@
+> **Status: superseded.** Adding primitives is the opposite of the direction PS-002
+> takes — a small stable core with everything else as recipes. Kept for the inventory,
+> which is still the clearest list of what exists.
+
 # SchemaFlux LLM Operations - Analysis & New Primitives Proposal
 
 ## Current Operations Inventory
