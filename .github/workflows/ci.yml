@@ -95,6 +95,15 @@ jobs:
       - name: Examples build
         run: go build ./examples/...
 
+      # CI-005. The floor is what was measured, and it only moves up.
+      - name: Coverage floor
+        run: python3 scripts/coverage_floor.py
+
+      # CI-007. An accidental export is a compatibility promise nobody decided
+      # to make; a removal is a broken build for somebody who did not ask.
+      - name: Public API surface
+        run: go test . -run TestPublicAPISurface
+
       # A dirty tree after a build means something generated a file nobody
       # committed.
       - name: Working tree is clean

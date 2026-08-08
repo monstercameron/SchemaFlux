@@ -1491,8 +1491,31 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
 - [ ] **CI-004** — Make the numbered examples a release gate. 19 of 45 fail under the local
   provider today because the mock returns `Mock response for: ...`, incompatible with the JSON
   contracts of `Rank`, `Enrich`, `Predict`, `Verify`, and `Question`. Depends on **TI-001**.
-- [ ] **CI-005** — Coverage floor, ratcheted from the current measured value rather than set
+  **Inventory, inherited from `PRODUCTION_TODO.md` when **DOC-003** folded it in.** As of that
+  document's run, under `SCHEMAFLUX_PROVIDER=local`:
+  *passing (26):* 02-transform, 07-summarize, 08-classify, 09-score, 10-compare, 11-similar,
+  12-validate, 13-merge, 14-decide, 15-guard, 16-infer, 17-diff, 18-explain, 19-parse,
+  20-complete, 21-redact, 22-suggest, 36-negotiate, 37-resolve, 38-derive, 39-conform,
+  41-arbitrate, 42-project, 43-audit, 44-compose, 45-pivot.
+  *failing (19):* 01-extract, 03-generate, 04-choose, 05-filter, 06-sort, 23-annotate,
+  24-cluster, 25-rank, 26-compress, 27-decompose, 28-enrich, 29-normalize, 30-match,
+  31-critique, 32-synthesize, 33-predict, 34-verify, 35-question, 40-interpolate.
+  The cause is one thing: the local provider answers `Mock response for: ...`, which satisfies
+  no JSON contract. **TI-001**'s scripted provider is the fix; this list is the acceptance
+  criterion. The numbers are from 2026-03-06 and several of these operations have changed
+  since — re-measure before relying on them.
+- [x] **CI-005** — Coverage floor, ratcheted from the current measured value rather than set
   aspirationally.
+  **Done — 62.2%, measured.** `scripts/coverage_floor.py`, run by the `quality` job.
+  The measurement covers the **library packages only**. Including the forty-five numbered
+  examples — `main` packages with no tests — puts the total at 47.5%, fifteen points of which
+  say nothing about whether the library is tested. Making the examples a gate is **CI-004**,
+  and it is a different kind of check.
+  The tolerance is a whole point rather than zero, because coverage moves by a tenth when an
+  error branch is added for a case that cannot be triggered yet, and a check that fails on
+  that teaches people to regenerate the floor instead of reading it.
+  *Verify:* the check exits 0 at the floor and 1 with the floor raised to 95%; `--update`
+  ratchets it.
 - [x] **CI-006** — Secret scanning on push; assert no cassette or fixture carries a key.
   **Done** — `scripts/secret_scan.py`, run by the `secrets` job over every tracked text file
   (485 of them). Seven vendor key shapes plus a credential-shaped-assignment heuristic, with
@@ -1510,8 +1533,19 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   placeholder, a waived line). Both the self-test and the repository scan run in CI. One real
   waiver was added: `internal/ops/json_redaction_test.go` carries a bearer token as the
   payload it proves does *not* reach an error string.
-- [ ] **CI-007** — Public API surface test: snapshot the exported symbols so an unintended
+- [x] **CI-007** — Public API surface test: snapshot the exported symbols so an unintended
   addition or removal fails review. Depends on **PS-003**.
+  **Done, and it does not depend on PS-003 after all** — the snapshot records whatever is
+  exported today, including the duplicate spellings PS-003 will resolve, and resolving them
+  is then a visible diff rather than a silent one. That is the more useful order.
+  `testdata/api_surface.txt`: 467 exported declarations of the root package, sorted, read
+  from the source rather than by reflection so it sees types and constants a running program
+  would not expose. A change prints as added and removed lines with the command to
+  regenerate.
+  *Verify:* `TestPublicAPISurface` passes against the snapshot and was confirmed to fail on a
+  planted line. Regenerating takes an environment variable rather than a flag, because
+  `go test` parses its own flags first and an unknown one fails the run before the test sees
+  it.
 - [x] **DOC-001** — Rewrite the README against what the code does. Today it advertises
   timeout control through context (dropped by 31 operations), cost tracking (zero or wrong for
   six of eight providers), retries for transient failures (classified by substring), and
@@ -1548,7 +1582,7 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   **Still to add when they land:** `Run(ctx)` (**A-013**) and the per-operation result structs
   collapsing into `Result[T]` (**OP-401**), both still open. The `SCHEMAFLOW_*` to
   `SCHEMAFLUX_*` rename shipped before this session and is in the Environment section.
-- [ ] **DOC-003** — Update `docs/engineering/backlog/PRODUCTION_TODO.md` to point here, or
+- [x] **DOC-003** — Update `docs/engineering/backlog/PRODUCTION_TODO.md` to point here, or
   fold it in and delete it.
   **Revised:** fold it in. It is dated 2026-03-06 and most of it is now false or already
   scheduled — the mock-provider complaint is **TI-001** and **CI-004**, the metrics
@@ -1556,6 +1590,16 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   families are **PS-001**, and the `-race` line is **CI-002**. The one item it holds that
   this list does not is the per-example pass/fail inventory; keep that inside **CI-004**
   and delete the file rather than maintaining a second backlog that drifts.
+  **Done — folded in and deleted.** Everything it held was either already scheduled here or
+  false. The mapping, so nothing is lost by the deletion:
+  the mock-provider complaint is **TI-001** (shipped) and **CI-004**; the failing numbered
+  examples are **CI-004**, whose inventory now lives in that task; the metrics-export
+  complaint is **MW-007** and **OB-001**; the duplicated `.env` loaders are **B-03**
+  (shipped); the stubbed tool families are **PS-001**; the `-race` line is **CI-002**
+  (shipped); and "add a first-class way for each operation to declare whether it requires
+  JSON output" is **S-005** (shipped).
+  Its verification snapshot was dated 2026-03-06 and described a build five months and three
+  breaking changes ago. A second backlog that drifts is worse than no second backlog.
 - [ ] **REL-001** — Tag v0.2.0 at the end of M02 (provider correctness), v0.3.0 at the end of
   M05 (operations verified), v1.0.0 only after M10.
   **Revised:** M10 is no longer the last gate. With M11–M17 scheduled, v1.0.0 means the §19
