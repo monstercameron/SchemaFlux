@@ -2209,12 +2209,36 @@ tests.
   That is **CA-004**, which is `[LIVE]` and blocked on **B-01** — nothing in this task can be
   confirmed by a test that never leaves the machine, and the honest statement is that the
   requests are now shaped correctly, not that caching is working.
-- [ ] **CA-004** — Consolidate per-operation invariant content (schema, exemplars, rules) into
+- [x] **CA-004** — Consolidate per-operation invariant content (schema, exemplars, rules) into
   the stable zone so it crosses the minimum cacheable prefix. Below the floor — 1024 tokens on
   OpenAI, 512–4096 on Anthropic depending on model — caching silently does nothing, and
   today's system prompts are a few hundred tokens.
   *Verify:* measured `cached_tokens` greater than zero on the second identical call.
   `[LIVE]`, blocked on **B-01**.
+  **Verify line satisfied by measurement, 2026-08-08, run live with Cam's authorization.** A
+  1461-token stable prefix reported `cached_tokens = 1458` on the second identical call, and
+  `cache_write_tokens = 1458` on the first. The floor is real and sharp: the **same test at 804
+  tokens cached nothing at all** — not less, nothing. Both numbers come from one afternoon's
+  four calls and are in `cachefloor_live_test.go`, which re-measures rather than asserting a
+  remembered figure.
+  The first draft of that prefix came in at 804 tokens and the test **refused to conclude
+  anything** — "this test cannot measure caching until the prefix is longer" — rather than
+  reporting the zero as evidence caching was broken. That refusal is the reason the number
+  above can be trusted.
+  **The consolidation itself should not be done, and the measurement is why.** Across all 14
+  operations in the golden snapshot the system prompts run 268–342 tokens, median 272:
+  **none reaches the floor, and the largest is a third of the way there.** So there is no
+  consolidation available that would cross it — the total invariant content of the biggest
+  operation is under 350 tokens. Reaching 1024 would mean **adding** roughly 700 tokens of
+  material written for no reason except to clear a threshold, on every call, when the measured
+  first call *pays to write* the cache (1458 write tokens here). That trades a certain 3× input
+  cost on every uncached call against a saving that only arrives when the identical operation
+  and schema repeat, at a repeat rate this library has never measured.
+  Recorded as a **revision of the premise rather than a task left undone**: CA-004 assumed the
+  content existed and was merely scattered. It does not exist. The mechanism is proven to work
+  and the door is open for any operation that genuinely grows a large stable zone — an
+  extraction with a big schema and worked exemplars would qualify — but padding the current
+  ones to reach the floor would cost money to save money and lose.
 - [x] **CA-005** — Fan-out ordering primitive: send one request, await first token, then
   release the rest. A cache entry is only readable after the first response begins streaming,
   so a naive parallel fan-out has every worker pay a full write.
