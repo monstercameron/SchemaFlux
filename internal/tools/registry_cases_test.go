@@ -181,8 +181,16 @@ func TestEveryStubToolIsIdentifiable(t *testing.T) {
 		})
 	}
 
-	if stubs < 5 {
-		t.Fatalf("only %d stubs found; the registry should carry more than that", stubs)
+	// PS-001 curated the registry: every tool that did nothing was deleted
+	// rather than kept behind a flag, so the expected number of stubs is now
+	// zero. This used to require at least five, which was the right assertion
+	// while half the registry was unimplemented and the wrong one afterwards.
+	//
+	// The subtests above still run if a stub is ever reintroduced, so the
+	// disclosure rule survives; what changed is that a stub is now an
+	// exception to justify rather than the normal state.
+	if stubs != 0 {
+		t.Errorf("%d stub tools are registered; the registry is meant to contain only tools that work", stubs)
 	}
 }
 

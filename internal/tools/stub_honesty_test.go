@@ -150,8 +150,13 @@ func TestEveryStubResultBelongsToAStubTool(t *testing.T) {
 		}
 	}
 
-	if checked == 0 {
-		t.Fatal("no stub-returning tool was found, so this test witnesses nothing")
+	// After PS-001 there are no stub-returning tools left, so `checked` is
+	// legitimately zero and this used to Fatal on that. The risk it was
+	// guarding against is real though -- a walker that silently stops finding
+	// anything would pass forever -- so instead of requiring stubs to exist,
+	// require that the walker still found the declarations it walks.
+	if len(declared) == 0 {
+		t.Fatal("no tool declarations were found at all, so the source walk is broken rather than clean")
 	}
 	t.Logf("checked %d stub-returning tools out of %d declarations", checked, len(declared))
 }

@@ -175,6 +175,9 @@ func Validating[T any](input T) ValidateRequest[T] {
 	return builder.Validating[T](input)
 }
 
+// Asking runs one model round trip despite its conversational name; see
+// ops.Question's doc comment for why and where a real multi-turn primitive
+// lives instead (PS-005, Revised ARC-20).
 func Asking[T any, A any](input T, question string) QuestionRequest[T, A] {
 	return builder.Asking[T, A](input, question)
 }
@@ -255,10 +258,16 @@ func VerifyingClaim(claim string) VerifyClaimRequest {
 	return builder.VerifyingClaim(claim)
 }
 
+// Negotiating runs one model round trip despite its conversational name; see
+// ops.Negotiate's doc comment for why and where a real multi-turn primitive
+// lives instead (PS-005, Revised ARC-20).
 func Negotiating[T any](constraints any) NegotiateRequest[T] {
 	return builder.Negotiating[T](constraints)
 }
 
+// NegotiatingAdversarially runs one model round trip despite its two-party
+// framing; see ops.NegotiateAdversarial's doc comment for why and where a
+// real multi-turn primitive lives instead (PS-005, Revised ARC-20).
 func NegotiatingAdversarially[T any](ctx AdversarialContext[T]) AdversarialNegotiationRequest[T] {
 	return builder.NegotiatingAdversarially[T](ctx)
 }

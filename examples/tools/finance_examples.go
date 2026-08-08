@@ -92,30 +92,6 @@ func runFinanceExamples(ctx context.Context) {
 	})
 	printResult("Interest: Savings ($5k initial + $200/mo for 10 years)", result, err)
 
-	// Example 10: Currency conversion (stub)
-	result, err = tools.Execute(ctx, "currency", map[string]any{
-		"amount": 100.0,
-		"from":   "USD",
-		"to":     "EUR",
-	})
-	printResult("Currency: USD to EUR (stub)", result, err)
-
-	// Example 11: Stock quote (stub)
-	result, err = tools.Execute(ctx, "stock", map[string]any{
-		"symbol": "AAPL",
-		"action": "quote",
-	})
-	printResult("Stock: AAPL quote (stub)", result, err)
-
-	// Example 12: Chart configuration (stub)
-	result, err = tools.Execute(ctx, "chart", map[string]any{
-		"type":   "line",
-		"data":   []any{10, 20, 15, 25, 30, 22},
-		"title":  "Sales Trend",
-		"labels": []any{"Jan", "Feb", "Mar", "Apr", "May", "Jun"},
-	})
-	printResult("Chart: Line chart config (stub)", result, err)
-
 	// Example 13: Compare investment options
 	fmt.Println("\n📊 Investment Comparison: $10,000 for 5 years")
 	fmt.Println(strings.Repeat("-", 50))

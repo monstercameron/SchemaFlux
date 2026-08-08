@@ -377,9 +377,16 @@ func TestCallLLMRetriesTransientFailures(t *testing.T) {
 	}
 }
 
+// A-008: built the way a real provider builds a client error -- typed, via
+// llm.NewAPIError -- rather than a plain fmt.Errorf whose message happened to
+// contain "status 400". The retry decision now comes from llm.Classify
+// reading the typed status, not from matching that substring, so a plain
+// string carrying the same words would no longer prove anything about the
+// classifier; see TestUnclassifiableErrorsAreRetriedNotFailedFast below for
+// what a plain, untyped error now does instead.
 func TestCallLLMDoesNotRetryNonRetryableFailures(t *testing.T) {
 	provider := &captureProvider{
-		errors: []error{fmt.Errorf("OpenAI API error (status 400): invalid request")},
+		errors: []error{llm.NewAPIError("openai", "gpt-5-mini", 400, `{"error":{"message":"invalid request"}}`)},
 	}
 
 	_, err := CallLLM(
@@ -394,6 +401,71 @@ func TestCallLLMDoesNotRetryNonRetryableFailures(t *testing.T) {
 	}
 	if provider.attempts != 1 {
 		t.Fatalf("expected 1 attempt, got %d", provider.attempts)
+	}
+}
+
+// A-008's verify line: "an unknown error does not silently fail fast." A
+// plain error nobody has taught the taxonomy about -- not wrapped in any of
+// this library's typed errors -- must still be retried up to the configured
+// budget rather than treated as permanent because it matched neither of the
+// old substring lists.
+func TestCallLLMRetriesAnUnclassifiableError(t *testing.T) {
+	provider := &captureProvider{
+		errors: []error{
+			errors.New("the vendor changed its error format again"),
+			nil,
+		},
+		resp: llm.CompletionResponse{Content: "ok", Model: "gpt-5-mini"},
+	}
+
+	got, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast, Mode: types.TransformMode},
+	)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("expected recovery after retry, got %q", got)
+	}
+	if provider.attempts != 2 {
+		t.Fatalf("expected 2 attempts (the unclassifiable failure retried), got %d", provider.attempts)
+	}
+}
+
+// A typed 429 retries; the wait between attempts still comes from the
+// server's own Retry-After rather than the computed backoff -- CB-03,
+// unaffected by A-008's jitter, since a server-stated wait is never jittered.
+func TestCallLLMRetriesATypedRateLimit(t *testing.T) {
+	provider := &captureProvider{
+		errors: []error{
+			&llm.RateLimitError{
+				APIError:   &llm.APIError{Provider: "cerebras", StatusCode: 429},
+				RetryAfter: time.Millisecond,
+			},
+			nil,
+		},
+		resp: llm.CompletionResponse{Content: "recovered", Model: "gpt-5-mini"},
+	}
+
+	got, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast, Mode: types.TransformMode},
+	)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if got != "recovered" {
+		t.Fatalf("got = %q", got)
+	}
+	if provider.attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", provider.attempts)
 	}
 }
 

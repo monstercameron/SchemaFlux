@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // An options field with a fluent setter and no reader is worse than a missing
@@ -111,7 +112,12 @@ func TestNoDeadOptionFields(t *testing.T) {
 			}
 
 			name := function.Name.Name
-			isSetter := strings.HasPrefix(name, "With") || strings.HasPrefix(name, "Set")
+			// A setter is WithX or SetX -- the prefix followed by a capital.
+			// Matching a bare "Set" prefix meant any function whose name merely
+			// began with those letters was skipped as if it were a setter, so
+			// the operation named Settle made three of its own options look
+			// dead. "Withhold" would have done the same.
+			isSetter := hasCapitalisedPrefix(name, "With") || hasCapitalisedPrefix(name, "Set")
 			isMerge := strings.Contains(strings.ToLower(name), "merge") ||
 				strings.Contains(strings.ToLower(name), "toopoptions") ||
 				strings.Contains(strings.ToLower(name), "applydefaults") ||
@@ -172,4 +178,19 @@ func TestNoDeadOptionFields(t *testing.T) {
 	}
 
 	t.Logf("%d option fields, %d dead, %d of those recorded", len(declared), len(dead), len(dead)-len(unexplained))
+}
+
+// hasCapitalisedPrefix reports whether name begins with prefix and continues
+// with an upper-case letter, which is what distinguishes the setter SetMode
+// from the operation Settle.
+func hasCapitalisedPrefix(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	rest := name[len(prefix):]
+	if rest == "" {
+		return true
+	}
+	first := rune(rest[0])
+	return unicode.IsUpper(first)
 }

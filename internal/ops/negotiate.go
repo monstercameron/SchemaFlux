@@ -84,6 +84,16 @@ type NegotiateResult[T any] struct {
 
 // Negotiate reconciles competing constraints to find an optimal typed solution.
 //
+// It is one model round trip: the constraints go in, a single response comes
+// back parsed into T, Tradeoffs, and Reasoning. Nothing about the name
+// implies otherwise on the wire -- there is no back-and-forth with the model
+// and no session the model's answer can be revised inside. A caller that
+// wants an actual multi-turn negotiation (propose, get pushback, revise) has
+// to build that loop itself, one Negotiate call per turn; Session in
+// session.go is the transcript primitive for doing that against
+// llm.Provider directly, but this operation does not use it (PS-005,
+// Revised ARC-20).
+//
 // Type parameter T specifies the output type that balances the constraints.
 //
 // Examples:
@@ -132,7 +142,20 @@ type NegotiateResult[T any] struct {
 //	    "company_max": 140000,
 //	    "remote_preference": "3-5 days",
 //	}, NegotiateOptions{Steering: "Find creative compensation solutions"})
+//
+// Deprecated: use Settle. This operation takes a set of constraints and
+// produces a settlement in a single model round trip; it does not negotiate,
+// and a conversational name on a one-round-trip implementation is the thing
+// PS-005 forbids. Settle is the same operation under a name that says so.
 func Negotiate[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T], error) {
+	return Settle[T](constraints, opts...)
+}
+
+// Settle produces a settlement satisfying the given constraints, in one model
+// round trip. For an actual multi-turn exchange, drive a Session yourself: the
+// transcript shape exists (session.go) precisely because this operation is not
+// one.
+func Settle[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T], error) {
 	log := logger.GetLogger()
 	log.Debug("Starting negotiate operation")
 
@@ -440,6 +463,13 @@ type AdversarialOptions struct {
 // must find common ground. The leverage parameter determines who has more power
 // and thus who should concede more.
 //
+// It is, like Negotiate, one model round trip -- both positions and the
+// leverage go in together, and a single response comes back with the whole
+// deal already settled. There is no actual back-and-forth between "our" and
+// "their" side across separate calls, despite the two-party framing. See
+// Negotiate's doc comment for where a real multi-turn transcript would live
+// (Session, session.go) if a caller needs one.
+//
 // Type parameter T specifies the structure of positions and the final deal.
 //
 // Examples:
@@ -459,7 +489,16 @@ type AdversarialOptions struct {
 //	// result.Deal has the final terms
 //	// result.TermMovements shows who moved on each term
 //	// result.WhoConcededMore indicates "they" since we had strong leverage
+//
+// Deprecated: use SettleAdversarial. One model round trip, not an exchange.
+// See PS-005.
 func NegotiateAdversarial[T any](context AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
+	return SettleAdversarial(context, opts...)
+}
+
+// SettleAdversarial produces a settlement between opposed positions in one
+// model round trip.
+func SettleAdversarial[T any](context AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
 	log := logger.GetLogger()
 	log.Debug("Starting adversarial negotiation")
 

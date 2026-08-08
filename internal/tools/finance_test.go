@@ -5,38 +5,6 @@ import (
 	"testing"
 )
 
-func TestChartToolStub(t *testing.T) {
-	result, _ := ChartTool.Execute(context.Background(), map[string]any{
-		"type": "bar",
-		"data": []any{1, 2, 3},
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected chart to be stubbed")
-	}
-}
-
-func TestCurrencyToolStub(t *testing.T) {
-	result, _ := CurrencyTool.Execute(context.Background(), map[string]any{
-		"action": "convert",
-		"from":   "USD",
-		"to":     "EUR",
-		"amount": 100,
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected currency to be stubbed")
-	}
-}
-
-func TestStockToolStub(t *testing.T) {
-	result, _ := StockTool.Execute(context.Background(), map[string]any{
-		"action": "quote",
-		"symbol": "AAPL",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected stock to be stubbed")
-	}
-}
-
 func TestTaxToolSales(t *testing.T) {
 	result, _ := TaxTool.Execute(context.Background(), map[string]any{
 		"type":   "sales",

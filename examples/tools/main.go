@@ -78,8 +78,9 @@ func runExamples(category string) {
 		runCacheSecurityExamples(ctx)
 	case "database":
 		runDatabaseExamples(ctx)
-	case "ai", "audio", "messaging", "image", "exec":
-		runAIExamples(ctx)
+	// The ai, audio, messaging, image, and exec categories are gone with the
+	// tools they demonstrated: every one of them answered with a stub result
+	// that reported success. See PS-001.
 	case "all":
 		runComputeExamples(ctx)
 		runDataExamples(ctx)
@@ -90,7 +91,6 @@ func runExamples(category string) {
 		runTemplateExamples(ctx)
 		runCacheSecurityExamples(ctx)
 		runDatabaseExamples(ctx)
-		runAIExamples(ctx)
 	default:
 		fmt.Printf("Unknown category: %s\n", category)
 	}

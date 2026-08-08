@@ -333,24 +333,6 @@ func TestTokenTool(t *testing.T) {
 	}
 }
 
-func TestEncryptDecryptStubs(t *testing.T) {
-	// Encrypt stub
-	result, _ := EncryptTool.Execute(context.Background(), map[string]any{
-		"data": "secret",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected encrypt to be stubbed")
-	}
-
-	// Decrypt stub
-	result, _ = DecryptTool.Execute(context.Background(), map[string]any{
-		"data": "encrypted_data",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected decrypt to be stubbed")
-	}
-}
-
 func TestCacheToolErrors(t *testing.T) {
 	// Missing key for get
 	result, _ := CacheTool.Execute(context.Background(), map[string]any{
@@ -411,6 +393,10 @@ func TestGenerateRandomToken(t *testing.T) {
 // The old implementation hashed the current nanosecond, so tokens issued in the
 // same nanosecond were identical and every token was a function of its issue
 // time. A thousand draws must all differ.
+
+// The old implementation hashed the current nanosecond, so tokens issued in the
+// same nanosecond were identical and every token was a function of its issue
+// time. A thousand draws must all differ.
 func TestGeneratedTokensAreUnpredictable(t *testing.T) {
 	seen := make(map[string]struct{}, 1000)
 	for i := 0; i < 1000; i++ {
@@ -424,6 +410,10 @@ func TestGeneratedTokensAreUnpredictable(t *testing.T) {
 		seen[token] = struct{}{}
 	}
 }
+
+// The jwt path returned a successful-looking stub from a tool not marked as a
+// stub, so a caller filtering on IsStub shipped a JWT generator that generated
+// nothing.
 
 // The jwt path returned a successful-looking stub from a tool not marked as a
 // stub, so a caller filtering on IsStub shipped a JWT generator that generated
@@ -446,6 +436,8 @@ func TestTokenToolRefusesJWTRatherThanFakingIt(t *testing.T) {
 		t.Error("this is not a stub result, it is a refusal")
 	}
 }
+
+// The random path still works.
 
 // The random path still works.
 func TestTokenToolGeneratesRandomTokens(t *testing.T) {

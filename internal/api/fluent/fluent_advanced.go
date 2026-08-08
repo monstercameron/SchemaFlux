@@ -45,6 +45,10 @@ func newNegotiateRequest[T any](constraints any, opts NegotiateOptions) Negotiat
 }
 
 // Negotiating starts a fluent Negotiate request.
+//
+// Despite the name, Run resolves it in a single model round trip -- see
+// ops.Negotiate's doc comment for what that means and where the real
+// multi-turn primitive (ops.Session) lives (PS-005, Revised ARC-20).
 func Negotiating[T any](constraints any) NegotiateRequest[T] {
 	return newNegotiateRequest[T](constraints, NegotiateOptions{})
 }
@@ -108,6 +112,11 @@ func newAdversarialNegotiationRequest[T any](ctx AdversarialContext[T], opts Adv
 }
 
 // NegotiatingAdversarially starts a fluent NegotiateAdversarial request.
+//
+// Despite the two-party framing, Run resolves it in a single model round
+// trip -- see ops.NegotiateAdversarial's doc comment for what that means and
+// where the real multi-turn primitive (ops.Session) lives (PS-005, Revised
+// ARC-20).
 func NegotiatingAdversarially[T any](ctx AdversarialContext[T]) AdversarialNegotiationRequest[T] {
 	return newAdversarialNegotiationRequest(ctx, AdversarialOptions{})
 }

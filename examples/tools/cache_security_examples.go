@@ -161,20 +161,6 @@ func runCacheSecurityExamples(ctx context.Context) {
 	})
 	printResult("Token: JWT (stub)", result, err)
 
-	// Example 18: Encrypt (stub)
-	result, err = tools.Execute(ctx, "encrypt", map[string]any{
-		"data":      "sensitive data",
-		"algorithm": "aes-256-gcm",
-	})
-	printResult("Encrypt: AES-256-GCM (stub)", result, err)
-
-	// Example 19: Decrypt (stub)
-	result, err = tools.Execute(ctx, "decrypt", map[string]any{
-		"data":      "encrypted-data-here",
-		"algorithm": "aes-256-gcm",
-	})
-	printResult("Decrypt: AES-256-GCM (stub)", result, err)
-
 	// Example 20: Using Hash helper function directly
 	hash, err := tools.Hash("hello world", "sha256")
 	if err != nil {

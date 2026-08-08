@@ -449,50 +449,10 @@ func generateRandomToken(length int) (string, error) {
 	return hex.EncodeToString(raw)[:length], nil
 }
 
-// EncryptTool encrypts data (STUBBED - requires key management).
-var EncryptTool = &Tool{
-	Name:        "encrypt",
-	Description: "Encrypt data using AES (requires encryption key setup)",
-	Category:    CategorySecurity,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"data":      StringParam("Data to encrypt"),
-		"key":       StringParam("Encryption key (or use default)"),
-		"algorithm": EnumParam("Algorithm", []string{"aes-256-gcm", "aes-256-cbc"}),
-	}, []string{"data"}),
-	Execute:      executeEncryptStub,
-	RequiresAuth: true,
-	IsStub:       true,
-}
-
-func executeEncryptStub(ctx context.Context, params map[string]any) (Result, error) {
-	return StubResult("Encryption requires proper key management. Configure ENCRYPTION_KEY or use a key management service."), nil
-}
-
-// DecryptTool decrypts data (STUBBED).
-var DecryptTool = &Tool{
-	Name:        "decrypt",
-	Description: "Decrypt data using AES (requires encryption key setup)",
-	Category:    CategorySecurity,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"data":      StringParam("Encrypted data (base64)"),
-		"key":       StringParam("Encryption key"),
-		"algorithm": EnumParam("Algorithm", []string{"aes-256-gcm", "aes-256-cbc"}),
-	}, []string{"data"}),
-	Execute:      executeDecryptStub,
-	RequiresAuth: true,
-	IsStub:       true,
-}
-
-func executeDecryptStub(ctx context.Context, params map[string]any) (Result, error) {
-	return StubResult("Decryption requires proper key management. Configure ENCRYPTION_KEY or use a key management service."), nil
-}
-
 func init() {
 	mustRegister(CacheTool)
 	mustRegister(MemoizeTool)
 	mustRegister(HashTool)
 	mustRegister(Base64Tool)
 	mustRegister(TokenTool)
-	mustRegister(EncryptTool)
-	mustRegister(DecryptTool)
 }

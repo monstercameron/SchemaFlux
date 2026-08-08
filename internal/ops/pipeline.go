@@ -256,42 +256,17 @@ func Map[T any, U any](items []T, operation func(T) (U, error)) ([]U, error) {
 	return results, nil
 }
 
-// MapConcurrent applies an operation to each element concurrently
-func MapConcurrent[T any, U any](items []T, operation func(T) (U, error), maxConcurrent int) ([]U, error) {
-	results := make([]U, len(items))
-	errors := make([]error, len(items))
-
-	sem := make(chan struct{}, maxConcurrent)
-	var wg sync.WaitGroup
-
-	for i, item := range items {
-		wg.Add(1)
-		go func(idx int, itm T) {
-			defer wg.Done()
-
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			result, err := operation(itm)
-			if err != nil {
-				errors[idx] = err
-			} else {
-				results[idx] = result
-			}
-		}(i, item)
-	}
-
-	wg.Wait()
-
-	// Check for errors
-	for i, err := range errors {
-		if err != nil {
-			return nil, fmt.Errorf("concurrent map failed at index %d: %w", i, err)
-		}
-	}
-
-	return results, nil
-}
+// MapConcurrent was retired here (CF-08). It was a second bounded-concurrency
+// primitive beside MapReduce's, and the weaker one: it started a goroutine per
+// item *before* acquiring the semaphore, so a ten-thousand-item slice created
+// ten thousand goroutines and then let them queue -- the semaphore bounded the
+// work, not the goroutines. It also took no context, so nothing it started
+// could be cancelled.
+//
+// MapReduce with Concurrency set is the primitive that survives (CF-009). It
+// bounds the workers themselves and honours cancellation.
+//
+// Nothing outside this package's own tests ever called it.
 
 // Reduce applies a reduction operation to combine multiple items
 func Reduce[T any](items []T, operation func(T, T) T) (T, error) {
@@ -321,25 +296,21 @@ func Tap[T any](operation func(T)) func(T) (T, error) {
 	}
 }
 
-// Retry wraps an operation with retry logic
-func Retry[T any](operation func() (T, error), maxAttempts int, delay time.Duration) (T, error) {
-	var zero T
-	var lastErr error
-
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		result, err := operation()
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-		if attempt < maxAttempts-1 {
-			time.Sleep(delay * time.Duration(attempt+1))
-		}
-	}
-
-	return zero, fmt.Errorf("operation failed after %d attempts: %w", maxAttempts, lastErr)
-}
+// Retry was retired here (CF-08). It was a third opinion about what is worth
+// retrying, and the weakest of the three: it retried *every* error the same
+// number of times, including the terminal ones -- a malformed request, a
+// policy refusal, an exhausted budget -- each of which fails identically on
+// the next attempt, so the only thing the retries bought was three times the
+// latency and, where a call had already been billed, three times the cost. It
+// also slept on a fixed schedule with no jitter, so every caller retrying at
+// once retried at the same instant.
+//
+// The two that remain are `CallLLM`'s own retry, which classifies through
+// llm.Classify, and mw.Retry, which classifies through the same function and
+// uses decorrelated jitter. A retry decision that differs between layers is a
+// bug nobody can reproduce, which is why there is no third.
+//
+// Nothing outside this package's own tests ever called it.
 
 // Cache wraps an operation with simple caching
 type CachedOperation[T any] struct {

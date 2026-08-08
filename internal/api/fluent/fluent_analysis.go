@@ -774,6 +774,10 @@ func newQuestionRequest[T any, A any](input T, opts QuestionOptions) QuestionReq
 }
 
 // Asking starts a fluent Question request.
+//
+// Despite the name, Run resolves it in a single model round trip -- see
+// ops.Question's doc comment for what that means and where the real
+// multi-turn primitive (ops.Session) lives (PS-005, Revised ARC-20).
 func Asking[T any, A any](input T, question string) QuestionRequest[T, A] {
 	return newQuestionRequest[T, A](input, NewQuestionOptions(question))
 }

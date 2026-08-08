@@ -7,16 +7,6 @@ import (
 	"testing"
 )
 
-func TestPDFToolStub(t *testing.T) {
-	result, _ := PDFTool.Execute(context.Background(), map[string]any{
-		"action": "extract",
-		"input":  "test.pdf",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected PDF to be stubbed")
-	}
-}
-
 func TestZipToolCreate(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -157,54 +147,5 @@ func TestZipToolInvalidArchive(t *testing.T) {
 	})
 	if result.Success {
 		t.Error("Expected failure for nonexistent archive")
-	}
-}
-
-func TestTarToolStub(t *testing.T) {
-	result, _ := TarTool.Execute(context.Background(), map[string]any{
-		"action": "create",
-		"path":   "test.tar.gz",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected tar to be stubbed")
-	}
-}
-
-func TestQRCodeTool(t *testing.T) {
-	result, _ := QRCodeTool.Execute(context.Background(), map[string]any{
-		"data": "https://example.com",
-	})
-
-	if !result.Success {
-		t.Fatalf("Expected success: %s", result.Error)
-	}
-
-	// Should return map with ascii and other data
-	data := result.Data.(map[string]any)
-	ascii, ok := data["ascii"].(string)
-	if !ok || len(ascii) == 0 {
-		t.Error("Expected non-empty ascii output")
-	}
-
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected stubbed flag")
-	}
-}
-
-func TestQRCodeToolMissingData(t *testing.T) {
-	result, _ := QRCodeTool.Execute(context.Background(), map[string]any{})
-	// QRCode with empty data should still work (generates pattern for empty string)
-	if !result.Success {
-		t.Skipf("QRCode tool fails on empty data: %s", result.Error)
-	}
-}
-
-func TestBarcodeToolStub(t *testing.T) {
-	result, _ := BarcodeTool.Execute(context.Background(), map[string]any{
-		"data": "123456789",
-		"type": "code128",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected barcode to be stubbed")
 	}
 }

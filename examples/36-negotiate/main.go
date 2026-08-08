@@ -71,7 +71,7 @@ func runSalaryNegotiation() {
 	fmt.Println("}")
 	fmt.Println("OPTIONS: Steering: \"They definitely don't want RTO but salary might be moveable\"")
 
-	result, err := schemaflux.NegotiateAdversarial[SalaryTerms](ctx, schemaflux.AdversarialOptions{
+	result, err := schemaflux.SettleAdversarial[SalaryTerms](ctx, schemaflux.AdversarialOptions{
 		Intelligence: types.Smart,
 		Steering:     "They definitely don't want RTO so hold firm on remote days. Salary is more flexible for them.",
 	})
@@ -127,7 +127,7 @@ func runVendorContract() {
 	fmt.Println("}")
 	fmt.Println("OPTIONS: Steering: \"Seller is desperate to close Q4, price is negotiable\"")
 
-	result, err := schemaflux.NegotiateAdversarial[ContractTerms](ctx, schemaflux.AdversarialOptions{
+	result, err := schemaflux.SettleAdversarial[ContractTerms](ctx, schemaflux.AdversarialOptions{
 		Intelligence: types.Smart,
 		Steering:     "Seller is desperate to close before Q4 ends. Price is very negotiable. Quantity less so.",
 	})
@@ -184,7 +184,7 @@ func runAcquisition() {
 	fmt.Printf("  OurLeverage: %q, Relationship: %q,\n", ctx.OurLeverage, ctx.Relationship)
 	fmt.Println("}")
 
-	result, err := schemaflux.NegotiateAdversarial[AcquisitionTerms](ctx, schemaflux.AdversarialOptions{
+	result, err := schemaflux.SettleAdversarial[AcquisitionTerms](ctx, schemaflux.AdversarialOptions{
 		Intelligence: types.Smart,
 		Steering:     "Target has 3 competing bidders, so they have the power.",
 	})

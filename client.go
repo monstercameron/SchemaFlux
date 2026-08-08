@@ -222,6 +222,33 @@ func (client *Client) WithRequestTracking(cfg requesttracking.Config) *Client {
 	return client
 }
 
+// Context returns ctx carrying this client's provider, so an operation invoked
+// with the returned context reaches THIS client's provider rather than the
+// package-level default (TI-002, IN-004).
+//
+// It exists because Go has no type-parameterised methods, so client.Extract[T]
+// cannot be written and the provider became a process-wide global instead.
+// Every Client construction overwrites that global, which means building a
+// second client silently repointed the first one's operations at the second
+// one's provider -- two clients in one process is a library embedded twice, a
+// test running beside application code, or a tenant per client, and all three
+// were broken.
+//
+// Pass the result as the operation's context:
+//
+//	opts := schemaflux.NewExtractOptions()
+//	opts.OpOptions.Context = client.Context(ctx)
+//	invoice, err := schemaflux.Extract[Invoice](body, opts)
+//
+// A client with no provider leaves ctx unchanged, so the package default still
+// applies and nothing that works today stops working.
+func (client *Client) Context(ctx context.Context) context.Context {
+	client.mu.RLock()
+	provider := client.provider
+	client.mu.RUnlock()
+	return ops.WithProvider(ctx, provider)
+}
+
 // Global configuration
 var (
 	defaultClient *Client

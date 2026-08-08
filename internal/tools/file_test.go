@@ -337,18 +337,6 @@ func TestSearchFilesTool(t *testing.T) {
 	}
 }
 
-func TestWatchFileToolStub(t *testing.T) {
-	result, _ := WatchFileTool.Execute(context.Background(), map[string]any{
-		"path": "/some/path",
-	})
-	if !result.Success {
-		t.Error("Expected success for stub")
-	}
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected stubbed metadata")
-	}
-}
-
 func TestGetMimeType(t *testing.T) {
 	tests := []struct {
 		ext      string

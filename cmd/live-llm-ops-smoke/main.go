@@ -623,7 +623,7 @@ func testVerifyClaim() error {
 	return req(out.Verdict != "" && out.ModelConfidence > 0, "verifyclaim invalid")
 }
 func testNegotiate() error {
-	out, err := schemaflux.Negotiate[map[string]any](map[string]any{"candidate_min_salary": 145000, "company_max_salary": 150000, "remote_preference": "3 days", "bonus_target": 10000}, schemaflux.NegotiateOptions{Strategy: "balanced", Intelligence: schemaflux.Fast})
+	out, err := schemaflux.Settle[map[string]any](map[string]any{"candidate_min_salary": 145000, "company_max_salary": 150000, "remote_preference": "3 days", "bonus_target": 10000}, schemaflux.NegotiateOptions{Strategy: "balanced", Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
 	}
@@ -631,7 +631,7 @@ func testNegotiate() error {
 }
 func testNegotiateAdversarial() error {
 	ctx := schemaflux.AdversarialContext[map[string]any]{Ours: schemaflux.AdversarialPosition[map[string]any]{Position: map[string]any{"base_salary": 160000, "remote_days": 5, "bonus": 15000}}, Theirs: schemaflux.AdversarialPosition[map[string]any]{Position: map[string]any{"base_salary": 140000, "remote_days": 2, "bonus": 5000}}, OurLeverage: "strong"}
-	out, err := schemaflux.NegotiateAdversarial(ctx, schemaflux.AdversarialOptions{Strategy: "balanced", Intelligence: schemaflux.Fast})
+	out, err := schemaflux.SettleAdversarial(ctx, schemaflux.AdversarialOptions{Strategy: "balanced", Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
 	}

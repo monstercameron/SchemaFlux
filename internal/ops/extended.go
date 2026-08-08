@@ -1070,6 +1070,15 @@ type QuestionResult[A any] struct {
 
 // Question answers questions about data and returns a typed answer.
 //
+// It is one model round trip: data and question go in, one answer comes
+// back. "Asking" (the fluent builder over this operation) is not a
+// conversation the way the word suggests -- there is no follow-up question
+// inside a single call, and no memory of a prior Question call carried into
+// the next one. A caller that wants a real multi-turn exchange assembles it
+// itself, one call per turn; Session in session.go is the transcript
+// primitive for that against llm.Provider directly (PS-005, Revised
+// ARC-20).
+//
 // Type parameters:
 //   - T: Input data type
 //   - A: Answer type (can be string, struct, slice, etc.)

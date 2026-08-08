@@ -479,52 +479,10 @@ func executeHoliday(ctx context.Context, params map[string]any) (Result, error) 
 	}), nil
 }
 
-// GeoTool provides geocoding (STUBBED).
-var GeoTool = &Tool{
-	Name:        "geo",
-	Description: "Geocoding and location services (requires external API)",
-	Category:    CategoryTime,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"action":  EnumParam("Action", []string{"geocode", "reverse", "distance"}),
-		"address": StringParam("Address to geocode"),
-		"lat":     NumberParam("Latitude"),
-		"lon":     NumberParam("Longitude"),
-	}, []string{"action"}),
-	Execute:      executeGeoStub,
-	RequiresAuth: true,
-	IsStub:       true,
-}
-
-func executeGeoStub(ctx context.Context, params map[string]any) (Result, error) {
-	action, _ := params["action"].(string)
-	return StubResult(fmt.Sprintf("Geo action '%s' requires Google Maps/OpenStreetMap API. Configure GEO_API_KEY.", action)), nil
-}
-
-// WeatherTool provides weather data (STUBBED).
-var WeatherTool = &Tool{
-	Name:        "weather",
-	Description: "Get weather data for a location (requires external API)",
-	Category:    CategoryTime,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"location": StringParam("Location (city name or coordinates)"),
-		"units":    EnumParam("Units", []string{"metric", "imperial"}),
-	}, []string{"location"}),
-	Execute:      executeWeatherStub,
-	RequiresAuth: true,
-	IsStub:       true,
-}
-
-func executeWeatherStub(ctx context.Context, params map[string]any) (Result, error) {
-	location, _ := params["location"].(string)
-	return StubResult(fmt.Sprintf("Weather for '%s' requires OpenWeatherMap API. Configure WEATHER_API_KEY.", location)), nil
-}
-
 func init() {
 	mustRegister(NowTool)
 	mustRegister(ParseTimeTool)
 	mustRegister(DurationTool)
 	mustRegister(ScheduleTool)
 	mustRegister(HolidayTool)
-	mustRegister(GeoTool)
-	mustRegister(WeatherTool)
 }

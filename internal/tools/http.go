@@ -173,68 +173,6 @@ func doRequest(ctx context.Context, method, urlStr, body string, headers map[str
 	return result, nil
 }
 
-// WebSearchTool searches the web (STUBBED - requires external API).
-var WebSearchTool = &Tool{
-	Name:        "web_search",
-	Description: "Search the web for information (requires external API integration)",
-	Category:    CategoryHTTP,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"query": StringParam("Search query"),
-		"num":   NumberParam("Number of results (default: 10)"),
-		"site":  StringParam("Limit to specific site (optional)"),
-	}, []string{"query"}),
-	Execute:      executeWebSearchStub,
-	RequiresAuth: true,
-	IsStub:       true,
-}
-
-func executeWebSearchStub(ctx context.Context, params map[string]any) (Result, error) {
-	query, _ := params["query"].(string)
-	return StubResult(fmt.Sprintf("Web search for '%s' requires integration with Google/Bing API. Set SEARCH_API_KEY to enable.", query)), nil
-}
-
-// ScrapeTool extracts data from web pages (STUBBED).
-var ScrapeTool = &Tool{
-	Name:        "scrape",
-	Description: "Extract structured data from a web page (requires headless browser)",
-	Category:    CategoryHTTP,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"url":       StringParam("URL to scrape"),
-		"selectors": StringParam("CSS selectors to extract (JSON object)"),
-		"wait":      NumberParam("Wait time for dynamic content (seconds)"),
-	}, []string{"url"}),
-	Execute:      executeScrapeStub,
-	RequiresAuth: false,
-	IsStub:       true,
-}
-
-func executeScrapeStub(ctx context.Context, params map[string]any) (Result, error) {
-	urlStr, _ := params["url"].(string)
-	return StubResult(fmt.Sprintf("Scraping '%s' requires headless browser integration (Playwright/Chromedp).", urlStr)), nil
-}
-
-// BrowserTool opens URLs in browser (STUBBED).
-var BrowserTool = &Tool{
-	Name:        "browser",
-	Description: "Open URL in browser, take screenshots, interact with pages (stub - requires browser automation)",
-	Category:    CategoryHTTP,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"action":   EnumParam("Action to perform", []string{"open", "screenshot", "click", "type"}),
-		"url":      StringParam("URL to open"),
-		"selector": StringParam("CSS selector for interactions"),
-		"text":     StringParam("Text to type"),
-	}, []string{"action", "url"}),
-	Execute:      executeBrowserStub,
-	RequiresAuth: false,
-	IsStub:       true,
-}
-
-func executeBrowserStub(ctx context.Context, params map[string]any) (Result, error) {
-	action, _ := params["action"].(string)
-	urlStr, _ := params["url"].(string)
-	return StubResult(fmt.Sprintf("Browser action '%s' on '%s' requires browser automation integration.", action, urlStr)), nil
-}
-
 // WebhookTool manages webhooks.
 var WebhookTool = &Tool{
 	Name:        "webhook",
@@ -395,9 +333,6 @@ func DownloadFile(ctx context.Context, urlStr string, timeout time.Duration) ([]
 func init() {
 	mustRegister(FetchTool)
 	mustRegister(PostTool)
-	mustRegister(WebSearchTool)
-	mustRegister(ScrapeTool)
-	mustRegister(BrowserTool)
 	mustRegister(WebhookTool)
 	mustRegister(EncodeURLTool)
 	mustRegister(BuildURLTool)

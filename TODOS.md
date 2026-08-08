@@ -397,10 +397,22 @@ to test code that uses this library without paying a provider.
   per operation, a canned error mode, a slow mode for timeout tests, and a recorder of the
   exact requests it received. Closes **Gap-06**.
   *Verify:* the triage example from the review doc runs green with no network and no key.
-- [ ] **TI-002** — Add a `Provider` seam consumers can inject per call rather than only via a
+- [x] **TI-002** — Add a `Provider` seam consumers can inject per call rather than only via a
   package global. Depends on **A-004**.
   *Verify:* two clients with different fake providers run concurrently without interference —
   the test that today's global would fail.
+  **Done as a context seam, not an option field, and the reason matters.** `internal/llm`
+  imports `internal/types`, so a `Provider` field on `OpOptions` is an import cycle; the
+  workaround — an `any` field type-asserted back — is exactly the untyped landmine
+  `dead_options_test.go` exists to keep out. So: `ops.WithProvider(ctx, p)` carries the
+  provider on the context, `callLLM` prefers it over the global, and `Client.Context(ctx)`
+  hands a caller a context carrying that client's provider.
+  This needed **zero** changes at the ~60 `callLLM` call sites, because every operation
+  already threads its options' context through. A client with no provider leaves the context
+  untouched, so the package default still applies and nothing that works today stops working.
+  Context values for dependency injection are not a shape to reach for casually, and it is
+  used here because Go has no type-parameterised methods: `client.Extract[T]` cannot be
+  written, which is *why* the provider became a global in the first place.
 - [x] **TI-003** — Cassette record/replay: capture live provider bodies once, replay them in
   CI. Redact keys on write.
   *Verify:* a recorded suite replays with `SCHEMAFLUX_LIVE_TESTS` unset; a cassette containing
@@ -497,7 +509,7 @@ to test code that uses this library without paying a provider.
   the first run: the Filter generator corrupted almost every answer and only 2 of 60 rounds
   reached an assertion. Corruption is applied to at most one item per round now, and the
   counts are 18, 35, 42, and 17.
-- [ ] **TI-008** — Concurrency tests under `-race` for the package globals: `defaultClient`
+- [x] **TI-008** — Concurrency tests under `-race` for the package globals: `defaultClient`
   (`client.go:192-236`), `ops.defaultProvider`, `ops.customLLMCaller`, and `pricing`'s
   package state. Closes **I-14**.
   *Verify:* `go test -race` is green; the review notes `-race` cannot run on the current
@@ -509,6 +521,18 @@ to test code that uses this library without paying a provider.
   case alongside the race case; it is the one that fails today by construction.
   *Verify (added):* two clients with different fake providers and different budgets run
   concurrently and each sees only its own.
+  **Done for the isolation half; the budget half is not.** The tests were written first and
+  watched failing — the seam was disabled deliberately and each one failed the way the defect
+  predicted: the wrong provider answered and the call counts crossed over.
+  Covered: two clients built in sequence, where the second's construction used to repoint the
+  first; two clients running concurrently, each seeing only its own provider, asserted by a
+  provider that names itself in its answer rather than by hoping a race detector notices; and
+  the same property through the exported API rather than only through `internal/ops`.
+  **Not done:** `pricing.CheckBudget` is still process-wide, so "different budgets" is modelled
+  at the fake provider rather than enforced per client. Real per-client budget, scheduler, and
+  observer isolation — IN-004's full Revised vision of a client owning an immutable snapshot —
+  is a larger redesign than this change, and claiming it here would be false. `Batch()` also
+  still reads the globals directly rather than the context.
 - [x] **TI-009** — UTF-8 corpus fixtures (CJK, emoji, combining marks, RTL) used by every
   truncation, slicing, and redaction test. Closes the test half of **T-06**.
   **Done** — `internal/ops/utf8corpus_test.go` holds one corpus of eleven entries, chosen for
@@ -541,7 +565,7 @@ port nothing yet except one operation as the proof.
   that case); a missing rate contributing nothing rather than inventing a number; PR-007's
   snapshot-versus-version-bump distinction; nil usage; and a summary of unpriced calls not
   reading as a summary of free ones.
-- [ ] **A-001** — `Op[In, Out]` descriptor: `Name`, `Prompt`, `Format`, `Schema`, `Decode`,
+- [x] **A-001** — `Op[In, Out]` descriptor: `Name`, `Prompt`, `Format`, `Schema`, `Decode`,
   `Invariants`. Closes the structural half of **D-15**.
   **Revised (ARC-04, ARC-16, API-09):** the descriptor is wider than six fields and it is
   *public*. `OperationID{Name, Version}` — a version, because a prompt edit is a behaviour
@@ -553,6 +577,26 @@ port nothing yet except one operation as the proof.
   planning, recipes, loop fusion, and middleware possible without a second execution path.
   *Verify (added):* a caller outside the module can construct an `Op`, inspect it, and run
   it; a stable operation with no declared batch class fails a build-time check.
+  **Done, with the stubs named.** `Op[In, Out]` in `internal/ops/op.go` and the pure data in
+  `internal/types/op.go`: `OperationID{Name, Version}`, `Semantics`, `OutputContract`,
+  `BatchAlgebra`, `DefaultPolicy`. The version reuses the existing `extractPromptVersion`
+  rather than minting a second identity for the same thing, which is what the Revised line's
+  "needs something to hang it on" was asking for.
+  **"Holds no context and no provider" is checked, not asserted in a comment.** A test walks
+  the descriptor's field tree by reflection and fails if a `context.Context` or a provider is
+  reachable from it. Function *parameters* that carry a context do not count and the test says
+  why: those are supplied per call by `RunOp` and never stored, which is the distinction that
+  makes planning and middleware possible without a second execution path.
+  The batch-class rule is a real build-time check: `MustNewOp` panics, and it is what builds
+  Extract's descriptor at package init, so a binary whose descriptors are wrong fails to start
+  rather than failing later down one path.
+  **Declared but not yet read** — said plainly rather than left to be discovered:
+  `BatchAlgebra`'s `Encode`, `Merge`, and `GlobalValidate`; `OutputContract.EvidenceRequired`;
+  `DefaultPolicy.Mode` and `Speed`; and every `Semantics` field except `Stability`. They are
+  forward shape for the operations still to be ported, not working machinery. `Op` is exported
+  at the root, so the exported-surface half of the Verify line holds; the literal
+  outside-the-module test cannot be written from inside `internal/`, and that limit is stated
+  rather than papered over.
 - [x] **A-002** — `Run[In, Out](ctx, client, op, in, opts...)` owning context propagation,
   response-format selection, provider dispatch, retry, decoding, invariant checking, repair,
   usage accounting, and telemetry. Closes **X-01** at one call site instead of thirty-one.
@@ -710,11 +754,26 @@ port nothing yet except one operation as the proof.
   siblings) still carry their own shapes. They wrap correctly and `errors.Is` reaches the
   sentinels through them, so they are compatible rather than wrong; collapsing them is
   **OP-206** and **A-006**.
-- [ ] **A-008** — Reclassify retries on typed errors and status codes instead of substring
+- [x] **A-008** — Reclassify retries on typed errors and status codes instead of substring
   matching on message text (`llm_helper.go:205-263`), and add jitter to the backoff
   (`retryDelay:265`). Closes **I-12**. Depends on **A-007**.
   *Verify:* a 429 retries, a 400 does not, an unknown error does not silently fail fast;
   concurrent retries do not align.
+  **Done.** `isRetryableLLMError` now has exactly one opinion — `llm.Classify` plus
+  `OperationError.Retryable()` — and both substring lists are gone. The behaviour change with
+  teeth: an *unclassifiable* error now retries within the budget instead of failing fast,
+  which is what the Verify line asks for and the opposite of what substring matching did to
+  any error it did not recognise.
+  Backoff uses decorrelated jitter with the wait threaded through the retry loop per call, not
+  as package state, so two concurrent calls do not correlate. `TestJitterSpreadsConcurrentRetriesApart`
+  asserts on the computed delays through an injected rand rather than on timing.
+  The tests that pinned the substring behaviour were rewritten around typed errors — they
+  were asserting the defect.
+  **Known duplication:** the jitter maths now exists in both `internal/ops` and `mw/retry.go`.
+  `mw` is an opt-in decorator and importing it into `internal/ops` would invert the layering,
+  so the algorithm is duplicated rather than shared. Both call the same classifier, so the
+  *decision* is single-sourced even though the arithmetic is not — which is the half that
+  actually caused bugs.
 - [ ] **A-009** — `Invariant[In, Out]` plus the shared library: `MemberOf`, `SubsetOf`,
   `SameMultiset`, `CoversExactlyOnce`, `AtMost`, `WithinLength`, `AtLeastConfidence`,
   `ExcludesValues`, `CategoryIn`, `OneOf`, `Satisfies`. Closes **X-05** mechanically.
@@ -772,9 +831,18 @@ port nothing yet except one operation as the proof.
   what it currently costs.
   *Verify (added):* with no sink configured nothing is captured; with one, the error carries
   a reference and the captured body is truncated and scrubbed of credentials.
-- [ ] **A-012** — Port `Extract` to the core as the proof, keeping `Extracting[T]` working
+- [x] **A-012** — Port `Extract` to the core as the proof, keeping `Extracting[T]` working
   unchanged.
   *Verify:* existing extract tests pass untouched against the new path.
+  **Done, and the proof is that nothing moved.** `Extract` runs through `runExtractOp`, which
+  builds the descriptor and executes it; the decode branching for Strict versus Transform is
+  the same code, relocated rather than rewritten. Every existing extract test passes
+  untouched, and **the golden prompt snapshot did not move** — the bytes Extract sends are
+  identical before and after, which is the only evidence that distinguishes a port from a
+  rewrite wearing a port's name.
+  One deliberate non-change: `DefaultPolicy.RepairAttempts` is left at zero rather than set to
+  the constant, so the repair budget keeps being read from configuration at call time as it
+  was. Setting it would have been a silent behaviour change.
 - [ ] **A-013** — `Run(ctx)` on the fluent builders. There is no way to honor cancellation
   otherwise, and the builder is where the context naturally arrives. Breaking change.
   *Verify:* `Extracting[T](x).Run(ctx)` cancels.
@@ -2008,6 +2076,13 @@ tests.
   for scripts and examples. `IN-001`'s mutexes are the stopgap, not the destination.
   *Verify:* two clients with different providers, budgets, and policies run concurrently
   and independently; core compiles with no reference to a package-level provider.
+  **Partly addressed, deliberately left open.** **TI-002**'s context seam and `Client.Context`
+  make two clients reach their own providers concurrently, which is the first half of the
+  Verify line and is now tested. The second half is untouched: the core still references
+  `ops.defaultProvider` and `ops.customLLMCaller`, there is no immutable client snapshot, and
+  budgets, scheduler, observer, and cache policy are still process-wide. Marking this done on
+  the provider seam alone would close the task that the rest of the multi-tenancy work hangs
+  on, so it stays open with the seam recorded as progress.
 
 ---
 
@@ -2106,9 +2181,39 @@ results, `Escalate` needs a failure signal that is not "the model said something
   Note this is the *combinator*; `mw.Fallback` (**MW-008**) is provider failover at the
   middleware seam, with capability and data-policy eligibility. Same word, two layers, and
   they are not interchangeable.
-- [ ] **CF-008** — Retire or reimplement `Decide`, `Guard`, `Match`, and `Pipeline` on the
+- [x] **CF-008** — Retire or reimplement `Decide`, `Guard`, `Match`, and `Pipeline` on the
   combinators. `Guard` currently issues an unannounced LLM call with a hardcoded 2-second
   timeout and no options (`procedural.go:143-180`). Closes **P-03**, **P-10**. Addresses **CF-09**.
+  **Guard — reimplemented.** It now runs the caller's Go predicates and makes **no provider
+  call at all**. What it did before was worse than the task's wording suggests: a caller
+  handing it a list of pure functions got three things they never agreed to — their money
+  spent, the failed-check messages (written by their own checks, from their own state) sent to
+  a provider, and both done on a hardcoded two-second timeout at a hardcoded tier, so their
+  configured deadline and intelligence were discarded.
+  Suggestions moved to `GuardWithSuggestions`, a separate function rather than an option,
+  because the difference between the two is whether a provider is called at all and that is
+  not something to bury in a struct field. It uses the caller's options and their deadline. A
+  provider outage there does not change the verdict, which Go had already decided.
+  Evidence: `internal/ops/guard_test.go`, 10 cases. The call-count assertions are the point —
+  a guard that called a provider and discarded the answer returns exactly what one that never
+  called returns, so asserting on the result proves nothing. One case installs a check whose
+  message quotes the state and asserts nothing left the process.
+  **Pipeline — two helpers retired.** `Retry` was a *third* opinion about what is worth
+  retrying, and the weakest: it retried every error the same number of times including
+  terminal ones — a malformed request, a policy refusal, an exhausted budget — each of which
+  fails identically next time, so the retries bought latency and, where the call had been
+  billed, cost. It also slept on a fixed schedule, so concurrent callers retried in unison.
+  `MapConcurrent` was a second bounded-concurrency primitive that started a goroutine per item
+  *before* taking the semaphore — ten thousand items meant ten thousand goroutines queueing —
+  and took no context, so nothing it started could be cancelled. `CallLLM`'s retry and
+  `mw.Retry` survive (both classify through `llm.Classify`), as does `MapReduce`'s bounded
+  pool. Nothing outside this package's own tests called either of the retired functions.
+  **`Match` and `Decide` — kept, with reasons.** `Match` evaluates cases and already returns a
+  provider failure rather than reading it as a non-match, which is the failure mode that
+  matters. `Decide`'s fallback is opt-in, marks `Fallback: true`, and reports a confidence of
+  zero rather than inventing one; with no fallback configured it returns the error. Neither
+  duplicates a combinator, so retiring them would remove reachable, tested behaviour to
+  satisfy a word in the task title.
 - [x] **CF-009** — Bounded-concurrency primitive used by OP-106, OP-304, and CF-004. Today
   only `batch.go:136` and `pipeline.go:232` start goroutines. Closes **Gap-08**.
   **Done `debaf6e`** — shipped as `MapReduceOptions.Concurrency`. Kept inside `MapReduce`
@@ -2122,9 +2227,35 @@ results, `Escalate` needs a failure signal that is not "the model said something
 Decisions, not defects. Each halves or doubles the maintenance surface, so make them before
 1.0 — every finding in the review has to be fixed once per operation that survives.
 
-- [ ] **PS-001** — Decide the fate of the tools registry: 86 tools, 41 of them stubs, none
+- [x] **PS-001** — Decide the fate of the tools registry: 86 tools, 41 of them stubs, none
   reachable by an external consumer. Promote (requires **PS-004**) or delete. Closes **G-01**,
   **G-02**, **G-05**.
+  **Decided by Cam: keep what is valuable, delete what is not.** Neither of the two options the
+  task offered — promote everything or delete everything — was the right shape, and the
+  registry is now 43 working tools with **zero stubs**.
+  Deleted outright: `exec.go` (the `shell` tool handed a model-authored string to a shell, and
+  a shell tool is the highest-risk, lowest-value thing a typed-LLM-call library can carry;
+  `run_code` and six AI tools beside it were stubs), `audio.go`, `image.go`, and
+  `messaging.go` — every tool in those three did nothing.
+  Pruned tool by tool from files that were otherwise real: `chart`, `currency`, `stock` from
+  finance (`tax` and `interest` work and stayed), `pdf`, `tar`, `qrcode`, `barcode` from
+  archive (`zip` works), `vector_db`, `watch_file`, `web_search`, `scrape`, `browser`, `geo`,
+  `weather`, and — the two worth naming — `encrypt` and `decrypt`, which reported success
+  without encrypting anything. A fake encrypt is not a missing feature; it is a security
+  claim that is false.
+  **The stub-honesty guards were re-pointed rather than deleted.** They asserted that at least
+  five stubs existed, which was correct while half the registry was unimplemented and became
+  the wrong assertion the moment it was not. `TestEveryStubToolIsIdentifiable` now asserts
+  there are **no** stubs, and its disclosure subtests still run if one is ever reintroduced;
+  `TestEveryStubResultBelongsToAStubTool` now fails if the source walk finds no declarations
+  at all, which is the failure it was really guarding against — a walker that quietly stops
+  finding anything passes forever.
+  `examples/tools/ai_examples.go` is gone (all 37 of its calls were to deleted tools) and the
+  dead calls in four other example files were removed with it.
+  **Not promoted, deliberately.** The registry stays `internal/`. **PS-004** is landing tool
+  *calling* at the provider level, which is the supported way for a caller to use tools of
+  their own; a maintained public catalogue of 43 file, http, and database handlers is a
+  different product from this one.
 - [ ] **PS-002** — Decide the verb catalogue. With invariants and combinators in place, a core
   of roughly twelve operations plus `Steer` expresses `Critique`, `Audit`, `Verify`,
   `Arbitrate`, `Negotiate`, `Resolve`, `Conform`, `Derive`, and `Pivot`. Ship those as a
@@ -2169,10 +2300,35 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   exported and appeared nowhere in it.
   *Verify:* `TestPublicAPISurface` records the new export; `TestREADMEClaimsMatchTheLibrary`
   and the compatibility section carry the policy.
-- [ ] **PS-004** — Add tool calling to the provider path: `Tools`, `ToolChoice`, and tool-call
+- [x] **PS-004** — Add tool calling to the provider path: `Tools`, `ToolChoice`, and tool-call
   response handling, none of which exist in `CompletionRequest`. Closes **Gap-02**; makes
   PS-001 worth doing.
-- [ ] **PS-005** — Multi-turn support: `CompletionRequest` carries one system string and one
+  **Done.** `Tool`, `ToolCall`, and `Message` on the provider path; `Tools` and `ToolChoice`
+  reach the Responses API in its wire shape and are omitted entirely when unset, so a caller
+  who wants none sends none.
+  Three things it deliberately does *not* do. It never executes anything — a tool call is a
+  request from the model, and the caller acts on it or does not. It never decodes the
+  arguments: they arrive as `json.RawMessage`, as untrusted as any other model output, and the
+  caller decodes them into their own type. And it never puts arguments in an error or a log
+  line, because they are built from the caller's data — the refusal names the tool, nothing
+  else.
+  **A model naming a tool that was never offered is refused in Go** (`ErrUnrequestedTool`)
+  rather than passed along for the caller to notice. A tool-call response is also no longer
+  mistaken for a malformed answer: it is a success with no text, which the classifier now
+  distinguishes.
+  Evidence: `internal/llm/toolcalling_test.go`, 11 cases against an `httptest.Server` — tools
+  omitted when unset, sent in shape when set including a forced tool name, a nil parameter
+  schema defaulting rather than sending nothing, a tool-call response succeeding, an
+  unoffered tool refused, arguments absent from the refusal, a plain text response unaffected
+  by the new fields, and the streamed path classifying a tool call the same as the buffered
+  one.
+  **Note this does not promote the tools registry** — **PS-001** ruled on that separately, and
+  the registry stays internal. What this adds is the capability for a caller to offer their
+  own tools.
+  **Limitation:** `ClassifyCompletion` called directly on a tool-call response with empty
+  content still reports `KindMalformedOutput`. The provider path no longer routes through
+  that, so it only bites a caller who ignores `ToolCalls` and classifies by hand.
+- [x] **PS-005** — Multi-turn support: `CompletionRequest` carries one system string and one
   user string, with no message history. `Asking`, `Negotiating`, and
   `NegotiatingAdversarially` are naturally multi-turn operations implemented as one round
   trip. Closes **Gap-03**.

@@ -65,27 +65,6 @@ func runHTTPExamples(ctx context.Context) {
 	})
 	printResult("Webhook", result, err)
 
-	// Example 8: Web search (stub)
-	result, err = tools.Execute(ctx, "web_search", map[string]any{
-		"query": "SchemaFlux Go library",
-		"num":   5.0,
-	})
-	printResult("Web Search (stub)", result, err)
-
-	// Example 9: Scrape (stub)
-	result, err = tools.Execute(ctx, "scrape", map[string]any{
-		"url":       "https://example.com",
-		"selectors": `{"title": "h1", "links": "a"}`,
-	})
-	printResult("Scrape (stub)", result, err)
-
-	// Example 10: Browser automation (stub)
-	result, err = tools.Execute(ctx, "browser", map[string]any{
-		"action": "screenshot",
-		"url":    "https://example.com",
-	})
-	printResult("Browser (stub)", result, err)
-
 	// Example 11: Using Fetch helper function directly
 	resp, err := tools.Fetch(ctx, "https://httpbin.org/json", nil, 10*1000*1000*1000) // 10s in nanoseconds
 	if err != nil {

@@ -298,19 +298,6 @@ func TestBackupTool(t *testing.T) {
 	}
 }
 
-func TestVectorDBToolStub(t *testing.T) {
-	result, _ := VectorDBTool.Execute(context.Background(), map[string]any{
-		"action": "search",
-		"query":  "test query",
-	})
-	if !result.Success {
-		t.Error("Expected success for stub")
-	}
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected stubbed metadata")
-	}
-}
-
 func TestSQLiteToolErrors(t *testing.T) {
 	// Missing database
 	result, _ := SQLiteTool.Execute(context.Background(), map[string]any{

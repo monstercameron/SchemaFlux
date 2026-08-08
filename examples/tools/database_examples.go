@@ -219,11 +219,7 @@ func runDatabaseExamples(ctx context.Context) {
 	})
 	printResult("SQLite: Delete users age < 30", result, err)
 
-	// Example 17: Vector DB (stub)
-	result, err = tools.Execute(ctx, "vector_db", map[string]any{
-		"action": "search",
-		"query":  "similar documents",
-		"limit":  10.0,
-	})
-	printResult("VectorDB: Semantic search (stub)", result, err)
+	// The vector_db example is gone with the tool. It answered every query
+	// with a stub result that reported success, which is the one thing an
+	// example must never demonstrate. See PS-001.
 }

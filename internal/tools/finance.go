@@ -6,83 +6,6 @@ import (
 	"math"
 )
 
-// ChartTool generates chart data (stub - requires external charting library)
-var ChartTool = &Tool{
-	Name:        "chart",
-	Description: "Generate chart specifications for visualization (stub - returns chart configuration)",
-	Category:    CategoryFinance,
-	IsStub:      true,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"type":   EnumParam("Chart type", []string{"line", "bar", "pie", "scatter", "area"}),
-		"data":   {Type: "array", Description: "Data points for the chart"},
-		"title":  StringParam("Chart title"),
-		"labels": {Type: "array", Description: "Labels for data points"},
-	}, []string{"type", "data"}),
-	Execute: func(ctx context.Context, params map[string]any) (Result, error) {
-		chartType, _ := params["type"].(string)
-		title, _ := params["title"].(string)
-		return NewResultWithMeta(map[string]any{
-			"stub":   true,
-			"type":   chartType,
-			"title":  title,
-			"config": "Chart generation requires external library integration",
-		}, map[string]any{"stubbed": true}), nil
-	},
-}
-
-// CurrencyTool converts between currencies (stub - requires exchange rate API)
-var CurrencyTool = &Tool{
-	Name:         "currency",
-	Description:  "Convert between currencies (stub - requires exchange rate API)",
-	Category:     CategoryFinance,
-	IsStub:       true,
-	RequiresAuth: true,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"amount": NumberParam("Amount to convert"),
-		"from":   StringParam("Source currency code (e.g., 'USD')"),
-		"to":     StringParam("Target currency code (e.g., 'EUR')"),
-	}, []string{"amount", "from", "to"}),
-	Execute: func(ctx context.Context, params map[string]any) (Result, error) {
-		amount, _ := params["amount"].(float64)
-		from, _ := params["from"].(string)
-		to, _ := params["to"].(string)
-		return NewResultWithMeta(map[string]any{
-			"stub":      true,
-			"amount":    amount,
-			"from":      from,
-			"to":        to,
-			"message":   "Currency conversion requires exchange rate API integration",
-			"converted": amount, // Placeholder 1:1 rate
-		}, map[string]any{"stubbed": true}), nil
-	},
-}
-
-// StockTool fetches stock information (stub - requires financial data API)
-var StockTool = &Tool{
-	Name:         "stock",
-	Description:  "Fetch stock information (stub - requires financial data API)",
-	Category:     CategoryFinance,
-	IsStub:       true,
-	RequiresAuth: true,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"symbol": StringParam("Stock symbol (e.g., 'AAPL')"),
-		"action": EnumParam("Action to perform", []string{"quote", "history", "info"}),
-	}, []string{"symbol"}),
-	Execute: func(ctx context.Context, params map[string]any) (Result, error) {
-		symbol, _ := params["symbol"].(string)
-		action, _ := params["action"].(string)
-		if action == "" {
-			action = "quote"
-		}
-		return NewResultWithMeta(map[string]any{
-			"stub":    true,
-			"symbol":  symbol,
-			"action":  action,
-			"message": "Stock data requires financial API integration",
-		}, map[string]any{"stubbed": true}), nil
-	},
-}
-
 // TaxTool calculates various types of taxes
 var TaxTool = &Tool{
 	Name:        "tax",
@@ -264,9 +187,6 @@ func executeInterest(ctx context.Context, params map[string]any) (Result, error)
 }
 
 func init() {
-	mustRegister(ChartTool)
-	mustRegister(CurrencyTool)
-	mustRegister(StockTool)
 	mustRegister(TaxTool)
 	mustRegister(InterestTool)
 }

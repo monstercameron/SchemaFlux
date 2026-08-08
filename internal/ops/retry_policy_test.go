@@ -125,36 +125,48 @@ func (p *deterministicFailureProvider) RetryPolicy() (int, time.Duration) {
 }
 
 // Non-retryable API errors stop immediately too.
+//
+// A-008: these used to be plain fmt.Errorf strings ("status 400 bad
+// request") that only stopped the retry loop because llm_helper.go carried a
+// substring list matching "status 400" -- exactly the second opinion A-008
+// removes. Built typed instead, via llm.NewAPIError, so the assertion is
+// about the classifier reading the STATUS, which is what actually decides
+// this now; a plain string carrying the same words no longer would.
 func TestNonRetryableErrorsStopImmediately(t *testing.T) {
 	withExplicitModel(t)
 
-	for _, message := range []string{
-		"invalid api key",
-		"unauthorized",
-		"status 400 bad request",
-		"status 404 not found",
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"unauthorized", 401},
+		{"forbidden", 403},
+		{"bad_request", 400},
+		{"not_found", 404},
 	} {
-		provider := &messageProvider{maxRetries: 5, message: message}
+		provider := &statusErrorProvider{maxRetries: 5, status: tc.status}
 
 		if _, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{}); err == nil {
 			t.Fatal("expected an error")
 		}
 		if provider.calls != 1 {
-			t.Errorf("%q: provider called %d times, want 1", message, provider.calls)
+			t.Errorf("%s (status %d): provider called %d times, want 1", tc.name, tc.status, provider.calls)
 		}
 	}
 }
 
-type messageProvider struct {
+type statusErrorProvider struct {
 	calls      int
 	maxRetries int
-	message    string
+	status     int
 }
 
-func (p *messageProvider) Complete(context.Context, llm.CompletionRequest) (llm.CompletionResponse, error) {
+func (p *statusErrorProvider) Complete(context.Context, llm.CompletionRequest) (llm.CompletionResponse, error) {
 	p.calls++
-	return llm.CompletionResponse{}, fmt.Errorf("%s", p.message)
+	return llm.CompletionResponse{}, llm.NewAPIError("message", "m", p.status, "")
 }
-func (p *messageProvider) Name() string                               { return "message" }
-func (p *messageProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
-func (p *messageProvider) RetryPolicy() (int, time.Duration)          { return p.maxRetries, time.Millisecond }
+func (p *statusErrorProvider) Name() string                               { return "message" }
+func (p *statusErrorProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
+func (p *statusErrorProvider) RetryPolicy() (int, time.Duration) {
+	return p.maxRetries, time.Millisecond
+}

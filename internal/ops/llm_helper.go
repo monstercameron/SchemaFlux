@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"strings"
 	"sync"
@@ -68,8 +69,72 @@ func currentHooks() (LLMCaller, llm.Provider) {
 	return customLLMCaller, defaultProvider
 }
 
-// callLLM executes an LLM request using the default provider
+// providerContextKey scopes a provider to one call chain via context, rather
+// than through the package globals above that every client construction and
+// every schemafluxtest.Install rewrites.
+//
+// TI-002 / IN-004: "a mutex around a package global passes -race and still
+// fails [the isolation] test" -- the lock in providerMu makes concurrent
+// writes to defaultProvider safe, but there is still only one defaultProvider,
+// so building a second Client silently repoints every operation the first
+// Client's caller is still running. A context value does not have this
+// problem: it travels with the call that carries it, and a second Client's
+// construction cannot reach into a context a first Client's caller already
+// holds.
+//
+// This lives on context rather than on types.OpOptions -- the shape the task
+// sketched -- for a reason that is not stylistic: internal/llm.Provider is
+// defined in a package that imports internal/types (for TokenUsage and
+// friends), so types.OpOptions cannot hold an llm.Provider field without
+// creating an import cycle. The alternative, an OpOptions field typed `any`
+// that ops type-asserts back to llm.Provider, was rejected: it is a field
+// that compiles for any value and only fails at the call site, which is the
+// exact kind of silent-wrong-type landmine dead_options_test.go exists to
+// keep out of this API. Context carries the same information with no cycle
+// and no untyped field, and every operation already threads opts.Context (or
+// an explicit ctx parameter derived from it) into callLLM -- see
+// operationContext and the ~60 call sites in this package -- so the seam
+// needs no change to any of them.
+type providerContextKey struct{}
+
+// WithProvider returns a context carrying p as the provider operations run
+// under. It takes priority over both the test caller (customLLMCaller) and
+// the package-level default (defaultProvider) in callLLM below, so a Client
+// that attaches its own provider to the context is unaffected by another
+// Client's construction -- see client.go's Client.Context, the intended
+// caller of this function.
+//
+// A nil p leaves ctx unchanged rather than storing a nil provider. Storing it
+// would make providerFromContext return a non-nil interface holding a nil
+// value with a nil method set -- providerFromContext's own nil check would
+// pass on the interface being non-nil, and the caller would silently fall
+// through to a nil Provider instead of to the global default, which is a
+// worse failure than never having called WithProvider at all.
+func WithProvider(ctx context.Context, p llm.Provider) context.Context {
+	if p == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, providerContextKey{}, p)
+}
+
+// providerFromContext reads the per-call provider WithProvider attached, or
+// nil when none was.
+func providerFromContext(ctx context.Context) llm.Provider {
+	if ctx == nil {
+		return nil
+	}
+	p, _ := ctx.Value(providerContextKey{}).(llm.Provider)
+	return p
+}
+
+// callLLM executes an LLM request, preferring a provider attached to ctx by
+// WithProvider over the package-level default -- see providerContextKey's
+// comment for why the per-call path has to win.
 func callLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.OpOptions) (string, error) {
+	if p := providerFromContext(ctx); p != nil {
+		return CallLLM(ctx, p, systemPrompt, userPrompt, opts)
+	}
+
 	caller, provider := currentHooks()
 
 	// Use custom caller if set (for testing)
@@ -200,6 +265,15 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		providerCalls int
 	)
 
+	// prevWait threads the decorrelated-jitter sequence across this one call's
+	// attempts. It is local to this call, not a package variable: two
+	// concurrent CallLLM invocations retrying the same kind of failure must
+	// each correlate their wait with their OWN previous attempt, never with
+	// each other's -- correlating across calls would reintroduce the
+	// synchronized-retry-wave problem jitter exists to avoid, just one level
+	// up. A-008.
+	prevWait := retryBackoff
+
 	for attempt := 1; attempt <= attempts; attempt++ {
 		providerCalls++
 		resp, err = provider.Complete(ctx, req)
@@ -258,7 +332,8 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			return "", err
 		}
 
-		delay := nextRetryDelay(err, retryBackoff, attempt)
+		delay := nextRetryDelay(err, retryBackoff, prevWait, maxComputedRetryDelay, retryRandFloat)
+		prevWait = delay
 		log.Warn("LLM request retry scheduled",
 			"requestID", requestID,
 			"correlationID", correlationID,
@@ -402,121 +477,130 @@ func validateLLMCompletion(resp llm.CompletionResponse) error {
 	return nil
 }
 
+// isRetryableLLMError decides whether the identical request is worth sending
+// again.
+//
+// A-008: this used to carry two substring lists -- a nonRetryable set checked
+// first, a retryable set checked second -- as a fallback for whatever
+// llm.Classify did not recognise. That is a second opinion about retry
+// disposition living beside the first one, and the two could disagree: a
+// 500 whose body happened to mention "invalid_request_error" (a vendor's OWN
+// classifier, inside the body of an unrelated failure) matched the
+// nonRetryable list and lost a retry it was entitled to, and there was no way
+// to tell from the caller's side which list had won. llm.Classify is the one
+// place internal/llm/classify.go decides what kind of failure something is,
+// and types.OperationError.Retryable is the one place that turns a kind into
+// a retry decision (A-007); asking either question a second way here is the
+// bug this closes.
 func isRetryableLLMError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// The caller's own context ending is not something classify.go's taxonomy
+	// is in a position to see: the next attempt would run under a context
+	// that is already done, so "try again" cannot mean anything here
+	// regardless of what kind the wrapped error turns out to be. This is a
+	// fact about the local call, not a second opinion about the taxonomy.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	// A response carrying no assistant message is deterministic: a reasoning-only
-	// response or an empty output list is identical on retry. It matched the
-	// "empty response" substring below and cost a full backoff cycle -- seven
-	// seconds per call -- to arrive at the same answer.
+	// A response carrying no assistant message is deterministic: a
+	// reasoning-only response or an empty output list is identical on retry.
+	// Not a kind classify.go's taxonomy carries (it is a shape of successful
+	// response, not a transport failure), so it stays a direct sentinel check.
 	if errors.Is(err, llm.ErrNoMessageOutput) {
 		return false
 	}
 
-	// A rate limit is retryable by construction, and saying so by type rather
-	// than by substring keeps the answer from depending on how the message
-	// happens to be worded -- or on what the vendor put in the body, which is
-	// matched against the non-retryable list below.
-	if _, rateLimited := llm.RetryAfterFrom(err); rateLimited {
+	kind := llm.Classify(err)
+	if kind == types.KindUnknown {
+		// classify.go's own text fallback is deliberately narrow: it matches
+		// only phrases this library itself produces, never a vendor's, so
+		// KindUnknown means nobody has taught the taxonomy about this error's
+		// *shape* yet -- not that the failure is known to be permanent.
+		// Refusing to retry on that gap is exactly the guess the removed
+		// substring lists were making, just inverted. The attempt budget
+		// already bounds what being wrong costs; failing fast on ignorance
+		// does not save the caller anything and can throw away a retry that
+		// would have succeeded. This is the case the task's verify line names:
+		// "an unknown error does not silently fail fast."
 		return true
 	}
-
-	// The shared taxonomy answers this question directly, and answering it in
-	// one place is the point: a retry decision that differs between operations
-	// is a bug nobody can reproduce. A-007.
-	//
-	// Deciding from the classified kind rather than from prose also survives
-	// the body being redacted out of the message, which is the whole point of
-	// the typed error: the string is for a human, the kind is for the code.
-	if kind := llm.Classify(err); kind != types.KindUnknown {
-		return (&types.OperationError{Kind: kind}).Retryable()
-	}
-
-	msg := strings.ToLower(err.Error())
-
-	nonRetryable := []string{
-		"api key is required",
-		"unauthorized",
-		"forbidden",
-		"invalid api key",
-		"invalid_request_error",
-		"status 400",
-		"status 401",
-		"status 403",
-		"status 404",
-		"status 422",
-	}
-	for _, needle := range nonRetryable {
-		if strings.Contains(msg, needle) {
-			return false
-		}
-	}
-
-	retryable := []string{
-		"timeout",
-		"temporary",
-		"connection reset",
-		"connection refused",
-		"i/o timeout",
-		"rate limit",
-		"throttled",
-		"try again later",
-		"service unavailable",
-		"bad gateway",
-		"gateway timeout",
-		"empty response",
-		"incomplete",
-		"no completion choices",
-		"provider returned empty completion content",
-		"status 408",
-		"status 409",
-		"status 429",
-		"status 500",
-		"status 502",
-		"status 503",
-		"status 504",
-	}
-	for _, needle := range retryable {
-		if strings.Contains(msg, needle) {
-			return true
-		}
-	}
-	return false
+	return (&types.OperationError{Kind: kind}).Retryable()
 }
+
+// maxComputedRetryDelay bounds the JITTERED backoff computed below, the same
+// way it always has: a server rate-limiting per minute answers with the exact
+// wait it wants (llm.RetryAfterFrom, honoured unjittered in nextRetryDelay),
+// and a short ceiling on the computed guess cannot clear a per-minute window
+// on its own -- that is CB-03's fix, unrelated to and unaffected by adding
+// jitter on top.
+const maxComputedRetryDelay = 5 * time.Second
 
 // nextRetryDelay picks how long to wait before the next attempt.
 //
-// The computed backoff is a guess that tops out at five seconds. When a server
-// rate-limits per minute it answers with the exact wait it wants, and a
-// five-second ceiling cannot clear a sixty-second window -- so every attempt
-// landed inside the same closed window and the retry budget bought nothing but
-// latency. When the server states a wait, that wait wins.
-func nextRetryDelay(err error, base time.Duration, attempt int) time.Duration {
+// A server-stated wait always wins outright and is not jittered: the whole
+// point of honouring it (CB-03) is that the server said exactly how long to
+// wait, and randomising a number it gave us would be the guess it exists to
+// replace, with extra steps.
+//
+// Otherwise the wait is decorrelated jitter -- mw/retry.go's term and
+// algorithm for it, duplicated here rather than imported. Reusing mw's
+// unexported decorrelatedJitter would mean either exporting it from a file
+// this task does not touch, or importing mw (an opt-in decorator a caller
+// wraps around their OWN provider, used by nothing in this call path today)
+// into internal/ops for one function; the ten-line algorithm is cheaper than
+// either. Before this, CallLLM's own retry loop computed a pure exponential
+// ladder from the attempt number alone, so every caller retrying the same
+// failure against the same base backoff retried at the identical instant --
+// a provider recovering from an outage met every one of them in the same
+// synchronized wave the moment it came back up. Jitter spreads that wave out.
+// A-008.
+func nextRetryDelay(err error, base, prevWait, maxDelay time.Duration, randFloat func() float64) time.Duration {
 	if wait, rateLimited := llm.RetryAfterFrom(err); rateLimited && wait > 0 {
 		// The server's number is already bounded by llm.MaxRetryAfter, and the
 		// caller's context deadline still cuts the wait short in waitForRetry.
 		return wait
 	}
-	return retryDelay(base, attempt)
+	return decorrelatedJitter(base, prevWait, maxDelay, randFloat)
 }
 
-func retryDelay(base time.Duration, attempt int) time.Duration {
-	if attempt <= 1 {
-		return base
+// decorrelatedJitter implements the AWS Architecture Blog's "decorrelated
+// jitter" backoff, matching mw/retry.go's function of the same name: each
+// wait is uniformly random between base and three times the PREVIOUS wait,
+// capped at max. Unlike "full jitter" (uniform between 0 and an
+// exponentially growing cap), each wait here is correlated with the previous
+// one rather than with the attempt number, which is what stops a burst of
+// concurrent callers -- all starting their backoff at the same moment -- from
+// re-converging on the same retry instant a few attempts in.
+func decorrelatedJitter(base, prev, maxDelay time.Duration, randFloat func() float64) time.Duration {
+	if base <= 0 {
+		base = time.Millisecond
 	}
-	delay := base
-	for i := 1; i < attempt; i++ {
-		delay *= 2
-		if delay > 5*time.Second {
-			return 5 * time.Second
-		}
+	upper := prev * 3
+	if upper < base {
+		upper = base
 	}
-	return delay
+
+	span := upper - base
+	wait := base
+	if span > 0 {
+		wait += time.Duration(randFloat() * float64(span))
+	}
+
+	if maxDelay > 0 && wait > maxDelay {
+		wait = maxDelay
+	}
+	return wait
 }
+
+// retryRandFloat returns a value in [0,1). A package variable rather than a
+// direct math/rand/v2 call so a test can make the jitter's output
+// deterministic instead of asserting on a range wide enough to hide a
+// mistake -- mw/retry.go's randFloat field documents the identical reasoning
+// for the same algorithm. math/rand/v2's top-level Float64 is safe for
+// concurrent use, so this needs no lock of its own.
+var retryRandFloat = rand.Float64
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)

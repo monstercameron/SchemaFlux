@@ -10,90 +10,190 @@ import (
 )
 
 // The retry loop computed a backoff that doubles from 500ms and stops at five
-// seconds. Providers that rate-limit per minute answer with the exact wait they
-// want -- Cerebras' free tier says `Retry-After: 53` -- so every attempt landed
-// inside the same closed window and the retry budget bought nothing but
-// latency. These pin the fix: when the server states a wait, that wait wins.
+// seconds. Providers that rate-limit per minute answer with the exact wait
+// they want -- Cerebras' free tier says `Retry-After: 53` -- so every attempt
+// landed inside the same closed window and the retry budget bought nothing
+// but latency. These pin the fix: when the server states a wait, that wait
+// wins outright and is never jittered.
 
-func TestNextRetryDelayPrefersTheServersWait(t *testing.T) {
+// zeroRand and oneRand are fixed randFloat sources for deterministic
+// assertions on decorrelatedJitter's two edges: 0 always lands on the floor
+// (base), and a value just under 1 always lands on (or past, before
+// capping) the ceiling (3x the previous wait).
+func zeroRand() float64 { return 0 }
+func oneRand() float64  { return 0.999999 }
+
+func TestNextRetryDelayPrefersTheServersWaitOverJitter(t *testing.T) {
 	base := 500 * time.Millisecond
+	prevWait := base
+	maxDelay := 5 * time.Second
 
 	cases := []struct {
-		name    string
-		err     error
-		attempt int
-		want    time.Duration
+		name string
+		err  error
+		want time.Duration
 	}{
 		{
 			"rate_limit_beats_the_backoff",
 			&llm.RateLimitError{APIError: &llm.APIError{Provider: "cerebras", StatusCode: 429}, RetryAfter: 53 * time.Second},
-			1, 53 * time.Second,
-		},
-		{
-			"rate_limit_beats_the_backoff_on_later_attempts_too",
-			&llm.RateLimitError{APIError: &llm.APIError{Provider: "cerebras", StatusCode: 429}, RetryAfter: 53 * time.Second},
-			4, 53 * time.Second,
+			53 * time.Second,
 		},
 		{
 			"wrapped_rate_limit_is_still_honoured",
 			fmt.Errorf("extraction failed: %w",
 				&llm.RateLimitError{APIError: &llm.APIError{Provider: "cerebras", StatusCode: 429}, RetryAfter: 30 * time.Second}),
-			2, 30 * time.Second,
-		},
-		{
-			// A rate limit with no stated wait leaves the backoff in charge
-			// rather than substituting a wait of zero and hammering the server.
-			"rate_limit_without_a_wait_falls_back_to_the_backoff",
-			&llm.RateLimitError{APIError: &llm.APIError{Provider: "cerebras", StatusCode: 429}},
-			1, base,
-		},
-		{
-			"ordinary_failure_uses_the_backoff",
-			errors.New("connection reset"),
-			1, base,
-		},
-		{
-			"ordinary_failure_still_doubles",
-			errors.New("connection reset"),
-			3, 2 * time.Second,
-		},
-		{
-			"ordinary_failure_is_still_capped",
-			errors.New("connection reset"),
-			10, 5 * time.Second,
+			30 * time.Second,
 		},
 		{
 			"a_shorter_wait_than_the_backoff_is_still_the_servers_call",
 			&llm.RateLimitError{APIError: &llm.APIError{Provider: "openai", StatusCode: 429}, RetryAfter: 100 * time.Millisecond},
-			5, 100 * time.Millisecond,
-		},
-		{
-			"nil_error_uses_the_backoff",
-			nil,
-			1, base,
+			100 * time.Millisecond,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := nextRetryDelay(tc.err, base, tc.attempt); got != tc.want {
+			// oneRand would push a computed backoff toward its ceiling; if the
+			// server's wait were being jittered instead of honoured outright,
+			// this would not equal the exact stated wait.
+			if got := nextRetryDelay(tc.err, base, prevWait, maxDelay, oneRand); got != tc.want {
 				t.Errorf("nextRetryDelay = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// The computed backoff can never clear a per-minute window. This is the whole
-// reason the server's number has to win, stated as a test so a later change to
-// the cap cannot quietly reintroduce the bug.
+// A rate limit with no stated wait leaves the computed backoff in charge
+// rather than substituting a wait of zero and hammering the server.
+func TestNextRetryDelayRateLimitWithoutAWaitFallsBackToComputed(t *testing.T) {
+	base := 500 * time.Millisecond
+	err := &llm.RateLimitError{APIError: &llm.APIError{Provider: "cerebras", StatusCode: 429}}
+
+	if got := nextRetryDelay(err, base, base, 5*time.Second, zeroRand); got != base {
+		t.Errorf("nextRetryDelay = %v, want the computed floor %v", got, base)
+	}
+}
+
+// A nil error is not something nextRetryDelay should ever see in production
+// (isRetryableLLMError gates the call), but it must not panic and must still
+// fall back to the computed delay.
+func TestNextRetryDelayNilErrorUsesComputedDelay(t *testing.T) {
+	base := 500 * time.Millisecond
+	if got := nextRetryDelay(nil, base, base, 5*time.Second, zeroRand); got != base {
+		t.Errorf("nextRetryDelay(nil, ...) = %v, want %v", got, base)
+	}
+}
+
+// decorrelatedJitter's two deterministic edges: randFloat=0 always lands on
+// the floor (base) regardless of the previous wait, and randFloat~1 always
+// lands on the ceiling (3x the previous wait), capped.
+func TestDecorrelatedJitterBounds(t *testing.T) {
+	base := 100 * time.Millisecond
+	prev := 200 * time.Millisecond
+	maxDelay := 5 * time.Second
+
+	if got := decorrelatedJitter(base, prev, maxDelay, zeroRand); got != base {
+		t.Errorf("randFloat=0: got %v, want the floor %v", got, base)
+	}
+
+	wantCeiling := 3 * prev
+	if got := decorrelatedJitter(base, prev, maxDelay, oneRand); got <= base || got > wantCeiling {
+		t.Errorf("randFloat~1: got %v, want in (%v, %v]", got, base, wantCeiling)
+	}
+}
+
+// The ceiling is still capped at maxDelay when 3x the previous wait would
+// exceed it -- an already-large previous wait must not make the NEXT one
+// larger still, unbounded.
+func TestDecorrelatedJitterCapsAtMaxDelay(t *testing.T) {
+	base := 100 * time.Millisecond
+	prev := 10 * time.Second // already past the cap on its own
+	maxDelay := 5 * time.Second
+
+	if got := decorrelatedJitter(base, prev, maxDelay, oneRand); got != maxDelay {
+		t.Errorf("got %v, want capped at %v", got, maxDelay)
+	}
+}
+
+// A zero or negative base is a caller mistake, not a zero wait: retrying
+// with no wait at all would hammer the provider on the very failure the
+// backoff exists to back off from.
+func TestDecorrelatedJitterNonPositiveBaseFloorsAtAMillisecond(t *testing.T) {
+	got := decorrelatedJitter(0, 0, 5*time.Second, zeroRand)
+	if got != time.Millisecond {
+		t.Errorf("got %v, want the 1ms floor", got)
+	}
+}
+
+// The chained sequence -- each wait's prevWait is the wait before it, the way
+// CallLLM's retry loop actually threads it -- grows (or holds at the cap),
+// never shrinks, and eventually plateaus at maxDelay rather than growing
+// forever.
+func TestDecorrelatedJitterChainGrowsThenPlateaus(t *testing.T) {
+	base := 100 * time.Millisecond
+	maxDelay := 5 * time.Second
+
+	prevWait := base
+	previous := time.Duration(0)
+	sawTheCap := false
+
+	for attempt := 0; attempt < 8; attempt++ {
+		delay := decorrelatedJitter(base, prevWait, maxDelay, oneRand)
+		if delay < previous {
+			t.Fatalf("attempt %d: delay %v is shorter than the previous %v", attempt, delay, previous)
+		}
+		if delay > maxDelay {
+			t.Fatalf("attempt %d: delay %v exceeds maxDelay %v", attempt, delay, maxDelay)
+		}
+		if delay == maxDelay {
+			sawTheCap = true
+		}
+		previous = delay
+		prevWait = delay
+	}
+
+	if !sawTheCap {
+		t.Error("the chain never reached maxDelay across 8 attempts at the jitter ceiling")
+	}
+}
+
+// Two callers retrying the identical failure from the identical state (same
+// base, same prevWait) must not compute the identical wait -- a synchronized
+// second wave is exactly what decorrelated jitter exists to prevent, and
+// A-008's verify line asks for this driven by an injected rand rather than by
+// timing, since asserting on wall-clock timing is what makes a jitter test
+// flaky.
+func TestJitterSpreadsConcurrentRetriesApart(t *testing.T) {
+	base := 200 * time.Millisecond
+	prevWait := base
+	maxDelay := 5 * time.Second
+	err := errors.New("connection reset")
+
+	first := nextRetryDelay(err, base, prevWait, maxDelay, func() float64 { return 0.1 })
+	second := nextRetryDelay(err, base, prevWait, maxDelay, func() float64 { return 0.9 })
+
+	if first == second {
+		t.Fatalf("two callers retrying from the same state computed the identical delay (%v); "+
+			"concurrent retries would still land on the same instant", first)
+	}
+}
+
+// The computed backoff can never clear a per-minute window even at its
+// jittered ceiling. This is the whole reason the server's number has to win,
+// stated as a test so a later change to the cap cannot quietly reintroduce
+// the bug.
 func TestTheComputedBackoffCannotClearAPerMinuteWindow(t *testing.T) {
 	base := 500 * time.Millisecond
+	maxDelay := 5 * time.Second
 
 	var longest time.Duration
-	for attempt := 1; attempt <= 20; attempt++ {
-		if delay := retryDelay(base, attempt); delay > longest {
+	prevWait := base
+	for attempt := 0; attempt < 20; attempt++ {
+		delay := decorrelatedJitter(base, prevWait, maxDelay, oneRand)
+		if delay > longest {
 			longest = delay
 		}
+		prevWait = delay
 	}
 
 	if longest >= time.Minute {
@@ -101,7 +201,7 @@ func TestTheComputedBackoffCannotClearAPerMinuteWindow(t *testing.T) {
 	}
 
 	rateLimited := &llm.RateLimitError{APIError: &llm.APIError{Provider: "cerebras", StatusCode: 429}, RetryAfter: 53 * time.Second}
-	if got := nextRetryDelay(rateLimited, base, 1); got <= longest {
+	if got := nextRetryDelay(rateLimited, base, prevWait, maxDelay, oneRand); got <= longest {
 		t.Errorf("nextRetryDelay = %v, which is within the backoff's %v ceiling -- "+
 			"the retry would land inside the same closed window", got, longest)
 	}
@@ -125,9 +225,11 @@ func TestRateLimitsAreRetryableByType(t *testing.T) {
 			true,
 		},
 		{
-			// The body is matched against the non-retryable substrings, so a
-			// vendor whose 429 body mentions an unrelated invalid-request code
-			// used to make a throttle look permanent.
+			// The body is what used to be matched against the non-retryable
+			// substrings, so a vendor whose 429 body mentions an unrelated
+			// invalid-request code made a throttle look permanent. Deciding
+			// from the typed StatusCode (429, via llm.Classify) rather than the
+			// body text is what fixes it.
 			"typed_rate_limit_whose_body_mentions_a_non_retryable_code",
 			&llm.RateLimitError{
 				APIError: &llm.APIError{
@@ -144,8 +246,25 @@ func TestRateLimitsAreRetryableByType(t *testing.T) {
 			&llm.RateLimitError{APIError: &llm.APIError{Provider: "openai", StatusCode: 503}, RetryAfter: 2 * time.Second},
 			true,
 		},
-		{"a_plain_400", errors.New("openai API error (status 400): bad schema"), false},
-		{"a_plain_401", errors.New("openai API error (status 401): unauthorized"), false},
+		{
+			// Built the way a provider actually builds a client error -- typed,
+			// via llm.NewAPIError -- rather than as a plain fmt.Errorf whose
+			// message happens to contain "status 400". A-008 removed the
+			// substring lists that used to make the plain-string spelling of
+			// this case matter; only the type does now.
+			"a_typed_400", llm.NewAPIError("openai", "m", 400, ""), false,
+		},
+		{
+			"a_typed_401", llm.NewAPIError("openai", "m", 401, ""), false,
+		},
+		{
+			// The case A-008's verify line names directly: an error nobody has
+			// taught the taxonomy about is not assumed permanent. It gets its
+			// retries; the attempt budget bounds what being wrong costs.
+			"an_unclassifiable_error_is_retried_not_failed_fast",
+			errors.New("the vendor changed its error format again"),
+			true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -184,7 +303,7 @@ func TestRetryDecisionComesFromTheStatus(t *testing.T) {
 		{"403_forbidden", 403, `{"error":{"message":"no access"}}`, false},
 
 		// The cases that separate a typed decision from a textual one. A vendor
-		// is free to put any classifier in its body, and the substring matcher
+		// is free to put any classifier in its body, and a substring matcher
 		// reads the WHOLE message including that classifier -- so a transient
 		// 500 whose body carries `invalid_request_error` was read as permanent
 		// and the caller lost a retry they were entitled to.

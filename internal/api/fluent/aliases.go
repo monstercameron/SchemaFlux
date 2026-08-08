@@ -361,10 +361,14 @@ func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 	return ops.VerifyClaim(claim, opts)
 }
 
+// Deprecated: use Settle. This surface keeps the old spelling for now; the
+// operation is one model round trip, not an exchange. See PS-005.
 func Negotiate[T any](constraints any, opts NegotiateOptions) (NegotiateResult[T], error) {
 	return ops.Negotiate[T](constraints, opts)
 }
 
+// Deprecated: use SettleAdversarial. This surface keeps the old spelling for now; the
+// operation is one model round trip, not an exchange. See PS-005.
 func NegotiateAdversarial[T any](ctx AdversarialContext[T], opts AdversarialOptions) (AdversarialResult[T], error) {
 	return ops.NegotiateAdversarial[T](ctx, opts)
 }

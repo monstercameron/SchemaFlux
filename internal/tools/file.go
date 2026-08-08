@@ -496,25 +496,6 @@ func getMimeType(ext string) string {
 	return "application/octet-stream"
 }
 
-// WatchFileTool watches for file changes (STUBBED).
-var WatchFileTool = &Tool{
-	Name:        "watch_file",
-	Description: "Watch for file changes (requires fsnotify integration)",
-	Category:    CategoryFile,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"path":      StringParam("Path to watch"),
-		"recursive": BoolParam("Watch recursively"),
-	}, []string{"path"}),
-	Execute:      executeWatchFileStub,
-	RequiresAuth: false,
-	IsStub:       true,
-}
-
-func executeWatchFileStub(ctx context.Context, params map[string]any) (Result, error) {
-	path, _ := params["path"].(string)
-	return StubResult(fmt.Sprintf("Watching '%s' requires fsnotify integration for real-time file system events.", path)), nil
-}
-
 // SearchFilesTool searches for files by name pattern.
 var SearchFilesTool = &Tool{
 	Name:        "search_files",
@@ -594,6 +575,5 @@ func init() {
 	mustRegister(DeleteFileTool)
 	mustRegister(FileExistsTool)
 	mustRegister(FileInfoTool)
-	mustRegister(WatchFileTool)
 	mustRegister(SearchFilesTool)
 }

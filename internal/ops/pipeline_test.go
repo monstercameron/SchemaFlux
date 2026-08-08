@@ -266,50 +266,6 @@ func TestMap(t *testing.T) {
 	})
 }
 
-func TestMapConcurrent(t *testing.T) {
-	t.Run("MapConcurrentOperation", func(t *testing.T) {
-		items := []int{1, 2, 3, 4, 5}
-
-		operation := func(n int) (int, error) {
-			return n * 2, nil
-		}
-
-		results, err := MapConcurrent(items, operation, 2)
-
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-
-		expected := []int{2, 4, 6, 8, 10}
-		for i, v := range results {
-			if v != expected[i] {
-				t.Errorf("At index %d: expected %d, got %d", i, expected[i], v)
-			}
-		}
-	})
-
-	t.Run("MapConcurrentWithError", func(t *testing.T) {
-		items := []int{1, 2, 3}
-
-		operation := func(n int) (int, error) {
-			if n == 2 {
-				return 0, fmt.Errorf("error at 2")
-			}
-			return n * 2, nil
-		}
-
-		_, err := MapConcurrent(items, operation, 2)
-
-		if err == nil {
-			t.Error("Expected error")
-		}
-
-		if !strings.Contains(err.Error(), "index 1") {
-			t.Errorf("Expected error at index 1, got %v", err)
-		}
-	})
-}
-
 func TestReduce(t *testing.T) {
 	t.Run("ReduceNumbers", func(t *testing.T) {
 		items := []int{1, 2, 3, 4, 5}
@@ -402,55 +358,6 @@ func TestTap(t *testing.T) {
 
 		if sideEffect != "tapped: hello" {
 			t.Errorf("Expected side effect 'tapped: hello', got %s", sideEffect)
-		}
-	})
-}
-
-func TestRetry(t *testing.T) {
-	t.Run("RetrySuccess", func(t *testing.T) {
-		attempts := 0
-		operation := func() (string, error) {
-			attempts++
-			if attempts < 3 {
-				return "", fmt.Errorf("temporary error")
-			}
-			return "success", nil
-		}
-
-		result, err := Retry(operation, 5, 10*time.Millisecond)
-
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-
-		if result != "success" {
-			t.Errorf("Expected 'success', got %s", result)
-		}
-
-		if attempts != 3 {
-			t.Errorf("Expected 3 attempts, got %d", attempts)
-		}
-	})
-
-	t.Run("RetryMaxAttempts", func(t *testing.T) {
-		attempts := 0
-		operation := func() (string, error) {
-			attempts++
-			return "", fmt.Errorf("permanent error")
-		}
-
-		_, err := Retry(operation, 3, 10*time.Millisecond)
-
-		if err == nil {
-			t.Error("Expected error after max attempts")
-		}
-
-		if attempts != 3 {
-			t.Errorf("Expected 3 attempts, got %d", attempts)
-		}
-
-		if !strings.Contains(err.Error(), "3 attempts") {
-			t.Errorf("Expected max attempts error, got %v", err)
 		}
 	})
 }

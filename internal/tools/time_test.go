@@ -218,25 +218,6 @@ func TestHolidayToolInvalidDate(t *testing.T) {
 	}
 }
 
-func TestGeoToolStub(t *testing.T) {
-	result, _ := GeoTool.Execute(context.Background(), map[string]any{
-		"action":  "geocode",
-		"address": "New York, NY",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected geo to be stubbed")
-	}
-}
-
-func TestWeatherToolStub(t *testing.T) {
-	result, _ := WeatherTool.Execute(context.Background(), map[string]any{
-		"location": "New York",
-	})
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected weather to be stubbed")
-	}
-}
-
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		duration time.Duration

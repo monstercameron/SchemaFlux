@@ -138,18 +138,4 @@ func runTimeExamples(ctx context.Context) {
 		"country": "US",
 	})
 	printResult("Holiday: Regular Monday", result, err)
-
-	// Example 11: Geo (stub)
-	result, err = tools.Execute(ctx, "geo", map[string]any{
-		"action":  "geocode",
-		"address": "1600 Pennsylvania Avenue, Washington, DC",
-	})
-	printResult("Geo: Geocode address (stub)", result, err)
-
-	// Example 12: Weather (stub)
-	result, err = tools.Execute(ctx, "weather", map[string]any{
-		"location": "New York, NY",
-		"units":    "imperial",
-	})
-	printResult("Weather: New York (stub)", result, err)
 }

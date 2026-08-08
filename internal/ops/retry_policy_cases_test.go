@@ -206,14 +206,20 @@ func TestSuccessOnTheLastAttempt(t *testing.T) {
 	}
 }
 
-// Backoff has to grow, or a retry storm hits the provider as fast as the first
-// attempt did.
+// Backoff has to grow (or hold at its cap), or a retry storm hits the
+// provider as fast as the first attempt did. nextRetryDelay's jitter makes a
+// single call's delay non-deterministic, so this chains prevWait the way
+// CallLLM's loop does and pins the growth at jitter's own ceiling (randFloat
+// returning ~1 every time), which is deterministic and is also the case that
+// would reveal a regression to "delay shrinks after growing" fastest.
 func TestRetryDelayGrows(t *testing.T) {
 	base := 100 * time.Millisecond
+	maxDelay := 5 * time.Second
 
+	prevWait := base
 	previous := time.Duration(0)
 	for attempt := 0; attempt < 5; attempt++ {
-		delay := retryDelay(base, attempt)
+		delay := nextRetryDelay(nil, base, prevWait, maxDelay, oneRand)
 		if delay <= 0 {
 			t.Fatalf("attempt %d produced a non-positive delay %v", attempt, delay)
 		}
@@ -221,5 +227,6 @@ func TestRetryDelayGrows(t *testing.T) {
 			t.Errorf("attempt %d delay %v is shorter than the previous %v", attempt, delay, previous)
 		}
 		previous = delay
+		prevWait = delay
 	}
 }

@@ -219,24 +219,62 @@ func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)
 		}
 	}
 
-	// Generate suggestions for failed checks using LLM if available
-	if !result.CanProceed && len(result.FailedChecks) > 0 {
-		ctx, cancel := operationContext(ctx, 2*time.Second)
-		defer cancel()
+	// No provider call. CF-08 and P-03: this used to call a model whenever a
+	// check failed, to write suggestions nobody asked for. A caller handing
+	// this function a list of Go predicates has every reason to believe it
+	// runs Go predicates, and it did three things they did not agree to: it
+	// spent their money, it sent the failed-check messages -- built from their
+	// own state -- to a provider, and it did both on a hardcoded two-second
+	// timeout with hardcoded options, so their configured tier, deadline, and
+	// steering were all ignored.
+	//
+	// Suggestions are now GuardWithSuggestions, where asking for them is the
+	// whole point of calling it.
+	return result
+}
 
-		systemPrompt := "You are a helpful assistant. Suggest how to fix these issues."
-		userPrompt := fmt.Sprintf("Issues:\n%s", strings.Join(result.FailedChecks, "\n"))
+// GuardWithSuggestions runs the same checks as Guard and then asks a model how
+// to fix the ones that failed.
+//
+// It exists as a separate function rather than an option because the
+// difference between the two is whether a provider is called at all, and that
+// is not a detail to bury in a struct field. The caller's own options are used
+// -- their tier, their context and deadline -- rather than the Quick tier and
+// two-second timeout Guard used to impose.
+//
+// The failed-check messages are sent to the provider. They are written by the
+// caller's own check functions and may quote the caller's state, which is
+// exactly why this is opt-in: see AGENTS.md on never sending the caller's
+// payload anywhere they did not ask for.
+//
+// A failure to produce suggestions is not a failure of the guard. The verdict
+// is already decided in Go by then, and returning an error would turn a
+// provider outage into a blocked operation that Go had already approved.
+func GuardWithSuggestions[T any](ctx context.Context, state T, opts types.OpOptions, checks ...func(T) (bool, string)) GuardResult {
+	log := logger.GetLogger()
 
-		opt := types.OpOptions{Intelligence: types.Quick}
-		response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
-		if err != nil {
-			log.Warn("Guard operation LLM call failed, proceeding without suggestions", "error", err)
-		} else {
-			result.Suggestions = strings.Split(response, "\n")
-			log.Debug("Guard operation succeeded", "suggestionsCount", len(result.Suggestions))
-		}
+	result := Guard(ctx, state, checks...)
+	if result.CanProceed || len(result.FailedChecks) == 0 {
+		return result
 	}
 
+	ctx, cancel := operationContext(ctx, config.GetTimeout())
+	defer cancel()
+
+	systemPrompt := "You are a helpful assistant. Suggest how to fix these issues."
+	userPrompt := fmt.Sprintf("Issues:\n%s", strings.Join(result.FailedChecks, "\n"))
+
+	response, err := callLLM(ctx, systemPrompt, userPrompt, opts)
+	if err != nil {
+		log.Warn("Guard suggestions unavailable; the verdict itself is unaffected", "error", err)
+		return result
+	}
+
+	for _, line := range strings.Split(response, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			result.Suggestions = append(result.Suggestions, trimmed)
+		}
+	}
 	return result
 }
 

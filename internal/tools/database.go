@@ -380,32 +380,9 @@ func executeBackup(ctx context.Context, params map[string]any) (Result, error) {
 	}), nil
 }
 
-// VectorDBTool provides vector database operations (STUBBED).
-var VectorDBTool = &Tool{
-	Name:        "vector_db",
-	Description: "Vector database operations for embeddings (requires external service)",
-	Category:    CategoryDatabase,
-	Parameters: ObjectSchema(map[string]ParameterSchema{
-		"action":    EnumParam("Action", []string{"insert", "search", "delete"}),
-		"embedding": StringParam("JSON array representing the embedding vector"),
-		"metadata":  StringParam("JSON object of metadata"),
-		"query":     StringParam("Query text to search for"),
-		"limit":     NumberParam("Number of results to return"),
-	}, []string{"action"}),
-	Execute:      executeVectorDBStub,
-	RequiresAuth: true,
-	IsStub:       true,
-}
-
-func executeVectorDBStub(ctx context.Context, params map[string]any) (Result, error) {
-	action, _ := params["action"].(string)
-	return StubResult(fmt.Sprintf("Vector DB action '%s' requires integration with Pinecone/Weaviate/Chroma. Configure VECTOR_DB_URL and VECTOR_DB_API_KEY.", action)), nil
-}
-
 func init() {
 	mustRegister(SQLiteTool)
 	mustRegister(MigrateTool)
 	mustRegister(SeedTool)
 	mustRegister(BackupTool)
-	mustRegister(VectorDBTool)
 }

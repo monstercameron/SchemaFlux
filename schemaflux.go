@@ -1301,8 +1301,18 @@ func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 //	result, err := schemaflux.Negotiate[Schedule](constraints, schemaflux.NegotiateOptions{
 //	    Strategy: "balanced",
 //	})
+//
+// Deprecated: use Settle. This is one model round trip that produces a
+// settlement from constraints, not an exchange, and a conversational name on a
+// single-shot operation is what PS-005 forbids.
 func Negotiate[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T], error) {
 	return ops.Negotiate[T](constraints, opts...)
+}
+
+// Settle produces a settlement satisfying the given constraints, in one model
+// round trip.
+func Settle[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T], error) {
+	return ops.Settle[T](constraints, opts...)
 }
 
 // AdversarialPosition represents one party's position in a negotiation.
@@ -1343,8 +1353,16 @@ type AdversarialOptions = ops.AdversarialOptions
 //	// result.Deal has the final terms
 //	// result.TermMovements shows who moved on each term
 //	// result.WhoConcededMore indicates "they" since we had strong leverage
+//
+// Deprecated: use SettleAdversarial. One model round trip, not an exchange.
 func NegotiateAdversarial[T any](context AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
 	return ops.NegotiateAdversarial[T](context, opts...)
+}
+
+// SettleAdversarial produces a settlement between opposed positions in one
+// model round trip.
+func SettleAdversarial[T any](context AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
+	return ops.SettleAdversarial[T](context, opts...)
 }
 
 // Resolve resolves conflicts when multiple typed sources disagree.
@@ -1698,4 +1716,92 @@ func StreamTranslate(input string, opts TranslateOptions) (*TextStream, error) {
 // StreamExpand expands text, delivering it as it arrives.
 func StreamExpand(input string, opts ExpandOptions) (*TextStream, error) {
 	return ops.StreamExpand(input, opts)
+}
+
+// --- The operation descriptor (A-001).
+//
+// An Op is what an operation *is*, separated from the machinery that runs it:
+// its identity and version, what it is allowed to do, the contract its output
+// must satisfy, how it batches, and its default policy. It holds no context
+// and no provider — it is data plus pure functions, which is what lets
+// planning, recipes, and middleware work on operations without a second
+// execution path. Extract runs through one (A-012), and its prompts did not
+// move, which is the proof the descriptor carries a real operation rather than
+// describing one.
+type (
+	// OperationID names an operation and its version. The version exists
+	// because a prompt edit is a behaviour change with no Go API change to
+	// show for it, and it needs something to hang on.
+	OperationID = types.OperationID
+
+	// Semantics says what an operation is allowed to do and what it promises:
+	// its category, whether inference is permitted, whether evidence is
+	// required, whether it preserves identity and order, and its stability
+	// tier.
+	Semantics = types.Semantics
+
+	// Category buckets operations into the stable families.
+	Category = types.Category
+
+	// StabilityTier is the compatibility promise attached to an operation.
+	StabilityTier = types.StabilityTier
+
+	// BatchClass says how — or whether — an operation batches.
+	BatchClass = types.BatchClass
+
+	// DefaultPolicy is the operation's own default mode, tier, and repair
+	// budget, before a caller's options are applied over it.
+	DefaultPolicy = types.DefaultPolicy
+
+	// OutputContract is what the answer has to satisfy: the schema, the
+	// decoder, the invariants, and any normalization.
+	OutputContract[Out any] = ops.OutputContract[Out]
+
+	// BatchAlgebra is how an operation splits, merges, and validates a batch.
+	BatchAlgebra[In, Out any] = ops.BatchAlgebra[In, Out]
+
+	// Op is the descriptor itself.
+	Op[In, Out any] = ops.Op[In, Out]
+
+	// RepairResult reports what the repair loop did.
+	RepairResult = ops.RepairResult
+)
+
+const (
+	CategoryUnspecified    = types.CategoryUnspecified
+	CategoryExtraction     = types.CategoryExtraction
+	CategoryTransformation = types.CategoryTransformation
+	CategoryGeneration     = types.CategoryGeneration
+	CategorySelection      = types.CategorySelection
+	CategoryJudgment       = types.CategoryJudgment
+
+	StabilityUnspecified  = types.StabilityUnspecified
+	StabilityExperimental = types.StabilityExperimental
+	StabilityStable       = types.StabilityStable
+
+	BatchUnspecified = types.BatchUnspecified
+	BatchNone        = types.BatchNone
+	BatchItemwise    = types.BatchItemwise
+	BatchAggregate   = types.BatchAggregate
+)
+
+// NewOp validates a descriptor and returns it. A stable operation that has not
+// declared how it batches is rejected: "stable" is a promise about behaviour a
+// caller can rely on, and how an operation behaves in a batch is part of that.
+func NewOp[In, Out any](op Op[In, Out]) (Op[In, Out], error) {
+	return ops.NewOp(op)
+}
+
+// MustNewOp is NewOp for a descriptor built at package initialisation, where
+// there is no caller to return an error to. It panics, which is what makes the
+// batch-class rule a build-time check in practice: a binary whose operation
+// descriptors are wrong fails to start rather than failing later on one code
+// path.
+func MustNewOp[In, Out any](op Op[In, Out]) Op[In, Out] {
+	return ops.MustNewOp(op)
+}
+
+// RunOp executes an operation described by an Op.
+func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt OpOptions) (Out, RepairResult, error) {
+	return ops.RunOp(ctx, op, input, opt)
 }

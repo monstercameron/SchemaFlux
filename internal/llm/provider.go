@@ -115,6 +115,99 @@ type CompletionRequest struct {
 	// the resolved model and the rendered template) because internal/llm
 	// cannot import internal/ops -- ops already imports llm. P-009.
 	PromptCacheKey string
+
+	// Tools lists the functions the model may call instead of answering
+	// directly. Omitted from the wire request entirely when empty -- a
+	// caller who never mentions tools gets the exact request this library
+	// sent before tool calling existed, not an empty tools array that some
+	// vendor implementation might treat differently from no array at all.
+	Tools []Tool
+
+	// ToolChoice steers whether and which tool the model must use. Accepted
+	// values mirror the Responses API: "auto" (the model decides, the
+	// default when this is empty), "none" (never call a tool), "required"
+	// (call some tool), or the exact Name of one of Tools to force that one.
+	// Any other value that names one of Tools is sent as a forced choice;
+	// forcing a name that is not in Tools is a caller bug caught by
+	// buildResponsesRequestBody's caller before the request is ever sent --
+	// see Complete.
+	ToolChoice string
+
+	// Messages, when non-empty, carries an explicit multi-turn transcript
+	// and takes priority over SystemPrompt/UserPrompt for the "input" the
+	// Responses API receives: SystemPrompt still becomes "instructions" (the
+	// Responses API keeps that separate from the turn history), but the
+	// turn-by-turn conversation is Messages, in order, oldest first.
+	//
+	// Left empty, a request behaves exactly as it did before this field
+	// existed: SystemPrompt/UserPrompt build the single-turn request. This is
+	// additive infrastructure for a caller building its own multi-turn loop
+	// (see internal/ops/session.go) -- it is not wired into any operation in
+	// this library today, so PromptCacheKeyFor's stable-prefix property for
+	// system+template is unaffected by its mere existence.
+	Messages []Message
+}
+
+// Tool describes one function the model may call. It is a declaration, not
+// an invocation -- the library never executes it. A ToolCall the model
+// returns is checked against the Tools a request actually offered (see
+// ErrUnrequestedTool); a tool the caller never declared here can never be
+// legitimately requested back.
+type Tool struct {
+	// Name identifies the tool. It is what a ToolCall.Name must match.
+	Name string
+
+	// Description tells the model when to use this tool. Prose, not a
+	// contract -- the schema is what Parameters enforces.
+	Description string
+
+	// Parameters is the JSON Schema (as a map, exactly like
+	// CompletionRequest.JSONSchema) describing the arguments the model must
+	// supply. A nil value is sent as an empty-object schema, which is the
+	// Responses API's spelling for "this tool takes no arguments."
+	Parameters map[string]any
+}
+
+// Message is one turn of an explicit conversation transcript. Role follows
+// the Responses API's own vocabulary ("system", "user", "assistant", or
+// "tool"); Content is the turn's text. ToolCallID identifies which prior
+// assistant ToolCall a "tool" role message is answering -- required by the
+// API to line a tool result up with the call that asked for it.
+type Message struct {
+	Role       string
+	Content    string
+	ToolCallID string
+}
+
+// ToolCall is a request FROM the model to run one of the Tools a
+// CompletionRequest offered. It is never executed by this library -- Complete
+// returns it inside CompletionResponse.ToolCalls and it is the caller's job
+// to run the tool (or refuse to) and feed the result back as a Message with
+// Role "tool" and this call's ID as ToolCallID.
+//
+// Arguments is the model's raw JSON payload, untouched. It is built from
+// whatever the model produced against the caller's Parameters schema, which
+// makes it exactly as untrusted as any other model output -- this library
+// decodes it into nothing narrower than raw bytes, on purpose, so the caller
+// decodes it with the validation appropriate to their own tool rather than
+// this library silently making that decision through a generic decode step
+// that a malformed or adversarial payload could exploit differently than the
+// caller expects.
+type ToolCall struct {
+	// ID identifies this specific call so a later tool-result Message can be
+	// correlated back to it. The Responses API calls this call_id.
+	ID string
+
+	// Name is the tool the model wants to call. Checked against the Tools a
+	// request offered before this ever reaches a caller -- see
+	// ErrUnrequestedTool.
+	Name string
+
+	// Arguments is the model's raw, undecoded JSON argument payload. Never
+	// logged, never embedded in an error: it is built from the caller's own
+	// schema against the caller's own data, exactly as unlogged as any other
+	// payload this library moves between the caller and the model.
+	Arguments json.RawMessage
 }
 
 // CompletionResponse represents a unified response format
@@ -124,6 +217,13 @@ type CompletionResponse struct {
 	Model        string
 	Provider     string
 	FinishReason string
+
+	// ToolCalls holds the tool calls the model asked for instead of (or
+	// alongside) answering in Content. Empty on every response that did not
+	// request a tool -- a plain text response is unaffected by this field's
+	// existence, and a caller that never passes Tools in the request never
+	// has to look at it. See ToolCall for why the arguments inside are raw.
+	ToolCalls []ToolCall
 }
 
 // ProviderConfig contains provider-specific configuration
@@ -151,6 +251,15 @@ type ProviderFactory func(config ProviderConfig) (Provider, error)
 // output list will be identical on retry, so the retry classifier must not
 // spend a backoff cycle on it.
 var ErrNoMessageOutput = errors.New("response carried no message output")
+
+// ErrUnrequestedTool reports a tool call naming something the caller never
+// declared in CompletionRequest.Tools. A model asking for a tool it was
+// never offered is a failure the library catches in Go, not something that
+// reaches the caller looking like a legitimate request to act on -- the
+// caller's Tools list is the only source of truth for what may be called,
+// and this is deterministic: the same offered/requested mismatch fails the
+// same way on retry, so it is not worth spending a backoff cycle on.
+var ErrUnrequestedTool = errors.New("model requested a tool that was not offered")
 
 // OpenAIProvider implements Provider for OpenAI
 type OpenAIProvider struct {
@@ -208,6 +317,18 @@ type responsesAPIResponse struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		// The fields below are populated only on a "function_call" output
+		// item; a "message" item leaves them at their zero value. CallID is
+		// the Responses API's name for what ToolCall.ID must carry so a
+		// later tool-result message correlates to this exact call -- ID is
+		// kept too because some payload shapes carry the item's own id there
+		// instead, and preferring CallID with ID as a fallback (see
+		// toolCalls) means a payload variance in this field is not a parse
+		// failure.
+		ID        string `json:"id"`
+		CallID    string `json:"call_id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
 	} `json:"output"`
 	Usage struct {
 		InputTokens        int `json:"input_tokens"`
@@ -244,6 +365,31 @@ func (r *responsesAPIResponse) content() string {
 	return builder.String()
 }
 
+// toolCalls extracts every "function_call" output item. A reasoning model
+// or a tool-calling model can emit these alongside or instead of a
+// "message" item, and unlike content() this does not require the payload
+// well-formed enough to decode arguments -- Arguments is carried through
+// exactly as the API sent it, because decoding it is the caller's job (see
+// ToolCall).
+func (r *responsesAPIResponse) toolCalls() []ToolCall {
+	var calls []ToolCall
+	for _, output := range r.Output {
+		if output.Type != "function_call" {
+			continue
+		}
+		id := output.CallID
+		if id == "" {
+			id = output.ID
+		}
+		calls = append(calls, ToolCall{
+			ID:        id,
+			Name:      output.Name,
+			Arguments: json.RawMessage(output.Arguments),
+		})
+	}
+	return calls
+}
+
 // finishReason derives the finish reason the same way for a buffered
 // response and a streamed one's terminal event -- a truncated answer must
 // be distinguishable from a complete one in both.
@@ -258,11 +404,26 @@ func (r *responsesAPIResponse) finishReason() string {
 }
 
 func (r *responsesAPIResponse) toCompletionResponse(providerName string) CompletionResponse {
+	content := r.content()
+	calls := r.toolCalls()
+
+	finishReason := r.finishReason()
+	if content == "" && len(calls) > 0 && finishReason == "stop" {
+		// "stop" is technically accurate (the response completed normally)
+		// but indistinguishable from a genuine empty text answer. A caller
+		// switching on FinishReason -- as this library's own
+		// ClassifyCompletion does for truncation -- needs to be able to
+		// tell "the model answered with nothing" apart from "the model
+		// asked for a tool instead of answering."
+		finishReason = "tool_calls"
+	}
+
 	return CompletionResponse{
-		Content:      r.content(),
+		Content:      content,
+		ToolCalls:    calls,
 		Provider:     providerName,
 		Model:        r.Model,
-		FinishReason: r.finishReason(),
+		FinishReason: finishReason,
 		Usage: types.TokenUsage{
 			PromptTokens:     r.Usage.InputTokens,
 			CompletionTokens: r.Usage.OutputTokens,
@@ -282,19 +443,54 @@ func (r *responsesAPIResponse) toCompletionResponse(providerName string) Complet
 // which is what keeps a streamed failure classified the same way as a
 // buffered one for the same cause: there is only one function that decides,
 // not a second opinion that only runs on the streaming path.
-func classifyResponsesResult(r *responsesAPIResponse, providerName string) (CompletionResponse, error) {
+//
+// offeredTools is the Tools list from the request that produced r. A
+// response that carries a tool call is not a parse failure -- content()
+// being empty because the answer is a function_call item, not a message
+// item, used to fall straight into ErrNoMessageOutput below, which
+// misreported a legitimate tool-call response as a malformed one. It is
+// still checked against offeredTools before it reaches the caller: a call
+// naming something the caller never declared is refused here, in Go,
+// instead of being handed to a caller who might mistake "the model
+// mentioned a tool" for "the model may run one."
+func classifyResponsesResult(r *responsesAPIResponse, providerName string, offeredTools []Tool) (CompletionResponse, error) {
 	if len(r.Output) == 0 {
 		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
 	}
 
-	if r.content() == "" {
+	calls := r.toolCalls()
+
+	if r.content() == "" && len(calls) == 0 {
 		if r.Status == "incomplete" && r.IncompleteReason.Reason != "" {
 			return CompletionResponse{}, fmt.Errorf("OpenAI response incomplete: %s", r.IncompleteReason.Reason)
 		}
 		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
 	}
 
+	if len(calls) > 0 {
+		if err := validateToolCalls(calls, offeredTools); err != nil {
+			return CompletionResponse{}, err
+		}
+	}
+
 	return r.toCompletionResponse(providerName), nil
+}
+
+// validateToolCalls refuses any call naming a tool the request never
+// offered. It compares by Name only -- offeredTools is what CompletionRequest
+// declared, calls is what the model sent back -- and never touches or
+// mentions a call's Arguments, which are the caller's data.
+func validateToolCalls(calls []ToolCall, offeredTools []Tool) error {
+	offered := make(map[string]struct{}, len(offeredTools))
+	for _, tool := range offeredTools {
+		offered[tool.Name] = struct{}{}
+	}
+	for _, call := range calls {
+		if _, ok := offered[call.Name]; !ok {
+			return fmt.Errorf("openai: %w: %q", ErrUnrequestedTool, call.Name)
+		}
+	}
+	return nil
 }
 
 // buildResponsesRequestBody constructs the JSON body shared by the buffered
@@ -304,9 +500,32 @@ func classifyResponsesResult(r *responsesAPIResponse, providerName string) (Comp
 // caller streaming the exact same request as a buffered call must produce
 // the exact same request on the wire.
 func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest, stream bool) map[string]interface{} {
-	input := req.UserPrompt
-	if req.ResponseFormat == "json" && !strings.Contains(strings.ToLower(input), "json") {
-		input = "Return valid JSON only.\n\n" + input
+	// input is either the single UserPrompt string (unchanged from before
+	// Messages existed) or, when the caller supplied an explicit transcript,
+	// an ordered array of role/content turns. SystemPrompt still becomes
+	// "instructions" either way -- the Responses API keeps steering separate
+	// from the turn history, so a caller building a transcript is not also
+	// responsible for re-injecting the system prompt as message zero.
+	var input interface{}
+	if len(req.Messages) > 0 {
+		turns := make([]map[string]interface{}, 0, len(req.Messages))
+		for _, msg := range req.Messages {
+			turn := map[string]interface{}{
+				"role":    msg.Role,
+				"content": msg.Content,
+			}
+			if msg.ToolCallID != "" {
+				turn["call_id"] = msg.ToolCallID
+			}
+			turns = append(turns, turn)
+		}
+		input = turns
+	} else {
+		userInput := req.UserPrompt
+		if req.ResponseFormat == "json" && !strings.Contains(strings.ToLower(userInput), "json") {
+			userInput = "Return valid JSON only.\n\n" + userInput
+		}
+		input = userInput
 	}
 
 	requestBody := map[string]interface{}{
@@ -334,6 +553,41 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 
 	if req.PromptCacheKey != "" {
 		requestBody["prompt_cache_key"] = req.PromptCacheKey
+	}
+
+	// Tools/ToolChoice are omitted entirely rather than sent empty/"auto" by
+	// default, so a request that never mentions tools produces the exact
+	// same wire body it produced before tool calling existed.
+	if len(req.Tools) > 0 {
+		tools := make([]map[string]interface{}, 0, len(req.Tools))
+		for _, tool := range req.Tools {
+			parameters := tool.Parameters
+			if parameters == nil {
+				parameters = map[string]interface{}{
+					"type":       "object",
+					"properties": map[string]interface{}{},
+				}
+			}
+			tools = append(tools, map[string]interface{}{
+				"type":        "function",
+				"name":        tool.Name,
+				"description": tool.Description,
+				"parameters":  parameters,
+			})
+		}
+		requestBody["tools"] = tools
+	}
+	if req.ToolChoice != "" {
+		switch req.ToolChoice {
+		case "auto", "none", "required":
+			requestBody["tool_choice"] = req.ToolChoice
+		default:
+			// Anything else names one specific tool to force.
+			requestBody["tool_choice"] = map[string]interface{}{
+				"type": "function",
+				"name": req.ToolChoice,
+			}
+		}
 	}
 
 	textConfig := map[string]interface{}{}
@@ -428,7 +682,7 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		return CompletionResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return classifyResponsesResult(&response, provider.Name())
+	return classifyResponsesResult(&response, provider.Name(), req.Tools)
 }
 
 // ErrStreamIncomplete reports a stream that ended without either a terminal
@@ -534,7 +788,7 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 				if envelope.Response == nil {
 					return yield(StreamChunk{}, fmt.Errorf("openai: %s carried no response", envelope.Type))
 				}
-				completion, err := classifyResponsesResult(envelope.Response, provider.Name())
+				completion, err := classifyResponsesResult(envelope.Response, provider.Name(), req.Tools)
 				if err != nil {
 					return yield(StreamChunk{}, err)
 				}

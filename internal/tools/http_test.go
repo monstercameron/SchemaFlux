@@ -100,46 +100,6 @@ func TestPostTool(t *testing.T) {
 	}
 }
 
-func TestWebSearchToolStub(t *testing.T) {
-	result, err := WebSearchTool.Execute(context.Background(), map[string]any{
-		"query": "golang tutorials",
-	})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-	if !result.Success {
-		t.Error("Expected success for stub")
-	}
-	if result.Metadata["stubbed"] != true {
-		t.Error("Expected stubbed metadata")
-	}
-}
-
-func TestScrapeToolStub(t *testing.T) {
-	result, err := ScrapeTool.Execute(context.Background(), map[string]any{
-		"url": "https://example.com",
-	})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-	if !result.Success {
-		t.Error("Expected success for stub")
-	}
-}
-
-func TestBrowserToolStub(t *testing.T) {
-	result, err := BrowserTool.Execute(context.Background(), map[string]any{
-		"action": "open",
-		"url":    "https://example.com",
-	})
-	if err != nil {
-		t.Fatalf("Execute error: %v", err)
-	}
-	if !result.Success {
-		t.Error("Expected success for stub")
-	}
-}
-
 func TestEncodeURL(t *testing.T) {
 	// Test encode
 	result, _ := EncodeURLTool.Execute(context.Background(), map[string]any{

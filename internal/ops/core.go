@@ -217,34 +217,14 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Call the model, and show it its own mistake if the answer cannot be used.
 	// A parse failure or a missing required field used to be terminal, even
 	// though the model can almost always fix both when told what was wrong.
-	var candidate T
-	response, repair, err := withRepair(ctx, systemPrompt, userPrompt, opt, RepairPolicy{},
-		func(body string) error {
-			var attempt T
-
-			if opt.Mode == types.Strict {
-				// Strict decoding: an unrecognised property, a repeated key, a
-				// second value, or a body past the limits is a failure rather
-				// than something encoding/json quietly resolves. A field
-				// nobody asked for is the model producing one, which is the
-				// most interesting thing in the response and was previously
-				// invisible unless *no* expected field was present (F-035).
-				if decodeErr := DecodeExact(body, &attempt, DecodeLimits{}); decodeErr != nil {
-					return decodeErr
-				}
-				if validateErr := ValidateExtractedData(attempt); validateErr != nil {
-					return validateErr
-				}
-				candidate = attempt
-				return nil
-			}
-
-			if parseErr := ParseJSONStrict(body, &attempt); parseErr != nil {
-				return parseErr
-			}
-			candidate = attempt
-			return nil
-		})
+	//
+	// A-012: this used to call withRepair directly with a closure built
+	// inline. It now goes through runExtractOp (opextract.go), which builds
+	// the same closure as an Op's OutputContract.Decode and runs it through
+	// RunOp -- the port A-001 exists to prove. Everything above this line is
+	// unchanged, so the prompt bytes, the schema and cache identities, and
+	// this function's own error handling below are unchanged too.
+	candidate, repair, err := runExtractOp[T](ctx, opt, systemPrompt, userPrompt)
 
 	if err != nil {
 		extractErr := types.ExtractError{
@@ -263,7 +243,6 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		return result, extractErr
 	}
 
-	_ = response
 	result = candidate
 
 	log.Info("Extract operation completed",
