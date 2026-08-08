@@ -38,7 +38,14 @@ type CompressOptions struct {
 	// Output format ("same", "summary", "key_points", "structured")
 	OutputFormat string
 
-	// Maximum output tokens/words
+	// MaxOutputSize is a hard ceiling on the compressed output, in characters.
+	//
+	// The unit is characters because that is what the prompt states ("Target
+	// size: approximately %d characters") and what CompressedSize measures. This
+	// field used to be documented as "tokens/words", which agreed with neither,
+	// and was enforced against nothing at all -- so the disagreement never
+	// surfaced. CompressionRatio remains a target the model aims at; this is the
+	// line it may not cross.
 	MaxOutputSize int
 }
 
@@ -342,6 +349,45 @@ Return a JSON object with:
 		result.ActualRatio = float64(result.CompressedSize) / float64(result.OriginalSize)
 	}
 
+	// MaxOutputSize is documented as a maximum and was compared against nothing,
+	// even though this function had already measured the output two lines above.
+	// A caller sizing a context window by it got no signal when the answer did
+	// not fit.
+	//
+	// CompressionRatio is deliberately NOT enforced. The prompt states it as
+	// "approximately", it is a target rather than a bound, and a compression
+	// that beat the target is a better answer, not a violation.
+	if opts.MaxOutputSize > 0 && result.CompressedSize > opts.MaxOutputSize {
+		log.Error("Compress produced output above the requested maximum",
+			"compressedSize", result.CompressedSize, "maxOutputSize", opts.MaxOutputSize)
+		return result, fmt.Errorf(
+			"compress: the compressed output is %d characters, above the requested maximum of %d",
+			result.CompressedSize, opts.MaxOutputSize)
+	}
+
+	// RetainFields is stated in the prompt as "Must retain these
+	// fields/information" -- "must", not "prefer" -- and a field named there
+	// that is missing from the compressed output is the one outcome the option
+	// exists to prevent. Only structured output is checked: when the compressed
+	// value is not a JSON object there are no named fields to look for, and the
+	// option is documented as being for structured data.
+	if len(opts.RetainFields) > 0 {
+		// The check runs against the model's own JSON, not against
+		// result.Compressed. Decoding into T fills every field the Go type
+		// declares, so a struct always looks like it carries "ssn" -- with an
+		// empty value. The wire object is the only place a dropped field is
+		// still visible as dropped.
+		if compressed := compressedObject(envelope.Compressed); compressed != nil {
+			for _, field := range opts.RetainFields {
+				if _, present := compressed[field]; !present {
+					log.Error("Compress dropped a field named in RetainFields", "field", field)
+					return result, fmt.Errorf(
+						"compress: field %q is named in RetainFields and is missing from the compressed output", field)
+				}
+			}
+		}
+	}
+
 	log.Debug("Compress operation succeeded",
 		"originalSize", result.OriginalSize,
 		"compressedSize", result.CompressedSize,
@@ -356,4 +402,25 @@ func CompressText(input string, opts CompressOptions) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%v", result.Compressed), nil
+}
+
+// compressedObject renders the model's "compressed" value as a generic JSON
+// object, or nil when it is not one.
+//
+// It handles the double-encoded case Compress already tolerates above: some
+// answers put the whole object in a JSON string rather than returning it
+// directly, and a retained field is just as dropped either way.
+func compressedObject(raw json.RawMessage) map[string]any {
+	if object := jsonObjectOf(raw); object != nil {
+		return object
+	}
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(encoded), &object); err != nil {
+		return nil
+	}
+	return object
 }

@@ -286,7 +286,17 @@ func Submit[T any](ctx context.Context, s *Scheduler, req SubmitRequest, run fun
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	seq := s.registerInFlight(cancel)
+	seq, err := s.registerInFlight(cancel)
+	if err != nil {
+		// The slot this request was admitted into still has to go back, or the
+		// scheduler leaks capacity on every shutdown race. releaseReservationOnly
+		// is the right one: registration never happened, so there is no
+		// inFlightCancel entry to remove -- and seq is zero here, which is a
+		// perfectly real key for the first request a scheduler ever admits.
+		cancel()
+		s.releaseReservationOnly(req)
+		return zero, err
+	}
 	defer func() {
 		s.wg.Done()
 		s.release(req, seq)
@@ -462,9 +472,36 @@ func (s *Scheduler) unreserveLocked(req SubmitRequest) {
 
 // registerInFlight records the cancel function for an admitted request so
 // Close can reach it, and returns the sequence number to release it by.
-func (s *Scheduler) registerInFlight(cancel context.CancelFunc) uint64 {
+func (s *Scheduler) registerInFlight(cancel context.CancelFunc) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// A closed scheduler admits nothing, INCLUDING a request that passed
+	// admission before Close ran.
+	//
+	// Holding s.mu across the Add below is necessary but was not sufficient on
+	// its own. Admission and registration are two separate critical sections,
+	// and Close can run entirely in the gap between them. With two requests in
+	// flight the reachable interleaving is: A registers (counter 1); Close sets
+	// closed and starts `go s.wg.Wait()`; A finishes and the counter drops to 0,
+	// so that Wait is on its way out; B -- admitted before Close, still holding
+	// nothing -- calls wg.Add(1) at that moment, and the runtime panics with
+	// "WaitGroup is reused before previous Wait has returned".
+	//
+	// It surfaced as an intermittent panic under `-count=2 -shuffle=on`, which
+	// is roughly a 1-in-4 reproduction on this machine; a single -count=1 run
+	// almost never shows it.
+	//
+	// Refusing here closes the gap: after Close's critical section no Add can
+	// happen at all, so nothing can increment a counter whose Wait is unwinding.
+	if s.closed {
+		return 0, &types.OperationError{
+			Kind:    types.KindShutdown,
+			Op:      "scheduler.Submit",
+			Message: "scheduler closed before the admitted request could start",
+		}
+	}
+
 	seq := s.nextSeq
 	s.nextSeq++
 	s.inFlightCancel[seq] = cancel
@@ -486,7 +523,7 @@ func (s *Scheduler) registerInFlight(cancel context.CancelFunc) uint64 {
 	// first and this request sees a non-zero counter to join, or this request
 	// increments first and Close's Wait observes it.
 	s.wg.Add(1)
-	return seq
+	return seq, nil
 }
 
 // release returns req's reservation to the pool and wakes the dispatcher so

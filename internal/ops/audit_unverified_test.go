@@ -231,44 +231,101 @@ func TestCritique_UnlabeledSeverityIsNotAFilterViolation(t *testing.T) {
 	}
 }
 
-// Compress's MaxOutputSize is documented as a hard cap ("Maximum output
-// tokens/words") and interpolated into the prompt as a target size, but the
-// compressed output's actual size is never compared against it -- unlike
-// WithinLength in invariants.go, which exists for exactly this and is not
-// called here. compress.go:216-219,306-334.
-func TestAudit_Compress_MaxOutputSizeNeverChecked(t *testing.T) {
+// Compress's MaxOutputSize is documented as a maximum and was compared against
+// nothing, even though Compress had already measured the output two lines
+// earlier. A caller sizing a context window by it got no signal when the answer
+// did not fit.
+func TestCompress_RefusesOutputAboveTheRequestedMaximum(t *testing.T) {
 	longOutput := strings.Repeat("word ", 500) // ~2500 characters
 	withResponse(t, `{"compressed": "`+longOutput+`"}`)
 
-	result, err := Compress("some long input text that should be compressed down", NewCompressOptions().WithMaxOutputSize(20))
-	if err != nil {
-		t.Fatalf("Compress returned an error for output that merely exceeded MaxOutputSize: %v", err)
+	_, err := Compress("some long input text that should be compressed down",
+		NewCompressOptions().WithMaxOutputSize(20))
+	if err == nil {
+		t.Fatal("Compress accepted ~2500 characters against a MaxOutputSize of 20")
 	}
-	if result.CompressedSize <= 20 {
-		t.Fatalf("test setup broken: expected compressed output over the 20-unit cap, got %d", result.CompressedSize)
+	if !strings.Contains(err.Error(), "maximum") {
+		t.Fatalf("the error does not name the cap: %v", err)
 	}
-	t.Logf("accepted %d units of compressed output against a MaxOutputSize of 20 with no error", result.CompressedSize)
 }
 
-// Compress's RetainFields is stated in the prompt ("Must retain these
-// fields/information") but the compressed output is never checked to
-// actually contain them. compress.go:223-225,306-334.
-func TestAudit_Compress_RetainFieldsNeverChecked(t *testing.T) {
+// The companion case, and the one that pins the unit: MaxOutputSize counts
+// characters, matching what the prompt states and what CompressedSize measures.
+// It used to be documented as "tokens/words", which agreed with neither -- and
+// since nothing enforced it, the disagreement never surfaced.
+func TestCompress_AcceptsOutputInsideTheRequestedMaximum(t *testing.T) {
+	withResponse(t, `{"compressed": "short"}`)
+
+	result, err := Compress("some long input text that should be compressed down",
+		NewCompressOptions().WithMaxOutputSize(20))
+	if err != nil {
+		t.Fatalf("Compress refused output inside the cap: %v", err)
+	}
+	if result.CompressedSize > 20 {
+		t.Fatalf("CompressedSize = %d, which is not inside the cap this test claims to exercise", result.CompressedSize)
+	}
+}
+
+// CompressionRatio is deliberately NOT enforced: the prompt states it as
+// "approximately", it is a target rather than a bound, and beating it is a
+// better answer, not a violation.
+func TestCompress_BeatingTheCompressionRatioIsNotAViolation(t *testing.T) {
+	withResponse(t, `{"compressed": "x"}`)
+
+	input := strings.Repeat("verbose input text ", 20)
+	if _, err := Compress(input, NewCompressOptions().WithCompressionRatio(0.5)); err != nil {
+		t.Fatalf("Compress refused an answer that compressed further than the target ratio: %v", err)
+	}
+}
+
+// RetainFields is stated in the prompt as "Must retain these
+// fields/information" -- "must", not "prefer" -- and a named field missing from
+// the compressed output is the one outcome the option exists to prevent.
+func TestCompress_RefusesOutputMissingARetainedField(t *testing.T) {
 	type record struct {
 		SSN  string `json:"ssn"`
-		Name string `json:"name"`
+		Note string `json:"note"`
 	}
-	withResponse(t, `{"compressed": {"name": "Alice"}}`)
+	withResponse(t, `{"compressed": {"note": "kept the wrong one"}}`)
 
-	result, err := Compress(record{SSN: "111-22-3333", Name: "Alice"},
+	_, err := Compress(record{SSN: "111-11-1111", Note: "some note"},
+		NewCompressOptions().WithRetainFields([]string{"ssn"}))
+	if err == nil {
+		t.Fatal("Compress accepted output missing a field named in RetainFields")
+	}
+	if !strings.Contains(err.Error(), "ssn") {
+		t.Fatalf("the error does not name the dropped field: %v", err)
+	}
+}
+
+func TestCompress_AcceptsOutputCarryingEveryRetainedField(t *testing.T) {
+	type record struct {
+		SSN  string `json:"ssn"`
+		Note string `json:"note"`
+	}
+	withResponse(t, `{"compressed": {"ssn": "111-11-1111"}}`)
+
+	result, err := Compress(record{SSN: "111-11-1111", Note: "some long note"},
 		NewCompressOptions().WithRetainFields([]string{"ssn"}))
 	if err != nil {
-		t.Fatalf("Compress returned an error for output that dropped a RetainFields entry: %v", err)
+		t.Fatalf("Compress refused output that kept the retained field: %v", err)
 	}
-	if result.Compressed.SSN != "" {
-		t.Fatalf("test setup broken: expected ssn to be dropped, got %q", result.Compressed.SSN)
+	if result.Compressed.SSN != "111-11-1111" {
+		t.Fatalf("Compressed = %+v, want the retained field intact", result.Compressed)
 	}
-	t.Logf("accepted compressed output with the required field %q entirely absent, no error", "ssn")
+}
+
+// Only structured output is checked. When the compressed value is not a JSON
+// object there are no named fields to look for, and RetainFields is documented
+// as being for structured data -- refusing here would break every text
+// compression that happens to set the option.
+func TestCompress_RetainFieldsIsNotCheckedAgainstUnstructuredOutput(t *testing.T) {
+	withResponse(t, `{"compressed": "a plain compressed sentence"}`)
+
+	if _, err := Compress("a long plain input sentence",
+		NewCompressOptions().WithRetainFields([]string{"ssn"})); err != nil {
+		t.Fatalf("Compress refused text output over a field name that cannot apply to it: %v", err)
+	}
 }
 
 // Arbitrate's RequireAllRules is stated in the prompt ("disqualify any
