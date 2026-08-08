@@ -121,6 +121,20 @@ type OpOptions struct {
 	// SchemaName names the schema in the provider request.
 	SchemaName string
 
+	// Model pins the exact model for this call, bypassing the Intelligence
+	// tier's mapping. TC-005.
+	//
+	// The tier is deliberately not a pin -- Speed.String() documents
+	// Smart/Fast/Quick as floating, and what "Smart" resolves to changes as
+	// models are released. That is the right default and the wrong thing for a
+	// caller reproducing a result, comparing two models, or holding a
+	// regression suite still. This is the escape hatch, and it is a separate
+	// field rather than an overload of Intelligence precisely so that "I chose
+	// a tier" and "I chose a model" stay distinguishable in the envelope.
+	//
+	// Empty means no pin: the tier mapping decides, as before.
+	Model string
+
 	// SchemaID is the schema's full identity -- name, version, hash, dialect --
 	// rendered for a log line, a cache key, or a stored result's provenance.
 	//
@@ -342,7 +356,23 @@ type ResultMetadata struct {
 	Duration  time.Duration `json:"duration"`
 
 	// Model and operation details
-	Model        string `json:"model"`
+	Model string `json:"model"`
+
+	// RequestedModel is the model the request asked for -- the caller's pin,
+	// or whatever the tier mapping resolved to. TC-005 needs it because a
+	// provider that substitutes is visible only as a difference between what
+	// was asked for and what answered, and a single "model" field reports the
+	// second while every reader assumes it is the first.
+	RequestedModel string `json:"requested_model,omitempty"`
+
+	// ObservedModel is the model string the provider itself returned, raw and
+	// **not** defaulted. Model, above, falls back to the requested model when a
+	// provider echoes nothing, which is right for pricing and logging and wrong
+	// for drift: it would make an unobserved substitution indistinguishable
+	// from an observed agreement. Empty here means the provider said nothing,
+	// and the envelope reports drift as unknown rather than absent.
+	ObservedModel string `json:"observed_model,omitempty"`
+
 	Provider     string `json:"provider"`
 	Operation    string `json:"operation"`
 	Mode         Mode   `json:"mode"`

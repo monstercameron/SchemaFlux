@@ -39,6 +39,10 @@ type CommonOptions struct {
 	// Quality/speed tradeoff (Smart/Fast/Quick)
 	Intelligence types.Speed
 
+	// Model pins the exact model, bypassing the Intelligence tier's mapping.
+	// TC-005; see types.OpOptions.Model for why a tier is not a pin.
+	Model string
+
 	// Context for cancellation
 	Context context.Context
 
@@ -156,10 +160,20 @@ func (c CommonOptions) toOpOptions() types.OpOptions {
 		Threshold:     c.Threshold,
 		Mode:          c.Mode,
 		Intelligence:  c.Intelligence,
+		Model:         c.Model,
 		Context:       ctx,
 		RequestID:     tracking.RequestID,
 		CorrelationID: tracking.CorrelationID,
 	}
+}
+
+// WithModel pins the exact model for this call. An empty string clears the pin
+// and returns to the tier mapping, rather than pinning to nothing -- which is
+// what a caller reading `WithModel("")` would expect, and the opposite of what
+// an unguarded assignment would do on a chain that set a model earlier.
+func (c CommonOptions) WithModel(model string) CommonOptions {
+	c.Model = model
+	return c
 }
 
 // WithSteering appends a steering instruction. FL-004 / F-04: this used to

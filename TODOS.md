@@ -3369,7 +3369,7 @@ the *contract* being read as stronger than what was actually enforced.
   byte range in stage 1's input is not yet a single traversal. `SchemaDigest` is also empty for
   any operation that computed no schema identity, and `AdapterVersion` is the provider name,
   because no finer adapter-version string exists anywhere in `llm.Provider` to read.
-- [ ] **TC-004** — Contract levels, requested and delivered:
+- [x] **TC-004** — Contract levels, requested and delivered:
   `PromptOnly < JSONWellFormed < SchemaConstrained < SchemaAndInvariantChecked <
   EvidenceChecked < FullyGoverned`. Every detailed result states which level was asked for
   and which was actually delivered, and any degradation requires policy approval rather than
@@ -3387,17 +3387,57 @@ the *contract* being read as stronger than what was actually enforced.
   equals `Delivered` on every success — which means `Meta.Degraded()` cannot yet fire for the
   case it was written for. The signal lives in `internal/llm`. There is also no policy gate
   that refuses a degradation.
-- [ ] **TC-005** — Model drift: record requested tier or pin, resolved provider and model
+  **Done — the negotiation half, which was the half that mattered.**
+  `negotiatedContractLevel` is the observation: when an operation claims
+  `ContractSchemaConstrained` or better **and** the caller actually requested native
+  enforcement, it looks up the resolved provider/model route in `llm.CapabilitiesFor` and
+  demotes to `ContractJSONWellFormed` if that route does not confirm `CapNativeJSONSchema`.
+  The signal read is `opt.JSONSchema` — what `llm_helper.go` forwards into the request — rather
+  than `op.Contract.SchemaName`, which is only the operation's static declaration. The
+  difference matters: one says what was asked for on this call, the other says what the
+  operation could ask for in principle.
+  **A route that is not registered at all is demoted too.** An unknown capability is not a
+  present one, and treating silence as support is the fail-open this repository refuses
+  everywhere else.
+  The refusal half: `types.DataPolicy.MinimumContract` existed from CP-002 and **nothing read
+  it against a real call**. `WithContractPolicy` attaches a policy to a context and
+  `RunOpResult` returns `ErrContractDegraded` when the negotiated level falls short — an error,
+  not a quieter answer with a footnote, which is what the task's "requires policy approval
+  rather than a log line" asks for.
+  **Not yet exercised by production traffic, and this is worth being precise about:** nothing
+  that currently reaches `RunOpResult` populates `opt.JSONSchema`. Only `Extract`'s separate
+  path does, and that path computes its delivered level independently and never calls
+  `RunOpResult`. So the negotiation is real, correct, and directly tested through a scripted
+  provider — and dormant until the remaining operations are lowered onto `RunOp` (§19.1.2).
+  It is the same honest position `cappedByLineage` is in.
+- [x] **TC-005** — Model drift: record requested tier or pin, resolved provider and model
   identifier, and provider model revision where exposed. `Tier(Smart)` is documented as
   floating; `Model(...)` is a pin request that the provider may not fully honour, and the
   envelope says so. Closes **TRU-04**. This is what makes **P-017**'s benchmark reproducible
   six months from now.
   **Partial.** `Meta.RequestedTier` records the caller's `Speed`, and the resolved provider and
   model were already on `Meta`.
-  **Not done:** there is no `Model(...)` pin option anywhere in this library to record, and
-  `llm.CompletionResponse` carries no model-revision field, so neither the pin nor the drift
-  can be reported. Adding a field for either without a source to populate it would be a
-  fabricated measurement, so neither was added.
+  **Done.** `OpOptions.Model` and `CommonOptions.WithModel` are the pin, and `CallLLM` prefers
+  it over the tier mapping. The pin is a **separate field** rather than an overload of
+  `Intelligence` so that "I chose a tier" and "I chose a model" stay distinguishable in the
+  envelope — a tier is documented as floating, and collapsing the two would make a
+  reproducible run indistinguishable from a preference.
+  A pin is deliberately **not validated** against a provider catalogue. This library has no
+  catalogue, and refusing a model it has simply never heard of would make every newly released
+  model unusable until somebody updated a list here.
+  Drift is **derived, never claimed**: `Meta.RequestedModel` versus the provider's own echo.
+  The earlier note said `llm.CompletionResponse` carried no revision field — it carries
+  `Model`, which is the provider's own answer, and that was the missing observation all along.
+  **The subtle part, and the reason this needed a third field:** `actualModel` falls back to
+  the requested model when a provider echoes nothing, which is right for pricing and logging
+  and would be a lie for drift — it makes an *unobserved* substitution indistinguishable from
+  an *observed* agreement. `ResultMetadata.ObservedModel` carries the raw echo, undefaulted, so
+  an absent echo reports `ModelDriftUnknown` rather than "no drift". Silence is not agreement,
+  and the two flags are asserted mutually exclusive: a caller asking "did this drift" never
+  gets yes and don't-know from the same result.
+  Adding the field was itself checked by **A-014's reflection guard**, which failed
+  immediately with "applyDefaults dropped Model entirely" — the guard catching the exact class
+  of bug it was written for, on the first new field added since.
 - [x] **TC-006** — Repair safety and repair regression. Strategy is chosen by failure class:
   syntax damage may include the prior response, bounded and delimited; missing fields may be
   patched; **invariant and evidence failures regenerate from source**, because feeding a

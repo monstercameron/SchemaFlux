@@ -28,6 +28,7 @@ func nonZeroOpOptions() types.OpOptions {
 		Threshold:       0.42,
 		Mode:            types.Strict,
 		Intelligence:    types.Quick,
+		Model:           "pinned-model",
 		Context:         context.Background(),
 		RequestID:       "req-1",
 		CorrelationID:   "corr-1",

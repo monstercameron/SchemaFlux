@@ -158,7 +158,18 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// Determine model. An empty result means the provider has no mapping and is
 	// not OpenAI, so there is no defensible default: sending an OpenAI model ID
 	// to another provider produces a 400 that reads as the caller's mistake.
-	model := config.GetModel(opts.Intelligence, provider.Name())
+	//
+	// TC-005: an explicit pin wins over the tier mapping. The tier is a
+	// preference that floats as models are released, which is the right default
+	// and the wrong thing for a caller reproducing a result or holding a
+	// regression suite still. A pin is not validated against a provider's
+	// catalogue -- this library does not have one, and refusing a model it has
+	// simply never heard of would make every newly released model unusable
+	// until somebody updated a list here.
+	model := opts.Model
+	if model == "" {
+		model = config.GetModel(opts.Intelligence, provider.Name())
+	}
 	if model == "" {
 		return "", fmt.Errorf(
 			"no default model for provider %q; set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK. Providers with a built-in mapping: %s",
@@ -384,18 +395,20 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		// Retries, not attempts: RetryCount is the count beyond the first, and
 		// the envelope adds the one back. A request that succeeded on its third
 		// try used to report a single attempt, because nothing wrote this down.
-		RetryCount:   providerCalls - 1,
-		TraceID:      telemetry.GetTraceID(ctx),
-		SpanID:       telemetry.GetSpanID(ctx),
-		StartTime:    start,
-		EndTime:      time.Now(),
-		Duration:     time.Since(start),
-		Model:        actualModel,
-		Provider:     actualProvider,
-		Mode:         opts.Mode,
-		Intelligence: opts.Intelligence,
-		TokenUsage:   &usage,
-		CostInfo:     cost,
+		RetryCount:     providerCalls - 1,
+		TraceID:        telemetry.GetTraceID(ctx),
+		SpanID:         telemetry.GetSpanID(ctx),
+		StartTime:      start,
+		EndTime:        time.Now(),
+		Duration:       time.Since(start),
+		Model:          actualModel,
+		RequestedModel: model,
+		ObservedModel:  resp.Model,
+		Provider:       actualProvider,
+		Mode:           opts.Mode,
+		Intelligence:   opts.Intelligence,
+		TokenUsage:     &usage,
+		CostInfo:       cost,
 		Custom: map[string]any{
 			"response_format": responseFormat,
 			// Which contract produced this answer. A stored result that cannot
@@ -877,15 +890,18 @@ func publishFailedCall(ctx context.Context, provider llm.Provider, model string,
 	requestID, correlationID string) {
 
 	publishCallRecord(ctx, &types.ResultMetadata{
-		RequestID:     requestID,
-		CorrelationID: correlationID,
-		RetryCount:    providerCalls - 1,
-		StartTime:     start,
-		EndTime:       time.Now(),
-		Duration:      time.Since(start),
-		Model:         model,
-		Provider:      provider.Name(),
-		Mode:          opts.Mode,
-		Intelligence:  opts.Intelligence,
+		RequestID:      requestID,
+		CorrelationID:  correlationID,
+		RetryCount:     providerCalls - 1,
+		StartTime:      start,
+		EndTime:        time.Now(),
+		Duration:       time.Since(start),
+		Model:          model,
+		RequestedModel: model,
+		// ObservedModel stays empty: the call failed, so no provider ever said
+		// what answered. Drift is unknown for a failed request, not absent.
+		Provider:     provider.Name(),
+		Mode:         opts.Mode,
+		Intelligence: opts.Intelligence,
 	})
 }

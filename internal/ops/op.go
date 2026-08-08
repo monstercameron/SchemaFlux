@@ -377,6 +377,26 @@ func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt
 	// cannot reach today.
 	meta.DeliveredContract = cappedByLineage(meta.DeliveredContract, meta.Provenance)
 
+	// TC-004, the negotiation half: meta.Provider/meta.Model (envelopeFrom,
+	// above) are what this call actually resolved to, so this is the first
+	// point in RunOpResult where "which route served this" is known and can
+	// be checked against what that route is declared to support. See
+	// negotiatedContractLevel's doc comment for why this reads opt.JSONSchema
+	// rather than op.Contract.SchemaName, and why it is a no-op for every
+	// caller in this repository today.
+	meta.DeliveredContract = negotiatedContractLevel(meta.DeliveredContract, opt, meta.Provider, meta.Model)
+
+	// TC-004's other half: a degradation nobody approved does not go out as
+	// a quieter success. Checked only on the success path -- a failure
+	// already returns its own error below, and enforceContractPolicy is a
+	// no-op for the (today, universal) case where no policy was attached via
+	// WithContractPolicy.
+	if err == nil {
+		if policyErr := enforceContractPolicy(ctx, meta.DeliveredContract); policyErr != nil {
+			return types.Result[Out]{Meta: meta}, policyErr
+		}
+	}
+
 	if err != nil {
 		return types.Result[Out]{Meta: meta}, err
 	}

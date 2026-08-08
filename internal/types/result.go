@@ -150,18 +150,33 @@ type Meta struct {
 	// here: it records what was asked for, not a guarantee about what
 	// answered.
 	//
-	// What TC-005 also asks for -- a caller's Model(...) pin, and the
-	// provider's own model-revision string where one is exposed -- has no
-	// carrier in this codebase to read from. There is no pin option on
-	// OpOptions (internal/types/types.go) and no revision field on
-	// llm.CompletionResponse (internal/llm/provider.go); both are out of
-	// this task's permitted files, and inventing a value for either would
-	// be exactly the fabricated-measurement failure AGENTS.md forbids. Model
-	// (below, pre-existing) already carries the resolved model identifier
-	// the provider echoed back, which is the "resolved provider and model
-	// identifier" half of TC-005 that this struct could satisfy without a
-	// new field.
 	RequestedTier Speed
+
+	// RequestedModel is the model this call asked for: the caller's
+	// OpOptions.Model pin when they set one, otherwise whatever the tier
+	// mapping resolved to before the request went out.
+	//
+	// Model (below) is what the provider said answered. The two are separate
+	// fields because they are separate facts, and a single "model" field
+	// silently reports the second while every reader assumes the first --
+	// which is the whole of the drift problem. A provider that substitutes,
+	// or that reports a dated revision of what was asked for, is visible only
+	// as a difference between these two.
+	RequestedModel string
+
+	// ModelDrifted reports that the provider answered with a model other than
+	// the one requested. It is derived, not claimed: RequestedModel !=
+	// Model, with both non-empty. When either is empty the answer is
+	// unknown rather than false, and this stays false while
+	// ModelDriftUnknown says why -- an unobserved substitution must not read
+	// as an observed absence of one.
+	ModelDrifted bool
+
+	// ModelDriftUnknown reports that drift could not be determined, because
+	// the request or the response did not name a model. A provider that
+	// echoes nothing back leaves this true; treating that silence as "no
+	// drift" would be the fail-open this envelope exists to prevent.
+	ModelDriftUnknown bool
 
 	// --- Model claims.
 
@@ -242,13 +257,26 @@ func MetaFrom(metadata *ResultMetadata) Meta {
 	}
 
 	meta := Meta{
-		RequestID:     metadata.RequestID,
-		CorrelationID: metadata.CorrelationID,
-		Operation:     metadata.Operation,
-		Provider:      metadata.Provider,
-		Model:         metadata.Model,
-		Attempts:      metadata.RetryCount + 1,
-		Elapsed:       metadata.Duration,
+		RequestID:      metadata.RequestID,
+		CorrelationID:  metadata.CorrelationID,
+		Operation:      metadata.Operation,
+		Provider:       metadata.Provider,
+		Model:          metadata.Model,
+		RequestedModel: metadata.RequestedModel,
+		Attempts:       metadata.RetryCount + 1,
+		Elapsed:        metadata.Duration,
+	}
+
+	// TC-005's drift, derived here rather than claimed anywhere: a difference
+	// between what was asked for and what answered. Either side missing makes
+	// the answer unknown, not "no drift" -- a provider that echoes nothing back
+	// has told us nothing, and recording that silence as agreement is the
+	// fail-open this compartment exists to prevent.
+	switch {
+	case meta.RequestedModel == "" || metadata.ObservedModel == "":
+		meta.ModelDriftUnknown = true
+	case meta.RequestedModel != metadata.ObservedModel:
+		meta.ModelDrifted = true
 	}
 
 	if metadata.TokenUsage != nil {
