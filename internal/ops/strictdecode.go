@@ -132,7 +132,9 @@ func DecodeExact(input string, target any, limits DecodeLimits) error {
 		}
 	}
 
-	return nil
+	// Numbers last, because it can only compare an answer against what the
+	// target actually holds. S-009.
+	return CheckNumericFidelity(body, target)
 }
 
 // checkStructure walks the tokens looking for what the decoder would silently

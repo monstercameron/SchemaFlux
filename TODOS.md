@@ -1200,7 +1200,7 @@ tests.
   Integration: `TestIntegrationStrictModeRejectsOverproduction` (3 bodies),
   `TestIntegrationTransformModeToleratesAnExtraField`, and
   `TestIntegrationStrictModeAcceptsAFaithfulAnswer`.
-- [ ] **S-009** — Exact numeric handling. `float64` is the wrong default for money,
+- [x] **S-009** — Exact numeric handling. `float64` is the wrong default for money,
   identifiers, and large integers: 16-digit account numbers lose precision, leading zeros
   vanish, and a postal code becomes a number. Support `json.Number` for deferred parsing,
   registered decimal types, integer bounds with overflow detection, string schemas for
@@ -1209,6 +1209,29 @@ tests.
   `ErrSchemaViolation`, not a silent zero. Closes **TRU-07**.
   *Verify:* a 19-digit identifier and a two-decimal currency amount survive a round trip
   byte-exact; a value exceeding the declared range is refused.
+  **Done for the detection, which is the part that was missing.** `json.Number` already
+  worked for deferred exact parsing and a string field already kept its leading zeros; what
+  nothing did was *notice* when a value the model sent could not survive its Go type.
+  `CheckNumericFidelity` is a round trip: decode, re-encode, compare every number literal as
+  an exact rational. A number that changed is a number the target could not hold, and the
+  caller is told which field instead of being handed a value that is quietly wrong.
+  Rationals rather than floats, because comparing the thing under suspicion with itself
+  proves nothing: `1284.50` and `1284.5` are the same rational and different strings, and
+  `90071992547409910` and `90071992547409920` are different rationals and the same float64.
+  **The float32 blind spot is recorded rather than papered over.** Go marshals a float32 as
+  the shortest decimal that round-trips *as a float32*, so `1284.57` stored as
+  `1284.5699462890625` re-encodes as `"1284.57"` and the trip looks clean. The loss is real
+  and this method cannot see it. The test asserts the limitation, so if the blind spot ever
+  closes the comment is caught as stale. A float32 money field is a type choice to reject at
+  preflight — **S-010** — not a value to catch at decode.
+  *Verify:* `internal/ops/numeric_test.go` — a nineteen-digit identifier in a float64, nested
+  precision loss with its JSON pointer, values that fit (including exponent and trailing-zero
+  forms, which are the same rational), int8 overflow still reported by the decoder,
+  `json.Number` keeping the literal, a string field keeping its leading zeros, and an
+  actionable message.
+  **Not closed by this:** registered decimal and Money types. Detecting the loss is what makes
+  a caller reach for them; providing them is a public-API decision that belongs with
+  **S-010**'s type support matrix.
 - [ ] **S-010** — Type support matrix, enforced at preflight rather than discovered at
   runtime. Four levels: full (structs, slices, arrays, pointers, scalars, enums, registered
   time/decimal types), restricted (string-keyed maps, bounded recursion, embedded fields,
