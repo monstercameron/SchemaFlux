@@ -437,6 +437,9 @@ Strictness: %s%s%s%s%s%s%s
 
 Minimum confidence for "verified" verdict: %.0f%%
 
+Cite sources by their zero-based index in the Knowledge sources list above, and
+only indices that appear there. Omit "sources" entirely when no source applies.
+
 Verdict options:
 - "verified": The claim is accurate and supported by evidence
 - "false": The claim is demonstrably incorrect
@@ -455,7 +458,7 @@ Return a JSON object with:
       "confidence": 0.9,
       "evidence": ["Evidence supporting the verdict"],
       "reasoning": "Why this verdict was reached",
-      "sources": [0, 1],
+      "sources": [0],
       "corrections": "Correct information if claim is false"
     }
   ],

@@ -44,7 +44,7 @@ func mockShapedResponse(req CompletionRequest) string {
 
 	if req.JSONSchema != nil {
 		if value, ok := valueForSchema(req.JSONSchema, 0); ok {
-			if encoded, err := json.Marshal(value); err == nil {
+			if encoded, err := json.Marshal(echoInputFields(value, req.UserPrompt)); err == nil {
 				return string(encoded)
 			}
 		}
@@ -68,7 +68,7 @@ func mockShapedResponse(req CompletionRequest) string {
 		if _, isObject := shape.(map[string]any); !isObject {
 			continue
 		}
-		if encoded, err := json.Marshal(fillTemplate(shape, 0)); err == nil {
+		if encoded, err := json.Marshal(echoInputFields(fillTemplate(shape, 0), req.UserPrompt)); err == nil {
 			return string(encoded)
 		}
 	}
@@ -176,7 +176,22 @@ func valueForSchema(schema map[string]any, depth int) (any, bool) {
 		return "mock", true
 
 	case "integer":
-		return 1, true
+		// Zero, not one, and the reason is indices.
+		//
+		// Several operations now bounds-check the index fields in an answer
+		// against the list the caller actually supplied: Verify's claim
+		// Sources, Resolve's ChosenSource, Arbitrate's WinnerIndex. One is out
+		// of range for any single-element list, and a synthetic out-of-range
+		// citation fails those checks correctly -- which says nothing about the
+		// example under test. Zero is a valid index into every non-empty list,
+		// and an unremarkable value for every other integer field.
+		//
+		// A schema that declares a floor is honored: some fields genuinely
+		// cannot be zero.
+		if minimum, ok := schema["minimum"].(float64); ok && minimum > 0 {
+			return int(minimum), true
+		}
+		return 0, true
 
 	case "number":
 		return 0.5, true
@@ -627,4 +642,78 @@ func balancedFrom(text string, start int, open, close byte) (string, bool) {
 // this module and no further.
 func ShapedMockResponse(req CompletionRequest) string {
 	return mockShapedResponse(req)
+}
+
+// echoInputFields replaces any generated field whose name also appears in the
+// caller's input object with the input's own value.
+//
+// It is the same instinct as mockCollectionResponse's identity transformation,
+// applied to fields instead of items: preserve what you were given, invent only
+// what you were asked for. Operations increasingly check the answer against the
+// input rather than only against a shape -- Enrich's AddOnly refuses a changed
+// existing value, Transform's PreserveFields refuses a changed pinned field,
+// Compress's RetainFields refuses a dropped one -- and a double that renames
+// every string to a synthetic placeholder fails all of them by construction,
+// which says nothing about the example under test.
+//
+// The walk is recursive because the input's fields are usually nested one level
+// down in the answer, under "enriched", "conformed", "compressed", and so on.
+// Only field NAMES are matched; nothing about the input's structure is imposed
+// on the answer.
+func echoInputFields(value any, userPrompt string) any {
+	input, ok := lastJSONObjectValue(userPrompt)
+	if !ok || len(input) == 0 {
+		return value
+	}
+	return echoInto(value, input)
+}
+
+func echoInto(value any, input map[string]any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		// An empty object in a response template is a placeholder: the prompt
+		// says `"enriched": {}` and describes the real shape elsewhere, so
+		// there is nothing here to fill from. Left empty it decodes to the zero
+		// value of the caller's type, which reads as "every field was blanked"
+		// -- and Enrich's AddOnly check correctly refuses that. The caller's own
+		// input is the closest thing to a right answer available, and for the
+		// operations that use this placeholder (Enrich, Conform, Compress) it
+		// IS the right answer for the fields it covers.
+		if len(typed) == 0 {
+			filled := make(map[string]any, len(input))
+			for key, original := range input {
+				filled[key] = original
+			}
+			return filled
+		}
+		for key := range typed {
+			if original, present := input[key]; present {
+				typed[key] = original
+				continue
+			}
+			typed[key] = echoInto(typed[key], input)
+		}
+		return typed
+	case []any:
+		for i := range typed {
+			typed[i] = echoInto(typed[i], input)
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
+// lastJSONObjectValue decodes the last balanced {...} run in text as an object.
+// Last rather than first: an operation's user prompt states the instruction and
+// then the payload, so the later object is the input.
+func lastJSONObjectValue(text string) (map[string]any, bool) {
+	candidates := jsonObjectCandidates(text)
+	for _, candidate := range candidates {
+		var object map[string]any
+		if err := json.Unmarshal([]byte(candidate), &object); err == nil {
+			return object, true
+		}
+	}
+	return nil, false
 }

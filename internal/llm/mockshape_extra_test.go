@@ -148,9 +148,17 @@ func TestValueForSchemaEveryType(t *testing.T) {
 		schema map[string]any
 		check  func(t *testing.T, value any, ok bool)
 	}{
+		// Zero rather than one: several operations bounds-check an answer's
+		// index fields against the caller's list, and one is out of range for
+		// any single-element list. See valueForSchema's "integer" case.
 		{"integer", map[string]any{"type": "integer"}, func(t *testing.T, v any, ok bool) {
-			if !ok || v != 1 {
-				t.Errorf("integer -> %v, %v; want 1, true", v, ok)
+			if !ok || v != 0 {
+				t.Errorf("integer -> %v, %v; want 0, true", v, ok)
+			}
+		}},
+		{"integer_with_minimum", map[string]any{"type": "integer", "minimum": 3.0}, func(t *testing.T, v any, ok bool) {
+			if !ok || v != 3 {
+				t.Errorf("integer with minimum 3 -> %v, %v; want 3, true", v, ok)
 			}
 		}},
 		{"number", map[string]any{"type": "number"}, func(t *testing.T, v any, ok bool) {
@@ -204,7 +212,7 @@ func TestValueForSchemaEveryType(t *testing.T) {
 			if !ok || !isObj {
 				t.Fatalf("object -> %v, %v; want a map", v, ok)
 			}
-			if obj["name"] != "mock" || obj["age"] != 1 {
+			if obj["name"] != "mock" || obj["age"] != 0 {
 				t.Errorf("object properties = %v", obj)
 			}
 		}},
