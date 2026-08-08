@@ -1301,7 +1301,7 @@ tests.
   **Follows from S-009:** a `float32` money field is a type choice this matrix is the right
   place to flag, and it is currently classified full. Flagging it needs a notion of what a
   field is *for*, which a Go type does not carry — filed as **S-012**.
-- [ ] **S-011** — Schema evolution rules and migrations. Adding an optional field is
+- [x] **S-011** — Schema evolution rules and migrations. Adding an optional field is
   decode-compatible but changes prompt behaviour and cache identity; adding a required
   field, changing a type, enum, precision, or evidence requirement is a new contract
   version; renaming a JSON field is breaking without an explicit alias. Stored results keep
@@ -1316,6 +1316,31 @@ tests.
 
 ## Pricing and budgets
 
+  **Done for the rules; migrations are deliberately not built.**
+  `CompareSchemas` classifies a change as unchanged, compatible, a new contract version, or
+  breaking, and `SchemaDiff.Summary()` renders it for a release note — which is what a
+  compatibility policy actually is. It names the fields added, removed, retyped, tightened,
+  and loosened.
+  The rules follow what breaks. Adding an **optional** field is decode-compatible; adding a
+  **required** one is a new contract, because old results decode with it empty and `Strict`
+  rejects them. Changing a field's type, or making an optional field required, is a new
+  contract for the same reason. Removing a field or renaming its json tag is **breaking**,
+  because an old result then carries a field the new type does not accept — which **S-008**'s
+  exact decoding refuses rather than ignores. The worst change wins: a release note has to
+  describe the release rather than its most flattering part.
+  Two Go types that serialise the same way are the same contract — `int` to `int64` is not a
+  change — which is the same rule **S-002**'s hash follows.
+  **A compatible change still changes the schema hash, and a test says so**, because
+  "compatible" is about decoding and a cache keyed on a stale identity would serve the old
+  answer to the new question.
+  *Verify:* `internal/ops/schemaevolution_test.go` — 7 classification cases, loosening named,
+  the JSON-shape rule, worst-change-wins, slices and pointers comparing by element, and the
+  cache-identity interaction.
+  **Migrations are not built and should not be guessed at.** A migration is a deterministic
+  function from one stored shape to another, with its own version and provenance; writing the
+  machinery before anything stores results would be building for an imagined caller. Stored
+  results already carry the schema identity that a migration would key on (**S-002**), which
+  is the prerequisite. Filed as **S-013**.
 - [x] **PR-001** — Never substitute another model's price. `getDefaultPricing` returns
   claude-3-haiku pricing for **any** Anthropic model, understating an Opus call by roughly
   60x while presenting it as a precise USD figure; six of eight providers have no entry at all
@@ -2426,6 +2451,14 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
+
+- [ ] **S-013** — Schema migrations: a deterministic function from one stored shape to
+  another, with its own version and provenance, plus the registry that finds one.
+  **S-011** built the classification and **S-002** the identity a migration keys on; what is
+  missing is the transformation, and it should not be built until something in this library
+  actually stores results — writing the machinery first is building for an imagined caller.
+  *Verify:* a result stored under `person/v1@abc123` decodes into the v2 type through a
+  registered migration, and the result records which migration ran.
 
 - [ ] **S-012** — Flag `float32` for money-shaped fields in the type support matrix.
   **S-009** established that a float32 price silently loses cents and that the round-trip
