@@ -22,21 +22,21 @@ import (
 func FuzzRedact(f *testing.F) {
 	seeds := []string{
 		"",
-		"sk-proj-abcdefghijklmnopqrstuvwxyz012345",
-		"sk-ant-abcdefghijklmnopqrstuvwxyz012345",
-		"AIzaSyAbcdefghijklmnopqrstuvwxyz0123456",
-		"AKIAABCDEFGHIJKLMNOP",
-		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-		"xoxb-1234567890-abcdefghij",
-		"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK...\n-----END RSA PRIVATE KEY-----",
+		"sk-proj-abcdefghijklmnopqrstuvwxyz012345",                                          // secret-scan: allow
+		"sk-ant-abcdefghijklmnopqrstuvwxyz012345",                                           // secret-scan: allow
+		"AIzaSyAbcdefghijklmnopqrstuvwxyz0123456",                                           // secret-scan: allow
+		"AKIAABCDEFGHIJKLMNOP",                                                              // secret-scan: allow
+		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",                                          // secret-scan: allow
+		"xoxb-1234567890-abcdefghij",                                                        // secret-scan: allow
+		"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK...\n-----END RSA PRIVATE KEY-----", // secret-scan: allow
 		"Authorization: Bearer abcdef0123456789",
 		"contact jane.doe@example.com about the invoice",
-		"two secrets: sk-proj-abcdefghijklmnopqrstuvwxyz and gh" + "p_abcdefghijklmnopqrstuvwxyz0123456789",
+		"two secrets: sk-proj-abcdefghijklmnopqrstuvwxyz and gh" + "p_abcdefghijklmnopqrstuvwxyz0123456789", // secret-scan: allow
 		"an invoice for $1,284.50 due on 2026-08-07, order #ORD-99182",
-		strings.Repeat("sk-proj-abcdefghijklmnopqrstuvwxyz01234 ", 500), // repeated matches, throughput case
-		"prefix \xff\xfe invalid utf-8 \x80 sk-ant-abcdefghijklmnopqrstuvwxyz012345 suffix",
+		strings.Repeat("sk-proj-abcdefghijklmnopqrstuvwxyz01234 ", 500),                     // repeated matches, throughput case // secret-scan: allow
+		"prefix \xff\xfe invalid utf-8 \x80 sk-ant-abcdefghijklmnopqrstuvwxyz012345 suffix", // secret-scan: allow
 		"AUTHORIZATION:BEARER nospacebetweenheadervalue",
-		"nested \"sk-proj-abcdefghijklmnopqrstuvwxyz\" inside quotes and a bearer token: Bearer xyz",
+		"nested \"sk-proj-abcdefghijklmnopqrstuvwxyz\" inside quotes and a bearer token: Bearer xyz", // secret-scan: allow
 	}
 	for _, s := range seeds {
 		f.Add(s)

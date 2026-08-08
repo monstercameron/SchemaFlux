@@ -3372,11 +3372,26 @@ others, with nothing at the call site to tell them apart.
   a matrix generated from results rather than hand-written. Protocol checks also cover only
   the OpenAI Responses adapter, and `CompletionResponse` has no request-ID field, so that
   dimension is unmeasurable as the code stands.
-- [ ] **SEC-001** — Publish `SECURITY.md`: threat model, supported versions, disclosure
+- [x] **SEC-001** — Publish `SECURITY.md`: threat model, supported versions, disclosure
   process, and response targets. The assets are credentials, prompts, source data, outputs,
   schemas, tenant identity, diagnostics, and routes; the actors include malicious input
   authors, compromised endpoints, other tenants, and the model's own output.
   Closes **PRD-04**. Coordinate with **PS-009**.
+  **Done.** `SECURITY.md`: private disclosure through GitHub's Security tab, a week's
+  acknowledgement, and — first, before anything else — **do not include a real payload in a
+  report**, because a reproduction from this library is very likely to contain somebody's data
+  and a report carrying live customer data is itself an incident.
+  Supported versions says the honest thing: the module is untagged, so only `main` is
+  supported and "supported" means fixes land there.
+  The threat model separates what the library defends against from what it does not, and the
+  second list is the useful one: a provider returning plausible wrong answers inside the
+  declared schema passes every check here — structure is verified, truth is not; prompt
+  injection through the caller's own data is narrowed and not eliminated; anything in-process
+  can read the process's credentials; and tool *calling* surfaces a request the library never
+  executes.
+  It also names three **known gaps** rather than leaving them to be found: the endpoint policy
+  is not wired, tenant deletion has no store implementing it, and client isolation is
+  partial.
 - [x] **SEC-002** — Content logging policy: `LogNoContent`, `LogMetadataOnly` (the production
   default), `LogRedactedContent`, `LogFullContent` (explicit, policy-gated). **Debug changes
   verbosity, not content policy** — that inversion is how prompts end up in log aggregators.
@@ -3876,7 +3891,7 @@ written, and the box it belonged to was never drawn.
   written from a docs page and never called. Now `gemma-4-31b` at all three tiers, priced,
   and the choice is stated rather than assumed. Evidence: `f745d66`.
 
-- [ ] **PS-010** — The repository hygiene files: `LICENSE`, `SECURITY.md` (threat model,
+- [x] **PS-010** — The repository hygiene files: `LICENSE`, `SECURITY.md` (threat model,
   supported versions, disclosure process — **SEC-001**), `CONTRIBUTING.md`, issue templates
   that ask for sanitized envelope metadata rather than raw payloads, and an ADR directory to
   hold the twenty decisions `to-production.md` records plus the departures this list has
@@ -3885,6 +3900,24 @@ written, and the box it belonged to was never drawn.
   a new Markdown file needs to be asked for by name. Nothing here is hard; it needs
   authorization rather than effort. Closes **PRD-25**.
 
+  **Done — Cam asked for all of them by name, which is what the rule required.**
+  `LICENSE` (MIT, and the licence choice is his to change in one file — nothing is tagged, so
+  nothing has shipped under it), `SECURITY.md`, `CONTRIBUTING.md`, two GitHub issue templates,
+  and `docs/adr/`.
+  The issue templates are the part worth reading: both ask for **envelope metadata** —
+  operation, provider, resolved model, attempts, repairs, delivered contract, error kind, and
+  the *shape* of the input — and both carry a required checkbox confirming no real payload,
+  credential, or customer data is included. `Meta.String()` prints a one-line summary that is
+  safe to paste, which is what the bug template asks for. A library whose whole premise is
+  running somebody's invoices through a model should not have a bug template that invites them
+  into a public issue.
+  `docs/adr/` holds **departures**, not copies of the specification's twenty decisions — a copy
+  drifts, and **TR-002** just spent a task building a checker for a hand-maintained table that
+  had drifted within a week. Four departures are recorded: the error-detail compromise
+  (**P-007**/**A-011**), the five deliberately-unshared redaction lists, the context-value
+  provider seam, and the unpriced default models. Each states what it costs and **the condition
+  that would change the answer** — a departure with no revisit condition becomes permanent by
+  default rather than by decision.
 - [ ] **S-013** — Schema migrations: a deterministic function from one stored shape to
   another, with its own version and provenance, plus the registry that finds one.
   **S-011** built the classification and **S-002** the identity a migration keys on; what is

@@ -176,8 +176,8 @@ func TestRedactLogContentScrubsCredentialShapesOnly(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"openai key", "here is sk-proj-abcdefghijklmnopqrstuvwx", "here is [redacted]"},
-		{"anthropic key", "key sk-ant-abcdefghijklmnopqrstuvwx", "key [redacted]"},
+		{"openai key", "here is sk-proj-abcdefghijklmnopqrstuvwx", "here is [redacted]"}, // secret-scan: allow
+		{"anthropic key", "key sk-ant-abcdefghijklmnopqrstuvwx", "key [redacted]"},       // secret-scan: allow
 		{"bearer header", `Authorization: Bearer abc123def456`, "[redacted]"},
 		{"email", "contact jane.doe@example.com please", "contact [redacted] please"},
 		{"plain text is untouched", "the invoice total is 42 dollars", "the invoice total is 42 dollars"},

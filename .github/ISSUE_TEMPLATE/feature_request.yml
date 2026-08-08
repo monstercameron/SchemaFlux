@@ -1,0 +1,65 @@
+name: Feature request
+description: Something the library should do and does not.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check [TODOS.md](../blob/main/TODOS.md). This library is
+        mid-rebuild against a review, and a good deal of what looks missing is
+        scheduled with a task ID and a reason. If your request already has one,
+        adding your case to that task is worth more than a new issue.
+
+        The same payload rule applies here: describe shapes, not data.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do that you cannot?
+      description: >
+        The problem, not the solution. The most useful requests here have been
+        the ones that named a wrong answer somebody got.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What are you doing instead today?
+      description: >
+        A workaround is evidence the gap is real, and it usually shows what the
+        API should have offered.
+    validations:
+      required: true
+
+  - type: input
+    id: existing-task
+    attributes:
+      label: Related task in TODOS.md
+      description: If you found one, its ID. If not, leave blank.
+      placeholder: PL-009
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Which part
+      options:
+        - An operation's behaviour or contract
+        - Provider support or capability
+        - Cost, budget, or accounting
+        - Planning, batching, or concurrency
+        - Observability, tracing, or metrics
+        - Testing support
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: no-payload
+    attributes:
+      label: Confirmation
+      options:
+        - label: >
+            I have not included a real request body, response body, credential,
+            or customer data in this request.
+          required: true

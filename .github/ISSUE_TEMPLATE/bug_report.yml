@@ -1,0 +1,93 @@
+name: Bug report
+description: Something behaves differently from what it says it does.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste a request or response body.**
+
+        This library runs invoices, tickets, and notes through language models,
+        so a reproduction is very likely to contain somebody's data. Every field
+        below asks for shapes, counts, and identifiers instead — which is also
+        what the library's own errors carry, for the same reason.
+
+        If you believe this is a security issue, do not file it here. See
+        [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect instead?
+      description: Describe the behaviour, not the data.
+    validations:
+      required: true
+
+  - type: textarea
+    id: envelope
+    attributes:
+      label: Envelope metadata
+      description: >
+        From `Meta` on the result — or from the error. Operation, provider,
+        resolved model, attempts, repairs, delivered contract, and the error
+        kind. `Meta.String()` prints a one-line summary that is safe to paste.
+      placeholder: |
+        extract via openai/gpt-5.6-luna: 3 attempt(s) (1 repair(s)), 812ms, 1420 tokens, cost unknown, delivered schema constrained
+        error kind: malformed_output
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: Input and schema shape
+      description: >
+        The Go type you asked for and the *shape* of the input — field names,
+        types, counts, sizes. Not the values. `types.DescribeValue` produces
+        exactly this if it helps.
+      placeholder: |
+        target type: struct{ Total float64 `json:"total"`; Due time.Time `json:"due"` }
+        input: map with 7 keys, one 4 KB string field, 2 nested objects
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >
+        The commit you are on. The module is untagged, so `go list -m` reports a
+        pseudo-version — paste that.
+      placeholder: v0.0.0-20260808010203-5f29f81abcde
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [Strict, Transform, Creative, unset]
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: >
+        A test using `schemafluxtest` is the most useful form: it needs no
+        credential, costs nothing, and contains your data only if you put it
+        there. Please do not.
+      render: go
+
+  - type: checkboxes
+    id: no-payload
+    attributes:
+      label: Confirmation
+      options:
+        - label: >
+            I have not included a real request body, response body, credential,
+            or customer data in this report.
+          required: true

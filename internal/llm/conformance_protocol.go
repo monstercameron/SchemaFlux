@@ -494,7 +494,7 @@ func checkStreamingTermination(ctx context.Context, _ *LiveTarget) ConformanceOu
 
 func checkCredentialRedaction(ctx context.Context, _ *LiveTarget) ConformanceOutcome {
 	return runProtocolCheck(func() ConformanceOutcome {
-		const secret = "sk-conformance-redaction-canary-do-not-leak"
+		const secret = "sk-conformance-redaction-canary-do-not-leak" // secret-scan: allow
 		var sawAuthHeader bool
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
