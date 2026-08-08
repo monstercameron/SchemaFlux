@@ -246,7 +246,15 @@ Rules:
 	response = strings.TrimSuffix(response, "```")
 	response = strings.TrimSpace(response)
 
-	// Parse the response - try direct array first
+	// Parse the response - try direct array first.
+	//
+	// The accumulator is declared per attempt on purpose. It used to be one
+	// slice shared by every branch below, and encoding/json PARTIALLY POPULATES
+	// a slice before returning an error: decoding `[{"name":"a"},{"text":"b"}]`
+	// into []string appends two zero-value strings and then fails. The failure
+	// was handled, the two empties were not, and the object-extraction branch
+	// further down appended to the same slice -- so a caller asking for two
+	// suggestions received ["", "", "a", "b"], and suggestions[0] was empty.
 	var suggestions []T
 	if err := ParseJSONStrict(response, &suggestions); err == nil {
 		// Successfully parsed as array
@@ -270,7 +278,12 @@ Rules:
 		return suggestions, nil
 	}
 
-	// If T is string, try to extract strings from array of objects
+	// If T is string, try to extract strings from array of objects.
+	//
+	// extracted, not `suggestions`: see the note on the first attempt above. A
+	// failed decode there can have left partial zero values behind, and
+	// appending to it produced empty suggestions ahead of the real ones.
+	var extracted []T
 	var rawArray []map[string]any
 	if err := ParseJSONStrict(response, &rawArray); err == nil {
 		for _, item := range rawArray {
@@ -281,19 +294,19 @@ Rules:
 						var t T
 						// Check if T is string
 						if _, ok := any(t).(string); ok {
-							suggestions = append(suggestions, any(str).(T))
+							extracted = append(extracted, any(str).(T))
 							break
 						}
 					}
 				}
 			}
 		}
-		if len(suggestions) > 0 {
-			if len(suggestions) > opts.TopN {
-				suggestions = suggestions[:opts.TopN]
+		if len(extracted) > 0 {
+			if len(extracted) > opts.TopN {
+				extracted = extracted[:opts.TopN]
 			}
-			log.Debug("Suggest operation succeeded (extracted)", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))
-			return suggestions, nil
+			log.Debug("Suggest operation succeeded (extracted)", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(extracted))
+			return extracted, nil
 		}
 	}
 
@@ -319,7 +332,13 @@ Rules:
 		}
 	}
 
-	log.Error("Suggest operation parse failed", "requestID", opts.CommonOptions.RequestID, "response", response[:min(200, len(response))])
+	// The response body is deliberately not logged. It is derived from the
+	// caller's input, and AGENTS.md forbids putting the caller's payload in a
+	// log line -- a 200-character prefix is still the caller's data. The length
+	// and the request ID are enough to correlate with a diagnostic capture,
+	// which is the mechanism that exists for looking at bodies.
+	log.Error("Suggest operation parse failed",
+		"requestID", opts.CommonOptions.RequestID, "responseBytes", len(response))
 	return nil, fmt.Errorf("failed to parse suggestions from response")
 }
 

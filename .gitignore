@@ -25,6 +25,13 @@ Thumbs.db
 # Test coverage
 *.out
 coverage.txt
+# Coverage HTML reports. *.out was already ignored, so a profile could not be
+# committed by accident -- but `go tool cover -html` writes a .html beside it,
+# and one of those did turn up untracked in the root. Ignoring the report too,
+# because the interesting artifact is the number in the floor file, not a
+# rendering of it.
+*.html
+coverage/
 
 # Logs
 *.log

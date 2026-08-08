@@ -535,6 +535,13 @@ Against these rules:
 	case "info":
 		result.Valid = len(result.Errors) == 0 && len(result.Warnings) == 0 && len(result.Info) == 0
 	default:
+		// Unreachable by construction: ValidateOptions.Validate runs as this
+		// function's first step and already rejects any FailOn outside
+		// {"", "error", "warning", "info"}. Kept as defence in depth rather
+		// than deleted -- if that check is ever relaxed, this is what stops an
+		// unknown severity from silently defaulting to "valid" -- but noted so
+		// the next person measuring coverage does not spend an afternoon trying
+		// to reach it.
 		return result, fmt.Errorf("validate: unknown FailOn severity %q, want error, warning, or info", opts.FailOn)
 	}
 
