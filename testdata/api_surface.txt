@@ -77,6 +77,7 @@ func Decompose
 func DecomposeToSlice
 func Decomposing
 func DecomposingInto
+func Deduplicate
 func Derive
 func Deriving
 func Diff
@@ -279,6 +280,7 @@ type DecomposeRequest
 type DecomposeResult
 type DecomposeSliceRequest
 type DecomposedPart
+type DeduplicateResult
 type Derivation
 type DeriveOptions
 type DeriveRequest

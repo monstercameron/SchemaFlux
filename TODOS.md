@@ -1668,10 +1668,34 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   compatibility policy at the same time, so "experimental" is a marker rather than a claim.
   *Verify:* every operation carries a tier; a stable one without a documented semantic
   contract, batch algebra, and invariants fails a check.
-- [ ] **PS-003** — Pick one public spelling. Mark the other `// Deprecated:` so tooling says
+- [x] **PS-003** — Pick one public spelling. Mark the other `// Deprecated:` so tooling says
   so — there is not a single deprecation marker in the repo today. Expose `Deduplicate`
   (implemented, exported nowhere) or delete it; document or delete `Format` and `Merge`.
   Closes **F-06**, **A-09**, **A-10**.
+  **Done, and the first half of the task is answered "no".**
+  "Pick one public spelling" assumed the two APIs are a duplication to resolve. They are not:
+  `to-production.md` **API-01** keeps both deliberately — the standard functions are the
+  canonical semantics, easiest to wrap and to construct options for dynamically; the fluent
+  builders are the ergonomic surface; and **FL-003** is the task that makes them provably
+  equivalent. Deprecating either would be a decision against the target architecture.
+  What was actually wrong is that the README **claimed** the direct API was
+  "compatibility-only" while most of its own examples used it, and while the repository
+  carried **not one `// Deprecated:` marker** — so even a caller who believed the claim had no
+  tooling that would tell them. Both are fixed: the README states the real policy, and the
+  two genuinely superseded functions carry the marker.
+  **`ValidateLegacy` and `QuestionLegacy` are now marked** in both packages, with the reason —
+  `ValidationResult` is a bool, a `[]string`, and a model-reported confidence, and cannot say
+  which field failed. They are marked rather than removed because the live smoke runner calls
+  both, and deleting an exported function before 1.0 to save four lines is not a trade.
+  **`Deduplicate` is exposed.** It was fully implemented in `internal/ops` and reachable by
+  nobody, while `core/doc.go` listed it among the available operations — a documented
+  operation that cannot be called is worse than an undocumented one, because the reader
+  concludes the library is broken rather than that the doc is. Its O(n²) call cost is stated,
+  with a pointer to **PS-006**, which is the right shape for the problem.
+  **`Format`, `Merge`, and their metadata twins** are in the README's catalogue now; they were
+  exported and appeared nowhere in it.
+  *Verify:* `TestPublicAPISurface` records the new export; `TestREADMEClaimsMatchTheLibrary`
+  and the compatibility section carry the policy.
 - [ ] **PS-004** — Add tool calling to the provider path: `Tools`, `ToolChoice`, and tool-call
   response handling, none of which exist in `CompletionRequest`. Closes **Gap-02**; makes
   PS-001 worth doing.

@@ -380,6 +380,17 @@ Against these rules:
 	return result, nil
 }
 
+// Deprecated: use Validate, which returns ValidateResult[T] with typed issues,
+// severities, and an optional correction. ValidateLegacy returns
+// ValidationResult -- a bool, a []string, and a model-reported confidence --
+// which cannot express which field failed or how badly.
+//
+// It stays because removing an exported function before 1.0 would break the
+// smoke runner and anyone who copied from it, and it is marked because until
+// now nothing in this repository carried a single deprecation marker: the
+// README said the legacy path was compatibility-only and no linter, IDE, or
+// staticcheck run would ever tell a user they were on it (F-06, A-09).
+//
 // ValidateLegacy is the legacy validation function for backward compatibility
 func ValidateLegacy[T any](data T, rules string, opts ...types.OpOptions) (ValidationResult, error) {
 	log := logger.GetLogger()
@@ -1029,6 +1040,10 @@ Question: %s`, string(dataJSON), opts.Question)
 	return result, nil
 }
 
+// Deprecated: use Question, which returns a typed answer with its supporting
+// detail rather than a bare string. See ValidateLegacy for why this is marked
+// rather than removed.
+//
 // QuestionLegacy answers questions about data (legacy interface)
 //
 // Examples:

@@ -828,6 +828,30 @@ func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 // Example:
 //
 //	result, err := schemaflux.ValidateLegacy(person, "age must be 18-100")
+//
+// DeduplicateResult holds the unique items, the groups that collapsed into
+// them, and how many were removed.
+type DeduplicateResult[T any] = ops.DeduplicateResult[T]
+
+// Deduplicate removes semantically duplicate items, keeping the caller's own
+// values.
+//
+// It was implemented in internal/ops and exported by nothing, so no consumer
+// could call it -- while `core/doc.go` listed it among the available
+// operations. A documented operation that cannot be reached is worse than an
+// undocumented one: the reader concludes the library is broken rather than that
+// the doc is (A-10).
+//
+// The threshold is a similarity floor between 0 and 1. Note what this costs: it
+// asks the model about pairs, so it is O(n^2) calls in the worst case. PS-006
+// tracks doing it with embeddings, which is the right shape for this problem.
+func Deduplicate[T any](items []T, threshold float64, opts ...OpOptions) (DeduplicateResult[T], error) {
+	return ops.Deduplicate(items, threshold, opts...)
+}
+
+// Deprecated: use Validate. ValidationResult is a bool, a []string, and a
+// model-reported confidence; ValidateResult[T] says which field failed, how
+// badly, and offers a correction. See internal/ops for the full note.
 func ValidateLegacy[T any](data T, rules string, opts ...OpOptions) (ValidationResult, error) {
 	return ops.ValidateLegacy(data, rules, opts...)
 }
@@ -847,6 +871,9 @@ func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], er
 // Example:
 //
 //	answer, err := schemaflux.QuestionLegacy(report, "What are the top 3 risks?")
+//
+// Deprecated: use Question, which returns the answer with its supporting
+// detail rather than a bare string.
 func QuestionLegacy(data any, question string, opts ...OpOptions) (string, error) {
 	return ops.QuestionLegacy(data, question, opts...)
 }

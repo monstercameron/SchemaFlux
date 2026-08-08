@@ -91,6 +91,15 @@ Builder conventions:
 - `Projecting[T, U](input)`
 - `Pivoting[T, U](input)`
 
+### Data reshaping and comparison
+- `Deduplicate(items, threshold)` — collapse semantically duplicate items,
+  keeping your own values. Note the cost: it asks the model about pairs, so it
+  is O(n²) calls in the worst case.
+- `Merge(sources, strategy)` / `MergeWithMetadata` — combine several records
+  into one.
+- `Format(data, template)` / `FormatWithMetadata` — render a value through a
+  natural-language template.
+
 ### Text operations
 - `Summarizing(input)`
 - `Rewriting(input)`
@@ -699,7 +708,22 @@ the file contains.
 
 ## Compatibility
 
-The older direct-call function API still exists for existing consumers, but it is compatibility-only. New code should use the fluent builders shown here.
+**Both API styles are supported, and neither is deprecated.** The direct
+functions (`schemaflux.Extract[T](input, opts)`) are the canonical semantics:
+easiest to wrap, to test, and to construct options for dynamically. The fluent
+builders (`schemaflux.Extracting[T](input).Strict().Run()`) are the ergonomic
+surface. Every fluent call lowers to the same options and the same execution,
+and a test asserts they send identical requests.
+
+This corrected an earlier claim here that the direct API was
+"compatibility-only". It was not true — most of this README's own examples use
+it — and saying so while shipping no `// Deprecated:` marker anywhere meant no
+linter, IDE, or `staticcheck` run would have told a user they were on a legacy
+path even if they had been.
+
+What *is* deprecated carries the marker, so your tools will say so:
+`ValidateLegacy` (use `Validate`, which reports which field failed and how
+badly) and `QuestionLegacy` (use `Question`).
 
 ### Breaking changes, and what to do about them
 
