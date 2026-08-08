@@ -37,6 +37,7 @@ func nonZeroOpOptions() types.OpOptions {
 		ResponseFormat:  "json_schema",
 		CacheIdentity:   "extract|v1|hash",
 		MaxOutputTokens: 321,
+		ParentResultIDs: []string{"parent-1"},
 	}
 }
 

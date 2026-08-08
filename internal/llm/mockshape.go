@@ -52,16 +52,76 @@ func mockShapedResponse(req CompletionRequest) string {
 
 	// The prompt-only operations state their contract as a JSON template in the
 	// system prompt: `Return a JSON object with: { "verdict": "...", ... }`.
-	if template, ok := firstJSONObject(req.SystemPrompt); ok {
+	//
+	// Every candidate object is tried, not just the first. These prompts
+	// routinely embed the caller's *type schema* before the response template
+	// -- "Each part should match this schema: {...}. Return a JSON object with:
+	// {...}" -- so taking the first object answered with the shape of the
+	// input instead of the shape of the answer, and taking only the last would
+	// break the prompts that put their template first. Trying each and keeping
+	// the first that parses and yields an object is what handles both.
+	for _, template := range jsonObjectCandidates(req.SystemPrompt) {
 		var shape any
-		if err := json.Unmarshal([]byte(template), &shape); err == nil {
-			if encoded, err := json.Marshal(fillTemplate(shape, 0)); err == nil {
-				return string(encoded)
-			}
+		if err := json.Unmarshal([]byte(template), &shape); err != nil {
+			continue
+		}
+		if _, isObject := shape.(map[string]any); !isObject {
+			continue
+		}
+		if encoded, err := json.Marshal(fillTemplate(shape, 0)); err == nil {
+			return string(encoded)
 		}
 	}
 
 	return ""
+}
+
+// jsonObjectCandidates returns every balanced top-level {...} run in text, in
+// the order they appear, last first.
+//
+// Last first because a response template is conventionally stated after the
+// schema it refers to, so the later object is the likelier answer shape. The
+// earlier ones are still tried, because some prompts state the template up
+// front.
+func jsonObjectCandidates(text string) []string {
+	var found []string
+
+	for offset := 0; offset < len(text); {
+		start := strings.IndexByte(text[offset:], '{')
+		if start < 0 {
+			break
+		}
+		start += offset
+
+		depth := 0
+		end := -1
+		for i := start; i < len(text); i++ {
+			switch text[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			break
+		}
+
+		found = append(found, text[start:end+1])
+		offset = end + 1
+	}
+
+	// Reverse: later objects first.
+	for i, j := 0, len(found)-1; i < j; i, j = i+1, j-1 {
+		found[i], found[j] = found[j], found[i]
+	}
+	return found
 }
 
 const maxMockDepth = 8

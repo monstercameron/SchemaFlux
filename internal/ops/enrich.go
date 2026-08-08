@@ -275,7 +275,7 @@ Fields to derive:
 
 Return a JSON object with:
 {
-  "enriched": <the enriched data matching output schema>,
+  "enriched": {},
   "added_fields": ["list of fields that were added"],
   "confidence": {"field": 0.95},
   "derivations": {"field": "how it was derived"}

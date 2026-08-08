@@ -144,6 +144,17 @@ type BatchResult[Out any] struct {
 	// cancelled rather than attempted.
 	Items   []ItemResult[Out]
 	Summary BatchSummary
+
+	// Ledger is PL-014's post-execution decision ledger: every adaptive
+	// choice this run made -- a chunk size held, grown, or halved; an
+	// isolate pass; an atomic fallback -- with the reason each one
+	// happened, in order. Its zero value (an empty DecisionLedger) is
+	// correct and honest for an engine that makes no adaptive decisions:
+	// RunOpManyPartial dispatches one call per item unconditionally, so it
+	// leaves this empty rather than fabricating entries for decisions that
+	// were never made. RunOpManyRecover (PL-009's cascade,
+	// internal/ops/recover.go) is where this is populated for real.
+	Ledger DecisionLedger
 }
 
 // Complete reports whether every item succeeded -- no failures, no

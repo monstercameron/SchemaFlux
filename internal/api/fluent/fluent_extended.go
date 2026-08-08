@@ -1,21 +1,47 @@
 package fluent
 
+import "context"
+
 // AnnotateRequest is a fluent builder for Annotate.
 type AnnotateRequest[T any] struct {
-	commonRequest[AnnotateRequest[T], AnnotateOptions]
+	requestBase[AnnotateRequest[T], AnnotateOptions]
 	input T
 }
 
 func newAnnotateRequest[T any](input T, opts AnnotateOptions) AnnotateRequest[T] {
 	return AnnotateRequest[T]{
-		commonRequest: commonRequest[AnnotateRequest[T], AnnotateOptions]{
+		requestBase: requestBase[AnnotateRequest[T], AnnotateOptions]{
 			opts: opts,
 			lift: func(next AnnotateOptions) AnnotateRequest[T] {
 				return newAnnotateRequest(input, next)
 			},
-			mutate: func(current AnnotateOptions, fn func(CommonOptions) CommonOptions) AnnotateOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o AnnotateOptions, s string) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o AnnotateOptions, v float64) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o AnnotateOptions, m Mode) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o AnnotateOptions, s Speed) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o AnnotateOptions, ctx context.Context) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o AnnotateOptions, id string) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o AnnotateOptions, id string) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -34,25 +60,53 @@ func (r AnnotateRequest[T]) Types(annotationTypes ...string) AnnotateRequest[T] 
 }
 
 func (r AnnotateRequest[T]) Run() (AnnotateResult, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero AnnotateResult
+		return zero, err
+	}
 	return Annotate[T](r.input, r.opts)
 }
 
 // ClusterRequest is a fluent builder for Cluster.
 type ClusterRequest[T any] struct {
-	commonRequest[ClusterRequest[T], ClusterOptions]
+	requestBase[ClusterRequest[T], ClusterOptions]
 	items []T
 }
 
 func newClusterRequest[T any](items []T, opts ClusterOptions) ClusterRequest[T] {
 	return ClusterRequest[T]{
-		commonRequest: commonRequest[ClusterRequest[T], ClusterOptions]{
+		requestBase: requestBase[ClusterRequest[T], ClusterOptions]{
 			opts: opts,
 			lift: func(next ClusterOptions) ClusterRequest[T] {
 				return newClusterRequest(items, next)
 			},
-			mutate: func(current ClusterOptions, fn func(CommonOptions) CommonOptions) ClusterOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o ClusterOptions, s string) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o ClusterOptions, v float64) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o ClusterOptions, m Mode) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o ClusterOptions, s Speed) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o ClusterOptions, ctx context.Context) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o ClusterOptions, id string) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o ClusterOptions, id string) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		items: items,
@@ -77,25 +131,53 @@ func (r ClusterRequest[T]) Clusters(n int) ClusterRequest[T] {
 }
 
 func (r ClusterRequest[T]) Run() (ClusterResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ClusterResult[T]
+		return zero, err
+	}
 	return Cluster[T](r.items, r.opts)
 }
 
 // RankRequest is a fluent builder for Rank.
 type RankRequest[T any] struct {
-	commonRequest[RankRequest[T], RankOptions]
+	requestBase[RankRequest[T], RankOptions]
 	items []T
 }
 
 func newRankRequest[T any](items []T, opts RankOptions) RankRequest[T] {
 	return RankRequest[T]{
-		commonRequest: commonRequest[RankRequest[T], RankOptions]{
+		requestBase: requestBase[RankRequest[T], RankOptions]{
 			opts: opts,
 			lift: func(next RankOptions) RankRequest[T] {
 				return newRankRequest(items, next)
 			},
-			mutate: func(current RankOptions, fn func(CommonOptions) CommonOptions) RankOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o RankOptions, s string) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o RankOptions, v float64) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o RankOptions, m Mode) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o RankOptions, s Speed) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o RankOptions, ctx context.Context) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o RankOptions, id string) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o RankOptions, id string) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		items: items,
@@ -126,25 +208,53 @@ func (r RankRequest[T]) MinScore(score float64) RankRequest[T] {
 }
 
 func (r RankRequest[T]) Run() (RankResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero RankResult[T]
+		return zero, err
+	}
 	return Rank[T](r.items, r.opts)
 }
 
 // CompressRequest is a fluent builder for Compress.
 type CompressRequest[T any] struct {
-	commonRequest[CompressRequest[T], CompressOptions]
+	requestBase[CompressRequest[T], CompressOptions]
 	input T
 }
 
 func newCompressRequest[T any](input T, opts CompressOptions) CompressRequest[T] {
 	return CompressRequest[T]{
-		commonRequest: commonRequest[CompressRequest[T], CompressOptions]{
+		requestBase: requestBase[CompressRequest[T], CompressOptions]{
 			opts: opts,
 			lift: func(next CompressOptions) CompressRequest[T] {
 				return newCompressRequest(input, next)
 			},
-			mutate: func(current CompressOptions, fn func(CommonOptions) CommonOptions) CompressOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o CompressOptions, s string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o CompressOptions, v float64) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o CompressOptions, m Mode) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o CompressOptions, s Speed) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o CompressOptions, ctx context.Context) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o CompressOptions, id string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o CompressOptions, id string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -157,25 +267,53 @@ func Compressing[T any](input T) CompressRequest[T] {
 }
 
 func (r CompressRequest[T]) Run() (CompressResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero CompressResult[T]
+		return zero, err
+	}
 	return Compress[T](r.input, r.opts)
 }
 
 // CompressTextRequest is a fluent builder for CompressText.
 type CompressTextRequest struct {
-	commonRequest[CompressTextRequest, CompressOptions]
+	requestBase[CompressTextRequest, CompressOptions]
 	input string
 }
 
 func newCompressTextRequest(input string, opts CompressOptions) CompressTextRequest {
 	return CompressTextRequest{
-		commonRequest: commonRequest[CompressTextRequest, CompressOptions]{
+		requestBase: requestBase[CompressTextRequest, CompressOptions]{
 			opts: opts,
 			lift: func(next CompressOptions) CompressTextRequest {
 				return newCompressTextRequest(input, next)
 			},
-			mutate: func(current CompressOptions, fn func(CommonOptions) CommonOptions) CompressOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o CompressOptions, s string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o CompressOptions, v float64) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o CompressOptions, m Mode) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o CompressOptions, s Speed) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o CompressOptions, ctx context.Context) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o CompressOptions, id string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o CompressOptions, id string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -188,25 +326,53 @@ func CompressingText(input string) CompressTextRequest {
 }
 
 func (r CompressTextRequest) Run() (string, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero string
+		return zero, err
+	}
 	return CompressText(r.input, r.opts)
 }
 
 // DecomposeRequest is a fluent builder for Decompose.
 type DecomposeRequest[T any] struct {
-	commonRequest[DecomposeRequest[T], DecomposeOptions]
+	requestBase[DecomposeRequest[T], DecomposeOptions]
 	input T
 }
 
 func newDecomposeRequest[T any](input T, opts DecomposeOptions) DecomposeRequest[T] {
 	return DecomposeRequest[T]{
-		commonRequest: commonRequest[DecomposeRequest[T], DecomposeOptions]{
+		requestBase: requestBase[DecomposeRequest[T], DecomposeOptions]{
 			opts: opts,
 			lift: func(next DecomposeOptions) DecomposeRequest[T] {
 				return newDecomposeRequest(input, next)
 			},
-			mutate: func(current DecomposeOptions, fn func(CommonOptions) CommonOptions) DecomposeOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o DecomposeOptions, s string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o DecomposeOptions, v float64) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o DecomposeOptions, m Mode) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o DecomposeOptions, s Speed) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o DecomposeOptions, ctx context.Context) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o DecomposeOptions, id string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o DecomposeOptions, id string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -219,25 +385,53 @@ func Decomposing[T any](input T) DecomposeRequest[T] {
 }
 
 func (r DecomposeRequest[T]) Run() (DecomposeResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero DecomposeResult[T]
+		return zero, err
+	}
 	return Decompose[T](r.input, r.opts)
 }
 
 // DecomposeSliceRequest is a fluent builder for DecomposeToSlice.
 type DecomposeSliceRequest[T any, U any] struct {
-	commonRequest[DecomposeSliceRequest[T, U], DecomposeOptions]
+	requestBase[DecomposeSliceRequest[T, U], DecomposeOptions]
 	input T
 }
 
 func newDecomposeSliceRequest[T any, U any](input T, opts DecomposeOptions) DecomposeSliceRequest[T, U] {
 	return DecomposeSliceRequest[T, U]{
-		commonRequest: commonRequest[DecomposeSliceRequest[T, U], DecomposeOptions]{
+		requestBase: requestBase[DecomposeSliceRequest[T, U], DecomposeOptions]{
 			opts: opts,
 			lift: func(next DecomposeOptions) DecomposeSliceRequest[T, U] {
 				return newDecomposeSliceRequest[T, U](input, next)
 			},
-			mutate: func(current DecomposeOptions, fn func(CommonOptions) CommonOptions) DecomposeOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o DecomposeOptions, s string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o DecomposeOptions, v float64) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o DecomposeOptions, m Mode) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o DecomposeOptions, s Speed) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o DecomposeOptions, ctx context.Context) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o DecomposeOptions, id string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o DecomposeOptions, id string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -250,25 +444,53 @@ func DecomposingInto[T any, U any](input T) DecomposeSliceRequest[T, U] {
 }
 
 func (r DecomposeSliceRequest[T, U]) Run() ([]U, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero []U
+		return zero, err
+	}
 	return DecomposeToSlice[T, U](r.input, r.opts)
 }
 
 // EnrichRequest is a fluent builder for Enrich.
 type EnrichRequest[T any, U any] struct {
-	commonRequest[EnrichRequest[T, U], EnrichOptions]
+	requestBase[EnrichRequest[T, U], EnrichOptions]
 	input T
 }
 
 func newEnrichRequest[T any, U any](input T, opts EnrichOptions) EnrichRequest[T, U] {
 	return EnrichRequest[T, U]{
-		commonRequest: commonRequest[EnrichRequest[T, U], EnrichOptions]{
+		requestBase: requestBase[EnrichRequest[T, U], EnrichOptions]{
 			opts: opts,
 			lift: func(next EnrichOptions) EnrichRequest[T, U] {
 				return newEnrichRequest[T, U](input, next)
 			},
-			mutate: func(current EnrichOptions, fn func(CommonOptions) CommonOptions) EnrichOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o EnrichOptions, s string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o EnrichOptions, v float64) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o EnrichOptions, m Mode) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o EnrichOptions, s Speed) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o EnrichOptions, ctx context.Context) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o EnrichOptions, id string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o EnrichOptions, id string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -281,25 +503,53 @@ func Enriching[T any, U any](input T) EnrichRequest[T, U] {
 }
 
 func (r EnrichRequest[T, U]) Run() (EnrichResult[U], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero EnrichResult[U]
+		return zero, err
+	}
 	return Enrich[T, U](r.input, r.opts)
 }
 
 // EnrichInPlaceRequest is a fluent builder for EnrichInPlace.
 type EnrichInPlaceRequest[T any] struct {
-	commonRequest[EnrichInPlaceRequest[T], EnrichOptions]
+	requestBase[EnrichInPlaceRequest[T], EnrichOptions]
 	input T
 }
 
 func newEnrichInPlaceRequest[T any](input T, opts EnrichOptions) EnrichInPlaceRequest[T] {
 	return EnrichInPlaceRequest[T]{
-		commonRequest: commonRequest[EnrichInPlaceRequest[T], EnrichOptions]{
+		requestBase: requestBase[EnrichInPlaceRequest[T], EnrichOptions]{
 			opts: opts,
 			lift: func(next EnrichOptions) EnrichInPlaceRequest[T] {
 				return newEnrichInPlaceRequest(input, next)
 			},
-			mutate: func(current EnrichOptions, fn func(CommonOptions) CommonOptions) EnrichOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o EnrichOptions, s string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o EnrichOptions, v float64) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o EnrichOptions, m Mode) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o EnrichOptions, s Speed) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o EnrichOptions, ctx context.Context) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o EnrichOptions, id string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o EnrichOptions, id string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -312,25 +562,53 @@ func EnrichingInPlace[T any](input T) EnrichInPlaceRequest[T] {
 }
 
 func (r EnrichInPlaceRequest[T]) Run() (T, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero T
+		return zero, err
+	}
 	return EnrichInPlace[T](r.input, r.opts)
 }
 
 // NormalizeRequest is a fluent builder for Normalize.
 type NormalizeRequest[T any] struct {
-	commonRequest[NormalizeRequest[T], NormalizeOptions]
+	requestBase[NormalizeRequest[T], NormalizeOptions]
 	input T
 }
 
 func newNormalizeRequest[T any](input T, opts NormalizeOptions) NormalizeRequest[T] {
 	return NormalizeRequest[T]{
-		commonRequest: commonRequest[NormalizeRequest[T], NormalizeOptions]{
+		requestBase: requestBase[NormalizeRequest[T], NormalizeOptions]{
 			opts: opts,
 			lift: func(next NormalizeOptions) NormalizeRequest[T] {
 				return newNormalizeRequest(input, next)
 			},
-			mutate: func(current NormalizeOptions, fn func(CommonOptions) CommonOptions) NormalizeOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o NormalizeOptions, s string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o NormalizeOptions, v float64) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o NormalizeOptions, m Mode) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o NormalizeOptions, s Speed) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o NormalizeOptions, ctx context.Context) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o NormalizeOptions, id string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o NormalizeOptions, id string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -343,25 +621,53 @@ func Normalizing[T any](input T) NormalizeRequest[T] {
 }
 
 func (r NormalizeRequest[T]) Run() (NormalizeResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero NormalizeResult[T]
+		return zero, err
+	}
 	return Normalize[T](r.input, r.opts)
 }
 
 // NormalizeTextRequest is a fluent builder for NormalizeText.
 type NormalizeTextRequest struct {
-	commonRequest[NormalizeTextRequest, NormalizeOptions]
+	requestBase[NormalizeTextRequest, NormalizeOptions]
 	input string
 }
 
 func newNormalizeTextRequest(input string, opts NormalizeOptions) NormalizeTextRequest {
 	return NormalizeTextRequest{
-		commonRequest: commonRequest[NormalizeTextRequest, NormalizeOptions]{
+		requestBase: requestBase[NormalizeTextRequest, NormalizeOptions]{
 			opts: opts,
 			lift: func(next NormalizeOptions) NormalizeTextRequest {
 				return newNormalizeTextRequest(input, next)
 			},
-			mutate: func(current NormalizeOptions, fn func(CommonOptions) CommonOptions) NormalizeOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o NormalizeOptions, s string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o NormalizeOptions, v float64) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o NormalizeOptions, m Mode) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o NormalizeOptions, s Speed) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o NormalizeOptions, ctx context.Context) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o NormalizeOptions, id string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o NormalizeOptions, id string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -374,25 +680,53 @@ func NormalizingText(input string) NormalizeTextRequest {
 }
 
 func (r NormalizeTextRequest) Run() (string, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero string
+		return zero, err
+	}
 	return NormalizeText(r.input, r.opts)
 }
 
 // NormalizeBatchRequest is a fluent builder for NormalizeBatch.
 type NormalizeBatchRequest[T any] struct {
-	commonRequest[NormalizeBatchRequest[T], NormalizeOptions]
+	requestBase[NormalizeBatchRequest[T], NormalizeOptions]
 	items []T
 }
 
 func newNormalizeBatchRequest[T any](items []T, opts NormalizeOptions) NormalizeBatchRequest[T] {
 	return NormalizeBatchRequest[T]{
-		commonRequest: commonRequest[NormalizeBatchRequest[T], NormalizeOptions]{
+		requestBase: requestBase[NormalizeBatchRequest[T], NormalizeOptions]{
 			opts: opts,
 			lift: func(next NormalizeOptions) NormalizeBatchRequest[T] {
 				return newNormalizeBatchRequest(items, next)
 			},
-			mutate: func(current NormalizeOptions, fn func(CommonOptions) CommonOptions) NormalizeOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o NormalizeOptions, s string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o NormalizeOptions, v float64) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o NormalizeOptions, m Mode) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o NormalizeOptions, s Speed) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o NormalizeOptions, ctx context.Context) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o NormalizeOptions, id string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o NormalizeOptions, id string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		items: items,
@@ -405,26 +739,54 @@ func NormalizingBatch[T any](items []T) NormalizeBatchRequest[T] {
 }
 
 func (r NormalizeBatchRequest[T]) Run() ([]NormalizeResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero []NormalizeResult[T]
+		return zero, err
+	}
 	return NormalizeBatch[T](r.items, r.opts)
 }
 
 // SemanticMatchRequest is a fluent builder for SemanticMatch.
 type SemanticMatchRequest[S any, T any] struct {
-	commonRequest[SemanticMatchRequest[S, T], MatchOptions]
+	requestBase[SemanticMatchRequest[S, T], MatchOptions]
 	sources []S
 	targets []T
 }
 
 func newSemanticMatchRequest[S any, T any](sources []S, targets []T, opts MatchOptions) SemanticMatchRequest[S, T] {
 	return SemanticMatchRequest[S, T]{
-		commonRequest: commonRequest[SemanticMatchRequest[S, T], MatchOptions]{
+		requestBase: requestBase[SemanticMatchRequest[S, T], MatchOptions]{
 			opts: opts,
 			lift: func(next MatchOptions) SemanticMatchRequest[S, T] {
 				return newSemanticMatchRequest(sources, targets, next)
 			},
-			mutate: func(current MatchOptions, fn func(CommonOptions) CommonOptions) MatchOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o MatchOptions, s string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o MatchOptions, v float64) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o MatchOptions, m Mode) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o MatchOptions, s Speed) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o MatchOptions, ctx context.Context) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o MatchOptions, id string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o MatchOptions, id string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		sources: sources,
@@ -450,26 +812,54 @@ func (r SemanticMatchRequest[S, T]) Strategy(strategy string) SemanticMatchReque
 }
 
 func (r SemanticMatchRequest[S, T]) Run() (MatchResult[S, T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero MatchResult[S, T]
+		return zero, err
+	}
 	return SemanticMatch[S, T](r.sources, r.targets, r.opts)
 }
 
 // MatchOneRequest is a fluent builder for MatchOne.
 type MatchOneRequest[S any, T any] struct {
-	commonRequest[MatchOneRequest[S, T], MatchOptions]
+	requestBase[MatchOneRequest[S, T], MatchOptions]
 	source  S
 	targets []T
 }
 
 func newMatchOneRequest[S any, T any](source S, targets []T, opts MatchOptions) MatchOneRequest[S, T] {
 	return MatchOneRequest[S, T]{
-		commonRequest: commonRequest[MatchOneRequest[S, T], MatchOptions]{
+		requestBase: requestBase[MatchOneRequest[S, T], MatchOptions]{
 			opts: opts,
 			lift: func(next MatchOptions) MatchOneRequest[S, T] {
 				return newMatchOneRequest(source, targets, next)
 			},
-			mutate: func(current MatchOptions, fn func(CommonOptions) CommonOptions) MatchOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o MatchOptions, s string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o MatchOptions, v float64) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o MatchOptions, m Mode) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o MatchOptions, s Speed) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o MatchOptions, ctx context.Context) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o MatchOptions, id string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o MatchOptions, id string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		source:  source,
@@ -495,25 +885,53 @@ func (r MatchOneRequest[S, T]) Strategy(strategy string) MatchOneRequest[S, T] {
 }
 
 func (r MatchOneRequest[S, T]) Run() ([]MatchPair[S, T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero []MatchPair[S, T]
+		return zero, err
+	}
 	return MatchOne[S, T](r.source, r.targets, r.opts)
 }
 
 // CritiqueRequest is a fluent builder for Critique.
 type CritiqueRequest[T any] struct {
-	commonRequest[CritiqueRequest[T], CritiqueOptions]
+	requestBase[CritiqueRequest[T], CritiqueOptions]
 	input T
 }
 
 func newCritiqueRequest[T any](input T, opts CritiqueOptions) CritiqueRequest[T] {
 	return CritiqueRequest[T]{
-		commonRequest: commonRequest[CritiqueRequest[T], CritiqueOptions]{
+		requestBase: requestBase[CritiqueRequest[T], CritiqueOptions]{
 			opts: opts,
 			lift: func(next CritiqueOptions) CritiqueRequest[T] {
 				return newCritiqueRequest(input, next)
 			},
-			mutate: func(current CritiqueOptions, fn func(CommonOptions) CommonOptions) CritiqueOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o CritiqueOptions, s string) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o CritiqueOptions, v float64) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o CritiqueOptions, m Mode) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o CritiqueOptions, s Speed) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o CritiqueOptions, ctx context.Context) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o CritiqueOptions, id string) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o CritiqueOptions, id string) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -526,25 +944,53 @@ func Critiquing[T any](input T) CritiqueRequest[T] {
 }
 
 func (r CritiqueRequest[T]) Run() (CritiqueResult, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero CritiqueResult
+		return zero, err
+	}
 	return Critique[T](r.input, r.opts)
 }
 
 // SynthesizeRequest is a fluent builder for Synthesize.
 type SynthesizeRequest[T any] struct {
-	commonRequest[SynthesizeRequest[T], SynthesizeOptions]
+	requestBase[SynthesizeRequest[T], SynthesizeOptions]
 	sources []any
 }
 
 func newSynthesizeRequest[T any](sources []any, opts SynthesizeOptions) SynthesizeRequest[T] {
 	return SynthesizeRequest[T]{
-		commonRequest: commonRequest[SynthesizeRequest[T], SynthesizeOptions]{
+		requestBase: requestBase[SynthesizeRequest[T], SynthesizeOptions]{
 			opts: opts,
 			lift: func(next SynthesizeOptions) SynthesizeRequest[T] {
 				return newSynthesizeRequest[T](sources, next)
 			},
-			mutate: func(current SynthesizeOptions, fn func(CommonOptions) CommonOptions) SynthesizeOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o SynthesizeOptions, s string) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o SynthesizeOptions, v float64) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o SynthesizeOptions, m Mode) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o SynthesizeOptions, s Speed) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o SynthesizeOptions, ctx context.Context) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o SynthesizeOptions, id string) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o SynthesizeOptions, id string) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		sources: sources,
@@ -563,25 +1009,53 @@ func (r SynthesizeRequest[T]) Strategy(strategy string) SynthesizeRequest[T] {
 }
 
 func (r SynthesizeRequest[T]) Run() (SynthesizeResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero SynthesizeResult[T]
+		return zero, err
+	}
 	return Synthesize[T](r.sources, r.opts)
 }
 
 // PredictRequest is a fluent builder for Predict.
 type PredictRequest[T any] struct {
-	commonRequest[PredictRequest[T], PredictOptions]
+	requestBase[PredictRequest[T], PredictOptions]
 	input any
 }
 
 func newPredictRequest[T any](input any, opts PredictOptions) PredictRequest[T] {
 	return PredictRequest[T]{
-		commonRequest: commonRequest[PredictRequest[T], PredictOptions]{
+		requestBase: requestBase[PredictRequest[T], PredictOptions]{
 			opts: opts,
 			lift: func(next PredictOptions) PredictRequest[T] {
 				return newPredictRequest[T](input, next)
 			},
-			mutate: func(current PredictOptions, fn func(CommonOptions) CommonOptions) PredictOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o PredictOptions, s string) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o PredictOptions, v float64) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o PredictOptions, m Mode) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o PredictOptions, s Speed) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o PredictOptions, ctx context.Context) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o PredictOptions, id string) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o PredictOptions, id string) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -600,25 +1074,53 @@ func (r PredictRequest[T]) Horizon(horizon string) PredictRequest[T] {
 }
 
 func (r PredictRequest[T]) Run() (PredictResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero PredictResult[T]
+		return zero, err
+	}
 	return Predict[T](r.input, r.opts)
 }
 
 // VerifyRequest is a fluent builder for Verify.
 type VerifyRequest struct {
-	commonRequest[VerifyRequest, VerifyOptions]
+	requestBase[VerifyRequest, VerifyOptions]
 	input string
 }
 
 func newVerifyRequest(input string, opts VerifyOptions) VerifyRequest {
 	return VerifyRequest{
-		commonRequest: commonRequest[VerifyRequest, VerifyOptions]{
+		requestBase: requestBase[VerifyRequest, VerifyOptions]{
 			opts: opts,
 			lift: func(next VerifyOptions) VerifyRequest {
 				return newVerifyRequest(input, next)
 			},
-			mutate: func(current VerifyOptions, fn func(CommonOptions) CommonOptions) VerifyOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o VerifyOptions, s string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o VerifyOptions, v float64) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o VerifyOptions, m Mode) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o VerifyOptions, s Speed) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o VerifyOptions, ctx context.Context) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o VerifyOptions, id string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o VerifyOptions, id string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		input: input,
@@ -631,25 +1133,53 @@ func Verifying(input string) VerifyRequest {
 }
 
 func (r VerifyRequest) Run() (VerifyResult, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero VerifyResult
+		return zero, err
+	}
 	return Verify(r.input, r.opts)
 }
 
 // VerifyClaimRequest is a fluent builder for VerifyClaim.
 type VerifyClaimRequest struct {
-	commonRequest[VerifyClaimRequest, VerifyOptions]
+	requestBase[VerifyClaimRequest, VerifyOptions]
 	claim string
 }
 
 func newVerifyClaimRequest(claim string, opts VerifyOptions) VerifyClaimRequest {
 	return VerifyClaimRequest{
-		commonRequest: commonRequest[VerifyClaimRequest, VerifyOptions]{
+		requestBase: requestBase[VerifyClaimRequest, VerifyOptions]{
 			opts: opts,
 			lift: func(next VerifyOptions) VerifyClaimRequest {
 				return newVerifyClaimRequest(claim, next)
 			},
-			mutate: func(current VerifyOptions, fn func(CommonOptions) CommonOptions) VerifyOptions {
-				current.CommonOptions = fn(current.CommonOptions)
-				return current
+			setSteering: func(o VerifyOptions, s string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithSteering(s)
+				return o
+			},
+			setThreshold: func(o VerifyOptions, v float64) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithThreshold(v)
+				return o
+			},
+			setMode: func(o VerifyOptions, m Mode) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithMode(m)
+				return o
+			},
+			setIntelligence: func(o VerifyOptions, s Speed) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setContext: func(o VerifyOptions, ctx context.Context) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithContext(ctx)
+				return o
+			},
+			setRequestID: func(o VerifyOptions, id string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithRequestID(id)
+				return o
+			},
+			setCorrelationID: func(o VerifyOptions, id string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithCorrelationID(id)
+				return o
 			},
 		},
 		claim: claim,
@@ -662,5 +1192,9 @@ func VerifyingClaim(claim string) VerifyClaimRequest {
 }
 
 func (r VerifyClaimRequest) Run() (ClaimVerification, error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ClaimVerification
+		return zero, err
+	}
 	return VerifyClaim(r.claim, r.opts)
 }

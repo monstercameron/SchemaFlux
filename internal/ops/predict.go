@@ -309,18 +309,18 @@ Method: %s%s%s%s%s%s%s
 
 Return a JSON object with:
 {
-  "prediction": <the predicted value/state>,
+  "prediction": {},
   "confidence": 0.75,
   "interval": {
-    "lower": <lower bound>,
-    "upper": <upper bound>,
+    "lower": 0,
+    "upper": 0,
     "confidence_level": 0.8
   },
   "scenarios": [
     {
       "name": "Optimistic",
       "description": "If conditions are favorable...",
-      "prediction": <scenario prediction>,
+      "prediction": {},
       "probability": 0.25,
       "conditions": ["condition1", "condition2"]
     }

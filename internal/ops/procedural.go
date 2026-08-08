@@ -140,7 +140,7 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 	systemPrompt := `You are a decision-making expert. Analyze the context and choose the best option.
 Return a JSON object with:
 {
-  "selected": <index>,
+  "selected": 0,
   "explanation": "reason for selection",
   "confidence": 0.0-1.0,
   "alternatives": [other viable option indices]

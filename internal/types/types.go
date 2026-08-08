@@ -165,6 +165,19 @@ type OpOptions struct {
 	// the tier default still applies -- it only gives the caller who has an
 	// opinion a place to say so.
 	MaxOutputTokens int
+
+	// ParentResultIDs names the results this call's answer should be traced
+	// back to, in a pipeline where one stage's output feeds the next stage's
+	// input -- ops.buildProvenance (internal/ops/provenance.go) copies this
+	// into the produced Result's Meta.Provenance.ParentResultIDs. TC-003.
+	//
+	// Nothing sets this automatically: only the caller building a pipeline
+	// knows which results are actually related, so a caller wanting a
+	// traceable chain sets it to the previous stage's
+	// Result.Meta.Provenance.ResultID before making the next call. Left
+	// empty, a result simply has no recorded parent, which is the correct
+	// answer for every call that is not part of a pipeline.
+	ParentResultIDs []string
 }
 
 // Case represents a pattern matching case for the Match function.

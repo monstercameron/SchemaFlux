@@ -257,14 +257,22 @@ func streamLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.
 		maxTokens = opts.MaxOutputTokens
 	}
 	temperature := config.GetTemperature(opts.Mode)
-	effectiveSystemPrompt := applySteering(systemPrompt, opts.Steering)
-	responseFormat := resolveResponseFormat(opts.ResponseFormat, effectiveSystemPrompt)
+
+	// Steering goes in the user message, exactly as it does in CallLLM.
+	//
+	// This path put it in the *system* prompt: caller-supplied text placed
+	// where the library's own trusted instructions go, which is the precise
+	// violation TC-001 exists to prevent, and it also moved the cacheable
+	// prefix on every steered call (CA-002). The buffered path was fixed and
+	// this one was missed, which is what happens when two code paths build the
+	// same request in two places.
+	responseFormat := resolveResponseFormat(opts.ResponseFormat, systemPrompt)
 	stableSystemPrompt := strengthenSystemPrompt(systemPrompt, responseFormat)
 
 	req := llm.CompletionRequest{
 		Model:          model,
-		SystemPrompt:   strengthenSystemPrompt(effectiveSystemPrompt, responseFormat),
-		UserPrompt:     userPrompt,
+		SystemPrompt:   stableSystemPrompt,
+		UserPrompt:     applySteering(userPrompt, opts.Steering),
 		Temperature:    float64(temperature),
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,

@@ -366,6 +366,17 @@ func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt
 		meta.DeliveredContract = meta.RequestedContract
 	}
 
+	// TC-003: lineage, built from the same op/input/opt this call already
+	// has in hand, plus the envelope and repair outcome computed above --
+	// see provenance.go for what this omits and why.
+	meta.Provenance = buildProvenance(op, input, opt, meta, repair)
+
+	// TC-003's other half, which a struct field alone does not deliver:
+	// "where lineage breaks, the delivered contract cannot be FullyGoverned."
+	// See cappedByLineage for why this is applied here and what it can and
+	// cannot reach today.
+	meta.DeliveredContract = cappedByLineage(meta.DeliveredContract, meta.Provenance)
+
 	if err != nil {
 		return types.Result[Out]{Meta: meta}, err
 	}

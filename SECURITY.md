@@ -76,10 +76,22 @@ with an invented confidence.
 - **A malicious or compromised provider.** A provider that returns plausible
   wrong answers within the declared schema will pass every check this library
   runs. Structure is verified; truth is not.
-- **Prompt injection through the caller's own data.** Steering is placed before
-  the caller's content and the response format is inferred only from prompts
-  this library writes, which narrows the surface. It does not eliminate it: a
-  model persuaded by its input is a model persuaded.
+- **Prompt injection through the caller's own data.** Every prompt segment
+  carries a trust level (TC-001). Only the two levels this library authors
+  itself — its fixed policy text and an operation's own instructions — may be
+  placed in the system prompt; a request whose system segment contains anything
+  else is refused rather than filtered. Caller-supplied steering is
+  application data, so it goes in the user message wrapped in an explicit
+  boundary, with any text inside it that looks like a boundary marker
+  neutralized first, and a final check refuses the request outright if steering
+  ever appears in the system prompt.
+
+  That narrows the surface. **It does not eliminate prompt injection**, and no
+  arrangement of Go types can: a model that reads instructions inside its own
+  user message can still act on them. What the boundary guarantees is that the
+  *library* never loses track of which bytes were the caller's, and never lets
+  those bytes become part of what a provider caches and a log treats as fixed
+  policy.
 - **A hostile caller.** Anything running in-process can read the credentials the
   process holds.
 - **Tool execution.** Tool *calling* surfaces a model's request; the library
@@ -99,3 +111,9 @@ Recorded here rather than left to be discovered, and tracked in `TODOS.md`:
   tenant deletion does not yet remove cached or captured data (SEC-005).
 - Client isolation is partial: a per-call provider seam exists, but budgets and
   other execution state remain process-wide (IN-004).
+- The fluent shorthand helpers — `ChooseBy`, `FilterBy`, `SortBy` — take no
+  `context.Context`, so `Client.Context(ctx)` cannot reach them and they always
+  resolve the process-wide provider. An application running two clients gets
+  whichever provider was installed last for any call through those three
+  spellings. Recorded by `internal/api/fluent/reach_test.go`, which can only
+  drive them through the package global.

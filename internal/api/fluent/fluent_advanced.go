@@ -4,13 +4,13 @@ import "context"
 
 // NegotiateRequest is a fluent builder for Negotiate.
 type NegotiateRequest[T any] struct {
-	directRequest[NegotiateRequest[T], NegotiateOptions]
+	requestBase[NegotiateRequest[T], NegotiateOptions]
 	constraints any
 }
 
 func newNegotiateRequest[T any](constraints any, opts NegotiateOptions) NegotiateRequest[T] {
 	return NegotiateRequest[T]{
-		directRequest: directRequest[NegotiateRequest[T], NegotiateOptions]{
+		requestBase: requestBase[NegotiateRequest[T], NegotiateOptions]{
 			opts: opts,
 			lift: func(next NegotiateOptions) NegotiateRequest[T] {
 				return newNegotiateRequest[T](constraints, next)
@@ -66,18 +66,22 @@ func (r NegotiateRequest[T]) MinimumSatisfaction(minimum float64) NegotiateReque
 }
 
 func (r NegotiateRequest[T]) Run() (NegotiateResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero NegotiateResult[T]
+		return zero, err
+	}
 	return Negotiate[T](r.constraints, r.opts)
 }
 
 // AdversarialNegotiationRequest is a fluent builder for NegotiateAdversarial.
 type AdversarialNegotiationRequest[T any] struct {
-	directRequest[AdversarialNegotiationRequest[T], AdversarialOptions]
+	requestBase[AdversarialNegotiationRequest[T], AdversarialOptions]
 	context AdversarialContext[T]
 }
 
 func newAdversarialNegotiationRequest[T any](ctx AdversarialContext[T], opts AdversarialOptions) AdversarialNegotiationRequest[T] {
 	return AdversarialNegotiationRequest[T]{
-		directRequest: directRequest[AdversarialNegotiationRequest[T], AdversarialOptions]{
+		requestBase: requestBase[AdversarialNegotiationRequest[T], AdversarialOptions]{
 			opts: opts,
 			lift: func(next AdversarialOptions) AdversarialNegotiationRequest[T] {
 				return newAdversarialNegotiationRequest(ctx, next)
@@ -128,18 +132,22 @@ func (r AdversarialNegotiationRequest[T]) Strategy(strategy string) AdversarialN
 }
 
 func (r AdversarialNegotiationRequest[T]) Run() (AdversarialResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero AdversarialResult[T]
+		return zero, err
+	}
 	return NegotiateAdversarial[T](r.context, r.opts)
 }
 
 // ResolveRequest is a fluent builder for Resolve.
 type ResolveRequest[T any] struct {
-	directRequest[ResolveRequest[T], ResolveOptions]
+	requestBase[ResolveRequest[T], ResolveOptions]
 	sources []T
 }
 
 func newResolveRequest[T any](sources []T, opts ResolveOptions) ResolveRequest[T] {
 	return ResolveRequest[T]{
-		directRequest: directRequest[ResolveRequest[T], ResolveOptions]{
+		requestBase: requestBase[ResolveRequest[T], ResolveOptions]{
 			opts: opts,
 			lift: func(next ResolveOptions) ResolveRequest[T] {
 				return newResolveRequest(sources, next)
@@ -185,18 +193,22 @@ func (r ResolveRequest[T]) Strategy(strategy string) ResolveRequest[T] {
 }
 
 func (r ResolveRequest[T]) Run() (ResolveResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ResolveResult[T]
+		return zero, err
+	}
 	return Resolve[T](r.sources, r.opts)
 }
 
 // DeriveRequest is a fluent builder for Derive.
 type DeriveRequest[T any, U any] struct {
-	directRequest[DeriveRequest[T, U], DeriveOptions]
+	requestBase[DeriveRequest[T, U], DeriveOptions]
 	input T
 }
 
 func newDeriveRequest[T any, U any](input T, opts DeriveOptions) DeriveRequest[T, U] {
 	return DeriveRequest[T, U]{
-		directRequest: directRequest[DeriveRequest[T, U], DeriveOptions]{
+		requestBase: requestBase[DeriveRequest[T, U], DeriveOptions]{
 			opts: opts,
 			lift: func(next DeriveOptions) DeriveRequest[T, U] {
 				return newDeriveRequest[T, U](input, next)
@@ -242,19 +254,23 @@ func (r DeriveRequest[T, U]) Fields(fields ...string) DeriveRequest[T, U] {
 }
 
 func (r DeriveRequest[T, U]) Run() (DeriveResult[U], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero DeriveResult[U]
+		return zero, err
+	}
 	return Derive[T, U](r.input, r.opts)
 }
 
 // ConformRequest is a fluent builder for Conform.
 type ConformRequest[T any] struct {
-	directRequest[ConformRequest[T], ConformOptions]
+	requestBase[ConformRequest[T], ConformOptions]
 	input    T
 	standard string
 }
 
 func newConformRequest[T any](input T, standard string, opts ConformOptions) ConformRequest[T] {
 	return ConformRequest[T]{
-		directRequest: directRequest[ConformRequest[T], ConformOptions]{
+		requestBase: requestBase[ConformRequest[T], ConformOptions]{
 			opts: opts,
 			lift: func(next ConformOptions) ConformRequest[T] {
 				return newConformRequest(input, standard, next)
@@ -301,18 +317,22 @@ func (r ConformRequest[T]) Strictly(strict bool) ConformRequest[T] {
 }
 
 func (r ConformRequest[T]) Run() (ConformResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ConformResult[T]
+		return zero, err
+	}
 	return Conform[T](r.input, r.standard, r.opts)
 }
 
 // InterpolateRequest is a fluent builder for Interpolate.
 type InterpolateRequest[T any] struct {
-	directRequest[InterpolateRequest[T], InterpolateOptions]
+	requestBase[InterpolateRequest[T], InterpolateOptions]
 	items []T
 }
 
 func newInterpolateRequest[T any](items []T, opts InterpolateOptions) InterpolateRequest[T] {
 	return InterpolateRequest[T]{
-		directRequest: directRequest[InterpolateRequest[T], InterpolateOptions]{
+		requestBase: requestBase[InterpolateRequest[T], InterpolateOptions]{
 			opts: opts,
 			lift: func(next InterpolateOptions) InterpolateRequest[T] {
 				return newInterpolateRequest(items, next)
@@ -352,18 +372,22 @@ func Interpolating[T any](items []T) InterpolateRequest[T] {
 }
 
 func (r InterpolateRequest[T]) Run() (InterpolateResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero InterpolateResult[T]
+		return zero, err
+	}
 	return Interpolate[T](r.items, r.opts)
 }
 
 // ArbitrateRequest is a fluent builder for Arbitrate.
 type ArbitrateRequest[T any] struct {
-	directRequest[ArbitrateRequest[T], ArbitrateOptions]
+	requestBase[ArbitrateRequest[T], ArbitrateOptions]
 	options []T
 }
 
 func newArbitrateRequest[T any](options []T, opts ArbitrateOptions) ArbitrateRequest[T] {
 	return ArbitrateRequest[T]{
-		directRequest: directRequest[ArbitrateRequest[T], ArbitrateOptions]{
+		requestBase: requestBase[ArbitrateRequest[T], ArbitrateOptions]{
 			opts: opts,
 			lift: func(next ArbitrateOptions) ArbitrateRequest[T] {
 				return newArbitrateRequest(options, next)
@@ -409,18 +433,22 @@ func (r ArbitrateRequest[T]) Rules(rules ...string) ArbitrateRequest[T] {
 }
 
 func (r ArbitrateRequest[T]) Run() (ArbitrateResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ArbitrateResult[T]
+		return zero, err
+	}
 	return Arbitrate[T](r.options, r.opts)
 }
 
 // ProjectRequest is a fluent builder for Project.
 type ProjectRequest[T any, U any] struct {
-	directRequest[ProjectRequest[T, U], ProjectOptions]
+	requestBase[ProjectRequest[T, U], ProjectOptions]
 	input T
 }
 
 func newProjectRequest[T any, U any](input T, opts ProjectOptions) ProjectRequest[T, U] {
 	return ProjectRequest[T, U]{
-		directRequest: directRequest[ProjectRequest[T, U], ProjectOptions]{
+		requestBase: requestBase[ProjectRequest[T, U], ProjectOptions]{
 			opts: opts,
 			lift: func(next ProjectOptions) ProjectRequest[T, U] {
 				return newProjectRequest[T, U](input, next)
@@ -466,24 +494,39 @@ func (r ProjectRequest[T, U]) Exclude(fields ...string) ProjectRequest[T, U] {
 }
 
 func (r ProjectRequest[T, U]) Run() (ProjectResult[U], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ProjectResult[U]
+		return zero, err
+	}
 	return Project[T, U](r.input, r.opts)
 }
 
 // AuditRequest is a fluent builder for Audit.
 type AuditRequest[T any] struct {
-	directRequest[AuditRequest[T], AuditOptions]
+	requestBase[AuditRequest[T], AuditOptions]
 	input T
 }
 
 func newAuditRequest[T any](input T, opts AuditOptions) AuditRequest[T] {
 	return AuditRequest[T]{
-		directRequest: directRequest[AuditRequest[T], AuditOptions]{
+		requestBase: requestBase[AuditRequest[T], AuditOptions]{
 			opts: opts,
 			lift: func(next AuditOptions) AuditRequest[T] {
 				return newAuditRequest(input, next)
 			},
 			setSteering: func(current AuditOptions, steering string) AuditOptions {
 				current.Steering = accumulateSteering(current.Steering, steering)
+				return current
+			},
+			// AuditOptions is the one type among fluent_advanced.go's eleven
+			// that has a Threshold field (minimum severity to report,
+			// internal/ops/audit.go) -- .Threshold() was previously
+			// unreachable on AuditRequest because directRequest had no
+			// Threshold setter slot at all. requestBase adding one closes
+			// that gap for free; the other ten leave setThreshold nil and
+			// .Threshold() stays a documented no-op for them, same as before.
+			setThreshold: func(current AuditOptions, threshold float64) AuditOptions {
+				current.Threshold = threshold
 				return current
 			},
 			setMode: func(current AuditOptions, mode Mode) AuditOptions {
@@ -529,18 +572,22 @@ func (r AuditRequest[T]) Categories(categories ...string) AuditRequest[T] {
 }
 
 func (r AuditRequest[T]) Run() (AuditResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero AuditResult[T]
+		return zero, err
+	}
 	return Audit[T](r.input, r.opts)
 }
 
 // AssembleRequest is a fluent builder for Assemble.
 type AssembleRequest[T any] struct {
-	directRequest[AssembleRequest[T], ComposeOptions]
+	requestBase[AssembleRequest[T], ComposeOptions]
 	parts []any
 }
 
 func newAssembleRequest[T any](parts []any, opts ComposeOptions) AssembleRequest[T] {
 	return AssembleRequest[T]{
-		directRequest: directRequest[AssembleRequest[T], ComposeOptions]{
+		requestBase: requestBase[AssembleRequest[T], ComposeOptions]{
 			opts: opts,
 			lift: func(next ComposeOptions) AssembleRequest[T] {
 				return newAssembleRequest[T](parts, next)
@@ -580,18 +627,22 @@ func Assembling[T any](parts []any) AssembleRequest[T] {
 }
 
 func (r AssembleRequest[T]) Run() (ComposeResult[T], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero ComposeResult[T]
+		return zero, err
+	}
 	return Assemble[T](r.parts, r.opts)
 }
 
 // PivotRequest is a fluent builder for Pivot.
 type PivotRequest[T any, U any] struct {
-	directRequest[PivotRequest[T, U], PivotOptions]
+	requestBase[PivotRequest[T, U], PivotOptions]
 	input T
 }
 
 func newPivotRequest[T any, U any](input T, opts PivotOptions) PivotRequest[T, U] {
 	return PivotRequest[T, U]{
-		directRequest: directRequest[PivotRequest[T, U], PivotOptions]{
+		requestBase: requestBase[PivotRequest[T, U], PivotOptions]{
 			opts: opts,
 			lift: func(next PivotOptions) PivotRequest[T, U] {
 				return newPivotRequest[T, U](input, next)
@@ -631,5 +682,9 @@ func Pivoting[T any, U any](input T) PivotRequest[T, U] {
 }
 
 func (r PivotRequest[T, U]) Run() (PivotResult[U], error) {
+	if err := buildError(r.opts); err != nil {
+		var zero PivotResult[U]
+		return zero, err
+	}
 	return Pivot[T, U](r.input, r.opts)
 }

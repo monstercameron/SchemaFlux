@@ -321,7 +321,7 @@ The "synthesized" field must match this target schema:
 
 Return a JSON object with:
 {
-  "synthesized": <the synthesized output>,
+  "synthesized": {},
   "facts": [
     {
       "fact": "Key fact from sources",

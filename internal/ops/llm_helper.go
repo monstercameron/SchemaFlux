@@ -212,6 +212,18 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// else already agreed on.
 	stableSystemPrompt := strengthenSystemPrompt(systemPrompt, responseFormat)
 
+	// TC-001: the caller's steering must never end up inside the segment
+	// this library sends as system policy. applySteering (below) always
+	// places it in the user message instead, so this ordinarily passes on
+	// every call; it exists to catch a regression in this file, refusing
+	// the request outright rather than sending a caller's per-call text as
+	// though it were fixed policy.
+	if err := verifyTrustBoundary(stableSystemPrompt, opts.Steering); err != nil {
+		log.Error("Refusing the request: trust boundary violated",
+			"provider", provider.Name(), "error", err)
+		return "", err
+	}
+
 	req := llm.CompletionRequest{
 		Model:          model,
 		SystemPrompt:   stableSystemPrompt,
@@ -621,12 +633,23 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 //
 // It used to attach them to the system prompt, which is the segment providers
 // cache. See CA-002 and the comment at the call site.
+//
+// TC-001: steering is TrustApplicationData -- caller-supplied, per call, by
+// code this library does not control -- and DelimitUntrusted wraps it in an
+// explicit boundary before it goes anywhere near the request. It used to be
+// concatenated in bare: "Additional instructions:\n" + steering + "\n\n" +
+// userPrompt, which is indistinguishable, once assembled, from an
+// instruction this library wrote itself. The "Additional instructions:"
+// label stays -- it is still the right label for what this is -- but the
+// text after it is now unambiguously marked as the caller's, with its own
+// attempt at forging that boundary neutralized by sanitizeMarkers.
 func applySteering(userPrompt, steering string) string {
 	steering = strings.TrimSpace(steering)
 	if steering == "" {
 		return userPrompt
 	}
-	return strings.TrimSpace("Additional instructions:\n" + steering + "\n\n" + userPrompt)
+	delimited := DelimitUntrusted(PromptSegment{Trust: TrustApplicationData, Content: steering})
+	return strings.TrimSpace("Additional instructions:\n" + delimited + "\n\n" + userPrompt)
 }
 
 // resolveResponseFormat decides whether to ask the provider for structured
@@ -694,6 +717,20 @@ func promptReinforcementEnabled() bool {
 	}
 }
 
+// strengthenSystemPrompt assembles the system/policy prompt every operation
+// sends: this library's own reinforcement rules, plus the operation's own
+// prompt text.
+//
+// TC-001: assembled through BuildSystemPrompt rather than plain string
+// concatenation, with every segment explicitly tagged TrustPolicy (the
+// reinforcement blocks, fixed and identical for every caller) or
+// TrustDeveloperInstruction (systemPrompt, the operation's own text). The
+// error path is unreachable through this function as written -- every
+// segment below is one of the two trusted levels by construction -- and the
+// fallback on it reproduces the exact bytes plain concatenation always
+// produced, so a hypothetical future edit that adds an untrusted segment
+// here fails loudly (BuildSystemPrompt refuses it) rather than silently
+// changing what gets sent.
 func strengthenSystemPrompt(systemPrompt, responseFormat string) string {
 	if !promptReinforcementEnabled() {
 		return strings.TrimSpace(systemPrompt)
@@ -703,15 +740,30 @@ func strengthenSystemPrompt(systemPrompt, responseFormat string) string {
 Do not merely restate schemas, field names, or type descriptions.
 Infer, compare, rank, validate, transform, or summarize based on the actual content.`)
 
-	if responseFormat != "json" {
-		return strings.TrimSpace(baseRules + "\n\n" + systemPrompt)
-	}
+	segments := []PromptSegment{{Trust: TrustPolicy, Content: baseRules}}
 
-	jsonRules := strings.TrimSpace(`After reasoning about the task, return only the final JSON answer.
+	if responseFormat == "json" {
+		jsonRules := strings.TrimSpace(`After reasoning about the task, return only the final JSON answer.
 Do not include markdown fences, prose, placeholders, or schema descriptions.
 Every field must be populated with task-relevant values supported by the input or clearly inferred from it.`)
+		segments = append(segments, PromptSegment{Trust: TrustPolicy, Content: jsonRules})
+	}
 
-	return strings.TrimSpace(baseRules + "\n\n" + jsonRules + "\n\n" + systemPrompt)
+	segments = append(segments, PromptSegment{Trust: TrustDeveloperInstruction, Content: systemPrompt})
+
+	built, err := BuildSystemPrompt(segments...)
+	if err != nil {
+		// Unreachable as this function is written -- see the doc comment
+		// above. If it is ever reached, that is the trust boundary catching
+		// a regression in this very function; falling back to the plain
+		// concatenation this function always used to do keeps behaviour
+		// identical to before TC-001 rather than sending an empty prompt.
+		if responseFormat == "json" {
+			return strings.TrimSpace(baseRules + "\n\n" + segments[1].Content + "\n\n" + systemPrompt)
+		}
+		return strings.TrimSpace(baseRules + "\n\n" + systemPrompt)
+	}
+	return built
 }
 
 // operationContext derives the context an operation runs under from the

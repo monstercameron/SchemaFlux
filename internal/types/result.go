@@ -175,6 +175,18 @@ type Meta struct {
 	// ModelClaims holds anything else the model asserted about its work --
 	// which fields it inferred, what it says it left out.
 	ModelClaims map[string]any
+
+	// --- Provenance (TC-003).
+
+	// Provenance is the lineage record: result and parent IDs, input and
+	// schema digests, operation and prompt versions, the resolved model,
+	// normalizers applied, the recovery path, cache usage, and library and
+	// adapter versions. See provenance.go's doc comment for the full
+	// account of what each field is and is not.
+	//
+	// Populated by ops.RunOpResult (internal/ops/op.go) for operations that
+	// run through the Op[In, Out] execution path; the zero value elsewhere.
+	Provenance Provenance
 }
 
 // Degraded reports whether the answer carries a weaker guarantee than was

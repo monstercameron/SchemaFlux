@@ -1,5 +1,5 @@
 # Numbered examples under SCHEMAFLUX_PROVIDER=local.
-# 36 of 45 pass. See scripts/examples_gate.py and TODOS.md CI-004.
+# 40 of 45 pass. See scripts/examples_gate.py and TODOS.md CI-004.
 # Update with: python scripts/examples_gate.py --update
 #
 # A FAIL line is a known gap, not permission to add another.
@@ -7,8 +7,7 @@
 PASS 01-extract
 PASS 02-transform
 PASS 03-generate
-FAIL 04-choose
-#   time=2026-08-08T01:40:10.175-04:00 level=ERROR msg="Selection failed" error="selection failed: failed to parse the selected id: schema violation: the response carried none of the expected fields; it has [result success], wanted one of [id]"
+PASS 04-choose
 PASS 05-filter
 PASS 06-sort
 PASS 07-summarize
@@ -29,25 +28,22 @@ PASS 21-redact
 PASS 22-suggest
 PASS 23-annotate
 FAIL 24-cluster
-#   time=2026-08-08T01:40:22.730-04:00 level=ERROR msg="Cluster operation failed: the clusters do not partition the input" error="the groups do not partition the input: 9 items in no group ([1 2 3 4 5 6 7 8 9])"
+#   time=2026-08-08T03:29:32.415-04:00 level=ERROR msg="Cluster operation failed: the clusters do not partition the input" error="the groups do not partition the input: 9 items in no group ([1 2 3 4 5 6 7 8 9])"
 PASS 25-rank
 FAIL 26-compress
-#   time=2026-08-08T01:40:23.713-04:00 level=ERROR msg="Compress operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [compressed preserved_info removed_info]"
+#   time=2026-08-08T03:29:33.189-04:00 level=ERROR msg="Compress operation failed: compressed payload parse error" error="json: cannot unmarshal object into Go value of type string"
 FAIL 27-decompose
-#   time=2026-08-08T01:40:24.122-04:00 level=ERROR msg="Decompose operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [parts root_parts]"
-FAIL 28-enrich
-#   time=2026-08-08T01:40:24.563-04:00 level=ERROR msg="Enrich operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [added_fields confidence derivations enriched]"
+#   time=2026-08-08T03:29:33.517-04:00 level=ERROR msg="Decompose operation failed: parse error" error="malformed output: the response could not be parsed as JSON (239 bytes, shape: json object)"
+PASS 28-enrich
 PASS 29-normalize
 PASS 30-match
 PASS 31-critique
-FAIL 32-synthesize
-#   time=2026-08-08T01:40:26.010-04:00 level=ERROR msg="Synthesize operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [conflicts facts insights source_coverage synthesized]"
+PASS 32-synthesize
 FAIL 33-predict
-#   time=2026-08-08T01:40:26.403-04:00 level=ERROR msg="Predict operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [assumptions confidence factors interval metadata prediction reasoning risks scenarios]"
-FAIL 34-verify
-#   time=2026-08-08T01:40:26.744-04:00 level=ERROR msg="Verify operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [actual_uptime_q4_2024 contracted_uptime_guarantee security_incidents_q4_2024], wanted one of [claims consistency_issues logic_i
+#   time=2026-08-08T03:29:35.652-04:00 level=ERROR msg="Predict operation failed: parse error" error="malformed output: the response could not be parsed as JSON (479 bytes, shape: json object)"
+PASS 34-verify
 FAIL 35-question
-#   time=2026-08-08T01:40:27.080-04:00 level=ERROR msg="Question operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [answer confidence evidence reasoning]"
+#   time=2026-08-08T03:29:36.628-04:00 level=ERROR msg="Question operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [answer confidence evidence reasoning]"
 PASS 36-negotiate
 PASS 37-resolve
 PASS 38-derive

@@ -59,3 +59,27 @@ func declaredContractLevel[Out any](contract OutputContract[Out]) types.Contract
 
 	return level
 }
+
+// cappedByLineage enforces TC-003's last clause: "where lineage breaks, the
+// delivered contract cannot be FullyGoverned." A result whose provenance does
+// not resolve -- no result ID, no input digest, no operation version, no
+// resolved model -- is demoted to ContractEvidenceChecked rather than being
+// allowed to advertise the strongest guarantee this library defines, because a
+// claim that cannot be traced back to what produced it is precisely what
+// FullyGoverned is meant to rule out.
+//
+// It exists as a named function, and is tested directly, for an honest reason:
+// declaredContractLevel never returns ContractFullyGoverned today (that needs
+// CP-001's capability negotiation and CP-002's data-policy enforcement), so
+// wired into RunOpResult this cannot currently fire. An `if` in the middle of
+// RunOpResult that no input reaches is untestable and would rot silently --
+// exactly what types.Provenance.FullyTraced already was, a predicate declared
+// and read by nothing. This way the rule is written down once, checked by a
+// test that can construct the case, and already in the path CP-001 will make
+// reachable rather than being a step somebody has to remember to add later.
+func cappedByLineage(level types.ContractLevel, prov types.Provenance) types.ContractLevel {
+	if level >= types.ContractFullyGoverned && !prov.FullyTraced() {
+		return types.ContractEvidenceChecked
+	}
+	return level
+}

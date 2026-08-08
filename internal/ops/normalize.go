@@ -328,7 +328,7 @@ Normalization instructions:
 
 Return a JSON object with:
 {
-  "normalized": <the normalized data>,
+  "normalized": {},
   "changes": [
     {
       "field": "field_name",

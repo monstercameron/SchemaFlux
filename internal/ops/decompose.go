@@ -287,7 +287,7 @@ Return a JSON object with:
       "id": "unique-id",
       "name": "Part Name",
       "description": "What this part covers",
-      "content": <content matching schema>,
+      "content": {},
       "parent_id": "parent-id or empty for root",
       "dependencies": ["id1", "id2"],
       "depth": 0,

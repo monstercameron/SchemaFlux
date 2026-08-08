@@ -25,7 +25,9 @@ Example:
 - Input [{"id":"i-000001","item":{"name":"A"}},{"id":"i-000002","item":{"name":"B"}}] -> Output {"id":"i-000002"}
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 the most urgent. Provide reasoning for your choice. Use scoring strategy
+END UNTRUSTED CONTENT>>>
 
 Selection Requirements: the most urgent. Provide reasoning for your choice. Use scoring strategy
 
@@ -61,7 +63,9 @@ Return a JSON object with these fields:
 - "reasoning": brief explanation of the classification
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Minimum confidence: 0.50
+END UNTRUSTED CONTENT>>>
 
 Classify this input:
 charged twice
@@ -97,7 +101,9 @@ Return a JSON object with these fields:
 - "aspect_scores": object with aspect names as keys and similarity scores as values
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Focus on: both. Depth level: 5/10. Report a similarity score alongside the differences, not only what differs
+END UNTRUSTED CONTENT>>>
 
 Compare these two items:
 
@@ -198,7 +204,9 @@ Rules:
 - Preserve as much information as possible
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Use only facts explicitly present
+END UNTRUSTED CONTENT>>>
 
 Extract structured data from this input:
 The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
@@ -262,7 +270,9 @@ Examples:
 - Input [{"id":"i-000001","item":{"id":1}},{"id":"i-000002","item":{"id":2}}] -> Output {"ids":["i-000002"]}
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Filter criteria: billing problems. Keep items that match the criteria. Minimum confidence: 0.70
+END UNTRUSTED CONTENT>>>
 
 Filter these items:
 [{"id":"i-000001","item":{"id":"T-1","subject":"charged twice","amount":42.5}},{"id":"i-000002","item":{"id":"T-2","subject":"cannot log in","amount":0}}]
@@ -329,7 +339,9 @@ Return a JSON object with these fields:
 - "weaknesses": array of identified weaknesses
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Score range: 0.0 to 10.0. Report a per-criterion breakdown alongside the overall score, so the number can be traced to its parts
+END UNTRUSTED CONTENT>>>
 
 Score this input:
 {"id":"T-1","subject":"charged twice","amount":42.5}
@@ -360,7 +372,9 @@ Example:
 - Input [{"id":"i-000001","item":"low"},{"id":"i-000002","item":"critical"},{"id":"i-000003","item":"medium"}] -> Output {"ids":["i-000002","i-000003","i-000001"]}
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Sort criteria: largest amount first. Direction: ascending. Maintain relative order of equal elements
+END UNTRUSTED CONTENT>>>
 
 Sort these items:
 [{"id":"i-000001","item":{"id":"T-1","subject":"charged twice","amount":42.5}},{"id":"i-000002","item":{"id":"T-2","subject":"cannot log in","amount":0}}]
@@ -382,7 +396,9 @@ Rules:
 - Keep the original tone when appropriate
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Style: paragraph
+END UNTRUSTED CONTENT>>>
 
 Summarize this text:
 The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
@@ -425,7 +441,9 @@ Transformation rules:
 - Return ONLY valid JSON matching the target schema
 --- user
 Additional instructions:
+<<<UNTRUSTED CONTENT: untrusted application data
 Use replace merge strategy
+END UNTRUSTED CONTENT>>>
 
 Transform this data:
 {"id":"T-1","subject":"charged twice","amount":42.5}

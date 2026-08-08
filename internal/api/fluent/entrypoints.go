@@ -123,6 +123,10 @@ func (r ExtractRequest[T]) SchemaHints(hints map[string]string) ExtractRequest[T
 // variadic rather than Run(ctx context.Context).
 func (r ExtractRequest[T]) Run(ctx ...context.Context) (T, error) {
 	r.opts.CommonOptions = withRunContext(r.opts.CommonOptions, ctx)
+	if err := buildError(r.opts); err != nil {
+		var zero T
+		return zero, err
+	}
 	return Extract[T](r.input, r.opts)
 }
 
@@ -130,6 +134,9 @@ func (r ExtractRequest[T]) Run(ctx ...context.Context) (T, error) {
 // alongside the value (A-013, API-11).
 func (r ExtractRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
+	if err := buildError(r.opts); err != nil {
+		return Result[T]{}, err
+	}
 	return ExtractResult[T](r.input, r.opts)
 }
 
@@ -207,6 +214,10 @@ func (r TransformRequest[T, U]) CorrelationID(correlationID string) TransformReq
 // Run executes the request; see ExtractRequest.Run for the ctx contract.
 func (r TransformRequest[T, U]) Run(ctx ...context.Context) (U, error) {
 	r.opts.CommonOptions = withRunContext(r.opts.CommonOptions, ctx)
+	if err := buildError(r.opts); err != nil {
+		var zero U
+		return zero, err
+	}
 	return Transform[T, U](r.input, r.opts)
 }
 
@@ -217,6 +228,9 @@ func (r TransformRequest[T, U]) Run(ctx ...context.Context) (U, error) {
 // Operation, RequestID, and CorrelationID are real.
 func (r TransformRequest[T, U]) RunResult(ctx context.Context) (Result[U], error) {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
+	if err := buildError(r.opts); err != nil {
+		return Result[U]{}, err
+	}
 	return runEnvelope("transform", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (U, error) {
 		return Transform[T, U](r.input, r.opts)
 	})
@@ -301,6 +315,10 @@ func (r GenerateRequest[T]) CorrelationID(correlationID string) GenerateRequest[
 // Run executes the request; see ExtractRequest.Run for the ctx contract.
 func (r GenerateRequest[T]) Run(ctx ...context.Context) (T, error) {
 	r.opts.CommonOptions = withRunContext(r.opts.CommonOptions, ctx)
+	if err := buildError(r.opts); err != nil {
+		var zero T
+		return zero, err
+	}
 	return Generate[T](r.prompt, r.opts)
 }
 
@@ -309,6 +327,9 @@ func (r GenerateRequest[T]) Run(ctx ...context.Context) (T, error) {
 // zero and why.
 func (r GenerateRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
+	if err := buildError(r.opts); err != nil {
+		return Result[T]{}, err
+	}
 	return runEnvelope("generate", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
 		return Generate[T](r.prompt, r.opts)
 	})
@@ -389,6 +410,10 @@ func (r ChooseRequest[T]) Reasoning(enabled bool) ChooseRequest[T] {
 // withCollectionRunContext for why Choose needs its context set twice.
 func (r ChooseRequest[T]) Run(ctx ...context.Context) (T, error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, ctx)
+	if err := buildError(r.opts); err != nil {
+		var zero T
+		return zero, err
+	}
 	return Choose[T](r.options, r.opts)
 }
 
@@ -397,6 +422,9 @@ func (r ChooseRequest[T]) Run(ctx ...context.Context) (T, error) {
 // zero and why.
 func (r ChooseRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
+	if err := buildError(r.opts); err != nil {
+		return Result[T]{}, err
+	}
 	return runEnvelope("choose", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
 		return Choose[T](r.options, r.opts)
 	})
@@ -477,6 +505,10 @@ func (r FilterRequest[T]) MinConfidence(confidence float64) FilterRequest[T] {
 // withCollectionRunContext for why Filter needs its context set twice.
 func (r FilterRequest[T]) Run(ctx ...context.Context) ([]T, error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, ctx)
+	if err := buildError(r.opts); err != nil {
+		var zero []T
+		return zero, err
+	}
 	return Filter[T](r.items, r.opts)
 }
 
@@ -485,6 +517,9 @@ func (r FilterRequest[T]) Run(ctx ...context.Context) ([]T, error) {
 // zero and why.
 func (r FilterRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
+	if err := buildError(r.opts); err != nil {
+		return Result[[]T]{}, err
+	}
 	return runEnvelope("filter", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
 		return Filter[T](r.items, r.opts)
 	})
@@ -565,6 +600,10 @@ func (r SortRequest[T]) Desc() SortRequest[T] {
 // withCollectionRunContext for why Sort needs its context set twice.
 func (r SortRequest[T]) Run(ctx ...context.Context) ([]T, error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, ctx)
+	if err := buildError(r.opts); err != nil {
+		var zero []T
+		return zero, err
+	}
 	return Sort[T](r.items, r.opts)
 }
 
@@ -573,6 +612,9 @@ func (r SortRequest[T]) Run(ctx ...context.Context) ([]T, error) {
 // zero and why.
 func (r SortRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
+	if err := buildError(r.opts); err != nil {
+		return Result[[]T]{}, err
+	}
 	return runEnvelope("sort", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
 		return Sort[T](r.items, r.opts)
 	})

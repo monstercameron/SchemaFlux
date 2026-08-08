@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 // PL-008: partial success and failure policies, as an item-level engine
@@ -165,6 +167,14 @@ func RunOpManyPartial[In, Out any](ctx context.Context, op Op[In, Out], items []
 		case types.ItemCancelled:
 			result.Summary.Cancelled++
 		}
+	}
+
+	// OB-002: PL-013's counters, emitted regardless of whether this policy
+	// goes on to fail the call -- a policy that returns an error still ran
+	// real provider calls that cost real money, and a metric that only fired
+	// on success would hide exactly the runs a caller most needs to see.
+	if config.IsMetricsEnabled() {
+		telemetry.RecordBatchMetrics(op.ID.String(), "atomic_partial", result.Metrics())
 	}
 
 	switch policy {

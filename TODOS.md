@@ -3059,7 +3059,7 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   Each stage carries its own operation ID and parent lineage. Closes **EXE-10**, **EXE-11**.
   *Verify:* a two-stage extract-then-verify plan sends the source once; a case where the
   deterministic check suffices makes one provider call, not two.
-- [ ] **PL-011** — Global and hierarchical operation algebras, written per operation because
+- [x] **PL-011** — Global and hierarchical operation algebras, written per operation because
   no generic chunker can derive them: ranking (score within chunks, keep a candidate
   frontier, rerank globally, validate IDs and pairwise constraints), clustering (features →
   cluster in Go → optional model labels → exact coverage), deduplication (candidate pairs by
@@ -3070,6 +3070,22 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   *Verify:* a 500-item `Sort` at the Quick tier returns a permutation of the input; a
   clustering covers every input exactly once; deduplication makes O(candidates) model calls,
   not O(n²).
+  **Done for the whole-set contract; the per-operation merges are not.**
+  `PermutationValidate` and `PartitionValidate` bind the **existing** `SameMultiset` and
+  `CoversExactlyOnce` to `BatchAlgebra.GlobalValidate` — no new membership or partition logic
+  was written, which is the point: a fourth implementation of a partition check is the defect
+  this repository keeps finding.
+  `RunOpGlobal` is the part that matters. A whole-set contract can only be checked when the
+  chunk *is* the whole set, so a plan needing more than one chunk is **refused before any
+  provider call** rather than assembled from chunk-local results that each looked valid
+  alone. That is the bug the existing global path has today: it concatenates chunks with no
+  whole-set check, so a "sorted" answer can be a concatenation of separately-sorted pieces.
+  Evidence: 14 cases, including the 500-item boundary the task names and a multi-chunk refusal
+  asserted by **provider call count of zero** — refusing after paying for the calls is not
+  refusing.
+  **Not done:** cross-chunk merges for ranking, clustering, dedup, and synthesis, which the
+  task itself says cannot be generic. No `Sort` or `Cluster` `Op` descriptor exists yet to
+  design one against, and the existing chunk-local global path is untouched.
 - [ ] **PL-012** — Optional batch group for loop fusion: a caller keeps a natural Go loop,
   builders defer, and compatible work fuses into MDSP plans. Fusion is legal only when
   operation ID and version, schema hash, route policy, steering, contract level, data policy,
@@ -3088,7 +3104,7 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   `Mode` already on each item rather than from a second accounting pass, and honestly zero for
   a run that never batched.
   **Not done:** the rest of PL-013's list. This closed exactly what OB-002 was waiting on.
-- [ ] **PL-014** — Planner explainability: a human-readable pre-execution plan explanation
+- [x] **PL-014** — Planner explainability: a human-readable pre-execution plan explanation
   (mode, chunking, parallelism, recovery ladder, call ceiling, cost range, minimum contract,
   data policy) and a post-execution decision ledger recording every adaptive choice and its
   reason. Adaptive routing that cannot explain itself is unauditable. Closes **TRU-28**.
@@ -3103,6 +3119,15 @@ M11 decides *what* to run; this decides *how much at once*, and what happens whe
 provider pushes back. Also Gate 2. `CF-009` shipped bounded concurrency inside `MapReduce`;
 this is the process-wide version with admission control.
 
+  **Done, both halves.** Pre-execution: a plan now carries the shapes it **rejected** and why —
+  cost tradeoff, size mismatch, or "the caller forced this instead" — and `Explain()` renders
+  them. A caller asking "why did this take forty calls" needs the alternative that was not
+  taken; the selected shape alone does not answer it.
+  Post-execution: `DecisionLedger` on the result, one entry per chunk recording hold, grow, or
+  halve with the adaptive state's own reason, plus an entry for the atomic-fallback stage. A
+  run that made no adaptive decisions leaves it **empty rather than fabricating entries**.
+  10 cases, including that the plan's serialization stays deterministic with alternatives in
+  it — an explanation that changes the plan's digest would break **PL-001**'s reproducibility.
 - [x] **SC-001** — Bounded scheduler: max concurrent calls, max queued nodes, in-flight
   tokens, in-flight cost, per-provider and per-tenant limits. Admission weighs estimated
   tokens, cost, quota, and priority; queues are bounded; a full queue or an unmeetable
@@ -3241,13 +3266,37 @@ the *contract* being read as stronger than what was actually enforced.
   presence, not content, so the validator cannot become a place a key gets logged.
   **Not done:** nothing builds a `ConfigSnapshot` from a live `*Client`. That is one function
   in `client.go`, which was out of scope.
-- [ ] **TC-001** — Prompt segments carry a role and a trust level (trusted policy, trusted
+- [x] **TC-001** — Prompt segments carry a role and a trust level (trusted policy, trusted
   developer instruction, untrusted application data, untrusted retrieved data, untrusted
   model output). Untrusted content is delimited and never interpolated into system policy
   text; model output is untrusted until it crosses the contract layer. This reduces prompt
   injection; it does not eliminate it, and the documentation must say so. Closes **TRU-01**.
   *Verify:* an adversarial corpus of inputs containing instructions; injection attempts
   reach the model as data, and the operation's invariants still hold.
+  **Done.** `internal/ops/trust.go`: `TrustLevel` (five levels plus an unspecified zero
+  value), `PromptSegment`, `BuildSystemPrompt`, `DelimitUntrusted`, `verifyTrustBoundary`.
+  The level is **enforced, not recorded** — `BuildSystemPrompt` returns
+  `ErrUntrustedInSystemPrompt` rather than filtering and continuing, and the zero value is
+  untrusted, so a caller who forgets to set it is refused instead of silently trusted. That
+  distinction is the one `dead_options_test.go` exists to catch one type over: a trust field
+  nothing gates is decoration.
+  `DelimitUntrusted` neutralizes boundary markers **inside** the content before wrapping, so
+  injected text cannot forge a close and make the region look like it ended early
+  (`TestDelimitUntrustedNeutralizesForgedMarkers`).
+  The real defect this found: `streaming.go` was placing caller steering in the **system**
+  prompt, where it becomes part of what every provider caches and every log treats as fixed
+  policy. `applySteering` moves it into the user message; `verifyTrustBoundary` fails the
+  request outright if it ever comes back, on both the ordinary and streaming paths
+  (`TestTheStreamingPathAlsoKeepsSteeringOutOfTheSystemPrompt`).
+  Documented in `SECURITY.md` under "What it does not defend against", stated plainly: the
+  boundary narrows the surface and **cannot eliminate** injection, because a model that reads
+  instructions in its own user message can act on them and no Go type changes that. What it
+  does guarantee is that the library never loses track of which bytes were the caller's.
+  **Not done:** only steering is delimited today. `TrustRetrievedData` and `TrustModelOutput`
+  are defined and enforced at the system-prompt boundary, but no operation yet routes a
+  retrieved document or a prior model answer through `DelimitUntrusted` — repair prompts and
+  pipeline stages still concatenate. The levels exist for those call sites; the call sites
+  have not been converted.
 - [x] **TC-002** — Evidence contract: `EvidenceRef{SourceID, JSONPointer, StartByte, EndByte,
   SourceDigest}` and `ClaimProvenance{FieldPath, Evidence, Inferred, Method}`, with four
   modes — none, material fields only, all model-derived fields, and `NoInference` (an
@@ -3272,12 +3321,36 @@ the *contract* being read as stronger than what was actually enforced.
   into every log that prints an error.
   **Not done:** validated claims are not exposed through `Meta` — that needs `RunOp`'s
   signature changed, and its call sites were outside this task.
-- [ ] **TC-003** — Provenance through pipelines: result IDs, parent links, input and schema
+- [x] **TC-003** — Provenance through pipelines: result IDs, parent links, input and schema
   digests, operation and prompt versions, resolved model, normalizers applied, item recovery
   path, cache usage, and library and adapter versions. A summary built from an extraction
   traces back to the original evidence; where lineage breaks, the delivered contract cannot
   be `FullyGoverned`. Closes **TRU-03**.
   *Verify:* a three-stage pipeline's final claim resolves to a span in the original source.
+  **Done.** `types.Provenance` carries all twelve fields; `RunOpResult` populates it on every
+  call through `buildProvenance` (`internal/ops/provenance.go`).
+  Everything recorded is an **identifier or a digest, never content** — `DigestValue` hashes
+  the input, `NormalizersApplied` names Go symbols rather than their output, and
+  `ItemRecoveryPath` describes the repair path without carrying the model's rejected attempts.
+  `TestDigestValueNeverContainsThePayload` asserts that directly, for a string and a struct.
+  The three-stage pipeline resolves: `TestThreeStagePipelineProvenanceChainsThroughParentResultIDs`
+  walks stage 3 → 2 → 1 and checks the IDs are distinct rather than three copies of one.
+  Parent links are **caller-threaded on purpose** — nothing infers them, because only the
+  caller knows which results are actually related.
+  `FullyTraced` was declared and **read by nothing** — the same dead-guarantee shape
+  `dead_options_test.go` exists to catch, one type over. `cappedByLineage` now enforces the
+  clause: a result whose lineage does not resolve is demoted out of `ContractFullyGoverned`.
+  It is a named function tested directly rather than an inline `if`, because
+  `declaredContractLevel` never returns `ContractFullyGoverned` today (that needs CP-001 and
+  CP-002), so wired in place the branch cannot yet fire — an unreachable `if` inside
+  `RunOpResult` would be untestable and would rot exactly the way `FullyTraced` did. It sits
+  in the path CP-001 will make reachable.
+  **Not done:** the verify line asks for a claim resolving to *a span in the original source*.
+  Lineage resolves to the **result** that produced a claim, and TC-002's `EvidenceRef` resolves
+  a claim to a span, but nothing joins the two — following a three-stage pipeline back to a
+  byte range in stage 1's input is not yet a single traversal. `SchemaDigest` is also empty for
+  any operation that computed no schema identity, and `AdapterVersion` is the provider name,
+  because no finer adapter-version string exists anywhere in `llm.Provider` to read.
 - [ ] **TC-004** — Contract levels, requested and delivered:
   `PromptOnly < JSONWellFormed < SchemaConstrained < SchemaAndInvariantChecked <
   EvidenceChecked < FullyGoverned`. Every detailed result states which level was asked for
@@ -3561,11 +3634,25 @@ others, with nothing at the call site to tell them apart.
   not built; only the tracer, logger, and diagnostic sink (A-011) exist. And the core still
   calls `telemetry.RecordMetric` directly rather than emitting through a sink, so metrics have
   no seam yet. That is **OB-002**'s work and it is blocked on **PL-013**.
-- [ ] **OB-002** — Metrics catalog per §15.2: requests, duration, plan nodes, provider
+- [x] **OB-002** — Metrics catalog per §15.2: requests, duration, plan nodes, provider
   attempts and duration, queue duration, in-flight gauge, circuit state, item outcomes, batch
   size, batch compliance ratio, repairs, atomic fallbacks, tokens, cost, budget exhaustion,
   and review-required counts. High-cardinality identifiers stay out of metric labels and live
   in the envelope. Depends on **PL-013**.
+  **Done for the metrics PL-013 unblocked; the rest is named and absent.**
+  `telemetry/opsmetrics.go` emits items, batch compliance ratio, repairs, atomic fallbacks,
+  cost — skipped honestly when unpriced rather than reported as zero — plus plan nodes and
+  batch size, wired into `Preflight`, the recovery cascade, and the partial runner.
+  **The label vocabulary is fixed and small**: operation, shape, status, currency, quality.
+  Never a request ID, correlation ID, item ID, or schema hash. That is asserted by walking the
+  labels against a forbidden list *and* by an integration test that drives the real call path
+  with a caller-supplied request ID and proves it never reaches a label — a high-cardinality
+  label multiplies series count by traffic, and it is the kind of mistake that only shows up on
+  a metrics bill.
+  **Not done:** provider attempts and duration, queue duration, in-flight gauge, circuit state,
+  budget exhaustion, and review-required counts — all owned by the scheduler and resilience
+  files, which were out of scope. Token counts are absent because the batch metrics carry cost,
+  not tokens.
 - [x] **OB-003** — Cost tree: logical request → stage → chunk → attempt → item attribution,
   with provider-reported usage preferred, estimates marked, and pricing quality recorded as
   `Exact`, `Estimated`, `Unknown`, or `Free`. Historical cost is never recomputed with
@@ -4066,7 +4153,26 @@ written, and the box it belonged to was never drawn.
   The golden prompts moved by exactly two lines — `json schema: false` to `true` for Transform
   and Generate — with the prompt text unchanged, which is the evidence that this changed what
   is *declared* and not what is *said*.
-  **Still failing (9), and the reason is not what it first looked like.** `Decompose` and
+
+  **Now 40 of 45, and the last fix was in the mock rather than the operations.**
+  Two things were wrong, and neither was what the task's own diagnosis assumed.
+  First, the shape-answering local provider read only the **first** JSON object in a system
+  prompt. These prompts routinely state the caller's *type schema* before the response
+  template — "Each part should match this schema: {...}. Return a JSON object with: {...}" —
+  so the mock was answering with the shape of the *input*. It now tries every balanced object
+  in the prompt, later ones first, and keeps the first that parses into an object.
+  Second, eight response templates contained **invalid JSON**: `"compressed": <the compressed
+  content>`, `"lower": <lower bound>`, `"selected": <index>`. Nothing could parse them — not
+  the mock, and not a model being shown an example of the answer it should produce. A template
+  that is not valid JSON invites a model to echo the placeholder. They are valid now.
+  That is a prompt change and therefore a behaviour change, which is what the golden snapshot
+  exists to surface.
+  **Still failing (5):** `24-cluster`, `26-compress`, `27-decompose`, `33-predict`,
+  `35-question`. Cluster is the case the task already identified as needing an answer the mock
+  can only give by understanding the operation — a partition — which argues for that example
+  using `schemafluxtest`. The other four have templates whose shape the mock fills correctly
+  but whose *content* the operation then rejects.
+  **Superseded diagnosis, left visible on purpose:**  **Still failing (9), and the reason is not what it first looked like.** `Decompose` and
   `Enrich` *were* given the same treatment and still fail. I first recorded that as a second
   call path the fix had missed; that was wrong, and the real cause is worth more than the fix:
   `GenerateJSONSchema` returns **nil** for a type it cannot faithfully represent — a
@@ -4245,16 +4351,49 @@ written, and the box it belonged to was never drawn.
   **Not done:** the second half of the finding — the operations join caller steering with
   their own generated clauses using `.` rather than the same separator — lives in the operation
   files and was out of this change's scope, so two different separators are still in play.
-- [ ] **FL-005** — **F-05**: `commonRequest`, `opRequest`, and `directRequest` implement the same
+- [x] **FL-005** — **F-05**: `commonRequest`, `opRequest`, and `directRequest` implement the same
   eleven methods three times, because the options structs behind them are inconsistent. Collapse to
   one base once **M06** has made the options structs uniform. Depends on M06.
-- [ ] **FL-006** — **F-07**: builders validate nothing until `Run()`, so a mis-built request is
+  **Done.** The three bases collapse into one `requestBase[Self, Opt]` with nil-guarded setter
+  closures, and all 49 construction sites migrated.
+  **It closed a real gap nobody had noticed:** `AuditOptions.Threshold` is a genuine field that
+  was **unreachable** from `AuditRequest`, because `directRequest` had no threshold slot at all.
+  Three near-identical bases is exactly how a field ends up wired in two of them and missing
+  from the third. It is wired now, and `TestEveryBuilderWiresEverySetter` records `setThreshold`
+  as the one legitimately optional setter rather than being weakened to accommodate the gap.
+  **Not done:** the six hand-rolled entrypoint types still duplicate the eleven methods. FL-005
+  names the three bases and those six carry extra machinery — variadic `Run(ctx...)`, the
+  double context-set for the collection operations — so migrating them was more risk than the
+  task asked for.
+- [x] **FL-006** — **F-07**: builders validate nothing until `Run()`, so a mis-built request is
   discovered after the call is set up. Add `Validate()` to the builder bases and call it from
   `Run()` before any provider work.
   *Verify:* a builder with empty criteria reports the error without a provider being contacted.
-- [ ] **FL-007** — **CF-09**: composition is linear and untyped. Fold into the **M08** combinator
+  **Done, and the finding is sharper than the task states.** Every options type in
+  `internal/ops` *already* had a `Validate()`, called first thing by its operation — the fluent
+  layer simply never called it. So a mis-built request was validated only after `Run()` had
+  handed it to the operation, which is a worse failure than no validation: the check existed
+  and was skipped.
+  `buildError` now runs as the first statement of all 61 `Run`/`RunResult` methods.
+  Evidence: 11 cases with a counting provider proving **zero provider contact** for a filter
+  with no criteria, a top-0 choose, an out-of-range threshold, an invalid sort direction, an
+  invalid strategy, and an invalid failure level — plus positive controls proving a valid
+  request still reaches the provider, so the check cannot pass by refusing everything.
+  **Not done:** the eleven advanced options types have **no `Validate()` at all** in
+  `internal/ops`, so `buildError` is a documented no-op for them. Inventing validation rules
+  there would be a second opinion about validity, which is the same class of mistake as a
+  second retry classifier.
+- [x] **FL-007** — **CF-09**: composition is linear and untyped. Fold into the **M08** combinator
   work rather than patching the current shape. Depends on CF-008.
 
+  **Done.** `CF-008` had already retired the linear untyped `Pipeline`, so there was nothing
+  left to patch — only something to add. `compose.go` re-exports the M08 combinators for the
+  fluent surface with two adapters: `AsStep` for the builders returning `(T, error)`, and
+  `AsStepCtx` for the variadic-context ones, which threads the combinator's context through so
+  cancellation reaches an in-flight call.
+  The difference between the two is tested rather than assumed: `AsStepCtx` cancels mid-call
+  and `AsStep` documented-does-not, which is the kind of distinction that is invisible until
+  somebody's timeout does nothing.
 - [ ] **P-017** — *(Filed as P-014, which was already taken by the open cassette task in M02.
   Renumbered here.)* Split `Smart` and `Fast` across the gpt-5.6 family, or record that they should
   not be split. The P-013 benchmark did not discriminate: all three models were 4/4 correct on

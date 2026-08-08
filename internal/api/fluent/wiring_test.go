@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// directRequest guards every setter with `if r.setX == nil { return r.lift(...) }`,
+// requestBase guards every setter with `if r.setX == nil { return r.lift(...) }`,
 // so a builder that forgets to wire one gets a method that compiles, chains,
 // and changes nothing. There is no compile error, no runtime warning, and no
 // test that would notice.
@@ -20,9 +20,27 @@ import (
 // setMode, so .Strict(), .TransformMode(), and .Creative() were dead. The field
 // they would have written did not even exist on AdversarialOptions.
 //
-// This walks every constructor that builds a directRequest or opRequest and
-// fails any that leaves a setter the base declares unwired.
+// This walks every constructor that builds a requestBase and fails any that
+// leaves a setter the base declares unwired -- with one deliberate exception,
+// optionalSetters below.
+//
+// setThreshold is that exception (FL-005): unifying commonRequest, opRequest,
+// and directRequest into one requestBase (fluent_base.go) gave every builder
+// in the package the same seven setter slots, including Threshold, which
+// directRequest never had at all before this task -- .Threshold() did not
+// exist as a method on any of fluent_advanced.go's eleven request types.
+// Of those eleven, only AuditOptions (internal/ops/audit.go) actually has a
+// Threshold field to write into; the other ten (NegotiateOptions,
+// AdversarialOptions, ResolveOptions, DeriveOptions, ConformOptions,
+// InterpolateOptions, ArbitrateOptions, ProjectOptions, ComposeOptions,
+// PivotOptions) do not, and this package cannot add one -- internal/ops is
+// out of this task's edit scope. Leaving setThreshold nil on those ten is not
+// an oversight the way a forgotten setMode was: there is nowhere for the
+// value to go, so .Threshold() on those ten types is documented as a no-op,
+// exactly like every other requestBase setter already is when a construction
+// site leaves it nil.
 func TestEveryBuilderWiresEverySetter(t *testing.T) {
+	optionalSetters := map[string]struct{}{"setThreshold": {}}
 	fileSet := token.NewFileSet()
 	files := parseFluentPackage(t, fileSet)
 
@@ -93,6 +111,9 @@ func TestEveryBuilderWiresEverySetter(t *testing.T) {
 
 				var missing []string
 				for setter := range setters {
+					if _, optional := optionalSetters[setter]; optional {
+						continue
+					}
 					if _, wired := assigned[setter]; !wired {
 						missing = append(missing, setter)
 					}

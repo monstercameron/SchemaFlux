@@ -276,7 +276,7 @@ For structured data: Remove or simplify fields while keeping essential informati
 
 Return a JSON object with:
 {
-  "compressed": <the compressed content>,
+  "compressed": {},
   "preserved_info": ["list of key information preserved"],
   "removed_info": ["list of information removed or simplified"]
 }`, targetSize, opts.CompressionRatio*100, strategyDesc, priorityDesc, outputDesc, fieldInstructions)

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 // PL-009: the progressive recovery cascade.
@@ -176,7 +178,15 @@ func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []
 	records := make([]recoverRecord[Out], len(items))
 	state := NewAdaptiveChunkState(start, maxItems)
 
+	// PL-014: the post-execution decision ledger. sizeBefore is read before
+	// state.Record so a "held at N" entry (no change) is distinguishable
+	// from a "grew/halved" entry by comparing sizeBefore to state.Size()
+	// after, rather than guessing from the outcome alone -- the outcome
+	// classification and the size-change decision are two different pieces
+	// of AdaptiveChunkState's own logic (adaptive.go), and the entry is
+	// only honest if it reports what that logic actually did.
 	offset := 0
+	chunkNumber := 0
 	for offset < len(items) {
 		size := state.Size()
 		if size > len(items)-offset {
@@ -185,6 +195,8 @@ func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []
 		if size < 1 {
 			size = 1
 		}
+		chunkNumber++
+		node := fmt.Sprintf("chunk %d (items %d-%d)", chunkNumber, offset, offset+size-1)
 
 		chunkIdx := make([]int, size)
 		for i := range chunkIdx {
@@ -192,7 +204,16 @@ func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []
 		}
 
 		outcome := runChunkCascade(ctx, op, items, codec, chunkIdx, opt, maxIsolate, records)
+
+		sizeBefore := state.Size()
 		state.Record(outcome)
+		sizeAfter := state.Size()
+
+		decision := fmt.Sprintf("chunk size held at %d", sizeBefore)
+		if sizeAfter != sizeBefore {
+			decision = fmt.Sprintf("chunk size changed from %d to %d", sizeBefore, sizeAfter)
+		}
+		result.Ledger.Record(node, decision, state.Reason())
 
 		offset += size
 	}
@@ -204,6 +225,11 @@ func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []
 		}
 	}
 	if len(pendingAtomic) > 0 {
+		result.Ledger.Record(
+			fmt.Sprintf("atomic fallback (%d item(s))", len(pendingAtomic)),
+			"routed to one atomic call per item",
+			"unresolved after every MDSP pass and isolate retry this cascade allows",
+		)
 		runAtomicFallback(ctx, op, items, opt, concurrency, pendingAtomic, records)
 	}
 
@@ -229,6 +255,13 @@ func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []
 		case types.ItemFailed:
 			result.Summary.Failed++
 		}
+	}
+
+	// OB-002: PL-013's counters, emitted through the observer seam rather
+	// than a vendor call -- see telemetry/opsmetrics.go's doc comment for
+	// exactly what tags are (and are not) attached.
+	if config.IsMetricsEnabled() {
+		telemetry.RecordBatchMetrics(op.ID.String(), "mdsp_recover", result.Metrics())
 	}
 
 	return result, nil

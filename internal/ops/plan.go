@@ -7,6 +7,7 @@ import (
 	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/types"
 	"github.com/monstercameron/schemaflux/pricing"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 // PL-001: Plan separated from Execute.
@@ -87,7 +88,7 @@ func Preflight[In, Out any](op Op[In, Out], items []In, req types.PlanRequest) (
 		return plan, nil
 	}
 
-	shape, forced, reason, err := chooseShape(op, len(items), req)
+	shape, forced, reason, alternatives, err := chooseShape(op, len(items), req)
 	if err != nil {
 		plan.IneligibleReason = err.Error()
 		return plan, nil
@@ -95,12 +96,14 @@ func Preflight[In, Out any](op Op[In, Out], items []In, req types.PlanRequest) (
 	plan.Shape = shape
 	plan.ShapeForced = forced
 	plan.ShapeReason = reason
+	plan.Alternatives = alternatives
 	plan.Eligible = true
 
 	switch shape {
 	case types.ShapeAtomic:
 		plan.MaxCalls = len(items)
 		plan.EstimatedCost = estimateAtomicCost(items, plan.Capability)
+		recordPlanMetrics(op.ID.String(), plan)
 		return plan, nil
 
 	case types.ShapeMDSP, types.ShapeGlobal:
@@ -114,6 +117,7 @@ func Preflight[In, Out any](op Op[In, Out], items []In, req types.PlanRequest) (
 		plan.OversizedItems = oversized
 		plan.MaxCalls = len(chunks) + len(oversized)
 		plan.EstimatedCost = estimateChunkedCost(chunks, oversized, plan.Capability)
+		recordPlanMetrics(op.ID.String(), plan)
 		return plan, nil
 
 	default:
@@ -121,6 +125,24 @@ func Preflight[In, Out any](op Op[In, Out], items []In, req types.PlanRequest) (
 		plan.IneligibleReason = fmt.Sprintf("shape %s has no execution plan in this delivery", shape)
 		return plan, nil
 	}
+}
+
+// recordPlanMetrics emits OB-002's fan-out metrics for an eligible plan,
+// gated on config.IsMetricsEnabled() the same way every other metrics call
+// site in this package already is (core.go's *_duration metrics) -- a
+// disabled-metrics build pays for the config read and nothing else.
+//
+// This does not compromise Preflight's own "makes zero provider calls"
+// contract (plan_test.go's TestPreflightMakesZeroProviderCalls): recording a
+// metric touches no llm.Provider and returns nothing that could change
+// plan's own value, so two Preflight calls over identical input still
+// produce byte-identical Plan.Serialize output regardless of whether
+// metrics are enabled.
+func recordPlanMetrics(operation string, plan types.Plan) {
+	if !config.IsMetricsEnabled() {
+		return
+	}
+	telemetry.RecordPlanMetrics(operation, plan)
 }
 
 // legalShapes reports which ExecutionShapes op can run under, given its
@@ -146,18 +168,21 @@ func legalShapes[In, Out any](op Op[In, Out]) map[types.ExecutionShape]bool {
 
 // chooseShape picks the ExecutionShape a plan will use: the caller's forced
 // choice if legal, an error if forced and illegal, or the planner's own
-// choice when the caller stated none.
+// choice when the caller stated none. It also names every other shape it
+// considered and why that one was not chosen -- PL-014's "say what was
+// chosen and what was rejected and why", the alternatives half of
+// types.Plan.Explain().
 //
 // PL-002's verify line is "a forced mode that is illegal for the operation
 // is refused at plan time, not silently ignored" -- the error return here,
 // which Preflight turns into an ineligible plan rather than ever silently
 // substituting Atomic, is that refusal.
-func chooseShape[In, Out any](op Op[In, Out], itemCount int, req types.PlanRequest) (shape types.ExecutionShape, forced bool, reason string, err error) {
+func chooseShape[In, Out any](op Op[In, Out], itemCount int, req types.PlanRequest) (shape types.ExecutionShape, forced bool, reason string, alternatives []types.RejectedAlternative, err error) {
 	legal := legalShapes(op)
 
 	if req.Force != types.ShapeUnspecified {
 		if !legal[req.Force] {
-			return types.ShapeUnspecified, false, "", fmt.Errorf(
+			return types.ShapeUnspecified, false, "", nil, fmt.Errorf(
 				"forced shape %s is not legal for op %s (batch class %s): legal shapes are %s",
 				req.Force, op.ID, op.Batch.Class, legalShapeNames(legal))
 		}
@@ -165,16 +190,52 @@ func chooseShape[In, Out any](op Op[In, Out], itemCount int, req types.PlanReque
 		if reason == "" {
 			reason = "caller forced this shape"
 		}
-		return req.Force, true, reason, nil
+		// Every other legal shape was available and not chosen only because
+		// the caller forced this one -- naming them says the choice was
+		// forced, not that no alternative existed.
+		for _, alt := range otherLegalShapes(legal, req.Force) {
+			alternatives = append(alternatives, types.RejectedAlternative{
+				Shape:  alt,
+				Reason: fmt.Sprintf("caller forced %s instead (%s)", req.Force, reason),
+			})
+		}
+		return req.Force, true, reason, alternatives, nil
 	}
 
 	if itemCount <= 1 {
-		return types.ShapeAtomic, false, "one item or fewer: no batching to gain", nil
+		reason = "one item or fewer: no batching to gain"
+		if legal[types.ShapeMDSP] {
+			alternatives = append(alternatives, types.RejectedAlternative{
+				Shape:  types.ShapeMDSP,
+				Reason: "legal for this operation, but only one item was offered -- a batch of one call gains nothing over atomic's one call",
+			})
+		}
+		return types.ShapeAtomic, false, reason, alternatives, nil
 	}
 	if legal[types.ShapeMDSP] {
-		return types.ShapeMDSP, false, "batch algebra declared and wired; batching many items into one call", nil
+		reason = fmt.Sprintf("batch algebra declared and wired; batching %d items into one call instead of %d", itemCount, itemCount)
+		alternatives = append(alternatives, types.RejectedAlternative{
+			Shape:  types.ShapeAtomic,
+			Reason: fmt.Sprintf("legal, but would cost %d calls instead of the planned chunk count", itemCount),
+		})
+		return types.ShapeMDSP, false, reason, alternatives, nil
 	}
-	return types.ShapeAtomic, false, "operation has no wired batch algebra", nil
+	return types.ShapeAtomic, false, "operation has no wired batch algebra", nil, nil
+}
+
+// otherLegalShapes lists every legal shape besides chosen, in a fixed order
+// -- the same order legalShapeNames renders in -- so two Preflight calls
+// over identical input produce the identical Alternatives slice, which
+// PL-001's byte-identical-Serialize property requires of everything on a
+// Plan, this field included.
+func otherLegalShapes(legal map[types.ExecutionShape]bool, chosen types.ExecutionShape) []types.ExecutionShape {
+	var others []types.ExecutionShape
+	for _, s := range []types.ExecutionShape{types.ShapeAtomic, types.ShapeMDSP, types.ShapeGlobal, types.ShapeSDMP} {
+		if s != chosen && legal[s] {
+			others = append(others, s)
+		}
+	}
+	return others
 }
 
 func legalShapeNames(legal map[types.ExecutionShape]bool) string {

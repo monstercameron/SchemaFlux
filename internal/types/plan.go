@@ -152,6 +152,16 @@ type CapabilitySnapshot struct {
 // Digest is a content hash of the capability snapshot.
 func (c CapabilitySnapshot) Digest() string { return digestOf(c) }
 
+// RejectedAlternative is a shape Preflight considered and did not choose,
+// with why -- PL-014's "say what was chosen and what was rejected and why".
+// A plan that names only its own choice cannot answer "why did this take 40
+// calls instead of 1" or "why didn't this batch"; the rejected alternative
+// is what a caller reviewing an adaptive decision actually needs.
+type RejectedAlternative struct {
+	Shape  ExecutionShape
+	Reason string
+}
+
 // ChunkPlan is one chunk of a Plan's MDSP or global fan-out.
 type ChunkPlan struct {
 	// ItemCount is how many items this chunk holds.
@@ -217,6 +227,12 @@ type Plan struct {
 	ShapeForced bool
 	Shape       ExecutionShape
 	ShapeReason string
+
+	// Alternatives lists every other shape Preflight considered for this
+	// operation and input, and why each was not chosen -- PL-014. Empty
+	// only when there was nothing else to consider (an ineligible plan
+	// never reaches shape selection).
+	Alternatives []RejectedAlternative
 
 	Chunks         []ChunkPlan
 	OversizedItems []OversizedItem
@@ -290,6 +306,11 @@ func (p Plan) Explain() string {
 	summary := fmt.Sprintf("%s: %d item(s), shape %s", p.Operation, p.ItemCount, p.Shape)
 	if p.ShapeForced {
 		summary += fmt.Sprintf(" (forced: %s)", p.ShapeReason)
+	} else {
+		summary += fmt.Sprintf(" (%s)", p.ShapeReason)
+	}
+	for _, alt := range p.Alternatives {
+		summary += fmt.Sprintf("\nRejected: %s -- %s", alt.Shape, alt.Reason)
 	}
 	if len(p.Chunks) > 0 {
 		summary += fmt.Sprintf(", %d chunk(s)", len(p.Chunks))
