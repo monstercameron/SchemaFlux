@@ -63,23 +63,33 @@ func updateAPISnapshot() bool {
 func exportedSurface(t *testing.T, dir string) []string {
 	t.Helper()
 
-	fset := token.NewFileSet()
-	packages, err := parser.ParseDir(fset, dir, func(info os.FileInfo) bool {
-		return !strings.HasSuffix(info.Name(), "_test.go")
-	}, 0)
+	// One file at a time rather than parser.ParseDir, which is deprecated for a
+	// reason that matters here: it ignores build tags, so a file excluded from
+	// the build would still contribute to the snapshot.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("parsing %s: %v", dir, err)
+		t.Fatalf("reading %s: %v", dir, err)
 	}
 
+	fset := token.NewFileSet()
 	var lines []string
-	for name, pkg := range packages {
-		if strings.HasSuffix(name, "_test") {
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				lines = append(lines, exportedFromDecl(decl)...)
-			}
+
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		if strings.HasSuffix(file.Name.Name, "_test") {
+			continue
+		}
+
+		for _, decl := range file.Decls {
+			lines = append(lines, exportedFromDecl(decl)...)
 		}
 	}
 
