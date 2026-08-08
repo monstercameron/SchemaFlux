@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // ParseJSON parses a JSON string into a target struct, handling common LLM output issues
@@ -22,8 +24,15 @@ func ParseJSON(input string, target any) error {
 		// being extracted or redacted -- so embedding it copies user content
 		// into every log aggregator the operator runs. Report the shape instead:
 		// enough to diagnose, nothing to leak.
-		return fmt.Errorf("failed to unmarshal JSON: %w (response was %d bytes, shape: %s)",
-			err, len(cleaned), describeShape(cleaned))
+		// Classified, so a caller can branch on the kind instead of matching
+		// this sentence -- which is the whole point of A-007, and which this
+		// message was previously the only route to.
+		return &types.OperationError{
+			Kind:  types.KindMalformedOutput,
+			Cause: err,
+			Message: fmt.Sprintf("the response could not be parsed as JSON (%d bytes, shape: %s)",
+				len(cleaned), describeShape(cleaned)),
+		}
 	}
 
 	return nil
@@ -79,7 +88,10 @@ func requireRecognisedField(input string, target any) error {
 	sort.Strings(want)
 
 	if len(raw) == 0 {
-		return fmt.Errorf("the response was an empty object, which answers nothing (wanted one of %v)", want)
+		return &types.OperationError{
+			Kind:    types.KindSchemaViolation,
+			Message: fmt.Sprintf("the response was an empty object, which answers nothing (wanted one of %v)", want),
+		}
 	}
 
 	present := make([]string, 0, len(raw))
@@ -89,7 +101,10 @@ func requireRecognisedField(input string, target any) error {
 	sort.Strings(present)
 
 	// Field names, not values: the keys describe the shape, not the payload.
-	return fmt.Errorf("the response carried none of the expected fields; it has %v, wanted one of %v", present, want)
+	return &types.OperationError{
+		Kind:    types.KindSchemaViolation,
+		Message: fmt.Sprintf("the response carried none of the expected fields; it has %v, wanted one of %v", present, want),
+	}
 }
 
 // jsonFieldNames returns the lower-cased JSON names of a struct's exported

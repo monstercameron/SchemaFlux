@@ -587,7 +587,7 @@ port nothing yet except one operation as the proof.
   that cannot attribute spend to a repair or an escalation cannot explain a bill (TRU-22).
   The envelope is constructed for every logical request including failures; `Run` may drop
   it, but must not skip building it, or the two return paths diverge.
-- [ ] **A-007** — Error taxonomy: `ErrNoProvider`, `ErrAuth`, `ErrRateLimited`,
+- [x] **A-007** — Error taxonomy: `ErrNoProvider`, `ErrAuth`, `ErrRateLimited`,
   `ErrTruncated`, `ErrDecode`, `ErrInvariant`, `ErrBudgetExceeded`, plus `APIError` and
   `InvariantError`. Closes **Gap-12**.
   *Verify:* every provider maps its failures onto the taxonomy; `errors.Is` table test.
@@ -605,6 +605,37 @@ port nothing yet except one operation as the proof.
   it a kind at a time.
   *Verify (added):* Appendix B's disposition table is a test — every kind asserts its
   retry, repair, fallback, and terminal behaviour.
+  **Done — 23 kinds, not 7**, per the Revised note: the kinds are chosen by what a caller
+  would *do* about them, which is why "malformed output" and "schema violation" are separate.
+  Both are bad answers, but one is repaired by asking again with the parse error quoted and
+  the other by regenerating from source — editing an answer that invented a field tends to
+  produce an answer that invents it again.
+  `internal/types/errorkind.go` holds the kinds, a sentinel each, and `OperationError` with
+  the structured context recovery needs: operation, provider, model, request and attempt IDs,
+  affected item IDs, `RetryAfter`, and an **`Ambiguous`** flag for a timeout that may already
+  have been served. The library performs no side effects; its callers do, and they could not
+  tell.
+  **Three dispositions, and they are mutually exclusive** — `Retryable` (the transport might
+  work next time), `Repairable` (asking again with the problem named might), `Terminal`
+  (nothing here will help). A test asserts no kind reports two at once, because a caller
+  reading them as a decision tree would take two branches.
+  `internal/llm/classify.go` is the single place that decides. `isRetryableLLMError` now asks
+  it instead of carrying its own opinion, so the retry decision cannot differ between
+  operations. Substring matching survives only as the fallback for errors carrying no type,
+  and only against phrases *this library* produces — never a vendor's prose, which is the
+  **P-007** finding that a 500 mentioning `invalid_request_error` was classified permanent.
+  The whole taxonomy is exported from the root package with usage in the doc comment.
+  *Verify:* `internal/types/errorkind_test.go` (23 kinds × 3 dispositions, sentinel identity
+  through wrapping, sanitized messages, ambiguity, every kind named) and
+  `internal/llm/classify_test.go` (18 mappings, the status beating the prose, transport
+  failures, and finish-reason classification — a 200 is not a logical success).
+  Integration: `error_taxonomy_integration_test.go`, which **found that decode and shape
+  failures were unclassified** — the taxonomy existed and nothing produced it. `ParseJSON`
+  and the field check emit it now.
+  **Not closed by this:** the remaining `types.*Error` structs (`ExtractError` and its twelve
+  siblings) still carry their own shapes. They wrap correctly and `errors.Is` reaches the
+  sentinels through them, so they are compatible rather than wrong; collapsing them is
+  **OP-206** and **A-006**.
 - [ ] **A-008** — Reclassify retries on typed errors and status codes instead of substring
   matching on message text (`llm_helper.go:205-263`), and add jitter to the backoff
   (`retryDelay:265`). Closes **I-12**. Depends on **A-007**.

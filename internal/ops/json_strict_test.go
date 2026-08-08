@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 type verdict struct {
@@ -99,8 +101,11 @@ func TestParseJSONStrictKeepsTheParseError(t *testing.T) {
 			if err == nil {
 				t.Fatal("an unparseable body must be reported")
 			}
-			if !strings.Contains(err.Error(), "unmarshal") {
-				t.Errorf("the parse error should be reported as such, got %v", err)
+			// The kind, not the wording. Asserting on the message is what
+			// A-007 exists to stop callers doing, and a test doing it is the
+			// same mistake with a shorter blast radius.
+			if kind := types.KindOf(err); kind != types.KindMalformedOutput {
+				t.Errorf("a body that is not JSON classified as %v, want malformed output", kind)
 			}
 		})
 	}

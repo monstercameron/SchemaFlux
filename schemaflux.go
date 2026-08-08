@@ -263,6 +263,65 @@ type (
 	MergeConflict      = ops.MergeConflict
 )
 
+// The failure taxonomy.
+//
+// Branch on these instead of matching substrings against an error message: the
+// message changes when someone improves the wording, and it changes per
+// provider. Every failure this library produces is classified, and errors.Is
+// reaches the sentinel through any amount of wrapping.
+//
+//	if errors.Is(err, schemaflux.ErrRateLimited) {
+//	    // back off; the provider said how long, and the library already waited
+//	}
+//	if errors.Is(err, schemaflux.ErrSchemaViolation) {
+//	    // the answer did not fit the type; retrying sends the same question
+//	}
+//
+// For the disposition rather than the identity, reach the error itself:
+//
+//	var opErr *schemaflux.OperationError
+//	if errors.As(err, &opErr) && opErr.Terminal() {
+//	    // nothing this library can do will help
+//	}
+type (
+	// OperationError is the classified failure, carrying the context an
+	// automated recovery needs and none of the caller's payload.
+	OperationError = types.OperationError
+
+	// ErrorKind is what kind of failure it was.
+	ErrorKind = types.ErrorKind
+)
+
+var (
+	ErrConfiguration          = types.ErrConfiguration
+	ErrAuthentication         = types.ErrAuthentication
+	ErrPermission             = types.ErrPermission
+	ErrInvalidRequest         = types.ErrInvalidRequest
+	ErrPolicyViolation        = types.ErrPolicyViolation
+	ErrBudgetExceededKind     = types.ErrBudgetExceeded
+	ErrAdmissionRejected      = types.ErrAdmissionRejected
+	ErrRateLimited            = types.ErrRateLimited
+	ErrProviderUnavailable    = types.ErrProviderUnavailable
+	ErrTimeout                = types.ErrTimeout
+	ErrCanceled               = types.ErrCanceled
+	ErrCircuitOpen            = types.ErrCircuitOpen
+	ErrShutdown               = types.ErrShutdown
+	ErrContextTooLarge        = types.ErrContextTooLarge
+	ErrOutputTruncated        = types.ErrOutputTruncated
+	ErrMalformedOutput        = types.ErrMalformedOutput
+	ErrSchemaViolation        = types.ErrSchemaViolation
+	ErrBatchProtocolViolation = types.ErrBatchProtocolViolation
+	ErrInvariantViolation     = types.ErrInvariantViolation
+	ErrEvidenceViolation      = types.ErrEvidenceViolation
+	ErrUnsupportedCapability  = types.ErrUnsupportedCapability
+	ErrRepairExhausted        = types.ErrRepairExhausted
+	ErrReviewRequired         = types.ErrReviewRequired
+)
+
+// KindOf reports how a failure was classified, or ErrorKind zero when nothing
+// classified it -- which is a gap to close rather than a category to handle.
+func KindOf(err error) ErrorKind { return types.KindOf(err) }
+
 // Mode constants
 const (
 	// ModeUnset means no mode was chosen and the operation's default applies.

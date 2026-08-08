@@ -285,13 +285,15 @@ func isRetryableLLMError(err error) bool {
 		return true
 	}
 
-	// A provider failure that carries a real HTTP status answers this question
-	// directly. Deciding from the status rather than from prose also survives
+	// The shared taxonomy answers this question directly, and answering it in
+	// one place is the point: a retry decision that differs between operations
+	// is a bug nobody can reproduce. A-007.
+	//
+	// Deciding from the classified kind rather than from prose also survives
 	// the body being redacted out of the message, which is the whole point of
-	// the typed error: the string is for a human, the status is for the code.
-	var apiErr *llm.APIError
-	if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 {
-		return apiErr.Retryable()
+	// the typed error: the string is for a human, the kind is for the code.
+	if kind := llm.Classify(err); kind != types.KindUnknown {
+		return (&types.OperationError{Kind: kind}).Retryable()
 	}
 
 	msg := strings.ToLower(err.Error())
