@@ -767,10 +767,28 @@ tests.
   whose code does not work today.
   *Verify:* `TestNamedStringTypesAreSupported` asserts a named string type round-trips and
   keeps its type; the int case is checked by the compiler, which is the point.
-- [ ] **OP-205** — `Validate`: add a deterministic rule path ahead of the model call. Every
+- [x] **OP-205** — `Validate`: add a deterministic rule path ahead of the model call. Every
   rule in the README's own example ("email must be valid, country must be ISO alpha-2, age at
   least 18") is checkable in Go, and `Parse` already demonstrates the deterministic-first
   pattern in this package. Closes **A-05**.
+  **Done** — `internal/ops/rules.go`. Rules a machine can decide are decided by the machine:
+  `email`, `url`, `uuid`, `iso3166-alpha2`, `nonempty`, `min`/`max`, `minlen`/`maxlen`,
+  `oneof`, and `regex`. An expression this layer does not understand — which is most of what
+  the operation is for — passes through to the model untouched, and the prompt then carries
+  only what the model is actually needed for.
+  Two consequences worth stating. **When every rule is decidable there is no provider call at
+  all**, so the README's own example (valid email, ISO country code, minimum age) costs
+  nothing and is exact rather than probable. And **the deterministic findings come first and
+  survive the model's answer**: a model that says `valid` does not get to overrule
+  `mail.ParseAddress` by omission.
+  Issue order is sorted, because Go randomizes map iteration and an issue list a caller
+  cannot diff is a worse list. Messages name the field and the complaint, never the value
+  (**X-03**).
+  *Verify:* `internal/ops/rules_test.go` — 30 rule cases across nine rule kinds, including a
+  rune-counted length limit; unrecognised expressions falling through; the no-provider-call
+  path asserted by counting calls; a model saying "valid" failing to overrule the email
+  check; the no-values-in-messages rule; and a rule naming a field the data lacks being an
+  error rather than a pass.
 - [ ] **OP-206** — Collapse `Validate` / `Verify` / `Audit` / `Critique` / `Score` onto one
   result shape. Five vocabularies for one operation shape (verdict + issues + summary) with
   different field names is the verb-explosion problem in its clearest form. Closes **A-08**.

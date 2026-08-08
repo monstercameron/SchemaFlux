@@ -227,12 +227,20 @@ func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 		return result, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
+	// Decide first what a machine can decide.
+	//
+	// Every rule in this operation's own documented example -- a valid email, an
+	// ISO country code, a minimum age -- is exact in Go and a judgement call in
+	// a model. Rules this layer understands are applied here; the rest go to the
+	// model, and if nothing is left there is no provider call at all.
+	deterministicIssues, remainingFieldRules := applyDeterministicRules(data, opts.FieldRules)
+
 	// Build rules description
 	rulesDesc := opts.Rules
-	if len(opts.FieldRules) > 0 {
+	if len(remainingFieldRules) > 0 {
 		var fieldRulesStr []string
-		for _, field := range sortedKeys(opts.FieldRules) {
-			fieldRulesStr = append(fieldRulesStr, fmt.Sprintf("- %s: %s", field, opts.FieldRules[field]))
+		for _, field := range sortedKeys(remainingFieldRules) {
+			fieldRulesStr = append(fieldRulesStr, fmt.Sprintf("- %s: %s", field, remainingFieldRules[field]))
 		}
 		if rulesDesc != "" {
 			rulesDesc += "\n\nField-specific rules:\n" + strings.Join(fieldRulesStr, "\n")
@@ -284,6 +292,19 @@ Return a JSON object with:
 Against these rules:
 %s`, string(dataJSON), rulesDesc)
 
+	// Nothing left for the model: every rule was decided exactly, so the answer
+	// is already complete and a provider call would only add latency, cost, and
+	// a chance of disagreeing with arithmetic.
+	if len(remainingFieldRules) == 0 && strings.TrimSpace(opts.Rules) == "" && len(opts.SchemaHints) == 0 {
+		result.Errors = deterministicIssues
+		result.Valid = len(deterministicIssues) == 0
+		result.Summary = fmt.Sprintf("checked %d field rules deterministically", len(opts.FieldRules))
+		result.Metadata["deterministic_only"] = true
+		log.Debug("Validate answered without a provider call",
+			"rules", len(opts.FieldRules), "issues", len(deterministicIssues))
+		return result, nil
+	}
+
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("Validate operation LLM call failed", "error", err)
@@ -313,7 +334,10 @@ Against these rules:
 	}
 
 	result.Valid = llmResult.Valid
-	result.Errors = llmResult.Errors
+	// The deterministic findings come first, because they are the ones that are
+	// certain. A model that missed a malformed email does not get to overrule
+	// mail.ParseAddress by omission.
+	result.Errors = append(append([]ValidationIssue{}, deterministicIssues...), llmResult.Errors...)
 	result.Warnings = llmResult.Warnings
 	result.Info = llmResult.Info
 	result.ModelConfidence = llmResult.ModelConfidence
