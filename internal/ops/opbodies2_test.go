@@ -377,8 +377,10 @@ func TestSettleHappyPath(t *testing.T) {
 // produce the same answer, not a second implementation that can drift.
 func TestNegotiateDelegatesToSettle(t *testing.T) {
 	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	// Above NegotiateOptions' default MinSatisfaction of 0.6, which Settle now
+	// enforces -- this test is about the delegation, not about the floor.
 	provider := &scriptedProvider{bodies: []string{
-		`{"solution": {"duration_weeks": 4, "features": []}, "satisfaction": {}, "overall_satisfaction": 0.5, "confidence": 0.5}`,
+		`{"solution": {"duration_weeks": 4, "features": []}, "satisfaction": {}, "overall_satisfaction": 0.8, "confidence": 0.5}`,
 	}}
 	ctx := WithProvider(context.Background(), provider)
 

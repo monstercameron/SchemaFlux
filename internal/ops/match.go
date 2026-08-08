@@ -372,6 +372,36 @@ Return a JSON object with:
 		}
 	}
 
+	// Threshold was stated in the prompt as "Minimum similarity threshold: %.2f"
+	// and compared against nothing, so a pair scored 0.01 against a 0.9
+	// threshold was returned as a match. The score is the model's claim; the
+	// threshold is the caller's line, and a caller who sets one is deciding what
+	// counts as a match at all.
+	for _, pair := range result.Matches {
+		if pair.Score < opts.Threshold {
+			log.Error("Match returned a pair scored below the requested threshold",
+				"score", pair.Score, "threshold", opts.Threshold)
+			return result, fmt.Errorf(
+				"match: a pair scored %.2f, below the requested threshold of %.2f", pair.Score, opts.Threshold)
+		}
+	}
+
+	// MaxMatches is stated per source item ("Maximum %d matches per source
+	// item"), so the count is per SourceIndex rather than over the whole list.
+	if opts.MaxMatches > 0 {
+		perSource := make(map[int]int, len(result.Matches))
+		for _, pair := range result.Matches {
+			perSource[pair.SourceIndex]++
+			if perSource[pair.SourceIndex] > opts.MaxMatches {
+				log.Error("Match returned more matches for one source than requested",
+					"sourceIndex", pair.SourceIndex, "maxMatches", opts.MaxMatches)
+				return result, fmt.Errorf(
+					"match: source %d has more than the requested maximum of %d match(es)",
+					pair.SourceIndex, opts.MaxMatches)
+			}
+		}
+	}
+
 	result.UnmatchedSources = parsed.UnmatchedSources
 	result.UnmatchedTargets = parsed.UnmatchedTargets
 	result.TotalMatches = len(result.Matches)

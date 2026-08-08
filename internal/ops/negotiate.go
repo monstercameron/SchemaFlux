@@ -312,6 +312,27 @@ Rules:
 	result.Reasoning = parsed.Reasoning
 	result.ModelConfidence = parsed.ModelConfidence
 
+	// MinSatisfaction was stated in the prompt as "Minimum acceptable
+	// satisfaction: %.0f%%" and compared against nothing, so a model that openly
+	// reported failing it -- 0.1 against a 0.9 floor -- still came back as a
+	// usable NegotiateResult with a nil error. The number is the model's claim,
+	// but the floor is the caller's, and checking one against the other is what
+	// makes the option mean what its name says.
+	if opt.MinSatisfaction > 0 && result.OverallSatisfaction < opt.MinSatisfaction {
+		log.Error("Negotiated solution is below the configured satisfaction floor",
+			"overallSatisfaction", result.OverallSatisfaction, "minSatisfaction", opt.MinSatisfaction)
+		return result, fmt.Errorf(
+			"negotiate: the model reported overall satisfaction %.2f, below the %.2f floor this operation was configured with",
+			result.OverallSatisfaction, opt.MinSatisfaction)
+	}
+
+	// MaxAlternatives was described in the prompt as "up to %d" and never
+	// counted.
+	if err := AtMost(result.Alternatives, opt.MaxAlternatives); err != nil {
+		log.Error("Negotiate returned more alternatives than requested", "error", err)
+		return result, fmt.Errorf("negotiate: %w", err)
+	}
+
 	log.Debug("Negotiate operation succeeded",
 		"overallSatisfaction", result.OverallSatisfaction,
 		"tradeoffs", len(result.Tradeoffs),

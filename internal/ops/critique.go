@@ -424,6 +424,34 @@ Return a JSON object with:
 		return result, fmt.Errorf("failed to parse critique result: %w", err)
 	}
 
+	// MaxIssues was rendered into the prompt as "Limit to top %d issues." and
+	// compared against nothing, even though AtMost exists in invariants.go for
+	// exactly this. A caller who caps the list is sizing something downstream --
+	// a UI, a report, a budget -- and silently getting more is the failure that
+	// cap was meant to prevent.
+	if err := AtMost(result.Issues, opts.MaxIssues); err != nil {
+		log.Error("Critique returned more issues than requested", "error", err)
+		return result, fmt.Errorf("critique: %w", err)
+	}
+
+	// SeverityFilter narrows what the caller wants reported, and an issue
+	// carrying a different severity is the model answering a question that was
+	// not asked. "all" is the default and opts out; an issue with no severity
+	// label is not matched against anything, because refusing an unlabeled
+	// issue would discard a real finding over a missing string.
+	if opts.SeverityFilter != "" && opts.SeverityFilter != "all" {
+		for i, issue := range result.Issues {
+			if issue.Severity == "" || issue.Severity == opts.SeverityFilter {
+				continue
+			}
+			log.Error("Critique returned an issue outside the requested severity",
+				"issueIndex", i, "severity", issue.Severity, "severityFilter", opts.SeverityFilter)
+			return result, fmt.Errorf(
+				"critique: issue %d is %q severity, but only %q issues were requested",
+				i, issue.Severity, opts.SeverityFilter)
+		}
+	}
+
 	log.Debug("Critique operation succeeded",
 		"overallScore", result.ModelOverallScore,
 		"issueCount", len(result.Issues),

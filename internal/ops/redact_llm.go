@@ -194,6 +194,30 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 		return result, fmt.Errorf("failed to parse LLM response: %w", err)
 	}
 
+	// The category list is what the caller asked to have detected, and it was
+	// stated in the prompt and checked nowhere -- so a caller who narrowed
+	// detection to "email" could get a name redacted anyway. That is not a
+	// harmless over-redaction: the caller narrowed the list precisely because
+	// the other fields have to survive intact downstream.
+	//
+	// "all" is the default and means what it says, so it opts out of the check.
+	// An empty Category on a span is not matched against anything: the span
+	// still redacts, and refusing it would turn a model that merely omitted a
+	// label into a failed redaction, which fails in the unsafe direction.
+	if !containsCategory(opts.Categories, "all") {
+		for _, span := range spans {
+			if span.Category == "" {
+				continue
+			}
+			if !containsCategory(opts.Categories, span.Category) {
+				logger.Error("RedactLLM returned a span outside the requested categories",
+					"requestID", opts.RequestID, "category", span.Category)
+				return RedactLLMResult{}, fmt.Errorf(
+					"redact: a span was categorized %q, which is not among the requested categories", span.Category)
+			}
+		}
+	}
+
 	// Apply redactions. A span the text cannot support is an error: applying it
 	// anyway redacts the wrong characters and leaves the sensitive ones in
 	// place, which is worse than not redacting at all because it looks done.

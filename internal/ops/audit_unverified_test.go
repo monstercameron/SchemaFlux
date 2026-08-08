@@ -16,10 +16,12 @@ import (
 // task that produced this file: no production code in this package is
 // touched here.
 
-// Negotiate/Settle's MinSatisfaction is stated in the prompt ("Minimum
-// acceptable satisfaction: %.0f%%") but never compared against
-// OverallSatisfaction in the response. negotiate.go:263-320.
-func TestAudit_Settle_MinSatisfactionNeverChecked(t *testing.T) {
+// Settle/Negotiate's MinSatisfaction was stated in the prompt as "Minimum
+// acceptable satisfaction: %.0f%%" and compared against nothing, so a model
+// that openly reported failing it -- 0.1 against a 0.9 floor -- came back as a
+// usable result with a nil error. The number is the model's claim, but the
+// floor is the caller's.
+func TestSettle_RefusesASolutionBelowTheSatisfactionFloor(t *testing.T) {
 	withResponse(t, `{
 		"solution": {"weeks": 5},
 		"satisfaction": {"budget": 0.1},
@@ -31,25 +33,17 @@ func TestAudit_Settle_MinSatisfactionNeverChecked(t *testing.T) {
 		Weeks int `json:"weeks"`
 	}
 
-	result, err := Settle[plan](map[string]any{"max_budget": 1000}, NegotiateOptions{
-		MinSatisfaction: 0.9,
-	})
-	if err != nil {
-		t.Fatalf("Settle returned an error for a response that merely failed the requested floor: %v", err)
+	_, err := Settle[plan](map[string]any{"max_budget": 1000}, NegotiateOptions{MinSatisfaction: 0.9})
+	if err == nil {
+		t.Fatal("Settle accepted overall satisfaction 0.1 against a 0.9 floor")
 	}
-	if result.OverallSatisfaction >= 0.9 {
-		t.Fatalf("test setup broken: expected a satisfaction below the floor, got %v", result.OverallSatisfaction)
+	if !strings.Contains(err.Error(), "satisfaction") {
+		t.Fatalf("the error does not name the floor it failed: %v", err)
 	}
-	// This is the defect: MinSatisfaction was asked for in the prompt and the
-	// model openly reported failing it (0.1 against a 0.9 floor), and Settle
-	// still returned a nil error and a usable NegotiateResult.
-	t.Logf("accepted overall_satisfaction=%.2f against a MinSatisfaction floor of 0.90 with no error", result.OverallSatisfaction)
 }
 
-// Negotiate/Settle's MaxAlternatives is stated in the prompt ("alternatives
-// provides up to %d Pareto-optimal alternatives") but len(Alternatives) is
-// never compared against it. negotiate.go:240,297-303.
-func TestAudit_Settle_MaxAlternativesNeverChecked(t *testing.T) {
+// MaxAlternatives was described in the prompt as "up to %d" and never counted.
+func TestSettle_RefusesMoreAlternativesThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"solution": {"weeks": 5},
 		"overall_satisfaction": 0.8,
@@ -61,23 +55,45 @@ func TestAudit_Settle_MaxAlternativesNeverChecked(t *testing.T) {
 		Weeks int `json:"weeks"`
 	}
 
-	result, err := Settle[plan](map[string]any{"max_budget": 1000}, NegotiateOptions{
+	_, err := Settle[plan](map[string]any{"max_budget": 1000}, NegotiateOptions{
 		MinSatisfaction: 0.5,
 		MaxAlternatives: 1,
 	})
-	if err != nil {
-		t.Fatalf("Settle returned an error for a response that merely exceeded the requested alternatives cap: %v", err)
+	if err == nil {
+		t.Fatal("Settle accepted 4 alternatives against a MaxAlternatives of 1")
 	}
-	if len(result.Alternatives) <= 1 {
-		t.Fatalf("test setup broken: expected more alternatives than the cap of 1, got %d", len(result.Alternatives))
-	}
-	t.Logf("accepted %d alternatives against a MaxAlternatives of 1 with no error", len(result.Alternatives))
 }
 
-// SemanticMatch's Threshold is stated in the prompt ("Minimum similarity
-// threshold: %.2f") but a match's Score is never compared against it before
-// being added to result.Matches. match.go:306-325,355-373.
-func TestAudit_SemanticMatch_ThresholdNeverChecked(t *testing.T) {
+// The companion case: inside both constraints, the solution comes back.
+func TestSettle_AcceptsASolutionInsideBothConstraints(t *testing.T) {
+	withResponse(t, `{
+		"solution": {"weeks": 5},
+		"overall_satisfaction": 0.8,
+		"confidence": 0.9,
+		"alternatives": [{"weeks": 1}]
+	}`)
+
+	type plan struct {
+		Weeks int `json:"weeks"`
+	}
+
+	result, err := Settle[plan](map[string]any{"max_budget": 1000}, NegotiateOptions{
+		MinSatisfaction: 0.5,
+		MaxAlternatives: 2,
+	})
+	if err != nil {
+		t.Fatalf("Settle refused a solution inside both constraints: %v", err)
+	}
+	if result.Solution.Weeks != 5 {
+		t.Fatalf("Solution = %+v, want the scripted plan", result.Solution)
+	}
+}
+
+// SemanticMatch's Threshold was stated in the prompt as "Minimum similarity
+// threshold: %.2f" and compared against nothing, so a pair scored 0.01 against
+// a 0.9 threshold was returned as a match. A caller who sets a threshold is
+// deciding what counts as a match at all.
+func TestSemanticMatch_RefusesAPairBelowTheThreshold(t *testing.T) {
 	withResponse(t, `{
 		"matches": [
 			{"source_index": 0, "target_index": 0, "score": 0.01, "explanation": "barely related"}
@@ -86,23 +102,18 @@ func TestAudit_SemanticMatch_ThresholdNeverChecked(t *testing.T) {
 		"unmatched_targets": []
 	}`)
 
-	result, err := SemanticMatch([]string{"apple"}, []string{"orange"}, NewMatchOptions().WithThreshold(0.9))
-	if err != nil {
-		t.Fatalf("SemanticMatch returned an error for a response that merely scored below the requested threshold: %v", err)
+	_, err := SemanticMatch([]string{"apple"}, []string{"orange"}, NewMatchOptions().WithThreshold(0.9))
+	if err == nil {
+		t.Fatal("SemanticMatch returned a pair scored 0.01 against a 0.9 threshold")
 	}
-	if len(result.Matches) != 1 {
-		t.Fatalf("test setup broken: expected exactly one match, got %d", len(result.Matches))
+	if !strings.Contains(err.Error(), "threshold") {
+		t.Fatalf("the error does not name the threshold: %v", err)
 	}
-	if result.Matches[0].Score >= 0.9 {
-		t.Fatalf("test setup broken: expected a score below the 0.9 threshold, got %v", result.Matches[0].Score)
-	}
-	t.Logf("accepted a match scored %.2f against a Threshold of 0.90 with no error", result.Matches[0].Score)
 }
 
-// SemanticMatch's MaxMatches is stated in the prompt ("Maximum %d matches per
-// source item") but the count of matches sharing a SourceIndex is never
-// compared against it. match.go:270-272,355-373.
-func TestAudit_SemanticMatch_MaxMatchesPerSourceNeverChecked(t *testing.T) {
+// MaxMatches is stated per source item ("Maximum %d matches per source item"),
+// so the count is per SourceIndex rather than over the whole list.
+func TestSemanticMatch_RefusesMoreMatchesForOneSourceThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"matches": [
 			{"source_index": 0, "target_index": 0, "score": 0.95},
@@ -113,27 +124,42 @@ func TestAudit_SemanticMatch_MaxMatchesPerSourceNeverChecked(t *testing.T) {
 		"unmatched_targets": []
 	}`)
 
-	result, err := SemanticMatch([]string{"apple"}, []string{"a", "b", "c"}, NewMatchOptions().WithMaxMatches(1))
-	if err != nil {
-		t.Fatalf("SemanticMatch returned an error for a response that merely exceeded MaxMatches per source: %v", err)
+	_, err := SemanticMatch([]string{"apple"}, []string{"a", "b", "c"}, NewMatchOptions().WithMaxMatches(1))
+	if err == nil {
+		t.Fatal("SemanticMatch returned 3 matches for one source against a MaxMatches of 1")
 	}
-	matchesForSource0 := 0
-	for _, m := range result.Matches {
-		if m.SourceIndex == 0 {
-			matchesForSource0++
-		}
+	if !strings.Contains(err.Error(), "source 0") {
+		t.Fatalf("the error does not name the offending source: %v", err)
 	}
-	if matchesForSource0 <= 1 {
-		t.Fatalf("test setup broken: expected more than one match for source 0, got %d", matchesForSource0)
-	}
-	t.Logf("accepted %d matches for one source item against a MaxMatches of 1 with no error", matchesForSource0)
 }
 
-// Critique's MaxIssues is stated in the prompt ("Limit to top %d issues.")
-// but len(result.Issues) is never compared against it -- unlike AtMost in
-// invariants.go, which exists for exactly this and is not called here.
-// critique.go:362-365,421-425.
-func TestAudit_Critique_MaxIssuesNeverChecked(t *testing.T) {
+// The per-source count is genuinely per source: two sources with one match each
+// is not a violation of MaxMatches(1), even though the list holds two pairs.
+func TestSemanticMatch_MaxMatchesCountsPerSourceNotOverTheWholeList(t *testing.T) {
+	withResponse(t, `{
+		"matches": [
+			{"source_index": 0, "target_index": 0, "score": 0.95},
+			{"source_index": 1, "target_index": 1, "score": 0.90}
+		],
+		"unmatched_sources": [],
+		"unmatched_targets": []
+	}`)
+
+	result, err := SemanticMatch([]string{"apple", "pear"}, []string{"a", "b"},
+		NewMatchOptions().WithMaxMatches(1).WithThreshold(0.5))
+	if err != nil {
+		t.Fatalf("SemanticMatch refused one match per source under MaxMatches(1): %v", err)
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("Matches = %+v, want both pairs", result.Matches)
+	}
+}
+
+// Critique's MaxIssues was rendered into the prompt as "Limit to top %d
+// issues." and compared against nothing, even though AtMost exists in
+// invariants.go for exactly this. A caller who caps the list is sizing
+// something downstream, and silently getting more is what the cap was for.
+func TestCritique_RefusesMoreIssuesThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"overall_score": 0.4,
 		"issues": [
@@ -144,20 +170,15 @@ func TestAudit_Critique_MaxIssuesNeverChecked(t *testing.T) {
 		"summary": "several issues found"
 	}`)
 
-	result, err := Critique("some text", NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithMaxIssues(1))
-	if err != nil {
-		t.Fatalf("Critique returned an error for a response that merely exceeded MaxIssues: %v", err)
+	_, err := Critique("some text", NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithMaxIssues(1))
+	if err == nil {
+		t.Fatal("Critique accepted 3 issues against a MaxIssues of 1")
 	}
-	if len(result.Issues) <= 1 {
-		t.Fatalf("test setup broken: expected more issues than the MaxIssues cap of 1, got %d", len(result.Issues))
-	}
-	t.Logf("accepted %d issues against a MaxIssues of 1 with no error", len(result.Issues))
 }
 
-// Critique's SeverityFilter is stated in the prompt ("Only report %s
-// issues.") but the severity of returned issues is never checked against it.
-// critique.go:357-360,421-425.
-func TestAudit_Critique_SeverityFilterNeverChecked(t *testing.T) {
+// SeverityFilter narrows what the caller wants reported; an issue carrying a
+// different severity is an answer to a question that was not asked.
+func TestCritique_RefusesAnIssueOutsideTheRequestedSeverity(t *testing.T) {
 	withResponse(t, `{
 		"overall_score": 0.4,
 		"issues": [
@@ -166,14 +187,48 @@ func TestAudit_Critique_SeverityFilterNeverChecked(t *testing.T) {
 		"summary": "one minor issue"
 	}`)
 
-	result, err := Critique("some text", NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithSeverityFilter("critical"))
+	_, err := Critique("some text", NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithSeverityFilter("critical"))
+	if err == nil {
+		t.Fatal("Critique accepted a minor issue against a SeverityFilter of \"critical\"")
+	}
+	if !strings.Contains(err.Error(), "minor") {
+		t.Fatalf("the error does not name the offending severity: %v", err)
+	}
+}
+
+// The companion cases: within the cap and inside the filter, both still pass.
+func TestCritique_AcceptsIssuesWithinBothConstraints(t *testing.T) {
+	withResponse(t, `{
+		"overall_score": 0.4,
+		"issues": [
+			{"criterion": "clarity", "severity": "critical", "description": "a real problem"}
+		],
+		"summary": "one critical issue"
+	}`)
+
+	result, err := Critique("some text",
+		NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithMaxIssues(2).WithSeverityFilter("critical"))
 	if err != nil {
-		t.Fatalf("Critique returned an error for a response that ignored SeverityFilter: %v", err)
+		t.Fatalf("Critique refused a response inside both constraints: %v", err)
 	}
-	if len(result.Issues) != 1 || result.Issues[0].Severity != "minor" {
-		t.Fatalf("test setup broken: expected one minor-severity issue, got %+v", result.Issues)
+	if len(result.Issues) != 1 {
+		t.Fatalf("Issues = %+v, want the one issue surfaced", result.Issues)
 	}
-	t.Logf("accepted a %q-severity issue against a SeverityFilter of %q with no error", result.Issues[0].Severity, "critical")
+}
+
+// An issue with no severity label is not matched against the filter: refusing
+// it would discard a real finding over a missing string.
+func TestCritique_UnlabeledSeverityIsNotAFilterViolation(t *testing.T) {
+	withResponse(t, `{
+		"overall_score": 0.4,
+		"issues": [{"criterion": "clarity", "description": "no severity given"}],
+		"summary": "one issue"
+	}`)
+
+	if _, err := Critique("some text",
+		NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithSeverityFilter("critical")); err != nil {
+		t.Fatalf("Critique refused an issue that simply carried no severity label: %v", err)
+	}
 }
 
 // Compress's MaxOutputSize is documented as a hard cap ("Maximum output
@@ -262,36 +317,65 @@ func TestAudit_Arbitrate_DisqualifiedWinnerNeverChecked(t *testing.T) {
 // it remains here because there is no live defect left to demonstrate; see
 // the finding note in the task report instead.
 
-// RedactLLM's Categories option is documented as "Categories to detect", and
-// buildRedactSystemPrompt only lists the categories the caller asked for
-// (redact_llm.go:222-250) -- but parseRedactResponse (redact_llm.go:272-326)
-// never checks a returned span's Category against opts.Categories before
-// RedactLLM applies it (redact_llm.go:200-205). A caller who restricted
-// detection to avoid touching a field they need intact (e.g. requesting only
-// "email" so a "name" stays usable for personalization) can have that field
-// redacted anyway because the model tagged it with a category nobody asked
-// for, with a nil error.
-func TestAudit_RedactLLM_CategoriesNotEnforced(t *testing.T) {
+// RedactLLM's Categories is documented as "Categories to detect", and the
+// prompt lists only what the caller asked for -- but a returned span's Category
+// was never checked against the list before being applied. A caller who
+// narrowed detection to "email" so a name stays usable downstream could have
+// that name redacted anyway, with a nil error. That is not a harmless
+// over-redaction: the narrowing is the whole reason the option exists.
+func TestRedactLLM_RefusesASpanOutsideTheRequestedCategories(t *testing.T) {
 	text := "Contact John Smith at john@example.com for details."
-	// The caller asked only for "email"; the model answers with an extra
-	// "name" span nobody requested.
 	withResponse(t, `{"spans":[
 		{"text":"john@example.com","start":22,"category":"email"},
 		{"text":"John Smith","start":8,"category":"name"}
 	]}`)
 
 	opts := NewRedactLLMOptions().WithCategories([]string{"email"})
+	_, err := RedactLLM(context.Background(), text, opts)
+	if err == nil {
+		t.Fatal("RedactLLM applied a \"name\" span to a caller who asked only for \"email\"")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Fatalf("the error does not name the unrequested category: %v", err)
+	}
+}
+
+// The companion case: spans inside the requested list still redact. Without it
+// the check above is indistinguishable from refusing every narrowed request.
+func TestRedactLLM_AppliesSpansInsideTheRequestedCategories(t *testing.T) {
+	text := "Contact John Smith at john@example.com for details."
+	withResponse(t, `{"spans":[
+		{"text":"john@example.com","start":22,"category":"email"}
+	]}`)
+
+	opts := NewRedactLLMOptions().WithCategories([]string{"email"})
 	result, err := RedactLLM(context.Background(), text, opts)
 	if err != nil {
-		t.Fatalf("RedactLLM returned an error for a response that merely included an unrequested category: %v", err)
+		t.Fatalf("RedactLLM refused a span inside the requested categories: %v", err)
+	}
+	if strings.Contains(result.Text, "john@example.com") {
+		t.Fatalf("the email survived redaction: %q", result.Text)
+	}
+	if !strings.Contains(result.Text, "John Smith") {
+		t.Fatalf("the name was redacted despite not being requested: %q", result.Text)
+	}
+}
+
+// "all" is the default and means what it says, so it opts out of the check
+// entirely rather than matching every span against the literal string "all".
+func TestRedactLLM_AllCategoriesAcceptsAnySpan(t *testing.T) {
+	text := "Contact John Smith at john@example.com for details."
+	withResponse(t, `{"spans":[
+		{"text":"John Smith","start":8,"category":"name"}
+	]}`)
+
+	result, err := RedactLLM(context.Background(), text, NewRedactLLMOptions())
+	if err != nil {
+		t.Fatalf("the default \"all\" category list refused a span: %v", err)
 	}
 	if strings.Contains(result.Text, "John Smith") {
-		t.Fatalf("test setup broken: expected the unrequested 'name' span to have been redacted, proving the defect; got text=%q", result.Text)
+		t.Fatalf("the name survived redaction under \"all\": %q", result.Text)
 	}
-	if _, found := result.Categories["name"]; !found {
-		t.Fatalf("test setup broken: expected result.Categories to record the unrequested 'name' category, got %v", result.Categories)
-	}
-	t.Logf("Categories was set to [\"email\"] only, and the answer still redacted a \"name\" span (text now %q) with a nil error", result.Text)
 }
 
 // A claim citing source 7 out of a three-source list is citing nothing. The
