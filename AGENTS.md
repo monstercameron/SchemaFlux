@@ -64,6 +64,37 @@ A collection operation's contract is relational, and the check belongs in Go:
 - `Filter` returns a subset. `Sort` returns a permutation. `Cluster` returns a partition.
 - The shared checks live in `internal/ops/invariants.go`. Use them; do not write a fourth membership test.
 
+### An option in a prompt is a request, not a guarantee
+
+If an option changes what the prompt asks for, something in Go has to check the
+answer against it. Otherwise the model is free to ignore it and nothing notices,
+which is the "reporting success while being wrong" failure in its most common
+form. Seven bugs found during the v1.0.1 sweep were this one shape:
+
+- `Conform` returned a nil error and a zero value when the response carried no
+  `conformed` field at all.
+- `Interpolate` accepted an answer of a different length than its input, and
+  accepted changes to items the caller had explicitly declared were not gaps.
+- `Cluster` put `MinClusterSize` and `MaxClusterSize` in the prompt and checked
+  neither, so `MaxClusterSize(2)` could return one cluster holding everything.
+- `MergeWithMetadata` invented a confidence of 0.7 on its fallback path.
+- `ValidateLegacy` decided its verdict with `strings.Contains(lower, "valid")`,
+  which "invalid" also satisfies.
+
+When adding or reviewing an option, ask the three questions in order: what does
+the prompt now claim, what does the decode do with the answer, and what refuses
+an answer that ignores the claim. If the third has no answer, the option is
+decoration.
+
+**Not everything should be enforced, and saying so is part of the job.** A
+`Steering` string is guidance. `NumClusters` is documented as a *target*, so
+refusing an answer that found four natural groups when three were suggested
+would override the judgement the library asked for. `Cluster`'s outlier group is
+exempt from `MinClusterSize` because it is the leftover, not a cluster the model
+chose to form. Each of those is a deliberate exemption with a test beside it —
+an exemption nothing exercises is indistinguishable from a check somebody forgot
+to write.
+
 ### Decide locally what can be decided locally
 
 A rule Go can evaluate exactly should not be sent to a model. `Validate`'s field rules are the worked example: `email`, `iso3166-alpha2`, `min:18` are exact in Go and a judgement call in a model, and when every rule is decidable there is no provider call at all.
