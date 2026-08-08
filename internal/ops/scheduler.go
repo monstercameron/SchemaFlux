@@ -287,7 +287,6 @@ func Submit[T any](ctx context.Context, s *Scheduler, req SubmitRequest, run fun
 
 	runCtx, cancel := context.WithCancel(ctx)
 	seq := s.registerInFlight(cancel)
-	s.wg.Add(1)
 	defer func() {
 		s.wg.Done()
 		s.release(req, seq)
@@ -469,6 +468,24 @@ func (s *Scheduler) registerInFlight(cancel context.CancelFunc) uint64 {
 	seq := s.nextSeq
 	s.nextSeq++
 	s.inFlightCancel[seq] = cancel
+
+	// wg.Add happens HERE, under the same lock that Close takes, and that
+	// placement is the fix for a panic rather than tidiness.
+	//
+	// It used to sit in Submit after this call returned, with no lock held, so
+	// this interleaving was reachable: a request passes admission; Close runs,
+	// sets closed, and starts `go s.wg.Wait()`; the counter is still zero so
+	// Wait returns immediately; the request then calls wg.Add(1) and the
+	// runtime panics with "WaitGroup is reused before previous Wait has
+	// returned". A panic in Close is the worst place for one -- it is what a
+	// process runs on the way out, so the crash lands during shutdown where it
+	// looks like something else.
+	//
+	// Holding s.mu across the Add means Close cannot begin waiting between a
+	// request being admitted and being counted: either Close gets the lock
+	// first and this request sees a non-zero counter to join, or this request
+	// increments first and Close's Wait observes it.
+	s.wg.Add(1)
 	return seq
 }
 

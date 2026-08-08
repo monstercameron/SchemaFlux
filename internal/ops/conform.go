@@ -268,12 +268,25 @@ Rules:
 		return result, fmt.Errorf("strict conformance failed: %v", parsed.Violations)
 	}
 
-	// Parse conformed data
-	if len(parsed.Conformed) > 0 {
-		if err := json.Unmarshal(parsed.Conformed, &result.Conformed); err != nil {
-			log.Error("Conform operation failed: conformed data parse error", "error", err)
-			return result, fmt.Errorf("failed to parse conformed data: %w", err)
-		}
+	// The conformed value is the answer. A response without one is a failure,
+	// not a success that produced nothing.
+	//
+	// This was guarded by `if len(parsed.Conformed) > 0`, so a response
+	// carrying any other recognised field -- `{"compliance":0.9}` was enough to
+	// satisfy the decoder's field check -- returned a nil error with
+	// result.Conformed left at T's zero value. A caller reading
+	// `if err == nil { use(result.Conformed) }` got an empty struct and no
+	// indication anything was wrong, which is the shape of failure this
+	// library exists to refuse: reporting success while being wrong.
+	if len(parsed.Conformed) == 0 || string(parsed.Conformed) == "null" {
+		log.Error("Conform operation failed: the response carried no conformed value",
+			"standard", standard)
+		return result, fmt.Errorf(
+			"conform: the response carried no `conformed` value, so there is nothing to return")
+	}
+	if err := json.Unmarshal(parsed.Conformed, &result.Conformed); err != nil {
+		log.Error("Conform operation failed: conformed data parse error", "error", err)
+		return result, fmt.Errorf("failed to parse conformed data: %w", err)
 	}
 
 	result.Adjustments = parsed.Adjustments

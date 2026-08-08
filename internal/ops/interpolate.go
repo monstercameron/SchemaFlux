@@ -272,8 +272,26 @@ Rules:
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Interpolate operation failed: parse error", "error", err, "response", response)
+		// The response body stays out of the log: it is built from the
+		// caller's items, and a parse failure is not a licence to print them.
+		log.Error("Interpolate operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse interpolation result: %w", err)
+	}
+
+	// The completed sequence must be the same length as the input.
+	//
+	// Nothing checked this: the result was rebuilt entirely from the model's
+	// `complete` array, so a response returning one item for three inputs was
+	// accepted and handed back as a one-item success. Interpolate fills gaps in
+	// a sequence -- a sequence that changed length is not that sequence, and a
+	// caller indexing the result against their own input would read the wrong
+	// element or run off the end.
+	if len(parsed.Complete) != len(items) {
+		log.Error("Interpolate operation failed: length changed",
+			"want", len(items), "got", len(parsed.Complete))
+		return result, fmt.Errorf(
+			"interpolate: the answer has %d items and the input had %d; filling gaps must not change the sequence's length",
+			len(parsed.Complete), len(items))
 	}
 
 	// Parse complete sequence
@@ -282,6 +300,37 @@ Rules:
 		if err := json.Unmarshal(itemJSON, &result.Complete[i]); err != nil {
 			log.Error("Interpolate operation failed: item parse error", "index", i, "error", err)
 			return result, fmt.Errorf("failed to parse item %d: %w", i, err)
+		}
+	}
+
+	// An index the caller did NOT declare a gap must come back unchanged.
+	//
+	// This was unchecked too, and it is the more dangerous of the two: a model
+	// that rewrites a value it was only asked to preserve produces a result
+	// that looks entirely well-formed. Interpolate's contract is that it fills
+	// the gaps and leaves everything else alone, and the whole point of Go-side
+	// invariants in this library is that a contract stated in a prompt is a
+	// request, not a guarantee.
+	//
+	// Only checked when the caller declared the gaps explicitly. With gaps
+	// inferred from the values, "unchanged" has no reference to compare
+	// against -- the operation is deciding which items were gaps in the first
+	// place -- and asserting it there would reject correct answers.
+	if len(opt.GapIndices) > 0 {
+		gap := make(map[int]bool, len(opt.GapIndices))
+		for _, index := range opt.GapIndices {
+			gap[index] = true
+		}
+
+		for i := range items {
+			if gap[i] {
+				continue
+			}
+			if !reflect.DeepEqual(items[i], result.Complete[i]) {
+				log.Error("Interpolate operation failed: a non-gap item changed", "index", i)
+				return result, fmt.Errorf(
+					"interpolate: item %d was not declared a gap but came back changed; filling gaps must leave the rest alone", i)
+			}
 		}
 	}
 
