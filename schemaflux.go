@@ -1805,3 +1805,39 @@ func MustNewOp[In, Out any](op Op[In, Out]) Op[In, Out] {
 func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt OpOptions) (Out, RepairResult, error) {
 	return ops.RunOp(ctx, op, input, opt)
 }
+
+// --- Diagnostics (A-011).
+//
+// Errors from this library never carry the caller's payload. That is correct
+// and it leaves debugging with nothing, which is why there is a second
+// channel: a sink the caller provides, off unless they do, bounded, scrubbed
+// of credentials, and referenced from the ordinary error by an ID and a digest
+// rather than by content.
+type (
+	// DiagnosticSink receives captured bodies. Implementations are called
+	// inline with the failing call, so a slow sink slows the caller — hand off
+	// to a queue rather than writing to a network from here.
+	DiagnosticSink = types.DiagnosticSink
+
+	// DiagnosticRecord is one captured body, already truncated and redacted.
+	DiagnosticRecord = types.DiagnosticRecord
+
+	// DiagnosticRef is what the error carries: an ID and a content digest,
+	// both safe to print.
+	DiagnosticRef = types.DiagnosticRef
+
+	// DiagnosticPolicy bounds what is captured and for how long.
+	DiagnosticPolicy = types.DiagnosticPolicy
+)
+
+// WithDiagnosticSink turns capture on for operations run with the returned
+// context. Without it nothing is captured, which is the default.
+func WithDiagnosticSink(ctx context.Context, sink DiagnosticSink, policy DiagnosticPolicy) context.Context {
+	return ops.WithDiagnosticSink(ctx, sink, policy)
+}
+
+// RunOpResult runs an operation described by an Op and returns the envelope,
+// including the repairs a caller's own invariants caused (A-009).
+func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt OpOptions) (Result[Out], error) {
+	return ops.RunOpResult(ctx, op, input, opt)
+}

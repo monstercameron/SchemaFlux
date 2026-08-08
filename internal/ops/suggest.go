@@ -209,7 +209,7 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	// Marshal input for LLM

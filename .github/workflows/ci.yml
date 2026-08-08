@@ -140,6 +140,24 @@ jobs:
       - name: Every finding traces to a task
         run: python3 .audit/traceability.py
 
+  # REL-001's ladder lived only in TODOS.md, which made it a statement of
+  # intent: nothing stopped a tag being cut while the milestone it depends on
+  # still had open work. A version number is the one claim a consumer cannot
+  # inspect for themselves, so it gets a gate.
+  #
+  # fetch-depth 0 and fetch-tags, because the check compares against the tags
+  # that exist and a shallow clone has none.
+  release-ladder:
+    name: release ladder
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: No tag ahead of the work it claims
+        run: python3 scripts/release_gate.py --check
+
   smarttodo:
     name: smarttodo module
     runs-on: ubuntu-latest

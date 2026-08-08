@@ -239,6 +239,14 @@ type OperationError struct {
 	// Message is a sanitized description. No payload.
 	Message string
 
+	// Diagnostic points at a record a caller-configured DiagnosticSink
+	// captured for this failure -- an ID and a content digest, never the
+	// content. It is the zero DiagnosticRef whenever no sink was configured,
+	// which is the default: A-011's Revised line asks for a second channel
+	// for debugging content, not for errors to carry it directly, and this
+	// field is the reference half of that channel.
+	Diagnostic DiagnosticRef
+
 	Cause error
 }
 
@@ -255,6 +263,11 @@ func (e *OperationError) Error() string {
 	}
 	if e.Cause != nil && e.Message == "" {
 		parts += ": " + e.Cause.Error()
+	}
+	if !e.Diagnostic.IsZero() {
+		// Safe to include: DiagnosticRef.String() is an ID and a digest, not
+		// the captured content.
+		parts += " (" + e.Diagnostic.String() + ")"
 	}
 	return parts
 }

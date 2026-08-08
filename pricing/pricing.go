@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -498,6 +499,9 @@ func lookupPricingModel(model string) (PricingModel, bool) {
 	// to mean "we genuinely do not know this model's rate".
 	model = strings.TrimSpace(strings.ToLower(model))
 
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+
 	if pricing, exists := pricingModels[model]; exists {
 		return pricing, true
 	}
@@ -766,4 +770,99 @@ func ResetBudget() {
 	budgetCallback = nil
 	budgetNotified = nil
 	budgetEnforce = false
+}
+
+// pricingMu guards the rate table. It exists because RegisterPricingModel
+// makes the table writable at runtime, and a map written by one goroutine
+// while another prices a request is a data race that shows up as a corrupted
+// invoice rather than a crash.
+var pricingMu sync.RWMutex
+
+// ErrInvalidPricingModel reports a rate card this package will not accept.
+var ErrInvalidPricingModel = errors.New("pricing: invalid pricing model")
+
+// RegisterPricingModel adds or replaces a model's rates.
+//
+// It exists because the built-in table is a snapshot of public list prices and
+// will always be behind, and because a caller on negotiated or enterprise
+// rates has never been able to say so: their costs were either computed from
+// somebody else's prices or reported unpriced. Registering their own rate card
+// is the difference between an accounting figure they can reconcile and one
+// they cannot.
+//
+// The model name is normalised the same way lookups are, so registering
+// "GPT-5.6-Luna" prices "gpt-5.6-luna".
+//
+// Rates are per 1,000 tokens, matching the built-in table. Getting that wrong
+// by a factor of a thousand is the obvious mistake here, so a rate above
+// oneThousandTokenSanityCeiling is refused: no real model costs more than a
+// dollar per thousand tokens, and a caller who meant per-million has said
+// something this package can tell is wrong.
+func RegisterPricingModel(model PricingModel) error {
+	name := strings.TrimSpace(strings.ToLower(model.Model))
+	if name == "" {
+		return fmt.Errorf("%w: no model name", ErrInvalidPricingModel)
+	}
+	if strings.TrimSpace(model.Provider) == "" {
+		return fmt.Errorf("%w: %q has no provider", ErrInvalidPricingModel, name)
+	}
+
+	rates := map[string]float64{
+		"prompt":     model.PricePerPromptToken,
+		"completion": model.PricePerCompletionToken,
+		"cached":     model.PriceCachedToken,
+		"reasoning":  model.PriceReasoningToken,
+	}
+	for _, kind := range []string{"prompt", "completion", "cached", "reasoning"} {
+		rate := rates[kind]
+		if rate < 0 {
+			return fmt.Errorf("%w: %q has a negative %s rate (%v)", ErrInvalidPricingModel, name, kind, rate)
+		}
+		if rate > oneThousandTokenSanityCeiling {
+			return fmt.Errorf(
+				"%w: %q has a %s rate of %v per 1K tokens, which is implausible -- rates in this table are per 1,000 tokens, not per 1,000,000",
+				ErrInvalidPricingModel, name, kind, rate)
+		}
+	}
+
+	// A rate card with every rate at zero would report real spending as free.
+	// PR-001's rule is that unpriced is not free; this is the same rule from
+	// the other side, because "priced at nothing" is the more convincing lie.
+	if model.PricePerPromptToken == 0 && model.PricePerCompletionToken == 0 {
+		return fmt.Errorf(
+			"%w: %q prices both prompt and completion tokens at zero, which would report real spending as free; omit the model instead and let it report unpriced",
+			ErrInvalidPricingModel, name)
+	}
+
+	model.Model = name
+	if strings.TrimSpace(model.Currency) == "" {
+		model.Currency = "USD"
+	}
+
+	pricingMu.Lock()
+	defer pricingMu.Unlock()
+	pricingModels[name] = model
+	return nil
+}
+
+// oneThousandTokenSanityCeiling is the highest per-1K-token rate this package
+// will accept. The most expensive public model is comfortably under a cent per
+// thousand tokens; a dollar leaves three orders of magnitude of headroom and
+// still catches the per-million mix-up, which is the mistake that actually
+// happens.
+const oneThousandTokenSanityCeiling = 1.0
+
+// RegisteredPricingModels reports the models with known rates, sorted, so a
+// caller can see what is priced without guessing. A model absent from this
+// list reports unpriced rather than free.
+func RegisteredPricingModels() []string {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+
+	names := make([]string, 0, len(pricingModels))
+	for name := range pricingModels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

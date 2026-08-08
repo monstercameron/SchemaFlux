@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
 	"github.com/monstercameron/schemaflux/internal/types"
@@ -19,6 +20,7 @@ type BaseOptions interface {
 	GetContext() context.Context
 	GetRequestID() string
 	GetCorrelationID() string
+	GetTimeout() time.Duration
 	Validate() error
 	toOpOptions() types.OpOptions
 }
@@ -39,6 +41,20 @@ type CommonOptions struct {
 
 	// Context for cancellation
 	Context context.Context
+
+	// Timeout is an invocation-scope deadline (ScopeInvocation). It is
+	// applied on top of whatever context.Context this call already carries,
+	// with context.WithTimeout's own semantics: a deadline the caller's
+	// context already carries that is earlier than now+Timeout is left
+	// alone, because Go's context package never lets a child extend a
+	// parent's deadline. That existing behaviour is exactly "a deadline
+	// always wins" (A-004's Revised line), so no extra bookkeeping is needed
+	// to enforce it -- only to apply Timeout in the first place, which
+	// nothing did before this field existed.
+	//
+	// Zero means the caller stated no opinion; the context's own deadline
+	// (or lack of one) applies unchanged.
+	Timeout time.Duration
 
 	// Internal fields
 	RequestID     string
@@ -91,6 +107,12 @@ func (c CommonOptions) GetCorrelationID() string {
 	return c.CorrelationID
 }
 
+// GetTimeout returns the invocation-scope timeout, or zero if the caller
+// stated no opinion.
+func (c CommonOptions) GetTimeout() time.Duration {
+	return c.Timeout
+}
+
 // Validate performs basic validation on common options
 func (c CommonOptions) Validate() error {
 	if c.Threshold < 0 || c.Threshold > 1 {
@@ -99,9 +121,36 @@ func (c CommonOptions) Validate() error {
 	return nil
 }
 
+// applyTimeout layers an invocation-scope Timeout onto a context using
+// context.WithTimeout's own precedence rule: a deadline the context already
+// carries that is earlier than now+timeout is left alone, because a child
+// context can never extend a parent's deadline. That is exactly "a deadline
+// always wins" (A-004's Revised line) -- the standard library already
+// enforces it, so this is only the one place that needs to call it, now that
+// CommonOptions has somewhere to keep the value.
+//
+// There is no single call site downstream that owns "this request is done"
+// the way a defer would need -- the context this returns outlives the
+// function that built it. The goroutine below is the resolution: it holds no
+// reference to anything but the child context and exits the moment Done
+// fires, which happens no later than the deadline either way, so it cannot
+// outlive what it is waiting on.
+func applyTimeout(ctx context.Context, timeout time.Duration) context.Context {
+	if timeout <= 0 {
+		return ctx
+	}
+	child, cancel := context.WithTimeout(ctx, timeout)
+	go func() {
+		<-child.Done()
+		cancel()
+	}()
+	return child
+}
+
 // toOpOptions converts to legacy OpOptions for backward compatibility
 func (c CommonOptions) toOpOptions() types.OpOptions {
-	ctx, tracking := requesttracking.Ensure(c.GetContext(), c.RequestID, c.CorrelationID)
+	ctx := applyTimeout(c.GetContext(), c.Timeout)
+	ctx, tracking := requesttracking.Ensure(ctx, c.RequestID, c.CorrelationID)
 	return types.OpOptions{
 		Steering:      c.Steering,
 		Threshold:     c.Threshold,
@@ -140,6 +189,14 @@ func (c CommonOptions) WithIntelligence(intelligence types.Speed) CommonOptions 
 // WithContext sets the context
 func (c CommonOptions) WithContext(ctx context.Context) CommonOptions {
 	c.Context = ctx
+	return c
+}
+
+// WithTimeout sets an invocation-scope deadline (ScopeInvocation), applied on
+// top of whatever context this call already carries. See CommonOptions.Timeout
+// for how it composes with a deadline the context already has.
+func (c CommonOptions) WithTimeout(timeout time.Duration) CommonOptions {
+	c.Timeout = timeout
 	return c
 }
 
@@ -198,6 +255,9 @@ func (e ExtractOptions) Validate() error {
 	}
 	if e.StrictSchema && e.AllowPartial {
 		return errors.New("cannot have both StrictSchema and AllowPartial")
+	}
+	if err := checkLockedLimits(e); err != nil {
+		return err
 	}
 	return nil
 }
@@ -318,11 +378,199 @@ func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) type
 		baseContext = context.Background()
 	}
 
+	// Timeout only lives on CommonOptions -- the embedded types.OpOptions has
+	// no field for it -- so there is nothing to merge here, only to apply.
+	baseContext = applyTimeout(baseContext, common.Timeout)
+
 	ctx, tracking := requesttracking.Ensure(baseContext, requestID, correlationID)
 	merged.Context = ctx
 	merged.RequestID = tracking.RequestID
 	merged.CorrelationID = tracking.CorrelationID
 	return merged
+}
+
+// LockedLimits are constraints installed at client or data-policy scope that
+// no invocation may loosen. A-004's Revised line requires exactly this: "an
+// invocation may make a limit stricter but may never weaken a locked client
+// or data-policy constraint," rejected rather than silently clamped, because
+// clamping a caller's request back to the lock without telling them hides
+// what happened just as effectively as applying it would (AGENTS.md's
+// never-fail-open rule, extended to configuration rather than only answers).
+//
+// Client scope has no field of its own in this package -- client.go, where a
+// *Client lives, is out of scope for this change -- so LockedLimits travels
+// the same way the provider already does (Client.Context, client.go): as a
+// value on the context.Context passed into an operation. A caller installing
+// limits at client construction attaches them once with WithLockedLimits and
+// passes that context into every call; every invocation under it is checked
+// against the same lock.
+type LockedLimits struct {
+	// MaxOutputTokens is the ceiling an invocation may not raise. Zero means
+	// no lock.
+	MaxOutputTokens int
+
+	// MinMode is the floor an invocation's Mode may not fall below, ordered
+	// by strictness (modeStrictness): Strict is the strongest, Creative the
+	// weakest. types.ModeUnset means no lock.
+	MinMode types.Mode
+}
+
+// lockedLimitsContextKey is unexported so nothing outside this package can
+// forge a value satisfying it -- a caller has to go through
+// WithLockedLimits, which is where the type is fixed.
+type lockedLimitsContextKey struct{}
+
+// WithLockedLimits attaches limits to ctx that every invocation running
+// under it must satisfy, per LockedLimits' doc comment.
+func WithLockedLimits(ctx context.Context, limits LockedLimits) context.Context {
+	return context.WithValue(ctx, lockedLimitsContextKey{}, limits)
+}
+
+// lockedLimitsFrom reads limits attached by WithLockedLimits, if any.
+func lockedLimitsFrom(ctx context.Context) (LockedLimits, bool) {
+	if ctx == nil {
+		return LockedLimits{}, false
+	}
+	limits, ok := ctx.Value(lockedLimitsContextKey{}).(LockedLimits)
+	return limits, ok
+}
+
+// modeStrictness orders Mode by how strong a guarantee it asks for, which is
+// what "weaker" and "stricter" mean for MinMode: Strict enforces exact schema
+// validation, Creative allows open-ended interpretation, and ModeUnset asks
+// for nothing at all, so it cannot violate a floor -- there is nothing to
+// compare.
+func modeStrictness(mode types.Mode) int {
+	switch mode {
+	case types.Strict:
+		return 3
+	case types.TransformMode:
+		return 2
+	case types.Creative:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// checkLockedLimits rejects an invocation that would weaken a lock installed
+// on this call's context, per LockedLimits. It reports nil when no lock is
+// present, or when the lock is present but nothing the invocation set
+// conflicts with it.
+//
+// This is called from Validate(), before toOpOptions() runs and before any
+// provider call is made -- the same point core.go already checks options at
+// (`if err := opts.Validate(); err != nil { return ... }`), so a rejected
+// invocation makes zero provider calls rather than one that gets discarded.
+//
+// Wired into ExtractOptions, ChooseOptions, and FilterOptions today. The
+// other eleven *Options types in this file do not call it yet -- see the
+// task report for why that is a stated limitation rather than an oversight.
+func checkLockedLimits(o BaseOptions) error {
+	limits, ok := lockedLimitsFrom(o.GetContext())
+	if !ok {
+		return nil
+	}
+
+	opt := o.toOpOptions()
+
+	if limits.MaxOutputTokens > 0 && opt.MaxOutputTokens > limits.MaxOutputTokens {
+		return fmt.Errorf(
+			"locked policy: max output tokens %d exceeds the client-scope ceiling of %d",
+			opt.MaxOutputTokens, limits.MaxOutputTokens)
+	}
+
+	if limits.MinMode != types.ModeUnset && opt.Mode != types.ModeUnset &&
+		modeStrictness(opt.Mode) < modeStrictness(limits.MinMode) {
+		return fmt.Errorf(
+			"locked policy: mode %s is weaker than the client-scope floor of %s",
+			opt.Mode, limits.MinMode)
+	}
+
+	return nil
+}
+
+// resolveField compares an operation's final value for one setting against
+// the operation's own default and reports which scope produced it: equal to
+// the default means nothing narrower said anything (ScopeOperationDescriptor);
+// different means an invocation set it (ScopeInvocation), unless that value
+// is exactly what a lock requires, in which case the lock is what is actually
+// binding (ScopeClient) even though the invocation's builder call is what
+// wrote the field.
+func resolveField[T comparable](name string, final, operationDefault T, render func(T) string, lockedValue *T) ResolvedSetting {
+	if lockedValue != nil && final == *lockedValue {
+		return ResolvedSetting{Name: name, Value: render(final), Source: types.ScopeClient, Locked: true}
+	}
+	if final == operationDefault {
+		return ResolvedSetting{Name: name, Value: render(final), Source: types.ScopeOperationDescriptor}
+	}
+	return ResolvedSetting{Name: name, Value: render(final), Source: types.ScopeInvocation}
+}
+
+// ResolvedSetting and ResolutionPlan are types.ResolvedSetting and
+// types.ResolutionPlan under package-local names, so Explain's signature
+// below reads without a types. prefix on every field. They are the same
+// type; a caller across the package boundary sees types.ResolutionPlan.
+type (
+	ResolvedSetting = types.ResolvedSetting
+	ResolutionPlan  = types.ResolutionPlan
+)
+
+// ExplainResolution builds a printable resolution plan comparing an option
+// value's final state against the operation's own default (operationDefault
+// is normally NewXOptions()), so a caller debugging why a setting did not
+// take effect can read where it actually came from instead of stepping
+// through the merge.
+//
+// Named ExplainResolution rather than Explain because Explain is already the
+// LLM operation in explain.go -- this is deterministic, reads no field it did
+// not resolve itself, and never calls a provider.
+//
+// It covers the cross-cutting settings every *Options type carries through
+// CommonOptions and the shared MaxOutputTokens field on types.OpOptions --
+// the ones A-004 is about. It does not cover operation-specific fields
+// (ChooseOptions.TopN, ScoreOptions.ScaleMax, and so on): those are the
+// "Params struct for operation inputs" half of the review's own distinction
+// between operation inputs and cross-cutting knobs, and they carry no scope
+// or lock semantics to explain.
+func ExplainResolution(final, operationDefault BaseOptions) ResolutionPlan {
+	ctx := final.GetContext()
+	limits, hasLock := lockedLimitsFrom(ctx)
+
+	var lockedMaxTokens *int
+	var lockedMinMode *types.Mode
+	if hasLock {
+		if limits.MaxOutputTokens > 0 {
+			lockedMaxTokens = &limits.MaxOutputTokens
+		}
+		if limits.MinMode != types.ModeUnset {
+			lockedMinMode = &limits.MinMode
+		}
+	}
+
+	finalOpt := final.toOpOptions()
+	defaultOpt := operationDefault.toOpOptions()
+
+	plan := ResolutionPlan{Settings: []ResolvedSetting{
+		resolveField("Steering", final.GetSteering(), operationDefault.GetSteering(), func(v string) string { return v }, nil),
+		resolveField("Threshold", final.GetThreshold(), operationDefault.GetThreshold(), func(v float64) string { return fmt.Sprintf("%g", v) }, nil),
+		resolveField("Mode", final.GetMode(), operationDefault.GetMode(), func(v types.Mode) string { return v.String() }, lockedMinMode),
+		resolveField("Intelligence", final.GetIntelligence(), operationDefault.GetIntelligence(), func(v types.Speed) string { return v.String() }, nil),
+		resolveField("RequestID", final.GetRequestID(), operationDefault.GetRequestID(), func(v string) string { return v }, nil),
+		resolveField("CorrelationID", final.GetCorrelationID(), operationDefault.GetCorrelationID(), func(v string) string { return v }, nil),
+		resolveField("Timeout", final.GetTimeout(), operationDefault.GetTimeout(), func(v time.Duration) string { return v.String() }, nil),
+		resolveField("MaxOutputTokens", finalOpt.MaxOutputTokens, defaultOpt.MaxOutputTokens, func(v int) string { return fmt.Sprintf("%d", v) }, lockedMaxTokens),
+	}}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		plan.Settings = append(plan.Settings, ResolvedSetting{
+			Name:   "Deadline",
+			Value:  deadline.Format(time.RFC3339Nano),
+			Source: types.ScopeRequestContext,
+		})
+	}
+
+	return plan
 }
 
 func (e ExtractOptions) toOpOptions() types.OpOptions {
@@ -1128,6 +1376,9 @@ func (c ChooseOptions) Validate() error {
 	if c.Strategy != "" && !validStrategies[c.Strategy] {
 		return fmt.Errorf("invalid strategy: %s", c.Strategy)
 	}
+	if err := checkLockedLimits(c); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1245,6 +1496,9 @@ func (f FilterOptions) Validate() error {
 	}
 	if f.MinConfidence < 0 || f.MinConfidence > 1 {
 		return fmt.Errorf("min confidence must be between 0 and 1, got %f", f.MinConfidence)
+	}
+	if err := checkLockedLimits(f); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1536,4 +1790,28 @@ func ConvertOpOptions(opts types.OpOptions, operationType string) BaseOptions {
 func IsLegacyOption(opt interface{}) bool {
 	_, ok := opt.(types.OpOptions)
 	return ok
+}
+
+// resolvedContext reports the context an operation should run under, given the
+// two places a caller can put one.
+//
+// Every options type embeds both CommonOptions and types.OpOptions, and the
+// fluent builders' .Context(ctx) sets the CommonOptions one -- but several
+// operations read opts.OpOptions.Context directly, so .Context(ctx) reached
+// Extract and silently did nothing for Choose, Filter, and Sort. A caller
+// could pass a cancellable context to a collection operation and watch it
+// ignore cancellation, which is exactly the failure A-013 exists to remove.
+//
+// The precedence is mergeEmbeddedOpOptions': the CommonOptions side wins when
+// it says something. This does not call toOpOptions, deliberately -- that
+// function mints request IDs as a side effect, and resolving a context should
+// not create identifiers.
+func resolvedContext(common CommonOptions, embedded types.OpOptions) context.Context {
+	if common.Context != nil {
+		return common.Context
+	}
+	if embedded.Context != nil {
+		return embedded.Context
+	}
+	return context.Background()
 }

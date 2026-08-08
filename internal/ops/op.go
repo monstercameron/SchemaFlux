@@ -181,7 +181,9 @@ func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types
 	policy := RepairPolicy{Attempts: op.DefaultPolicy.RepairAttempts}
 
 	var candidate Out
+	var lastBody string
 	_, repair, err := withRepair(ctx, system, user, opt, policy, func(body string) error {
+		lastBody = body
 		value, decodeErr := op.Contract.Decode(body)
 		if decodeErr != nil {
 			return decodeErr
@@ -199,9 +201,64 @@ func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types
 	})
 
 	if err != nil {
+		// withRepair returns two different failures through the same `error`
+		// return: a transport failure (callLLM never produced a body to
+		// validate) and a validation exhaustion (every attempt produced an
+		// answer this op's Decode or Invariants rejected). Only the second
+		// carries a raw body worth offering to a diagnostic sink, and the two
+		// are distinguishable without withRepair exposing a third return
+		// value: a validation exhaustion recorded one failure per attempt --
+		// validate ran and rejected the body every time -- while a transport
+		// failure short-circuits before validate is ever called for that
+		// attempt, so the failure count trails the attempt count.
+		if repair.Attempts > 0 && len(repair.Failures) == repair.Attempts {
+			ref := captureDiagnostic(ctx, op.ID.String(), types.KindRepairExhausted, lastBody)
+			return zero, repair, &types.OperationError{
+				Kind:       types.KindRepairExhausted,
+				Op:         op.ID.Name,
+				Cause:      err,
+				Diagnostic: ref,
+			}
+		}
 		return zero, repair, err
 	}
 	return candidate, repair, nil
+}
+
+// RunOpResult runs op exactly as RunOp does and additionally returns the
+// execution envelope: attempts, repairs, and usage summed across them.
+//
+// It exists because RunOp's (Out, RepairResult, error) return answers "what
+// happened to this call" in a shape only this package's own callers read.
+// A-009's Revised line asks for more: a caller-supplied invariant
+// participating in recovery has to be *visible* in the same envelope every
+// other operation reports through (types.Meta), not only in a RepairResult a
+// caller has to know to inspect separately. RunOpResult is the same
+// execution as RunOp -- it calls RunOp and wraps call recording around it --
+// so there is one path, not two that could drift (T-01's lesson, the same
+// one ExtractResult already follows for Extract).
+func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types.OpOptions) (types.Result[Out], error) {
+	ctx, records := withCallRecording(ctx)
+
+	value, repair, err := RunOp(ctx, op, input, opt)
+
+	meta := envelopeFrom(records.collect(), op.ID.String())
+
+	// envelopeFrom sums Attempts from the provider-call records it collected,
+	// which is the same number RepairResult.Attempts carries -- both count
+	// every call this logical request made. Repairs is not something
+	// envelopeFrom can derive from a ResultMetadata slice at all: nothing in
+	// a single provider response says whether the request that produced it
+	// was a first try or a repair, only RepairResult does. So it is set here,
+	// from the one place that already knows.
+	if repair.Attempts > 1 {
+		meta.Repairs = repair.Attempts - 1
+	}
+
+	if err != nil {
+		return types.Result[Out]{Meta: meta}, err
+	}
+	return types.Result[Out]{Value: value, Meta: meta}, nil
 }
 
 // --- The context/provider-free proof.

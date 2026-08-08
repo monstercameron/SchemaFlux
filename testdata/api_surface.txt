@@ -190,6 +190,7 @@ func RewriteResult
 func RewriteWithMetadata
 func Rewriting
 func RunOp
+func RunOpResult
 func Score
 func Scoring
 func SemanticMatch
@@ -235,6 +236,7 @@ func VerifyingClaim
 func Vote
 func When
 func WithCorrelationID
+func WithDiagnosticSink
 func WithRequestID
 func WithRequestTrackingMetadata
 method *Client.Context
@@ -339,6 +341,10 @@ type Derivation
 type DeriveOptions
 type DeriveRequest
 type DeriveResult
+type DiagnosticPolicy
+type DiagnosticRecord
+type DiagnosticRef
+type DiagnosticSink
 type DiffOptions
 type DiffRequest
 type DiffResult

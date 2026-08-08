@@ -2,7 +2,42 @@ package fluent
 
 import (
 	"context"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+// withRunContext applies an optional trailing context to opts, returning opts
+// unchanged when none was given. It is what every Run(ctx ...context.Context)
+// below calls: see run.go's doc comment for why Run stays variadic instead of
+// taking a required context.Context -- a hard signature change would break
+// provider_integration_test.go, a call site outside this package.
+func withRunContext(common CommonOptions, ctx []context.Context) CommonOptions {
+	if len(ctx) == 0 {
+		return common
+	}
+	return common.WithContext(ctx[0])
+}
+
+// withCollectionRunContext is withRunContext's counterpart for Choose,
+// Filter, and Sort.
+//
+// Those three live in internal/ops/collection.go, which this task cannot
+// edit, and which reads opts.OpOptions.Context directly rather than the
+// merged value opts.toOpOptions() would produce -- so setting only
+// CommonOptions.Context (what Context(ctx) and every other builder in this
+// file already did, before this task) never reached their actual provider
+// call. This sets OpOptions.Context too, so Run(ctx)/RunResult(ctx)'s
+// cancellation actually takes effect for these three. It is a workaround for
+// an existing defect outside this change's edit scope, not a fix to it --
+// see the task report for the citation (collection.go lines 222, 339, 425,
+// 615, all `operationContext(opts.OpOptions.Context, ...)`).
+func withCollectionRunContext(opts *types.OpOptions, common *CommonOptions, ctx []context.Context) {
+	if len(ctx) == 0 {
+		return
+	}
+	*common = common.WithContext(ctx[0])
+	opts.Context = ctx[0]
+}
 
 // ExtractRequest is a fluent builder for Extract.
 type ExtractRequest[T any] struct {
@@ -80,8 +115,22 @@ func (r ExtractRequest[T]) SchemaHints(hints map[string]string) ExtractRequest[T
 	return r
 }
 
-func (r ExtractRequest[T]) Run() (T, error) {
+// Run executes the request. An optional ctx applies to this call only and,
+// if cancelled, aborts it; called with no argument, Run uses whatever
+// context the builder chain already set (Context(ctx)), or
+// context.Background() if none -- exactly today's behaviour, preserved for
+// provider_integration_test.go's Run() call. See run.go for why Run is
+// variadic rather than Run(ctx context.Context).
+func (r ExtractRequest[T]) Run(ctx ...context.Context) (T, error) {
+	r.opts.CommonOptions = withRunContext(r.opts.CommonOptions, ctx)
 	return Extract[T](r.input, r.opts)
+}
+
+// RunResult executes identically to Run and returns the execution envelope
+// alongside the value (A-013, API-11).
+func (r ExtractRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
+	return ExtractResult[T](r.input, r.opts)
 }
 
 // TransformRequest is a fluent builder for Transform.
@@ -155,8 +204,22 @@ func (r TransformRequest[T, U]) CorrelationID(correlationID string) TransformReq
 	return r
 }
 
-func (r TransformRequest[T, U]) Run() (U, error) {
+// Run executes the request; see ExtractRequest.Run for the ctx contract.
+func (r TransformRequest[T, U]) Run(ctx ...context.Context) (U, error) {
+	r.opts.CommonOptions = withRunContext(r.opts.CommonOptions, ctx)
 	return Transform[T, U](r.input, r.opts)
+}
+
+// RunResult executes identically to Run and returns a best-effort execution
+// envelope: Transform has no ops.TransformResult twin yet (only Extract
+// does, ops.ExtractResult), so Usage, Cost, Attempts, and the delivered
+// contract are left at their zero values rather than guessed. Elapsed,
+// Operation, RequestID, and CorrelationID are real.
+func (r TransformRequest[T, U]) RunResult(ctx context.Context) (Result[U], error) {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
+	return runEnvelope("transform", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (U, error) {
+		return Transform[T, U](r.input, r.opts)
+	})
 }
 
 // GenerateRequest is a fluent builder for Generate.
@@ -235,8 +298,20 @@ func (r GenerateRequest[T]) CorrelationID(correlationID string) GenerateRequest[
 	return r
 }
 
-func (r GenerateRequest[T]) Run() (T, error) {
+// Run executes the request; see ExtractRequest.Run for the ctx contract.
+func (r GenerateRequest[T]) Run(ctx ...context.Context) (T, error) {
+	r.opts.CommonOptions = withRunContext(r.opts.CommonOptions, ctx)
 	return Generate[T](r.prompt, r.opts)
+}
+
+// RunResult executes identically to Run and returns a best-effort execution
+// envelope; see TransformRequest.RunResult for what "best-effort" leaves at
+// zero and why.
+func (r GenerateRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
+	return runEnvelope("generate", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
+		return Generate[T](r.prompt, r.opts)
+	})
 }
 
 // ChooseRequest is a fluent builder for Choose.
@@ -310,8 +385,21 @@ func (r ChooseRequest[T]) Reasoning(enabled bool) ChooseRequest[T] {
 	return r
 }
 
-func (r ChooseRequest[T]) Run() (T, error) {
+// Run executes the request; see ExtractRequest.Run for the ctx contract and
+// withCollectionRunContext for why Choose needs its context set twice.
+func (r ChooseRequest[T]) Run(ctx ...context.Context) (T, error) {
+	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, ctx)
 	return Choose[T](r.options, r.opts)
+}
+
+// RunResult executes identically to Run and returns a best-effort execution
+// envelope; see TransformRequest.RunResult for what "best-effort" leaves at
+// zero and why.
+func (r ChooseRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
+	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
+	return runEnvelope("choose", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
+		return Choose[T](r.options, r.opts)
+	})
 }
 
 // FilterRequest is a fluent builder for Filter.
@@ -385,8 +473,21 @@ func (r FilterRequest[T]) MinConfidence(confidence float64) FilterRequest[T] {
 	return r
 }
 
-func (r FilterRequest[T]) Run() ([]T, error) {
+// Run executes the request; see ExtractRequest.Run for the ctx contract and
+// withCollectionRunContext for why Filter needs its context set twice.
+func (r FilterRequest[T]) Run(ctx ...context.Context) ([]T, error) {
+	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, ctx)
 	return Filter[T](r.items, r.opts)
+}
+
+// RunResult executes identically to Run and returns a best-effort execution
+// envelope; see TransformRequest.RunResult for what "best-effort" leaves at
+// zero and why.
+func (r FilterRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
+	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
+	return runEnvelope("filter", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
+		return Filter[T](r.items, r.opts)
+	})
 }
 
 // SortRequest is a fluent builder for Sort.
@@ -460,8 +561,21 @@ func (r SortRequest[T]) Desc() SortRequest[T] {
 	return r
 }
 
-func (r SortRequest[T]) Run() ([]T, error) {
+// Run executes the request; see ExtractRequest.Run for the ctx contract and
+// withCollectionRunContext for why Sort needs its context set twice.
+func (r SortRequest[T]) Run(ctx ...context.Context) ([]T, error) {
+	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, ctx)
 	return Sort[T](r.items, r.opts)
+}
+
+// RunResult executes identically to Run and returns a best-effort execution
+// envelope; see TransformRequest.RunResult for what "best-effort" leaves at
+// zero and why.
+func (r SortRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
+	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
+	return runEnvelope("sort", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
+		return Sort[T](r.items, r.opts)
+	})
 }
 
 // ChooseBy is a compact entrypoint for selection-style tasks.

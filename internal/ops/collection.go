@@ -219,7 +219,7 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 		opOptions.Steering = steering
 	}
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	tagged := tagItems(options)
@@ -336,7 +336,7 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	// which is the point of OP-101 -- but a collection can still be large
 	// enough that even one id per item does not fit.
 	if fits := filterChunkSize(len(items), opOptions.Intelligence); fits > 0 && fits < len(items) {
-		ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+		ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 		defer cancel()
 
 		kept, _, err := MapReduceFlat(ctx, items,
@@ -422,7 +422,7 @@ func filterOneChunk[T any](items []T, opts FilterOptions) ([]T, error) {
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	tagged := tagItems(items)
@@ -555,7 +555,7 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 // why this library attaches the envelope this way rather than giving every
 // operation a second, divergent code path.
 func SortResult[T any](items []T, opts SortOptions) (types.Result[[]T], error) {
-	ctx, records := withCallRecording(opts.OpOptions.Context)
+	ctx, records := withCallRecording(resolvedContext(opts.CommonOptions, opts.OpOptions))
 	opts.OpOptions.Context = ctx
 
 	value, strategy, err := sortWithStrategy(items, opts)
@@ -612,7 +612,7 @@ func sortWithStrategy[T any](items []T, opts SortOptions) ([]T, string, error) {
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	// OP-106: above the threshold, per-item scoring is the primary strategy,

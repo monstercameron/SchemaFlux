@@ -13,6 +13,10 @@ type (
 	Mode  = types.Mode
 	Speed = types.Speed
 
+	// Result is the execution envelope RunResult(ctx) returns alongside
+	// Run(ctx)'s plain value -- see A-013.
+	Result[T any] = types.Result[T]
+
 	ExtractOptions             = ops.ExtractOptions
 	TransformOptions           = ops.TransformOptions
 	GenerateOptions            = ops.GenerateOptions
@@ -162,6 +166,13 @@ var (
 
 func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	return ops.Extract[T](input, opts)
+}
+
+// ExtractResult runs Extract and returns the execution envelope alongside
+// the value -- the same execution, per ops.ExtractResult's own doc comment.
+// It is what ExtractRequest.RunResult(ctx) calls (A-013).
+func ExtractResult[T any](input any, opts ExtractOptions) (Result[T], error) {
+	return ops.ExtractResult[T](input, opts)
 }
 
 func Transform[T any, U any](input T, opts TransformOptions) (U, error) {

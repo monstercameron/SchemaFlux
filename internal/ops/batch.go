@@ -123,7 +123,7 @@ func extractParallel[T any](batchProcessor *BatchProcessor, inputs []interface{}
 	semaphore := make(chan struct{}, batchProcessor.maxConcurrent)
 	var wg sync.WaitGroup
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, batchProcessor.timeout)
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), batchProcessor.timeout)
 	defer cancel()
 
 	apiCalls := 0
@@ -204,7 +204,7 @@ Output JSON array where each element matches this schema:
 Return format: [{"index": 0, "data": {...}}, {"index": 1, "data": {...}}, ...]`, typeInfo)
 
 		opOptions := opts.toOpOptions()
-		ctx, cancel := operationContext(opts.OpOptions.Context, batchProcessor.timeout)
+		ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), batchProcessor.timeout)
 
 		// Use provider from batchProcessor if available, otherwise default
 		var response string

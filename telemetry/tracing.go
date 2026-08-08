@@ -38,7 +38,17 @@ var (
 	tracingEnabled bool = false
 )
 
-// InitTracing initializes OpenTelemetry tracing with configured exporters
+// InitTracing initializes OpenTelemetry tracing with configured exporters.
+//
+// Deprecated: use telemetry/otel.Install with the TracerProvider your
+// application configured. This function builds exporters, picks an endpoint,
+// chooses a sampler, and calls otel.SetTracerProvider -- it configures the
+// *host's* telemetry stack, which means a host that has already configured its
+// own loses silently to whichever initialiser ran last, and a library embedded
+// twice fights itself. See MW-007 (ARC-17, ARC-18).
+//
+// It still works, and still does exactly what it did, for callers who were
+// relying on it.
 func InitTracing(serviceName string) error {
 	// Check if tracing is enabled
 	if !tracingEnvEnabled() {
@@ -156,6 +166,8 @@ func InitTracing(serviceName string) error {
 }
 
 // ShutdownTracing cleanly shuts down the trace provider
+// Deprecated: paired with InitTracing. A library that did not start the
+// provider has nothing to shut down; a host flushes its own.
 func ShutdownTracing(ctx context.Context) error {
 	if traceProvider != nil {
 		return traceProvider.Shutdown(ctx)

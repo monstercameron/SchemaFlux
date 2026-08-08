@@ -107,7 +107,7 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 	// Build summarization instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
@@ -156,7 +156,7 @@ func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error)
 	// Build summarization instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
@@ -249,7 +249,7 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 	// Build rewrite instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
@@ -297,7 +297,7 @@ func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
 	// Build rewrite instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
@@ -367,7 +367,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 	// Build translation instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a translation expert. Translate text accurately between languages.
@@ -415,7 +415,7 @@ func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, er
 	// Build translation instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a translation expert. Translate text accurately between languages.
@@ -487,7 +487,7 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 	// Build expansion instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.
@@ -535,7 +535,7 @@ func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
 	// Build expansion instructions
 	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
 
-	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
+	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.

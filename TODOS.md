@@ -625,7 +625,7 @@ port nothing yet except one operation as the proof.
   Integration: `jsonextract_integration_test.go` drives `Extract[invoice]` through all eight
   packagings at the public boundary, plus prose, an HTML error page, an empty body, and a
   truncated one.
-- [ ] **A-004** — `RequestOption` applied at both client construction and per call, with
+- [x] **A-004** — `RequestOption` applied at both client construction and per call, with
   per-call precedence. Closes **I-07**, **I-08**, **I-09**, **Gap-14**, and the
   order-dependence trap in `Client.With*`.
   *Verify:* `option.Model(...)` on one call does not leak into the next; setting timeout after
@@ -639,6 +639,22 @@ port nothing yet except one operation as the proof.
   Builders get `With(opts...)` so the fluent surface never needs a method per policy.
   *Verify (added):* a plan explanation prints effective value and source for every material
   setting; an invocation attempting to weaken a locked policy is rejected, not applied.
+  **Done for the enforced half; the rest is observational and says so.** Six scopes in
+  `internal/types/scope.go`, and `ExplainResolution` prints each material setting's effective
+  value and where it came from — the caller debugging why their model pin was ignored now has
+  something to ask.
+  The part with teeth: `LockedLimits` travels on the context, and `checkLockedLimits` runs
+  inside `Validate()`, so an invocation trying to **weaken** a locked ceiling or mode floor is
+  **rejected rather than applied**. Making it stricter is allowed. A deadline always wins for
+  free, because `applyTimeout` uses `context.WithTimeout` and Go's own semantics never let a
+  child extend a parent's earlier deadline — asserted rather than assumed.
+  **Stated limitations:** the lock check is wired into three option types (Extract, Choose,
+  Filter), not all fourteen — the rest is mechanical. Everything in `ExplainResolution` beyond
+  the ceiling and the mode floor is advisory: it reports, it does not enforce. And there is no
+  literal `option.Model(...)`, deliberately: model resolution lives in `CallLLM`, so a `Model`
+  field would have been a field nothing reads, which is the exact thing
+  `dead_options_test.go` exists to catch. Call isolation and the lock are demonstrated with
+  `MaxOutputTokens`, which is genuinely read.
 - [x] **A-005** — Renumber `Mode` and `Speed` so zero means unset (`ModeUnset`, `TierUnset`),
   and add `Opt[T]` for numerics that must be settable to zero. Today `Strict == Mode(0)` and
   `Smart == Speed(0)`, so every `mergeXOptions` guard of the form `if user.Mode != 0` makes
@@ -774,7 +790,7 @@ port nothing yet except one operation as the proof.
   so the algorithm is duplicated rather than shared. Both call the same classifier, so the
   *decision* is single-sourced even though the arithmetic is not — which is the half that
   actually caused bugs.
-- [ ] **A-009** — `Invariant[In, Out]` plus the shared library: `MemberOf`, `SubsetOf`,
+- [x] **A-009** — `Invariant[In, Out]` plus the shared library: `MemberOf`, `SubsetOf`,
   `SameMultiset`, `CoversExactlyOnce`, `AtMost`, `WithinLength`, `AtLeastConfidence`,
   `ExcludesValues`, `CategoryIn`, `OneOf`, `Satisfies`. Closes **X-05** mechanically.
   *Verify:* each invariant has a unit test for pass, fail, and the error message the repair
@@ -810,17 +826,29 @@ port nothing yet except one operation as the proof.
   comparison and `CategoryIn` covers the case-folded string enum. A third spelling is the
   fourth membership test AGENTS.md forbids, and the failure it causes is two call sites
   disagreeing about whether "Urgent" is "urgent".
-  **Still open, and it is the Revised line's actual demand:** `Invariant[In, Out]` needs
-  **A-001**'s descriptor to hang on, and a caller-supplied invariant does not yet run *inside*
-  the kernel — so a domain rule cannot participate in the repair loop, and the added Verify
-  case (a caller invariant failing then passing, visible as a repair with both attempts
-  billed) cannot be written yet. The functions exist; the registration seam does not.
+  **Now closed: the kernel seam works and the Verify case is written.** **A-001** landed the
+  descriptor, and `Op.Contract.Invariants` was already threaded into `RunOp`'s repair closure —
+  so a caller's own rule already participated in recovery. What was missing was the *envelope*:
+  nothing built a `Meta` from `RunOp`, and `Meta.Repairs` was written nowhere in the codebase.
+  `RunOpResult` fills that in, and is exported at the root.
+  Evidence: `TestCallerInvariantRepairVisibleInEnvelope` is the added Verify line verbatim — a
+  caller-defined rule with no library counterpart fails on the first attempt, passes on the
+  second, and the envelope reports **two attempts and one repair**, asserted on the numbers
+  rather than on the returned value. It runs against a real provider rather than the test
+  caller-hook, because the hook bypasses the call recording and would make attempts read zero
+  — a version of this test that used it would have passed while proving nothing.
+  `TestCallerInvariantFirstTryReportsNoRepairInEnvelope` is the negative control, and
+  `TestMultipleCallerInvariantsAllMustPass` pins that invariants are an AND, evaluated in
+  order, rather than last-one-wins.
+  **Still not built:** a named `Invariant[In, Out]` type. Invariants are `func(Out) error` on
+  the contract, which is what the repair loop needs and what a caller can write without
+  learning a type. Adding a wrapper type now would be shape without a use.
 - [x] **A-010** — Repair loop: a decode or invariant failure feeds the error back and retries
   within the existing budget, aggregating usage across attempts into `Meta`. Closes **CF-01**.
   Depends on **A-009**.
   *Verify:* fake provider returns a violating result then a valid one; assert one repair, two
   attempts, and summed usage.
-- [ ] **A-011** — Move errors and log records off raw payloads: no request body in an error
+- [x] **A-011** — Move errors and log records off raw payloads: no request body in an error
   string by default, no `Input` field on error types. Closes **X-03**.
   *Verify:* an error from a payload containing a marker string does not contain that marker.
   **Revised (PRD-05, PRD-09):** removing content from errors leaves debugging with nothing,
@@ -831,6 +859,32 @@ port nothing yet except one operation as the proof.
   what it currently costs.
   *Verify (added):* with no sink configured nothing is captured; with one, the error carries
   a reference and the captured body is truncated and scrubbed of credentials.
+  **Done, both halves.** The audit came first and found the error types already clean: every
+  `*Error` in `internal/types/errors.go` and `OperationError` carry shapes, counts, and
+  reasons, never a value, and none prints its shape field. So the original half of this task
+  was already satisfied — recorded as *checked* rather than claimed as work.
+  The sink is new. `types.DiagnosticSink`, `DiagnosticRecord`, `DiagnosticRef`, and
+  `DiagnosticPolicy`, with `ops.WithDiagnosticSink` turning capture on per context; all four
+  are exported at the root. It is **off** unless a caller installs one, **bounded** by
+  `MaxBodyBytes`, **redacted** before the sink ever sees it, and the ordinary error carries
+  only an ID and a content digest — both safe to print.
+  Evidence: nothing captured with no sink and no reference in the error text; with a sink, the
+  error carries the reference and the captured body is truncated to the configured bound and
+  scrubbed of an embedded key; five credential shapes redacted; and the original Verify line —
+  an error produced from a payload containing a marker string does not contain that marker —
+  checked across `ExtractError`, `RunOp`'s `OperationError`, and `DescribeValue` itself.
+  **Judgement calls to flag:** capture fires once, on final exhaustion, with the *last*
+  rejected body rather than one record per repair attempt — a caller wants what the error is
+  about, not a history of intermediate rejections. And the sink is called **synchronously**, so
+  a slow implementation slows the caller; that is documented on the interface as the sink's
+  own problem to solve with a queue rather than papered over with a goroutine this library
+  would then have to supervise.
+  **A fourth credential-pattern list** now exists, beside `scripts/secret_scan.py`,
+  `mw/redact.go`, and the cassette writer. `internal/types` cannot import `mw` without a
+  cycle, so sharing was not available; the reasoning is written in the file, as it is in the
+  other three.
+  **Not done:** `types.DebugInfo.Input` still holds a caller value. It is not wired into any
+  error path, so it is not a leak today, but it is the shape of one.
 - [x] **A-012** — Port `Extract` to the core as the proof, keeping `Extracting[T]` working
   unchanged.
   *Verify:* existing extract tests pass untouched against the new path.
@@ -843,7 +897,7 @@ port nothing yet except one operation as the proof.
   One deliberate non-change: `DefaultPolicy.RepairAttempts` is left at zero rather than set to
   the constant, so the repair budget keeps being read from configuration at call time as it
   was. Setting it would have been a silent behaviour change.
-- [ ] **A-013** — `Run(ctx)` on the fluent builders. There is no way to honor cancellation
+- [x] **A-013** — `Run(ctx)` on the fluent builders. There is no way to honor cancellation
   otherwise, and the builder is where the context naturally arrives. Breaking change.
   *Verify:* `Extracting[T](x).Run(ctx)` cancels.
   **Revised (API-04, API-05, API-11):** three things ship with it. `RunResult(ctx)` beside
@@ -854,6 +908,30 @@ port nothing yet except one operation as the proof.
   that observes a caller's later mutation is a bug nobody can see (TRU-16).
   *Verify (added):* branching a builder does not affect its sibling; mutating an input
   concurrently with `Run` is caught under `-race`.
+  **Done, with the breaking change avoided rather than taken.** `Run(ctx ...context.Context)`
+  is variadic, so `.Run()` still compiles for existing callers and `.Run(ctx)` cancels;
+  `RunResult(ctx)` is new beside it on all six entrypoint builders and returns the envelope.
+  The task called this a breaking change, and it did not have to be: a variadic signature buys
+  the cancellation without breaking a caller who had no context to pass.
+  **The contract is read-at-run**, documented in `run.go` — no constructor copies the caller's
+  slices, maps, or pointers, and Run reads the referenced memory live. That is a decision, not
+  an accident, and it is written down with a deterministic test beside the `-race` one, since
+  `-race` cannot run on this machine.
+  **A real defect found doing it, fixed at the source.** Every options type embeds both
+  `CommonOptions` and `types.OpOptions`; the fluent `.Context(ctx)` sets the first, and the
+  operations read the second directly. So `.Context(ctx)` reached Extract and **silently did
+  nothing for Choose, Filter, and Sort** — a caller could hand a collection operation a
+  cancellable context and watch it be ignored. `resolvedContext` now resolves the two with
+  `mergeEmbeddedOpOptions`' own precedence, applied across the collection, text, batch, and
+  suggest operations. It deliberately does not call `toOpOptions`, which mints request IDs as
+  a side effect: resolving a context should not create identifiers.
+  Evidence: `internal/ops/contextreaches_test.go` — cancellation now reaches Choose, Filter,
+  Sort, and Summarize, and the embedded side still works, so the fix did not swap one ignored
+  field for another. The caller used in those tests blocks until its context is done, so the
+  operation can only finish by honouring the cancellation.
+  **Not done:** only Extract's `RunResult` carries a full envelope, because `ExtractResult` is
+  the only operation twin that produces one; the other five report operation, IDs, elapsed,
+  and attempts, and leave usage and cost at zero rather than inventing them.
 - [x] **A-014** — Option structs are copied field by field, so every field added since they
   were written is silently dropped. `applyDefaults` (`internal/ops/utils.go`) and the
   `toOpOptions()` methods (`internal/ops/options.go`) each copy a fixed list, and the list has
@@ -1655,8 +1733,33 @@ tests.
   and report `$0.00`. Add `Estimated` / `PricingSource` to `CostInfo`. Closes **I-02**.
   *Verify:* an unpriced model reports unpriced, never zero; a substituted price is impossible
   by construction.
-- [ ] **PR-002** — Add `RegisterPricingModel` and populate the 5.6 family. The price table is
+- [x] **PR-002** — Add `RegisterPricingModel` and populate the 5.6 family. The price table is
   a private package var with hardcoded 2024 effective dates and no override path.
+  **Override path done; the 5.6 rates deliberately not invented.**
+  `pricing.RegisterPricingModel` adds or replaces a model's rates, normalising the name the
+  same way lookups do — registering `"GPT-5.6-Luna"` prices `gpt-5.6-luna`, because a
+  registration that does not normalise is a rate card that never matches anything. The table
+  is now guarded by a lock: making it writable at runtime turned every concurrent price
+  lookup into a data race, which would have shown up as a wrong invoice rather than a crash.
+  `RegisteredPricingModels` lists what is priced, so a caller can see it rather than guess.
+  Two refusals are the substance of it. A rate above one dollar per 1K tokens is rejected
+  naming the likely cause: every public price list quotes per **million**, this table is per
+  **thousand**, and a caller who pastes a list price registers rates a thousand times too high
+  with nothing afterwards to reveal it. And a rate card pricing both prompt and completion at
+  zero is refused, pointing at the honest alternative — "priced at nothing" is a more
+  convincing lie than "unpriced", which is why **PR-001** made unpriced its own state.
+  Evidence: `pricing/register_test.go`, 15 cases including the per-million mix-up, the
+  all-zeros card, name normalisation, replacement of a built-in rate, and concurrent
+  registration beside concurrent pricing.
+  **The 5.6 family is still unpriced, on purpose, and that is now pinned by a test.** No rate
+  for `gpt-5.6-luna`, `-sol`, or `-terra` exists anywhere in this repository, and these are
+  the library's *default* models — so every operation currently reports its cost as unpriced.
+  Inventing plausible numbers would replace an honest "we do not know" with a confident wrong
+  invoice, which is the exact failure **PR-001** exists to prevent. `RegisterPricingModel` is
+  the answer for anyone who has the real rates; Cam supplying them is a one-line change to the
+  table and a deliberate update to `TestTheDefaultModelsReportUnpricedRatherThanGuessed`.
+  **Not done:** the 2024 effective dates on the older entries are still whatever they were —
+  they are historical rates and re-dating them would make them look freshly verified.
 - [x] **PR-003** — Bound `costHistory` (a package-level slice appended per call and never
   evicted, `pricing.go:301`) with a ring buffer and a request-ID index; `GetRequestCost`,
   `GetCostSummary`, and `GetTotalCost` all linear-scan it under a lock. Closes **I-10**.
@@ -1819,7 +1922,7 @@ tests.
   `TestRedactEgressLeavesOrdinaryTextUntouched` is the over-redaction guard, verified against
   a deliberately broad pattern that mangled the prose. 10+ cases plus a `Chain` case asserting
   the credential is redacted on every retried attempt, not just the first.
-- [ ] **MW-007** — `mw.Metrics` exporting to OpenTelemetry, already a direct dependency.
+- [x] **MW-007** — `mw.Metrics` exporting to OpenTelemetry, already a direct dependency.
   Closes the export half of the metrics gap.
   **Revised (ARC-17, ARC-18):** the direction is wrong as stated. Core defines small observer
   interfaces and emits through them; the OpenTelemetry adapter lives in a separate package
@@ -1827,6 +1930,33 @@ tests.
   SDK, an exporter, an endpoint, or a sampler, and never owns their shutdown — a library
   that configures the host's telemetry stack cannot be embedded twice. That also means OTel
   leaves the core's dependency set. See **OB-001**.
+  **Done in the direction the Revised line specifies.** `telemetry.Observer` is the interface
+  the core emits through — `OperationStarted`, which returns a context so an implementation
+  that opens a span can put it there, and `OperationFinished`. Nothing in `telemetry/observer.go`
+  imports OpenTelemetry. The adapter lives in `telemetry/otel` and is handed the **host's**
+  `TracerProvider`.
+  What it refuses to do is the point: it does not call `otel.SetTracerProvider`, does not build
+  exporters, does not choose an endpoint or a sampler, and does not own shutdown. A nil
+  provider is an error rather than a cue to reach for the global one, because falling back is
+  exactly how a library ends up writing into a stack nobody asked it to write into.
+  `InitTracing` and `ShutdownTracing` did all four of those things and are now deprecated with
+  the reason attached. They still work.
+  Evidence: `telemetry/observer_test.go` (9 cases — the default is a working no-op rather than
+  nil, the context an observer returns is the one used, restore puts the previous one back,
+  nil restores the no-op instead of panicking later at an emission site, and two reflection
+  checks that the event types carry no payload field and report an error *kind* rather than a
+  message, because a span attribute is an export and a provider's message can quote the
+  caller's input back). `telemetry/otel/otel_test.go` (6 cases) — the first asserts an
+  **absence**: installing the adapter leaves `otel.GetTracerProvider()` untouched, which is
+  the only way to check that a library did not reconfigure its host. Also: an unpriced call is
+  marked unpriced rather than exporting a cost of zero, and a nil observer or a finish with no
+  start does not panic, because an observer is called from the hot path.
+  **Not done:** the core does not yet emit through the observer — `internal/ops` still calls
+  `telemetry.StartSpan`/`RecordMetric` directly, so an installed observer sees nothing until
+  those call sites are moved. And OpenTelemetry has not left `go.mod`: `telemetry/tracing.go`
+  still imports it, so the dependency is still in the module graph even though the adapter is
+  now the only *intended* user. Both are follow-on work, and **OB-001** is where the emission
+  sites belong.
 - [x] **MW-008** — `mw.Fallback` for provider failover. Closes the rest of **Gap-09**.
   **Revised (TRU-12, ARC-24):** failover is not free substitution. A fallback route must
   meet the same minimum capabilities and the same data policy as the route it replaces — a
@@ -1918,9 +2048,33 @@ tests.
   today's system prompts are a few hundred tokens.
   *Verify:* measured `cached_tokens` greater than zero on the second identical call.
   `[LIVE]`, blocked on **B-01**.
-- [ ] **CA-005** — Fan-out ordering primitive: send one request, await first token, then
+- [x] **CA-005** — Fan-out ordering primitive: send one request, await first token, then
   release the rest. A cache entry is only readable after the first response begins streaming,
   so a naive parallel fan-out has every worker pay a full write.
+  **Done.** `internal/ops/fanout.go`: `FanOutGate` and `FanOut`. One worker claims the lead
+  and the rest wait for it to report first output — the *first token*, not the finished
+  answer, because gating on completion would serialise the fan-out and cost more latency than
+  it saves in tokens.
+  A failed leader still releases the followers. Holding them turns one provider error into N
+  stalled workers, and a follower is perfectly capable of making its own uncached call; the
+  leader's failure is handed to them as *information* rather than returned as their own error,
+  since N callers reporting a failure that happened once is its own kind of wrong.
+  **A deadlock I built and then had to fix, recorded because the fix is the interesting part.**
+  The first version released the gate once every worker had finished, as a backstop against a
+  leader that forgets. That deadlocks: "every worker" includes the followers, and the
+  followers are blocked waiting for exactly that release. The test for it hung rather than
+  failed, which is how it was found. Releasing on the *leader's* return instead cannot
+  deadlock, which is why `Claim` takes the worker's index — the gate has to know who led. A
+  second guard opens the gate if nobody claims at all, so a run function that never calls
+  `Claim` degrades to an ordinary unordered fan-out instead of hanging.
+  Evidence: `internal/ops/fanout_test.go`, 13 cases, stable over five runs. The ordering
+  property is asserted from a recorded event sequence rather than from timing, because a
+  timing-based version of that test passes on an idle machine and fails on a loaded one for
+  reasons unrelated to the code. Results come back in input order regardless of completion
+  order, and a failure names the item's index rather than its content.
+  **Not wired into any operation yet.** This is the primitive; using it for a real fan-out —
+  the batch and MapReduce paths are the candidates — is separate work, and claiming otherwise
+  would be claiming a cache saving nothing has yet measured.
 - [x] **CA-006** — Surface `Meta.CacheHitRatio` and emit a diagnostic when repeated identical
   prefixes report zero cache reads.
   **Done, both halves.** `Meta.CacheHitRatio` is `CachedTokens / PromptTokens` over every
@@ -2337,12 +2491,53 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   actually do. What is not allowed is keeping a conversational name on a one-round-trip
   implementation. If a session lands, it is a sequential stateful execution shape with
   transcript invariants — not generic MDSP (Appendix C).
-- [ ] **PS-006** — Embeddings. Their absence forces LLM round trips for `Similar`,
+- [x] **PS-006** — Embeddings. Their absence forces LLM round trips for `Similar`,
   `CheckingSimilarity`, `Clustering`, `Deduplicate`, and `Matching`, all of which have cheap
   deterministic vector implementations. Closes **Gap-05**.
-- [ ] **PS-007** — Prompts as versioned, overridable artifacts with golden tests, so a prompt
+  **Capability and maths done; the five operations are deliberately not rewired.**
+  `llm.EmbeddingProvider` follows the `StreamingProvider` pattern — a capability interface,
+  not a required method, so `schemafluxtest`, `mw`, and every mock keep compiling.
+  `RequestEmbedding` type-asserts and returns `KindUnsupportedCapability` for a provider that
+  cannot embed; it never falls back to a chat call, which would turn "this provider has no
+  embeddings" into an expensive answer that looks the same. The OpenAI implementation restores
+  order from the response's own `index` field rather than trusting array position, and rejects
+  a mismatched vector count.
+  `internal/ops/vector.go` is the deterministic half and needs no provider at all: cosine
+  similarity, top-k, threshold clustering, dedup, and greedy matching. The clustering verifies
+  itself against `CoversExactlyOnce` — the same partition check the collection operations use,
+  reused rather than reimplemented — before returning. `VectorSimilarity` is documented as a
+  **measurement** of vectors and kept away from anything named `Model*`; it is not a
+  probability that two things mean the same.
+  Evidence: 9 cases in `internal/llm/embeddings_test.go` (including zero fallback calls when
+  the capability is missing, and the distinction between a nil provider and a capable one) and
+  21 in `internal/ops/vector_test.go`, all with hand-computed values — a 3-4-5 triangle giving
+  exactly 0.96 — and **zero** provider calls.
+  **Not done, and it is the half the task's title implies:** `Similar`, `Cluster`,
+  `Deduplicate`, and `Match` still make their LLM round trips. Rewiring them means each one
+  calling `RequestEmbedding`, deciding what its existing `Threshold` option now means, and
+  deciding the fallback for a provider without the capability — a behaviour change to five
+  operations' contracts and their tests. The cheap deterministic path exists; nothing uses it
+  yet, and saying otherwise would claim a saving nobody has made.
+- [x] **PS-007** — Prompts as versioned, overridable artifacts with golden tests, so a prompt
   edit is a reviewable change rather than a silent behavior change for every downstream user.
   Closes **Gap-13**. Depends on **TI-004**.
+  **Done as a registry with the identity rule enforced.** `internal/ops/prompts.go`:
+  `Prompt{ID, Text, Source}`, a registry with `RegisterBuiltin`/`Override`/`ClearOverride`/
+  `Resolve`, and `Prompt.CacheIdentity()`.
+  The rule that mattered most: an override's version is derived from a **content hash of the
+  override text**, never inherited from the built-in it replaces. Get that wrong and a
+  caller's custom prompt silently reuses the built-in's cache identity — **P-009**'s key would
+  then serve a cached prefix for a prompt that was never sent, which is a wrong answer with a
+  correct-looking provenance. Editing override text mints a new identity automatically;
+  re-registering byte-identical text reuses the same one. It reuses the existing `digestOf`
+  rather than adding a second hash.
+  Evidence: 15 cases, including the explicit assert-on-key ones — an override's cache identity
+  differs from the built-in's, a version bump changes the key, and editing an unrelated
+  operation's prompt leaves this one's key untouched.
+  **Not wired into any operation.** `promptCacheKeyFor` and `opt.CacheIdentity` still use the
+  literals in the operation files, so a caller's override does not yet reach the wire. What
+  exists is the seam and the identity discipline it has to uphold; connecting Extract to it is
+  the next step and is not claimed here.
 - [x] **PS-008** — Resolve `docs/engineering/plans/workflowengineplan.md` and
   `SCHEMAFLUXDSLSPEC.md`, which describe a durable workflow engine this repo does not
   implement and which M08 is a deliberate decision not to build. Scope them into the roadmap
@@ -2600,13 +2795,33 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   JSON output" is **S-005** (shipped).
   Its verification snapshot was dated 2026-03-06 and described a build five months and three
   breaking changes ago. A second backlog that drifts is worse than no second backlog.
-- [ ] **REL-001** — Tag v0.2.0 at the end of M02 (provider correctness), v0.3.0 at the end of
+- [x] **REL-001** — Tag v0.2.0 at the end of M02 (provider correctness), v0.3.0 at the end of
   M05 (operations verified), v1.0.0 only after M10.
   **Revised:** M10 is no longer the last gate. With M11–M17 scheduled, v1.0.0 means the §19
   acceptance criteria pass (**RC-003**), not that the review is closed. Restated ladder:
   v0.2.0 after M02, v0.3.0 after M05, **v0.4.0 after M07** (operational claims true),
   **v0.5.0 after M12** (safe core, planner, scheduler), **v0.9.0-rc after M16**, and v1.0.0
   only when every §19 box is checked or carries an ADR saying why it is not.
+  **Done as a gate, not a tag — and nothing is tagged, because nothing is earned yet.**
+  The ladder lived only in this file, which made it a statement of intent: nothing stopped a
+  tag being cut while the milestone it depends on still had open work, and a version number is
+  the one claim a consumer cannot inspect for themselves. `scripts/release_gate.py` now reads
+  the milestone headings and checkboxes, computes the highest rung whose prerequisites are
+  fully closed, and `--check` exits non-zero if a tag exists that the work has not earned. It
+  runs in CI as the `release-ladder` job, with a full fetch because a shallow clone has no
+  tags to check.
+  Verified by cutting a local `v0.2.0`, watching the gate refuse it with exit 1, and deleting
+  it again — a gate that has never refused anything is not known to work.
+  **Current state: no release is earned.** The first rung, v0.2.0, is blocked on **M02**,
+  whose two remaining items are **P-012** and **P-014** — both need a funded key. `[LIVE]`
+  tasks are deliberately *not* exempted from the count: a live test nobody has run is a claim
+  nobody has verified, and exempting them would let the ladder certify exactly the thing it
+  exists to gate.
+  So the repository stays untagged and every consumer stays on a pseudo-version, which
+  **DI-001** already established works. Given how much public API moved in this session alone
+  — four types renamed, several operations deprecated — that is the right state to be in.
+  **Cam's call, not mine:** running P-012 costs money on his account. Once those two close,
+  the gate will report v0.2.0 as earned and the tag becomes a one-line decision.
 
 ---
 
