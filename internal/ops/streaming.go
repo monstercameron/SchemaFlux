@@ -452,7 +452,7 @@ func StreamSummarize(input string, opts SummarizeOptions) (*TextStream, error) {
 		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), summarizeInstructions(opts))
 
 	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
 
@@ -473,7 +473,7 @@ func StreamRewrite(input string, opts RewriteOptions) (*TextStream, error) {
 		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), rewriteInstructions(opts))
 
 	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
 
@@ -495,7 +495,7 @@ func StreamTranslate(input string, opts TranslateOptions) (*TextStream, error) {
 		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), translateInstructions(opts))
 
 	systemPrompt := `You are a translation expert. Translate text accurately between languages.
 
@@ -516,7 +516,7 @@ func StreamExpand(input string, opts ExpandOptions) (*TextStream, error) {
 		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), expandInstructions(opts))
 
 	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.
 

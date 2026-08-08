@@ -124,8 +124,8 @@ func Classify[T any, C ~string](input T, opts ClassifyOptions) (ClassifyResult[C
 
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
+		if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+			steering = effectiveSteering(opts.CommonOptions, opts.OpOptions) + ". " + steering
 		}
 		opt.Steering = steering
 	}
@@ -404,8 +404,8 @@ func Score[T any](input T, opts ScoreOptions) (ScoreResult, error) {
 
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
+		if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+			steering = effectiveSteering(opts.CommonOptions, opts.OpOptions) + ". " + steering
 		}
 		opt.Steering = steering
 	}
@@ -593,8 +593,8 @@ func Compare[T any](itemA, itemB T, opts CompareOptions) (CompareResult[T], erro
 
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
+		if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+			steering = effectiveSteering(opts.CommonOptions, opts.OpOptions) + ". " + steering
 		}
 		opt.Steering = steering
 	}
@@ -802,6 +802,9 @@ func Similar[T any](itemA, itemB T, opts SimilarOptions) (SimilarResult, error) 
 
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")
+		// SimilarOptions embeds only types.OpOptions, so there is one place
+		// steering can be and no merge to do — see effectiveSteering for why
+		// every other operation in this file needs one.
 		if opts.OpOptions.Steering != "" {
 			steering = opts.OpOptions.Steering + ". " + steering
 		}

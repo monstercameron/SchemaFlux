@@ -16,7 +16,7 @@ func newNegotiateRequest[T any](constraints any, opts NegotiateOptions) Negotiat
 				return newNegotiateRequest[T](constraints, next)
 			},
 			setSteering: func(current NegotiateOptions, steering string) NegotiateOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current NegotiateOptions, mode Mode) NegotiateOptions {
@@ -50,7 +50,7 @@ func newNegotiateRequest[T any](constraints any, opts NegotiateOptions) Negotiat
 // ops.Negotiate's doc comment for what that means and where the real
 // multi-turn primitive (ops.Session) lives (PS-005, Revised ARC-20).
 func Negotiating[T any](constraints any) NegotiateRequest[T] {
-	return newNegotiateRequest[T](constraints, NegotiateOptions{})
+	return newNegotiateRequest[T](constraints, NewNegotiateOptions())
 }
 
 func (r NegotiateRequest[T]) Strategy(strategy string) NegotiateRequest[T] {
@@ -83,7 +83,7 @@ func newAdversarialNegotiationRequest[T any](ctx AdversarialContext[T], opts Adv
 				return newAdversarialNegotiationRequest(ctx, next)
 			},
 			setSteering: func(current AdversarialOptions, steering string) AdversarialOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current AdversarialOptions, mode Mode) AdversarialOptions {
@@ -118,7 +118,7 @@ func newAdversarialNegotiationRequest[T any](ctx AdversarialContext[T], opts Adv
 // where the real multi-turn primitive (ops.Session) lives (PS-005, Revised
 // ARC-20).
 func NegotiatingAdversarially[T any](ctx AdversarialContext[T]) AdversarialNegotiationRequest[T] {
-	return newAdversarialNegotiationRequest(ctx, AdversarialOptions{})
+	return newAdversarialNegotiationRequest(ctx, NewAdversarialOptions())
 }
 
 func (r AdversarialNegotiationRequest[T]) Strategy(strategy string) AdversarialNegotiationRequest[T] {
@@ -145,7 +145,7 @@ func newResolveRequest[T any](sources []T, opts ResolveOptions) ResolveRequest[T
 				return newResolveRequest(sources, next)
 			},
 			setSteering: func(current ResolveOptions, steering string) ResolveOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current ResolveOptions, mode Mode) ResolveOptions {
@@ -175,7 +175,7 @@ func newResolveRequest[T any](sources []T, opts ResolveOptions) ResolveRequest[T
 
 // Resolving starts a fluent Resolve request.
 func Resolving[T any](sources []T) ResolveRequest[T] {
-	return newResolveRequest(sources, ResolveOptions{})
+	return newResolveRequest(sources, NewResolveOptions())
 }
 
 func (r ResolveRequest[T]) Strategy(strategy string) ResolveRequest[T] {
@@ -202,7 +202,7 @@ func newDeriveRequest[T any, U any](input T, opts DeriveOptions) DeriveRequest[T
 				return newDeriveRequest[T, U](input, next)
 			},
 			setSteering: func(current DeriveOptions, steering string) DeriveOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current DeriveOptions, mode Mode) DeriveOptions {
@@ -232,7 +232,7 @@ func newDeriveRequest[T any, U any](input T, opts DeriveOptions) DeriveRequest[T
 
 // Deriving starts a fluent Derive request.
 func Deriving[T any, U any](input T) DeriveRequest[T, U] {
-	return newDeriveRequest[T, U](input, DeriveOptions{})
+	return newDeriveRequest[T, U](input, NewDeriveOptions())
 }
 
 func (r DeriveRequest[T, U]) Fields(fields ...string) DeriveRequest[T, U] {
@@ -260,7 +260,7 @@ func newConformRequest[T any](input T, standard string, opts ConformOptions) Con
 				return newConformRequest(input, standard, next)
 			},
 			setSteering: func(current ConformOptions, steering string) ConformOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current ConformOptions, mode Mode) ConformOptions {
@@ -291,7 +291,7 @@ func newConformRequest[T any](input T, standard string, opts ConformOptions) Con
 
 // Conforming starts a fluent Conform request.
 func Conforming[T any](input T, standard string) ConformRequest[T] {
-	return newConformRequest(input, standard, ConformOptions{})
+	return newConformRequest(input, standard, NewConformOptions())
 }
 
 func (r ConformRequest[T]) Strictly(strict bool) ConformRequest[T] {
@@ -318,7 +318,7 @@ func newInterpolateRequest[T any](items []T, opts InterpolateOptions) Interpolat
 				return newInterpolateRequest(items, next)
 			},
 			setSteering: func(current InterpolateOptions, steering string) InterpolateOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current InterpolateOptions, mode Mode) InterpolateOptions {
@@ -348,7 +348,7 @@ func newInterpolateRequest[T any](items []T, opts InterpolateOptions) Interpolat
 
 // Interpolating starts a fluent Interpolate request.
 func Interpolating[T any](items []T) InterpolateRequest[T] {
-	return newInterpolateRequest(items, InterpolateOptions{})
+	return newInterpolateRequest(items, NewInterpolateOptions())
 }
 
 func (r InterpolateRequest[T]) Run() (InterpolateResult[T], error) {
@@ -369,7 +369,7 @@ func newArbitrateRequest[T any](options []T, opts ArbitrateOptions) ArbitrateReq
 				return newArbitrateRequest(options, next)
 			},
 			setSteering: func(current ArbitrateOptions, steering string) ArbitrateOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current ArbitrateOptions, mode Mode) ArbitrateOptions {
@@ -399,7 +399,7 @@ func newArbitrateRequest[T any](options []T, opts ArbitrateOptions) ArbitrateReq
 
 // Arbitrating starts a fluent Arbitrate request.
 func Arbitrating[T any](options []T) ArbitrateRequest[T] {
-	return newArbitrateRequest(options, ArbitrateOptions{})
+	return newArbitrateRequest(options, NewArbitrateOptions())
 }
 
 func (r ArbitrateRequest[T]) Rules(rules ...string) ArbitrateRequest[T] {
@@ -426,7 +426,7 @@ func newProjectRequest[T any, U any](input T, opts ProjectOptions) ProjectReques
 				return newProjectRequest[T, U](input, next)
 			},
 			setSteering: func(current ProjectOptions, steering string) ProjectOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current ProjectOptions, mode Mode) ProjectOptions {
@@ -456,7 +456,7 @@ func newProjectRequest[T any, U any](input T, opts ProjectOptions) ProjectReques
 
 // Projecting starts a fluent Project request.
 func Projecting[T any, U any](input T) ProjectRequest[T, U] {
-	return newProjectRequest[T, U](input, ProjectOptions{})
+	return newProjectRequest[T, U](input, NewProjectOptions())
 }
 
 func (r ProjectRequest[T, U]) Exclude(fields ...string) ProjectRequest[T, U] {
@@ -483,7 +483,7 @@ func newAuditRequest[T any](input T, opts AuditOptions) AuditRequest[T] {
 				return newAuditRequest(input, next)
 			},
 			setSteering: func(current AuditOptions, steering string) AuditOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current AuditOptions, mode Mode) AuditOptions {
@@ -513,7 +513,7 @@ func newAuditRequest[T any](input T, opts AuditOptions) AuditRequest[T] {
 
 // Auditing starts a fluent Audit request.
 func Auditing[T any](input T) AuditRequest[T] {
-	return newAuditRequest(input, AuditOptions{})
+	return newAuditRequest(input, NewAuditOptions())
 }
 
 func (r AuditRequest[T]) Policies(policies ...string) AuditRequest[T] {
@@ -546,7 +546,7 @@ func newAssembleRequest[T any](parts []any, opts ComposeOptions) AssembleRequest
 				return newAssembleRequest[T](parts, next)
 			},
 			setSteering: func(current ComposeOptions, steering string) ComposeOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current ComposeOptions, mode Mode) ComposeOptions {
@@ -576,7 +576,7 @@ func newAssembleRequest[T any](parts []any, opts ComposeOptions) AssembleRequest
 
 // Assembling starts a fluent Assemble request.
 func Assembling[T any](parts []any) AssembleRequest[T] {
-	return newAssembleRequest[T](parts, ComposeOptions{})
+	return newAssembleRequest[T](parts, NewComposeOptions())
 }
 
 func (r AssembleRequest[T]) Run() (ComposeResult[T], error) {
@@ -597,7 +597,7 @@ func newPivotRequest[T any, U any](input T, opts PivotOptions) PivotRequest[T, U
 				return newPivotRequest[T, U](input, next)
 			},
 			setSteering: func(current PivotOptions, steering string) PivotOptions {
-				current.Steering = steering
+				current.Steering = accumulateSteering(current.Steering, steering)
 				return current
 			},
 			setMode: func(current PivotOptions, mode Mode) PivotOptions {
@@ -627,7 +627,7 @@ func newPivotRequest[T any, U any](input T, opts PivotOptions) PivotRequest[T, U
 
 // Pivoting starts a fluent Pivot request.
 func Pivoting[T any, U any](input T) PivotRequest[T, U] {
-	return newPivotRequest[T, U](input, PivotOptions{})
+	return newPivotRequest[T, U](input, NewPivotOptions())
 }
 
 func (r PivotRequest[T, U]) Run() (PivotResult[U], error) {

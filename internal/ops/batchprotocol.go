@@ -209,6 +209,68 @@ func NewIDBatchAlgebra[In, Out any](class types.BatchClass, kind types.AlgebraKi
 	}
 }
 
+// mergeIDBatchPartial decodes as many of subsetItems' answers out of body as
+// the response's own id coverage allows, instead of requiring exact coverage
+// the way NewIDBatchAlgebra's Merge does. It is PL-009's "keep the valid
+// items" step: a missing id, a duplicated id (which id's payload is the real
+// one is not decidable from the response alone), an invented id, or one
+// item's own decode failure marks only that one item unresolved -- it never
+// invalidates the ids that did resolve cleanly, the way Merge's all-or-
+// nothing coverage check does.
+//
+// resolved is local-subset-index -> Out for every item whose id was answered
+// exactly once among the ids offered for subsetItems and decoded without
+// error. unresolved lists the local-subset index of every other item, in
+// ascending order -- PL-009's set to isolate and retry at a smaller size.
+// coverage is the raw classification (batchprotocol.go's own diagnostic),
+// carried out so a caller can turn it into an AdaptiveChunkState outcome.
+//
+// A body that does not even parse as the expected
+// {"items":[{"id":...,"output":...}]} shape resolves nothing and marks every
+// offered item unresolved -- there is no id list in an unparseable body to
+// classify against, so coverage is reported as Offered-only.
+func mergeIDBatchPartial[In, Out any](body string, subsetItems []In, codec BatchItemCodec[In, Out]) (resolved map[int]Out, unresolved []int, coverage BatchCoverage, err error) {
+	var parsed idBatchResponse
+	if parseErr := ParseJSONStrict(body, &parsed); parseErr != nil {
+		unresolved = make([]int, len(subsetItems))
+		for i := range subsetItems {
+			unresolved[i] = i
+		}
+		return nil, unresolved, BatchCoverage{Offered: len(subsetItems)},
+			fmt.Errorf("batch response is not the expected {\"items\":[{\"id\":...,\"output\":...}]} shape: %w", parseErr)
+	}
+
+	ids := make([]string, len(parsed.Items))
+	byID := make(map[string]json.RawMessage, len(parsed.Items))
+	counts := make(map[string]int, len(parsed.Items))
+	for i, item := range parsed.Items {
+		ids[i] = item.ID
+		counts[item.ID]++
+		byID[item.ID] = item.Output
+	}
+
+	coverage = classifyBatchIDs(len(subsetItems), ids)
+
+	offered := itemIDs(len(subsetItems))
+	resolved = make(map[int]Out, len(subsetItems))
+	for i, id := range offered {
+		if counts[id] != 1 {
+			// Missing (count 0) or duplicated (count > 1): neither case has
+			// exactly one trustworthy payload to decode.
+			unresolved = append(unresolved, i)
+			continue
+		}
+		value, decodeErr := codec.DecodeItem(byID[id])
+		if decodeErr != nil {
+			unresolved = append(unresolved, i)
+			continue
+		}
+		resolved[i] = value
+	}
+
+	return resolved, unresolved, coverage, nil
+}
+
 // RunOpBatch runs op's declared batch algebra over one chunk of items: encode
 // the batch request, call the model once, merge the response by id, and --
 // for a BatchAggregate operation -- run the whole-set validation nothing

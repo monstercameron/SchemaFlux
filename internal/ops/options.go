@@ -162,9 +162,22 @@ func (c CommonOptions) toOpOptions() types.OpOptions {
 	}
 }
 
-// WithSteering sets the steering prompt
+// WithSteering appends a steering instruction. FL-004 / F-04: this used to
+// assign (`c.Steering = steering; return c`), so a second `.Steer(...)` call
+// silently discarded the first instead of adding to it -- a fluent chain
+// like `.Steer("be concise").Steer("cite sources")` produced only "cite
+// sources", with no error and no trace of the dropped instruction. Multiple
+// calls now accumulate, separated by "; ", so every instruction the caller
+// wrote reaches the prompt.
 func (c CommonOptions) WithSteering(steering string) CommonOptions {
-	c.Steering = steering
+	if steering == "" {
+		return c
+	}
+	if c.Steering == "" {
+		c.Steering = steering
+	} else {
+		c.Steering = c.Steering + "; " + steering
+	}
 	return c
 }
 
@@ -328,6 +341,35 @@ func (e ExtractOptions) WithIntelligence(intelligence types.Speed) ExtractOption
 // so "unset" and "explicitly Strict/Smart" are indistinguishable and no merge
 // rule can be correct until TODOS.md A-005 renumbers them. Taking CommonOptions
 // preserves today's behaviour rather than guessing.
+// effectiveSteering is the caller's steering, from whichever of the two places
+// it can be set.
+//
+// # Why this exists rather than reading a field
+//
+// Every options type embeds BOTH `CommonOptions` and `types.OpOptions`, and each
+// carries a `Steering`. The fluent builders write the CommonOptions one --
+// `.Steer(...)` calls `CommonOptions.WithSteering` -- while an options struct
+// filled in by hand usually sets the OpOptions one, which is what the examples
+// under examples/ do.
+//
+// Twenty-four operations read `opts.OpOptions.Steering` directly to decide
+// whether the caller had said anything, and every one of them therefore saw an
+// empty string for the entire fluent API. In the operations that compose their
+// own instructions -- Choose, Score, Summarize, Rewrite, Translate, Expand and
+// the rest -- the branch guarded by that check is what PRESERVES the caller's
+// steering before the composed instructions overwrite it, so `.Steer(...)` was
+// not merely ignored: it was silently discarded, on every call, while the
+// builder that set it returned no error and the operation succeeded.
+//
+// The merge rule matches mergeEmbeddedOpOptions exactly, so the value an
+// operation checks and the value it eventually sends can never disagree.
+func effectiveSteering(common CommonOptions, embedded types.OpOptions) string {
+	if common.Steering != "" {
+		return common.Steering
+	}
+	return embedded.Steering
+}
+
 func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) types.OpOptions {
 	merged := embedded
 

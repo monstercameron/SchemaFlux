@@ -105,7 +105,7 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 	}
 
 	// Build summarization instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), summarizeInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -154,7 +154,7 @@ func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error)
 	}
 
 	// Build summarization instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), summarizeInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -247,7 +247,7 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 	}
 
 	// Build rewrite instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), rewriteInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -295,7 +295,7 @@ func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
 	}
 
 	// Build rewrite instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), rewriteInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -365,7 +365,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 	}
 
 	// Build translation instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), translateInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -413,7 +413,7 @@ func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, er
 	}
 
 	// Build translation instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), translateInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -485,7 +485,7 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 	}
 
 	// Build expansion instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), expandInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
@@ -533,7 +533,7 @@ func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
 	}
 
 	// Build expansion instructions
-	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), expandInstructions(opts))
 
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()

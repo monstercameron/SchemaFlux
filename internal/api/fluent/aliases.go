@@ -162,6 +162,22 @@ var (
 	NewSynthesizeOptions    = ops.NewSynthesizeOptions
 	NewPredictOptions       = ops.NewPredictOptions
 	NewVerifyOptions        = ops.NewVerifyOptions
+
+	// FL-003: constructors for the advanced fluent surface's option types.
+	// Added in internal/ops/options_advanced.go, which did not exist before --
+	// these eleven types had no NewXOptions() to route through, which is why
+	// fluent_advanced.go built its options from a bare `XOptions{}` literal.
+	NewNegotiateOptions   = ops.NewNegotiateOptions
+	NewAdversarialOptions = ops.NewAdversarialOptions
+	NewResolveOptions     = ops.NewResolveOptions
+	NewDeriveOptions      = ops.NewDeriveOptions
+	NewConformOptions     = ops.NewConformOptions
+	NewInterpolateOptions = ops.NewInterpolateOptions
+	NewArbitrateOptions   = ops.NewArbitrateOptions
+	NewProjectOptions     = ops.NewProjectOptions
+	NewAuditOptions       = ops.NewAuditOptions
+	NewComposeOptions     = ops.NewComposeOptions
+	NewPivotOptions       = ops.NewPivotOptions
 )
 
 func Extract[T any](input any, opts ExtractOptions) (T, error) {

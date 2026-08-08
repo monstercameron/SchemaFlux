@@ -241,6 +241,86 @@ type ProviderConfig struct {
 	// to false: the zero value is the private one, so a caller who never
 	// thinks about this gets retention off rather than on.
 	Store bool
+
+	// HTTPClient lets the caller supply their own *http.Client -- a proxy, an
+	// mTLS transport, request instrumentation, or a transport that fails on
+	// dial for a test. SC-007: before this field existed, every constructor
+	// in this file built its own `&http.Client{Timeout: config.Timeout}`
+	// with no injection point, so a caller who needed any of that had no way
+	// to get it short of forking the library.
+	//
+	// The caller owns it: nil (the default) preserves exactly today's
+	// behaviour -- this library builds one *http.Client per provider,
+	// scoped to config.Timeout, precisely as it always did. A non-nil value
+	// is used as-is; this library never mutates its Timeout, Jar, or
+	// CheckRedirect, and never closes it. The one exception is ExtraHeaders:
+	// if also set, the client actually used is a shallow copy with Transport
+	// wrapped to add those headers, so the caller's Transport (and whatever
+	// pooling or instrumentation it does) still runs underneath -- the
+	// original *http.Client the caller passed in is never written to.
+	HTTPClient *http.Client
+
+	// EndpointPolicy, when non-nil, is checked against BaseURL before any
+	// client is built (SEC-004's ValidateEndpoint, internal/types/
+	// endpointpolicy.go). nil is the default and means no policy is
+	// enforced -- today's behaviour, where BaseURL is used exactly as given.
+	// SEC-004 documented this as the gap: the check existed with nothing
+	// calling it. A caller who wants the loopback/link-local/cloud-metadata
+	// refusal (or a host/scheme allowlist) opts in by setting this; nothing
+	// is refused by default, because an EndpointPolicy left at its own zero
+	// value refuses every scheme and host (see EndpointPolicy's doc
+	// comment), and enforcing an implicit empty policy on every caller who
+	// never mentioned one would reject every configured BaseURL that exists
+	// in this codebase's own tests today.
+	EndpointPolicy *types.EndpointPolicy
+}
+
+// resolveHTTPClient returns the *http.Client a provider should use for
+// config, applying SC-007's ownership rule: a caller-supplied client is
+// never replaced, and a caller who supplies nothing gets exactly what every
+// provider built before this field existed -- one *http.Client scoped to
+// config.Timeout.
+//
+// ExtraHeaders is layered on top either way. When config.HTTPClient is set,
+// this returns a shallow copy with Transport wrapped around whatever
+// Transport the caller configured (http.DefaultTransport if they left it
+// nil) rather than discarding it -- the caller's own *http.Client value is
+// never mutated, only read.
+func resolveHTTPClient(config ProviderConfig) *http.Client {
+	if config.HTTPClient != nil {
+		if len(config.ExtraHeaders) == 0 {
+			return config.HTTPClient
+		}
+		wrapped := *config.HTTPClient
+		base := wrapped.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		wrapped.Transport = &customTransport{transport: base, headers: config.ExtraHeaders}
+		return &wrapped
+	}
+
+	client := &http.Client{Timeout: config.Timeout}
+	if len(config.ExtraHeaders) > 0 {
+		client.Transport = &customTransport{transport: http.DefaultTransport, headers: config.ExtraHeaders}
+	}
+	return client
+}
+
+// validateConfiguredEndpoint enforces config.EndpointPolicy against
+// config.BaseURL, when a policy was supplied. Called once per provider
+// construction, before any client or request is built, so a refused
+// endpoint fails configuration rather than the first request. See
+// ProviderConfig.EndpointPolicy for why nil means unenforced rather than
+// "refuse everything."
+func validateConfiguredEndpoint(providerName string, config ProviderConfig) error {
+	if config.EndpointPolicy == nil {
+		return nil
+	}
+	if err := config.EndpointPolicy.ValidateEndpoint(config.BaseURL); err != nil {
+		return fmt.Errorf("configuring provider %q: %w", providerName, err)
+	}
+	return nil
 }
 
 // ProviderFactory creates a provider from configuration.
@@ -283,6 +363,9 @@ func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 	if config.APIKey == "" {
 		return nil, fmt.Errorf("OpenAI API key is required")
 	}
+	if err := validateConfiguredEndpoint("openai", config); err != nil {
+		return nil, err
+	}
 
 	client, config, err := newOpenAIClient(config, "")
 	if err != nil {
@@ -291,10 +374,13 @@ func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 
 	return &OpenAIProvider{
 		client: client,
-		// One client per provider. A fresh http.Client per request defeats
+		// One client per provider, resolved by resolveHTTPClient: the
+		// caller's own *http.Client (SC-007) when config.HTTPClient is set,
+		// or the same `&http.Client{Timeout: config.Timeout}` this always
+		// built otherwise. A fresh http.Client per request defeats
 		// connection reuse and HTTP/2 multiplexing; the per-request deadline
 		// rides on the context instead.
-		httpClient: &http.Client{Timeout: config.Timeout},
+		httpClient: resolveHTTPClient(config),
 		config:     config,
 	}, nil
 }
@@ -990,6 +1076,10 @@ func newOpenAIClient(config ProviderConfig, defaultBaseURL string) (*openai.Clie
 }
 
 func newOpenAICompatibleProvider(name string, config ProviderConfig, defaultBaseURL string) (*OpenAICompatibleProvider, error) {
+	if err := validateConfiguredEndpoint(name, config); err != nil {
+		return nil, err
+	}
+
 	// newOpenAIClient is still what validates the key and settles the base URL,
 	// even though the SDK client it builds is no longer used to send the call.
 	_, config, err := newOpenAIClient(config, defaultBaseURL)
@@ -998,23 +1088,30 @@ func newOpenAICompatibleProvider(name string, config ProviderConfig, defaultBase
 	}
 
 	return &OpenAICompatibleProvider{
-		name:       normalizeProviderName(name),
-		httpClient: &http.Client{Timeout: config.Timeout},
+		name: normalizeProviderName(name),
+		// resolveHTTPClient (SC-007): the caller's own *http.Client when
+		// config.HTTPClient is set, otherwise the same
+		// `&http.Client{Timeout: config.Timeout}` this always built.
+		httpClient: resolveHTTPClient(config),
 		config:     config,
 	}, nil
 }
 
 // AnthropicProvider implements Provider for Anthropic Claude
 type AnthropicProvider struct {
-	config  ProviderConfig
-	apiKey  string
-	baseURL string
+	config     ProviderConfig
+	apiKey     string
+	baseURL    string
+	httpClient *http.Client
 }
 
 // NewAnthropicProvider creates a new Anthropic provider
 func NewAnthropicProvider(config ProviderConfig) (*AnthropicProvider, error) {
 	if config.APIKey == "" {
 		return nil, fmt.Errorf("anthropic API key is required")
+	}
+	if err := validateConfiguredEndpoint("anthropic", config); err != nil {
+		return nil, err
 	}
 
 	baseURL := config.BaseURL
@@ -1026,6 +1123,14 @@ func NewAnthropicProvider(config ProviderConfig) (*AnthropicProvider, error) {
 		config:  config,
 		apiKey:  config.APIKey,
 		baseURL: baseURL,
+		// resolveHTTPClient (SC-007). This used to be built fresh inside
+		// Complete on every call -- `client := &http.Client{Timeout:
+		// provider.config.Timeout}` -- which defeated connection reuse the
+		// same way OpenAIProvider's own doc comment warns against, and gave
+		// a caller-supplied client (once this field existed to accept one)
+		// nowhere to land, since a fresh internal client was built
+		// regardless of what the caller configured.
+		httpClient: resolveHTTPClient(config),
 	}, nil
 }
 
@@ -1129,12 +1234,12 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 	httpReq.Header.Set("x-api-key", provider.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	// Use a custom HTTP client or default
-	client := &http.Client{
-		Timeout: provider.config.Timeout,
-	}
-
-	resp, err := client.Do(httpReq)
+	// provider.httpClient (SC-007, resolveHTTPClient at construction): the
+	// caller's own *http.Client when supplied, otherwise the same
+	// `&http.Client{Timeout: provider.config.Timeout}` this used to build
+	// fresh on every call here -- which defeated connection reuse and gave a
+	// caller-supplied client nowhere to land.
+	resp, err := provider.httpClient.Do(httpReq)
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("anthropic request failed: %w", err)
 	}

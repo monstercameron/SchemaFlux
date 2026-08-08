@@ -25,9 +25,9 @@ Example:
 - Input [{"id":"i-000001","item":{"name":"A"}},{"id":"i-000002","item":{"name":"B"}}] -> Output {"id":"i-000002"}
 --- user
 Additional instructions:
-Provide reasoning for your choice. Use scoring strategy
+the most urgent. Provide reasoning for your choice. Use scoring strategy
 
-Selection Requirements: Provide reasoning for your choice. Use scoring strategy
+Selection Requirements: the most urgent. Provide reasoning for your choice. Use scoring strategy
 
 Choose the best option from this list:
 [{"id":"i-000001","item":{"id":"T-1","subject":"charged twice","amount":42.5}},{"id":"i-000002","item":{"id":"T-2","subject":"cannot log in","amount":0}}]

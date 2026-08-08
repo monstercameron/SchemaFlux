@@ -213,8 +213,8 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 
 	if len(instructions) > 0 {
 		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
+		if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+			steering = effectiveSteering(opts.CommonOptions, opts.OpOptions) + ". " + steering
 		}
 		opOptions.Steering = steering
 	}

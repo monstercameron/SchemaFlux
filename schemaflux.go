@@ -932,9 +932,11 @@ func Deduplicate[T any](items []T, threshold float64, opts ...OpOptions) (Dedupl
 	return ops.Deduplicate(items, threshold, opts...)
 }
 
-// Deprecated: use Validate. ValidationResult is a bool, a []string, and a
-// model-reported confidence; ValidateResult[T] says which field failed, how
-// badly, and offers a correction. See internal/ops for the full note.
+// Deprecated: use ValidateHybrid. ValidationResult is a bool, a []string, and
+// a model-reported confidence; JudgmentResult says which field failed, how
+// badly, and offers a correction. It named Validate before, which is itself
+// deprecated now -- a deprecation pointing at a deprecation sends a caller on
+// two migrations instead of one.
 func ValidateLegacy[T any](data T, rules string, opts ...OpOptions) (ValidationResult, error) {
 	return ops.ValidateLegacy(data, rules, opts...)
 }
@@ -978,6 +980,10 @@ func Merge[T any](sources []T, strategy string, opts ...OpOptions) (T, error) {
 //	result, err := schemaflux.MergeWithMetadata(sources, "prefer-newest")
 //	fmt.Printf("Merged: %+v\nConflicts: %d\nConfidence: %.0f%%\n",
 //	    result.Merged, len(result.Conflicts), result.ModelConfidence*100)
+//
+// Deprecated: use Merge, which returns the same result. This spelling carries
+// a Metadata map beside the value, where a measurement and a model's claim are
+// indistinguishable. See OP-401 for why that shape is being retired.
 func MergeWithMetadata[T any](sources []T, strategy string, opts ...OpOptions) (MergeResult[T], error) {
 	return ops.MergeWithMetadata(sources, strategy, opts...)
 }
@@ -998,6 +1004,9 @@ func Format(data any, template string, opts ...OpOptions) (string, error) {
 //
 //	result, err := schemaflux.FormatWithMetadata(data, "professional bio in third person")
 //	fmt.Printf("Formatted: %s\nFormat applied: %s\n", result.Text, result.FormatApplied)
+//
+// Deprecated: use Format. Same operation; this spelling carries the Metadata
+// map that OP-401 is retiring.
 func FormatWithMetadata(data any, template string, opts ...OpOptions) (FormatResult, error) {
 	return ops.FormatWithMetadata(data, template, opts...)
 }
@@ -1285,6 +1294,10 @@ func Verify(input string, opts VerifyOptions) (VerifyResult, error) {
 // Example:
 //
 //	result, err := schemaflux.VerifyClaim("GDP grew 5%", schemaflux.NewVerifyOptions())
+//
+// Deprecated: use VerifyWithModel, whose name says the verdict is a model's
+// review rather than a deterministic check, and which returns the shared
+// JudgmentResult. See OP-206.
 func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 	return ops.VerifyClaim(claim, opts)
 }

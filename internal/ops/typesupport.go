@@ -204,6 +204,29 @@ func classifyType(targetType reflect.Type, seen map[reflect.Type]bool, path []st
 			Path:    joinPath(path),
 		}
 
+	// S-012. A Go type does not say what a field is *for* -- float32 is fine
+	// for a temperature and wrong for a price, and reflection cannot tell
+	// those apart. S-009 already recorded the concrete failure: Go marshals a
+	// float32 as the shortest decimal that round-trips as a float32, so
+	// 1284.57 stored in one comes back as 1284.5699462890625, re-encodes as
+	// "1284.57", and CheckNumericFidelity's round trip sees nothing wrong --
+	// the loss is real and that check cannot see it. Of the three ways to
+	// close that gap (a struct tag, a registered Money type, or flagging
+	// every float32), this is the cheapest: every float32 field is
+	// restricted, whether it holds a price or a temperature. It is noisier
+	// than a tag would be, and it is the rule this library documents rather
+	// than papers over.
+	case reflect.Float32:
+		return TypeReport{
+			Support: SupportRestricted,
+			Reason: "float32 loses precision a round trip cannot detect -- 1284.57 stored as " +
+				"1284.5699462890625 re-encodes clean, so a money-shaped field here is silently " +
+				"wrong (S-009). Every float32 is flagged, not only the ones that look like money, " +
+				"because a Go type does not say what a field is for; use float64 or a registered " +
+				"decimal/Money type if this field is a currency amount.",
+			Path: joinPath(path),
+		}
+
 	default:
 		return TypeReport{Support: SupportFull}
 	}

@@ -100,6 +100,24 @@ type ItemResult[Out any] struct {
 	Err error
 }
 
+// ModeAtomicFallback is the ItemResult.Mode value PL-009's progressive
+// recovery cascade (internal/ops/recover.go) uses for an item that no MDSP
+// pass resolved and that was recovered instead by one isolated atomic call
+// over just that item -- set whether or not that atomic call itself
+// succeeded, since "it reached the fallback stage" and "the fallback stage
+// worked" are different facts and BatchMetrics needs the first one even when
+// the second is false. The paired value for an item resolved from a batched
+// response is "mdsp" (ExecutionShape.String() for ShapeMDSP, reused rather
+// than a second literal that could drift from it -- see
+// RunOpBatchResult's Meta.Strategy in batchprotocol.go, which sets the
+// identical string).
+const ModeAtomicFallback = "atomic_fallback"
+
+// modeMDSP mirrors ExecutionShape's own "mdsp" string without importing the
+// ExecutionShape type here -- Metrics below only needs the literal to
+// compare ItemResult.Mode against, not the enum.
+const modeMDSP = "mdsp"
+
 // BatchSummary is a plural run's aggregate outcome.
 type BatchSummary struct {
 	Total     int
@@ -186,16 +204,17 @@ func (r BatchResult[Out]) String() string {
 // a pure derivation instead.
 //
 // What this delivery measures: valid-item ratio, total attempts, total
-// repairs, and cost per accepted item -- all read from data RunOpManyPartial
-// already collects per item. What it does not measure: MDSP-chunk-level
-// omissions (a chunk response that answered fewer ids than it was offered)
-// and atomic-fallback counts (an item that escalated from a failed MDSP
-// chunk to its own atomic call). Both are properties of PL-009's progressive
-// recovery cascade, which RunOpManyPartial does not implement -- it dispatches
-// one call per item unconditionally, so there is no chunk-level omission or
-// fallback event to count. A caller running PL-013 metrics against a future
-// PL-009-aware engine will see those numbers once that engine exists to
-// produce them.
+// repairs, cost per accepted item, omissions, and atomic-fallback counts --
+// all read from data RunOpManyPartial or RunOpManyRecover (PL-009,
+// internal/ops/recover.go) already collects per item. Omissions and
+// AtomicFallbacks are zero for every BatchResult RunOpManyPartial produces,
+// honestly: RunOpManyPartial dispatches one call per item unconditionally,
+// so there is no chunk-level omission or fallback event for it to have
+// produced -- Mode is "atomic" for everything it reports (see
+// RunOpManyPartial's own doc comment, internal/ops/partial.go), which never
+// matches ModeAtomicFallback and whose Attempts already starts at 1, so
+// neither counter can be nonzero by construction. A BatchResult from
+// RunOpManyRecover is where these two numbers are real.
 type BatchMetrics struct {
 	Total int
 
@@ -234,6 +253,23 @@ type BatchMetrics struct {
 	// working". Zero and meaningless when Succeeded is zero or CostPriced
 	// is false.
 	CostPerAcceptedItem float64
+
+	// Omissions counts items that were not resolved by the very first MDSP
+	// pass that asked about them: an item whose final Mode is "mdsp" but
+	// whose Attempts is greater than one (it took an isolate pass to
+	// resolve), plus every item whose final Mode is ModeAtomicFallback
+	// (every one of those was omitted by at least one MDSP pass before
+	// falling back). PL-013's own phrase for why this matters: "HTTP 200
+	// hides omissions" -- a batch that succeeds overall can still have paid
+	// for a chunk response that dropped items nobody would otherwise see.
+	Omissions int
+
+	// AtomicFallbacks counts items whose final Mode is ModeAtomicFallback --
+	// set whether or not that atomic call itself succeeded, so a batch
+	// strategy that is failing badly enough to fall back on most of its
+	// items shows up here even if every fallback call eventually succeeded
+	// and ValidItemRatio looks fine.
+	AtomicFallbacks int
 }
 
 // Metrics computes PL-013's per-item measurement from r's own ItemResults.
@@ -251,6 +287,15 @@ func (r BatchResult[Out]) Metrics() BatchMetrics {
 	for _, item := range r.Items {
 		m.TotalAttempts += item.Attempts
 		m.TotalRepairs += item.Repairs
+
+		switch {
+		case item.Mode == ModeAtomicFallback:
+			m.Omissions++
+			m.AtomicFallbacks++
+		case item.Mode == modeMDSP && item.Attempts > 1:
+			m.Omissions++
+		}
+
 		if !item.Cost.Priced {
 			continue
 		}

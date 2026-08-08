@@ -6,6 +6,24 @@ import (
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
+// accumulateSteering joins a new steering instruction onto whatever the
+// caller already accumulated (FL-004 / F-04). It is the shared rule behind
+// every Steer() in this package -- commonRequest's (via
+// CommonOptions.WithSteering in internal/ops/options.go), opRequest's, and
+// directRequest's setSteering closures in fluent_advanced.go all use it, so
+// two builders built from the same fluent call chain a caller might switch
+// between behave identically rather than one silently keeping only the last
+// call.
+func accumulateSteering(existing, next string) string {
+	if next == "" {
+		return existing
+	}
+	if existing == "" {
+		return next
+	}
+	return existing + "; " + next
+}
+
 type commonRequest[Self any, Opt any] struct {
 	opts   Opt
 	lift   func(Opt) Self
@@ -100,9 +118,12 @@ func (r opRequest[Self, Opt]) Configure(fn func(Opt) Opt) Self {
 	return r.lift(fn(r.opts))
 }
 
+// Steer accumulates steering instructions rather than replacing the
+// previous one (FL-004 / F-04: a second .Steer(...) call used to silently
+// discard the first). Multiple calls join with "; ".
 func (r opRequest[Self, Opt]) Steer(steering string) Self {
 	return r.lift(r.mutate(r.opts, func(op types.OpOptions) types.OpOptions {
-		op.Steering = steering
+		op.Steering = accumulateSteering(op.Steering, steering)
 		return op
 	}))
 }

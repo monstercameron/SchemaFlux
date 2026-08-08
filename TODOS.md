@@ -184,6 +184,34 @@ regardless of what happens to the rest of the plan.
   against a mechanism that is a prompt hint with no post-filter. Closes the documentation half
   of **D-08**.
 
+## Steering
+
+- [x] **ST-010** — `.Steer(...)` never reached the provider. Found while integrating SchemaFlux
+  into ArticleFlux, whose feed categoriser passed the feed's title and description through it
+  and got answers that ignored them.
+  Every options type embeds both `CommonOptions` and `types.OpOptions`, each carrying a
+  `Steering`. The fluent builders write the CommonOptions one; **23 operations read
+  `opts.OpOptions.Steering` directly** — the raw embedded field, which the builders never touch
+  — to decide whether the caller had said anything. In the operations that compose their own
+  instructions (Choose, Score, Summarize, Rewrite, Translate, Expand, Filter, Sort and the
+  rest) that check is what PRESERVES the caller's steering before the composed instructions
+  overwrite the field. So `.Steer(...)` was not merely ignored, it was **silently discarded**:
+  the builder returned no error, the operation succeeded, and the answer addressed a question
+  the caller had not asked. Reporting success while being wrong, which is the failure this
+  library is being rebuilt against.
+  **Fixed** with `effectiveSteering(common, embedded)` in `internal/ops/options.go`, applied at
+  all 23 sites. It mirrors `mergeEmbeddedOpOptions` exactly, so the value an operation checks
+  and the value it eventually sends cannot disagree. `SimilarOptions` embeds only
+  `types.OpOptions` and was already correct; it is left alone with a comment saying why.
+  *Verify:* `steering_test.go` — 12 cases through the exported fluent API with a provider
+  installed, covering the four text operations, the four collection ones, steering alongside
+  an operation's own criteria, two `.Steer` calls appending, steering set on the options struct
+  instead (the regression a naive "read CommonOptions" fix would cause), and no empty
+  instruction when the caller said nothing. Watched every one fail first.
+  **The golden prompts recorded the bug**: `testdata/golden_prompts.txt` held a Choose case
+  built with `.Steer("the most urgent")` whose prompt did not contain it. Regenerated; the
+  diff is that phrase appearing, and nothing else.
+
 ## Dead options
 
 - [x] **F-023** — Implement or delete the dead options. Each has a fluent setter, so the call
@@ -2998,7 +3026,7 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   never reported. Evidence: `internal/ops/failedattempts_test.go`, 5 cases, including that a
   terminal failure reports the one attempt it made rather than the budget it never used, and
   that a success still publishes exactly one record — so the fix did not double-count.
-- [ ] **PL-009** — Progressive recovery cascade: preferred MDSP → keep valid items → isolate
+- [x] **PL-009** — Progressive recovery cascade: preferred MDSP → keep valid items → isolate
   only unresolved IDs → smaller MDSP → atomic → escalate model or provider only if the
   minimum contract and data policy survive → review packet or terminal item failure at
   budget exhaustion. A valid item is never replayed because a sibling failed, unless the
@@ -3006,6 +3034,24 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   acceptance criterion.
   *Verify:* a batch where two of twenty items fail spends recovery calls on two items, and
   the eighteen valid results are byte-identical to their first-attempt values.
+  **Done.** `RunOpManyRecover` runs the full ladder: preferred MDSP over chunks sized by the
+  adaptive state, keep the items that resolved cleanly, isolate the unresolved ids into a
+  smaller retry, then fall back to atomic for whatever still has not answered.
+  `mergeIDBatchPartial` is what makes "keep the valid items" possible: the existing merge is
+  all-or-nothing on coverage, so a chunk that answered nine of ten was thrown away entirely.
+  **`AdaptiveChunkState` (PL-005) finally has a caller** — each chunk's first-pass outcome
+  feeds it, and its size decides the next chunk. The shrink is proven by call count rather
+  than by inspecting state: 4 batch calls instead of 3 once the size really halves.
+  Every item ends up in the result **exactly once**, and `ItemResult.Mode` says whether it came
+  from a batch or an atomic retry — a caller reconciling a bill or a quality regression needs
+  to tell those apart, and they are different provenance.
+  Cost is attributed as an even split of each pass's **measured** total across the items that
+  pass covered, documented as an attribution convention over a real number rather than an
+  invented per-item price.
+  15 cases, deterministic.
+  **Not done:** no model escalation before the atomic fallback (needs **CP-001**'s negotiation
+  seam), no review packet at exhaustion, and aggregate-shaped operations like Sort and Cluster
+  are out of scope — this cascade handles item-wise batches only.
 - [ ] **PL-010** — SDMP staged plans over one datum, with reuse. Pass structured
   intermediates instead of resending the source, reuse deterministic preprocessing and
   schema artifacts, run independent checks concurrently under one budget, and **skip the
@@ -3035,6 +3081,13 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   valid-item ratio, omissions, repairs, atomic fallbacks, and **cost per accepted item** —
   the number that actually says whether a batch strategy is working. Closes **EXE-19**.
   Feeds **OB-002**.
+  **Partial.** `BatchMetrics` reports the valid-item ratio, attempts, repairs, accepted and
+  failed cost with its pricing quality, and cost per accepted item — the last guarded so it is
+  meaningless rather than misleading when the model is unpriced. **PL-009** unblocked the two
+  counters **OB-002** named as its blocker: omissions and atomic fallbacks, computed from the
+  `Mode` already on each item rather than from a second accounting pass, and honestly zero for
+  a run that never batched.
+  **Not done:** the rest of PL-013's list. This closed exactly what OB-002 was waiting on.
 - [ ] **PL-014** — Planner explainability: a human-readable pre-execution plan explanation
   (mode, chunking, parallelism, recovery ladder, call ceiling, cost range, minimum contract,
   data policy) and a post-execution decision ledger recording every adaptive choice and its
@@ -3145,10 +3198,22 @@ this is the process-wide version with admission control.
   context, and waits for drain up to the caller's deadline. Idempotent under concurrent calls.
   **Not done:** `Client.Close()` does not call it. That needs `client.go`, and a shutdown path
   half-wired is worse than one that is honestly absent.
-- [ ] **SC-007** — Caller-owned HTTP. Every provider accepts an `*http.Client` or transport
+- [x] **SC-007** — Caller-owned HTTP. Every provider accepts an `*http.Client` or transport
   with documented ownership, because enterprise deployments need their own proxies, mTLS,
   and instrumentation, and tests need a transport that fails on dial. Closes **PRD-21**.
   **P-006** made the client per-provider; this makes it injectable.
+  **Done.** `ProviderConfig.HTTPClient` — every provider uses the caller's client when one is
+  supplied and builds its own when not, so nothing that works today changes.
+  Proven with a recording `http.RoundTripper` asserting the caller's client **actually executes
+  the request**, rather than by inspecting a field: a config value that is stored and never
+  used looks identical from the outside.
+  **Two things fell out of it.** `AnthropicProvider` was rebuilding an `http.Client` on *every*
+  `Complete` call — a new connection pool per request, which is a latency and file-descriptor
+  problem nobody had noticed. It stores one now. And **SEC-004**'s `EndpointPolicy`, which
+  existed with no enforcement point, is now wired at construction: a custom base URL is checked
+  against the policy when one is supplied, opt-in so no existing caller is affected.
+  13 cases, including that a dial-failing transport surfaces as an error and that extra headers
+  still layer onto a caller's client without mutating the value they passed in.
 - [x] **SC-008** — `ValidateConfiguration(ctx)` — non-billable readiness: provider
   registration, credential presence without revealing values, model maps, endpoint scheme
   and host policy, HTTP client presence, capability assumptions, scheduler limits, store
@@ -3585,11 +3650,30 @@ others, with nothing at the call site to tell them apart.
   every unchecked box at v1.0.0 to carry an ADR saying why it ships unmet. Twenty-nine boxes
   across core architecture, correctness and trust, execution and resilience, security and
   governance, and verification and operations.
-- [ ] **RC-004** — Compatibility and deprecation policy: at least one documented window for a
+  **Checker done; the ledger is not written.** `scripts/acceptance_checklist.py` parses §19,
+  assigns stable IDs, and diffs them against a ledger it expects in this file — refusing a
+  missing criterion, an unchecked one with no ADR, stale text, and a dangling ID. Self-tested
+  against fabricated fixtures.
+  **It found §19 carries 32 checkboxes, not the 29 this task's text states** — either the
+  specification grew or the count was wrong when written, and it is worth resolving before the
+  ledger is transcribed rather than after.
+  Only the self-test runs in CI: `--check` would red the build permanently until the ledger
+  exists, and a gate that is always failing is a gate people learn to ignore.
+- [x] **RC-004** — Compatibility and deprecation policy: at least one documented window for a
   deprecated stable API, deprecation notices that name a mechanical replacement, global and
   default-client APIs routed to `quick` or a compatibility adapter, and removal only at a
   major version. There is not one `// Deprecated:` marker in the repository today
   (**PS-003**).
+  **Done as a checker, which is worth more than the document.** `scripts/deprecation_policy.py`
+  reads `catalog.go`'s deprecated entries and verifies the **source** carries a
+  `// Deprecated:` marker naming the catalogued replacement. Self-tested against fabricated
+  fixtures — marker present, absent, detached, and on the wrong function — because a checker
+  that has never refused anything is not known to work. Wired into CI.
+  **It found four real violations on its first run**, all in my own catalogue: `VerifyClaim`,
+  `MergeWithMetadata`, and `FormatWithMetadata` claimed a replacement with no marker anywhere,
+  and `ValidateLegacy`'s marker pointed at `Validate` — which is **itself deprecated**, so it
+  sent a caller on two migrations instead of one. All four are fixed, and the gate is what
+  keeps the catalogue and the code from disagreeing again.
 - [ ] **RC-005** — Load and chaos suites: large item streams, provider slowdown and 429
   bursts, mixed tenants and priorities, cancellation storms, large schemas and near-limit
   chunks, partial MDSP failures forcing atomic fallback, and failing telemetry and stores.
@@ -3918,7 +4002,7 @@ written, and the box it belonged to was never drawn.
   provider seam, and the unpriced default models. Each states what it costs and **the condition
   that would change the answer** — a departure with no revisit condition becomes permanent by
   default rather than by decision.
-- [ ] **S-013** — Schema migrations: a deterministic function from one stored shape to
+- [x] **S-013** — Schema migrations: a deterministic function from one stored shape to
   another, with its own version and provenance, plus the registry that finds one.
   **S-011** built the classification and **S-002** the identity a migration keys on; what is
   missing is the transformation, and it should not be built until something in this library
@@ -3926,7 +4010,20 @@ written, and the box it belonged to was never drawn.
   *Verify:* a result stored under `person/v1@abc123` decodes into the v2 type through a
   registered migration, and the result records which migration ran.
 
-- [ ] **S-012** — Flag `float32` for money-shaped fields in the type support matrix.
+  **Done.** `Migration{Name, From, To, Fn}` over the `SchemaDescriptor` identity **S-002**
+  already established, with a registry that refuses an unnamed migration, one with no
+  function, one from a shape to itself, and a second migration for the same source — an
+  ambiguous path is a silent choice between two answers.
+  `Migrate` no-ops when the identities already match, refuses an unregistered path with
+  `KindSchemaViolation`, and refuses a migration whose declared target does not match the
+  caller's actual type — a migration that claims to produce `v2` and produces something else
+  is worse than no migration.
+  A failing migration keeps the underlying error in `Cause` rather than flattening it into a
+  message, because a caller-authored function can error with the payload it was transforming,
+  and a message is what gets logged.
+  13 cases, including the scenario the task names: stored `person/v1` bytes migrated into
+  `personV2`, decoded exactly, with `Result.MigrationName` naming what ran.
+- [x] **S-012** — Flag `float32` for money-shaped fields in the type support matrix.
   **S-009** established that a float32 price silently loses cents and that the round-trip
   check cannot see it, because Go marshals a float32 as the shortest decimal that round-trips
   as a float32. The matrix is the right place to catch it, and today it classifies float32 as
@@ -3938,6 +4035,16 @@ written, and the box it belonged to was never drawn.
   *Verify:* a struct with a float32 price is flagged; one with a float32 temperature is not,
   or the rule is documented as covering both.
 
+  **Done.** `classifyType` reports `SupportRestricted` for `float32` — top level, nested,
+  in a slice, in an array, behind a pointer — and says why: a float32 re-encodes to the same
+  decimal literal, so `CheckNumericFidelity`'s round-trip check **cannot see the loss**. That
+  is the blind spot **S-009** recorded rather than papered over, and this is the flag that
+  makes it visible at the type boundary instead of at the invoice.
+  Restricted, not rejected: the call still runs. And the rule covers **every** float32, not
+  only money-sounding names, because a Go type does not say what a field is for — a float32
+  temperature is flagged too, which is stated rather than treated as a false positive.
+  12 cases, including that a worse finding elsewhere in the struct still wins the comparison
+  so a float32 cannot mask a channel.
 - [ ] **CI-008** — Close the twelve numbered examples still failing under the local provider,
   listed with their errors in `.audit/examples_expected.txt`. Two groups, and they want
   different fixes: `Transform`, `Generate`, `Compress`, `Decompose`, `Enrich`, `Normalize`,
@@ -3959,10 +4066,17 @@ written, and the box it belonged to was never drawn.
   The golden prompts moved by exactly two lines — `json schema: false` to `true` for Transform
   and Generate — with the prompt text unchanged, which is the evidence that this changed what
   is *declared* and not what is *said*.
-  **Still failing (9):** `Compress`, `Decompose`, `Enrich`, `Synthesize`, `Predict`, `Verify`,
-  and `Question` need the same treatment; `Decompose` and `Enrich` were attempted and still
-  fail because each has a second call path the first fix did not reach, which is a sign the
-  pattern needs applying per call site rather than per file. `Choose` and `Cluster` are the
+  **Still failing (9), and the reason is not what it first looked like.** `Decompose` and
+  `Enrich` *were* given the same treatment and still fail. I first recorded that as a second
+  call path the fix had missed; that was wrong, and the real cause is worth more than the fix:
+  `GenerateJSONSchema` returns **nil** for a type it cannot faithfully represent — a
+  `map[string]any` payload, which is exactly what those examples pass — so the operation
+  correctly sends no schema at all rather than a wrong one. Verified directly: the request
+  reaches the wire with `ResponseFormat: "json"` and `JSONSchema: nil`.
+  That is the right behaviour and it means declaring a schema cannot fix these examples. They
+  need the other half of the task's own diagnosis: either the local provider learns to read
+  the prose template these operations state their shape in, or the examples use
+  `schemafluxtest`. `Compress`, `Synthesize`, `Predict`, `Verify`, and `Question` are untried. `Choose` and `Cluster` are the
   different problem the task already identified: the mock cannot answer them without
   understanding the operation, so those two examples should use `schemafluxtest` instead of
   the local provider. The ratchet is updated to 36 so the three that were fixed cannot
@@ -4108,21 +4222,29 @@ written, and the box it belonged to was never drawn.
   builder values, which is what **A-013**'s value receivers and copy-on-write storage began.
   *Verify:* a test that constructs each operation both ways and asserts the resolved options are
   equal.
-  **Partial, and the remainder is blocked on missing constructors.** Six of seventeen
-  entrypoints already route through `NewXOptions()`; the other eleven — the advanced fluent
-  surface — cannot, because **those option types have no constructor to route through**. The
-  fix is therefore two steps, not one: give them constructors, then route. A test pins the six
-  that are correct and a second documents the eleven that are not, so the split is visible
-  rather than implied.
+  **Done — all seventeen.** The eleven advanced entrypoints had **no constructor to route
+  through**, so the fix was two steps: `internal/ops/options_advanced.go` adds the eleven
+  missing `NewXOptions()` constructors, each reproducing the defaults literal already built
+  inside its own operation *field for field*, and the entrypoints then route through them.
+  Building the constructor from the operation's own existing defaults is what makes this a
+  correction rather than a second opinion about what the defaults are.
+  `TestFL003EntrypointsMatchDirectConstructorDefaults` now covers all seventeen and passes —
+  the test that previously documented the failing eleven has flipped, which is the evidence
+  that matters.
 - [ ] **FL-004** — **F-04**: `Steer` assigns rather than appends, so two `.Steer(...)` calls
   silently drop the first, and the op then joins the caller's steering with its own generated
   clauses using `". "`, producing a run-on in which the library can contradict the caller.
   Accumulate steering, and keep the caller's text in its own block.
   *Verify:* two `.Steer` calls both reach the prompt; the caller's text is separable from the
   library's.
-  **Untouched, with the current behaviour pinned.** `Steer` still assigns rather than appends,
-  so two `.Steer(...)` calls silently discard the first. A test records that, so the fix will
-  have something to flip rather than being written against a guess.
+  **Done.** Steering accumulates across all three builder bases, joined with `"; "`. Two
+  `.Steer(...)` calls used to silently discard the first, which is the worst shape a builder
+  can have: it reads as configuration and behaves as replacement.
+  11 cases, including three-call chains, that an empty steer is a no-op rather than a
+  separator, and that branching a builder does not leak steering into its sibling.
+  **Not done:** the second half of the finding — the operations join caller steering with
+  their own generated clauses using `.` rather than the same separator — lives in the operation
+  files and was out of this change's scope, so two different separators are still in play.
 - [ ] **FL-005** — **F-05**: `commonRequest`, `opRequest`, and `directRequest` implement the same
   eleven methods three times, because the options structs behind them are inconsistent. Collapse to
   one base once **M06** has made the options structs uniform. Depends on M06.

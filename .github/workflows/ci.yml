@@ -130,6 +130,34 @@ jobs:
       - name: Scan for credentials
         run: python3 scripts/secret_scan.py
 
+  # RC-004. catalog.go already records which operations are TierDeprecated
+  # and what replaces them; this checks the source backs that promise up with
+  # an actual `// Deprecated:` marker naming the replacement, rather than
+  # trusting the table.
+  deprecation-policy:
+    name: deprecation policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checker self-test
+        run: python3 scripts/deprecation_policy.py --self-test
+      - name: Deprecated catalog entries carry a source marker
+        run: python3 scripts/deprecation_policy.py --check
+
+  # RC-003. §19 of to-production.md is the v1.0.0 acceptance checklist; this
+  # is the parser and drift check for the ledger TODOS.md is meant to carry
+  # (see `python3 scripts/acceptance_checklist.py --explain`). It is not
+  # required yet -- the ledger does not exist -- so this job runs the
+  # self-test only, which is the part proven to work regardless of whether
+  # the ledger has been added.
+  acceptance-checklist:
+    name: acceptance checklist (self-test only, no ledger yet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checker self-test
+        run: python3 scripts/acceptance_checklist.py --self-test
+
   # The review is the input to TODOS.md, and that relationship is only worth
   # anything if it is checkable. TR-001.
   traceability:

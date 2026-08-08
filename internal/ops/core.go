@@ -66,8 +66,8 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Enhance steering with extraction-specific options
 	if opts.SchemaHints != nil || opts.Examples != nil || opts.FieldRules != nil {
 		var steeringParts []string
-		if opts.OpOptions.Steering != "" {
-			steeringParts = append(steeringParts, opts.OpOptions.Steering)
+		if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+			steeringParts = append(steeringParts, effectiveSteering(opts.CommonOptions, opts.OpOptions))
 		}
 
 		if opts.StrictSchema {
@@ -291,8 +291,8 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 
 	// Enhance steering with transformation-specific options
 	var steeringParts []string
-	if opts.OpOptions.Steering != "" {
-		steeringParts = append(steeringParts, opts.OpOptions.Steering)
+	if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+		steeringParts = append(steeringParts, effectiveSteering(opts.CommonOptions, opts.OpOptions))
 	}
 
 	if opts.TransformLogic != "" {
@@ -543,8 +543,8 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 	}
 
 	prompt = strings.Join(promptParts, ". ")
-	if opts.OpOptions.Steering != "" {
-		opt.Steering = opts.OpOptions.Steering
+	if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
+		opt.Steering = effectiveSteering(opts.CommonOptions, opts.OpOptions)
 	}
 
 	startTime := time.Now()

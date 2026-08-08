@@ -422,6 +422,7 @@ func testMerge() error {
 	return req(s(out["email"]) != "", "merge output incomplete")
 }
 func testMergeWithMetadata() error {
+	//lint:ignore SA1019 this case exists to smoke-test the deprecated path itself
 	out, err := schemaflux.MergeWithMetadata([]map[string]any{{"name": "Toni Ruiz", "email": "", "role": "Manager"}, {"name": "Toni Ruiz", "email": "toni@example.com", "role": "Senior Manager"}}, "prefer newest contact details", schemaflux.OpOptions{Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
@@ -436,6 +437,7 @@ func testFormat() error {
 	return req(strings.TrimSpace(out) != "", "format output empty")
 }
 func testFormatWithMetadata() error {
+	//lint:ignore SA1019 this case exists to smoke-test the deprecated path itself
 	out, err := schemaflux.FormatWithMetadata(map[string]any{"name": "Dana Kim", "email": "dana@example.com", "role": "PM"}, "markdown bullet list", schemaflux.OpOptions{Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
@@ -616,6 +618,7 @@ func testVerify() error {
 func testVerifyClaim() error {
 	opts := schemaflux.NewVerifyOptions()
 	opts.CheckFacts = false
+	//lint:ignore SA1019 this case exists to smoke-test the deprecated path itself
 	out, err := schemaflux.VerifyClaim("A statement cannot be both true and false in the same sense at the same time.", opts)
 	if err != nil {
 		return err

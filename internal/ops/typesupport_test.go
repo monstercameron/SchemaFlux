@@ -62,6 +62,33 @@ type noExportedFields struct {
 	hidden string
 }
 
+type withFloat32Price struct {
+	Name  string  `json:"name"`
+	Price float32 `json:"price"`
+}
+
+type withFloat32Temperature struct {
+	Celsius float32 `json:"celsius"`
+}
+
+type withFloat32Slice struct {
+	Amounts []float32 `json:"amounts"`
+}
+
+type withNestedFloat32 struct {
+	Line struct {
+		Total float32 `json:"total"`
+	} `json:"line"`
+}
+
+type withFloat32Pointer struct {
+	Price *float32 `json:"price"`
+}
+
+type withFloat64Price struct {
+	Price float64 `json:"price"`
+}
+
 // S-010. A Go type is the whole contract: it becomes the schema the model is
 // shown and the shape the answer is decoded into. The question is when a caller
 // finds out that theirs cannot play that role.
@@ -171,5 +198,65 @@ func TestExcludedFieldsDoNotCount(t *testing.T) {
 
 	if err := PreflightType(reflect.TypeOf(record{})); err != nil {
 		t.Errorf("a json:\"-\" channel broke preflight: %v", err)
+	}
+}
+
+// S-012. A float32 loses precision a round trip cannot detect (S-009), and
+// the matrix cannot tell a price from a temperature -- so every float32 is
+// flagged restricted, wherever it sits in the shape.
+func TestClassifyTypeFlagsFloat32(t *testing.T) {
+	cases := []struct {
+		name   string
+		target any
+		want   TypeSupport
+		reason string
+	}{
+		{"a top-level float32 price", withFloat32Price{}, SupportRestricted, "precision"},
+		{"a float32 with no money-sounding name", withFloat32Temperature{}, SupportRestricted, "precision"},
+		{"a slice of float32", withFloat32Slice{}, SupportRestricted, "precision"},
+		{"a float32 nested inside another struct", withNestedFloat32{}, SupportRestricted, "precision"},
+		{"a pointer to a float32", withFloat32Pointer{}, SupportRestricted, "precision"},
+		{"a bare float32 scalar", float32(0), SupportRestricted, "precision"},
+		{"an array of float32", [3]float32{}, SupportRestricted, "precision"},
+
+		// float64 is unaffected -- the blind spot is specific to float32.
+		{"a float64 price is full support", withFloat64Price{}, SupportFull, ""},
+		{"a bare float64 scalar", float64(0), SupportFull, ""},
+		{"a bare float32 pointer alone", func() *float32 { v := float32(1); return &v }(), SupportRestricted, "precision"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := ClassifyType(reflect.TypeOf(tc.target))
+			if report.Support != tc.want {
+				t.Fatalf("support = %v (%s), want %v", report.Support, report.Reason, tc.want)
+			}
+			if tc.reason != "" && !strings.Contains(report.Reason, tc.reason) {
+				t.Errorf("reason %q does not mention %q", report.Reason, tc.reason)
+			}
+		})
+	}
+}
+
+// Restricted is usable -- a float32 field does not stop the call, it flags
+// it. Preflight lets it through, same as a string-keyed map.
+func TestPreflightAcceptsFloat32AsRestricted(t *testing.T) {
+	for _, target := range []any{withFloat32Price{}, withFloat32Temperature{}, withFloat32Slice{}} {
+		if err := PreflightType(reflect.TypeOf(target)); err != nil {
+			t.Errorf("PreflightType(%T) = %v, want nil -- restricted is not rejected", target, err)
+		}
+	}
+}
+
+// A float32 still loses to an actually-rejected field: the worst finding
+// wins, and float32's restricted does not mask a channel two fields down.
+func TestFloat32DoesNotMaskAWorseFinding(t *testing.T) {
+	type worse struct {
+		Price float32  `json:"price"`
+		Ch    chan int `json:"ch"`
+	}
+	report := ClassifyType(reflect.TypeOf(worse{}))
+	if report.Support != SupportRejected {
+		t.Errorf("support = %v, want rejected -- the channel should still win over float32", report.Support)
 	}
 }
