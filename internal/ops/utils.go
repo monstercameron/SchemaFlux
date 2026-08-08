@@ -427,35 +427,47 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-// applyDefaults applies default values to OpOptions
+// applyDefaults merges the caller's options over the operation defaults.
+//
+// It copies field by field *through reflection* rather than by naming each
+// field, because the hand-written version fell behind the struct: it copied
+// eight of the thirteen fields, so MaxOutputTokens, CacheIdentity,
+// ResponseFormat, JSONSchema, and SchemaName were set by a caller and silently
+// thrown away on the way to the provider. That is worse than a missing
+// feature -- it made ST-003's ceiling and P-009's cache identity unreachable
+// from every legacy entrypoint while both looked implemented and both had
+// passing tests, because the tests drove CallLLM directly. See A-014.
+//
+// The merge rule is that a non-zero field wins. A caller cannot use this to
+// set a field back to its zero value; that is what A-005's Opt[T] is for, and
+// it was already true of the hand-written version.
 func applyDefaults(opts ...types.OpOptions) types.OpOptions {
-	result := types.OpOptions{
-		Mode:         types.TransformMode,
-		Intelligence: types.Smart,
-	}
+	result := types.OpOptions{}
 
 	for _, opt := range opts {
-		// Mode is an int enum, 0 is Strict which is valid
-		// Only override if the mode appears set (checking for non-zero threshold is a proxy)
-		// Actually, we should just always copy since 0 (Strict) is a valid value
-		// Let's check if any field is set by looking at Steering
-		if opt.Steering != "" {
-			result.Steering = opt.Steering
+		incoming := reflect.ValueOf(opt)
+		merged := reflect.ValueOf(&result).Elem()
+
+		for i := 0; i < incoming.NumField(); i++ {
+			field := incoming.Field(i)
+			if !merged.Field(i).CanSet() {
+				continue
+			}
+			if field.IsZero() {
+				continue
+			}
+			merged.Field(i).Set(field)
 		}
-		if opt.Threshold > 0 {
-			result.Threshold = opt.Threshold
-		}
-		if opt.RequestID != "" {
-			result.RequestID = opt.RequestID
-		}
-		if opt.Context != nil {
-			result.Context = opt.Context
-		}
-		// For enums, we need a different approach - check if explicitly set
-		// Since we can't tell if they're explicitly set, we'll assume any value is intentional
-		// This means callers must always set these explicitly if they differ from defaults
-		result.Mode = opt.Mode
-		result.Intelligence = opt.Intelligence
+	}
+
+	// Defaults last, and only where the caller chose nothing. Zero means unset
+	// for both of these since A-005, which is what makes this safe to test
+	// after the merge rather than before it.
+	if result.Mode == types.ModeUnset {
+		result.Mode = types.TransformMode
+	}
+	if result.Intelligence == types.TierUnset {
+		result.Intelligence = types.Smart
 	}
 
 	return result

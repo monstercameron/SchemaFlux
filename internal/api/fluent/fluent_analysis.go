@@ -360,7 +360,7 @@ func (r SummarizeRequest) Run() (string, error) {
 	return Summarize(r.input, r.opts)
 }
 
-func (r SummarizeRequest) RunDetailed() (SummarizeResult, error) {
+func (r SummarizeRequest) RunDetailed() (Summary, error) {
 	return SummarizeWithMetadata(r.input, r.opts)
 }
 
@@ -407,7 +407,7 @@ func (r RewriteRequest) Run() (string, error) {
 	return Rewrite(r.input, r.opts)
 }
 
-func (r RewriteRequest) RunDetailed() (RewriteResult, error) {
+func (r RewriteRequest) RunDetailed() (Rewritten, error) {
 	return RewriteWithMetadata(r.input, r.opts)
 }
 
@@ -448,7 +448,7 @@ func (r TranslateRequest) Run() (string, error) {
 	return Translate(r.input, r.opts)
 }
 
-func (r TranslateRequest) RunDetailed() (TranslateResult, error) {
+func (r TranslateRequest) RunDetailed() (Translation, error) {
 	return TranslateWithMetadata(r.input, r.opts)
 }
 
@@ -489,7 +489,7 @@ func (r ExpandRequest) Run() (string, error) {
 	return Expand(r.input, r.opts)
 }
 
-func (r ExpandRequest) RunDetailed() (ExpandResult, error) {
+func (r ExpandRequest) RunDetailed() (Expansion, error) {
 	return ExpandWithMetadata(r.input, r.opts)
 }
 

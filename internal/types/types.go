@@ -153,6 +153,18 @@ type OpOptions struct {
 	// an unset CacheIdentity degrades the key's precision rather than losing
 	// caching entirely. P-009.
 	CacheIdentity string
+
+	// MaxOutputTokens overrides the output ceiling CallLLM sends as the
+	// provider's max-tokens field. Zero (the default) leaves the ceiling at
+	// config.GetMaxTokens(Intelligence) -- 4000/2000/1000 by tier.
+	//
+	// The tier ceiling used to be the only ceiling there was, which conflates
+	// "how smart" with "how long": a caller who wants a long answer from a fast
+	// model, or a short one from a smart model to control cost, had no way to
+	// ask. I-09. This does not change what a caller who sets nothing gets --
+	// the tier default still applies -- it only gives the caller who has an
+	// opinion a place to say so.
+	MaxOutputTokens int
 }
 
 // Case represents a pattern matching case for the Match function.

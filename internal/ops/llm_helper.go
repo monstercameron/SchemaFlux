@@ -109,7 +109,14 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		return "", err
 	}
 
+	// The tier ceiling is only the default. A caller who set
+	// opts.MaxOutputTokens has an opinion about how long the answer should be
+	// that is independent of how smart it should be -- I-09 -- and that
+	// opinion wins. A caller who set nothing gets exactly what they always got.
 	maxTokens := config.GetMaxTokens(opts.Intelligence)
+	if opts.MaxOutputTokens > 0 {
+		maxTokens = opts.MaxOutputTokens
+	}
 	temperature := config.GetTemperature(opts.Mode)
 	effectiveSystemPrompt := applySteering(systemPrompt, opts.Steering)
 	responseFormat := resolveResponseFormat(opts.ResponseFormat, effectiveSystemPrompt)
@@ -181,7 +188,37 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		providerCalls++
 		resp, err = provider.Complete(ctx, req)
 		if err == nil {
-			if validationErr := validateLLMCompletion(resp); validationErr != nil {
+			// A truncated body arrives with the same 200 status as a complete
+			// one, and the finish reason is the only thing that says so. This has
+			// to run before resp.Content reaches ParseJSON: caught here it is a
+			// truncation naming the real cause; caught there it is a parse
+			// failure that looks like the model is broken (I-09). classify.go
+			// is the only place that decides the kind, so this reads its answer
+			// rather than repeating the finish-reason check.
+			//
+			// Scoped to truncation specifically -- not every kind
+			// llm.ClassifyCompletion can return -- because it also classifies
+			// plain empty content as KindMalformedOutput, and that case already
+			// has its own, deliberately retryable, handling below
+			// (validateLLMCompletion / TestCallLLMRetriesEmptyContent). Folding
+			// it into this check would make an empty-content retry stop
+			// retrying with no task asking for that change.
+			if kind := llm.ClassifyCompletion(resp); kind == types.KindOutputTruncated {
+				truncatedProvider := resp.Provider
+				if truncatedProvider == "" {
+					truncatedProvider = provider.Name()
+				}
+				truncatedModel := resp.Model
+				if truncatedModel == "" {
+					truncatedModel = model
+				}
+				err = &types.OperationError{
+					Kind:     kind,
+					Provider: truncatedProvider,
+					Model:    truncatedModel,
+					Message:  fmt.Sprintf("response truncated before it could be decoded (finish_reason=%q)", resp.FinishReason),
+				}
+			} else if validationErr := validateLLMCompletion(resp); validationErr != nil {
 				err = validationErr
 			}
 		}

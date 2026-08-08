@@ -282,11 +282,11 @@ func testSummarize() error {
 	return req(strings.TrimSpace(out) != "", "summary empty")
 }
 func testSummarizeWithMetadata() error {
-	out, err := schemaflux.SummarizeWithMetadata("The project shipped three features, reduced support load by 15 percent, and cut response latency after batching inference requests.", schemaflux.NewSummarizeOptions())
+	out, err := schemaflux.SummarizeResult("The project shipped three features, reduced support load by 15 percent, and cut response latency after batching inference requests.", schemaflux.NewSummarizeOptions())
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.ModelConfidence > 0, "summary metadata invalid")
+	return req(out.Value.Text != "" && out.Value.ModelConfidence > 0, "summary metadata invalid")
 }
 func testRewrite() error {
 	opts := schemaflux.NewRewriteOptions()
@@ -300,11 +300,11 @@ func testRewrite() error {
 func testRewriteWithMetadata() error {
 	opts := schemaflux.NewRewriteOptions()
 	opts.TargetTone = "friendly"
-	out, err := schemaflux.RewriteWithMetadata("Send the customer a direct but polite apology.", opts)
+	out, err := schemaflux.RewriteResult("Send the customer a direct but polite apology.", opts)
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.ModelConfidence > 0, "rewrite metadata invalid")
+	return req(out.Value.Text != "" && out.Value.ModelConfidence > 0, "rewrite metadata invalid")
 }
 func testTranslate() error {
 	opts := schemaflux.NewTranslateOptions()
@@ -318,11 +318,11 @@ func testTranslate() error {
 func testTranslateWithMetadata() error {
 	opts := schemaflux.NewTranslateOptions()
 	opts.TargetLanguage = "French"
-	out, err := schemaflux.TranslateWithMetadata("Please restart the server after deployment.", opts)
+	out, err := schemaflux.TranslateResult("Please restart the server after deployment.", opts)
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.ModelConfidence > 0, "translate metadata invalid")
+	return req(out.Value.Text != "" && out.Value.ModelConfidence > 0, "translate metadata invalid")
 }
 func testExpand() error {
 	in := "We launched a new billing dashboard."
@@ -333,11 +333,11 @@ func testExpand() error {
 	return req(len(out) > len(in), "expand did not grow text")
 }
 func testExpandWithMetadata() error {
-	out, err := schemaflux.ExpandWithMetadata("The experiment improved retention.", schemaflux.NewExpandOptions())
+	out, err := schemaflux.ExpandResult("The experiment improved retention.", schemaflux.NewExpandOptions())
 	if err != nil {
 		return err
 	}
-	return req(out.Text != "" && out.ModelConfidence > 0, "expand metadata invalid")
+	return req(out.Value.Text != "" && out.Value.ModelConfidence > 0, "expand metadata invalid")
 }
 func testSuggest() error {
 	opts := schemaflux.NewSuggestOptions()

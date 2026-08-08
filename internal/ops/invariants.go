@@ -304,3 +304,81 @@ func countParagraphs(text string) int {
 	}
 	return count
 }
+
+// AtMost reports whether a collection stayed inside a caller's ceiling.
+//
+// The operations that take a "return at most N" option interpolated it into the
+// prompt and never checked it, so a caller asking for three suggestions and
+// getting seven had no way to find out except by counting -- and the ones that
+// did count usually truncated silently, which turns a model that ignored the
+// instruction into a result that looks obedient.
+func AtMost[T any](items []T, limit int) error {
+	if limit <= 0 || len(items) <= limit {
+		return nil
+	}
+	return fmt.Errorf("received %d items for a limit of %d", len(items), limit)
+}
+
+// ExcludesValues reports whether an answer contains any value the caller ruled
+// out.
+//
+// The count is deliberate. Naming the offending values would put the caller's
+// own records into an error string that every caller logs, which is F-034 and
+// the payload rule in AGENTS.md: a redaction operation that reports "the
+// output still contains 4111-1111-1111-1111" has leaked the thing it was asked
+// to remove.
+func ExcludesValues[T any](forbidden, output []T) error {
+	if len(forbidden) == 0 || len(output) == 0 {
+		return nil
+	}
+
+	banned := make(map[string]struct{}, len(forbidden))
+	for _, value := range forbidden {
+		banned[canonicalKey(value)] = struct{}{}
+	}
+
+	violations := 0
+	for _, value := range output {
+		if _, found := banned[canonicalKey(value)]; found {
+			violations++
+		}
+	}
+	if violations > 0 {
+		return fmt.Errorf("the answer contains %d value(s) the caller excluded", violations)
+	}
+	return nil
+}
+
+// Satisfies runs a caller's own predicate as an invariant, so a domain rule is
+// checked in the same place and on the same terms as the built-in ones.
+//
+// A-009's Revised line is what this is for: a rule the caller writes after the
+// operation returns is paid for twice and cannot participate in the repair
+// loop, because by then the answer has already been handed back. Naming the
+// rule is required rather than optional -- an unnamed predicate produces
+// "invariant failed", which tells the repair loop nothing to feed back and
+// tells the caller nothing to fix.
+//
+// The value is never named in the error, for the same reason ExcludesValues
+// counts rather than quotes.
+func Satisfies[T any](value T, name string, predicate func(T) bool) error {
+	if predicate == nil {
+		// A nil predicate is a rule that cannot fail, which would silently
+		// weaken the contract of every call that registered it.
+		return fmt.Errorf("the invariant %q has no predicate to run", name)
+	}
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("an invariant was registered with no name, so a failure could not be reported usefully")
+	}
+	if predicate(value) {
+		return nil
+	}
+	return fmt.Errorf("the answer did not satisfy %q", name)
+}
+
+// OneOf is deliberately absent. A-009 lists it beside MemberOf, and they are
+// the same check: "is this answer one of the values it was allowed to be".
+// MemberOf covers values compared canonically and CategoryIn covers the
+// case-folded string enum; a third spelling would be the fourth membership
+// test AGENTS.md forbids, and the failure that causes is two call sites
+// disagreeing about whether "Urgent" is "urgent".

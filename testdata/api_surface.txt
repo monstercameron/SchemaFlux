@@ -86,7 +86,9 @@ func Enrich
 func EnrichInPlace
 func Enriching
 func EnrichingInPlace
+func Escalate
 func Expand
+func ExpandResult
 func ExpandWithMetadata
 func Expanding
 func Explain
@@ -95,6 +97,7 @@ func Extract
 func ExtractRequestTracking
 func ExtractResult
 func Extracting
+func Fallback
 func Filter
 func FilterBy
 func Filtering
@@ -158,6 +161,7 @@ func Resolve
 func Resolving
 func RetryAfterFrom
 func Rewrite
+func RewriteResult
 func RewriteWithMetadata
 func Rewriting
 func Score
@@ -174,6 +178,7 @@ func StatusCodeFrom
 func Suggest
 func Suggesting
 func Summarize
+func SummarizeResult
 func SummarizeWithMetadata
 func Summarizing
 func Synthesize
@@ -181,8 +186,10 @@ func Synthesizing
 func Transform
 func Transforming
 func Translate
+func TranslateResult
 func TranslateWithMetadata
 func Translating
+func Until
 func Validate
 func ValidateLegacy
 func Validating
@@ -294,9 +301,10 @@ type EnrichOptions
 type EnrichRequest
 type EnrichResult
 type ErrorKind
+type EscalationRecord
 type ExpandOptions
 type ExpandRequest
-type ExpandResult
+type Expansion
 type ExplainOptions
 type ExplainRequest
 type ExplainResult
@@ -387,7 +395,7 @@ type Result
 type ResultMetadata
 type RewriteOptions
 type RewriteRequest
-type RewriteResult
+type Rewritten
 type RuleEvaluation
 type ScoreOptions
 type ScoreRequest
@@ -399,12 +407,13 @@ type SimilarResult
 type SortOptions
 type SortRequest
 type Speed
+type Step
 type SuggestOptions
 type SuggestRequest
 type SuggestStrategy
 type SummarizeOptions
 type SummarizeRequest
-type SummarizeResult
+type Summary
 type SynthesisConflict
 type SynthesisFact
 type SynthesisInsight
@@ -418,7 +427,7 @@ type TransformOptions
 type TransformRequest
 type TranslateOptions
 type TranslateRequest
-type TranslateResult
+type Translation
 type TranslationAlternative
 type ValidateOptions
 type ValidateRequest

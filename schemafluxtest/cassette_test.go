@@ -239,14 +239,14 @@ func TestSaveRedactsCredentialsBeforeTheyReachDisk(t *testing.T) {
 		name: "openai",
 		answers: []cassetteAnswer{{
 			response: schemaflux.CompletionResponse{
-				Content: "the operator pasted sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZ into the ticket",
+				Content: "the operator pasted sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZ into the ticket", // secret-scan: allow
 			},
 		}},
 	}
 	recorder := schemafluxtest.Record(inner, directory)
 
 	req := sampleRequest()
-	req.SystemPrompt = "Use key sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA when calling out."
+	req.SystemPrompt = "Use key sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA when calling out." // secret-scan: allow
 	if _, err := recorder.Complete(context.Background(), req); err != nil {
 		t.Fatalf("recording: %v", err)
 	}
@@ -291,14 +291,14 @@ func TestEveryCredentialShapeIsRedacted(t *testing.T) {
 		text    string
 		redacts bool
 	}{
-		{"OpenAI key", "sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", true},
-		{"OpenAI project key", "sk-proj-BBBBBBBBBBBBBBBBBBBBBBBBBBBB", true},
-		{"OpenAI service account key", "sk-svcacct-CCCCCCCCCCCCCCCCCCCCCCCCCCCC", true},
-		{"Anthropic key", "sk-ant-api03-DDDDDDDDDDDDDDDDDDDDDDDDDD", true},
-		{"Google API key", "AIzaSyDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", true},
+		{"OpenAI key", "sk-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", true},                     // secret-scan: allow
+		{"OpenAI project key", "sk-proj-BBBBBBBBBBBBBBBBBBBBBBBBBBBB", true},            // secret-scan: allow
+		{"OpenAI service account key", "sk-svcacct-CCCCCCCCCCCCCCCCCCCCCCCCCCCC", true}, // secret-scan: allow
+		{"Anthropic key", "sk-ant-api03-DDDDDDDDDDDDDDDDDDDDDDDDDD", true},              // secret-scan: allow
+		{"Google API key", "AIzaSyDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", true},           // secret-scan: allow
 		{"AWS access key ID", "AKIAIOSFODNN7EXAMPLE", true},
 		{"AWS session key ID", "ASIAIOSFODNN7EXAMPLE", true},
-		{"GitHub token", "ghp_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE", true},
+		{"GitHub token", "ghp_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE", true}, // secret-scan: allow
 		{"bearer header", `Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc`, true},
 		{"an invoice number", "invoice SK-2026-000418 was charged twice", false},
 		{"prose about keys", "the customer lost their sk key, they said", false},

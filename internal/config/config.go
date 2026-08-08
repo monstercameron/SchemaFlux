@@ -222,7 +222,15 @@ const (
 	ModelDefaultQuick = "gpt-5.6-terra"
 )
 
-// GetMaxTokens returns the maximum token limit based on intelligence level
+// GetMaxTokens returns the default output-token ceiling for an intelligence
+// tier.
+//
+// This used to be the only ceiling a caller could get -- tier and ceiling were
+// the same knob, so a caller who wanted a long answer from a fast model, or a
+// short one from a smart model, had no way to ask (I-09). It is now only the
+// default: ops.CallLLM uses this when types.OpOptions.MaxOutputTokens is unset
+// (zero) and the caller's value otherwise, so every existing call that never
+// touched the option keeps exactly the ceiling it had.
 func GetMaxTokens(intelligence types.Speed) int {
 	switch intelligence {
 	case types.Smart:

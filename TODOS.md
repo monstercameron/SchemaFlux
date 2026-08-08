@@ -401,7 +401,7 @@ to test code that uses this library without paying a provider.
   package global. Depends on **A-004**.
   *Verify:* two clients with different fake providers run concurrently without interference —
   the test that today's global would fail.
-- [ ] **TI-003** — Cassette record/replay: capture live provider bodies once, replay them in
+- [x] **TI-003** — Cassette record/replay: capture live provider bodies once, replay them in
   CI. Redact keys on write.
   *Verify:* a recorded suite replays with `SCHEMAFLUX_LIVE_TESTS` unset; a cassette containing
   a key fails the redaction check.
@@ -735,6 +735,27 @@ port nothing yet except one operation as the proof.
   writes after `Run` returns and pays for twice.
   *Verify (added):* a caller-supplied invariant failing on the first attempt and passing on
   the second is visible in the envelope as a repair, with both attempts billed.
+  **Library complete; the kernel seam is not.** `AtMost`, `ExcludesValues`, and `Satisfies`
+  now ship beside the original four, with 27 cases in
+  `internal/ops/invariants_bounds_test.go`. Each has a pass case, a fail case, and a case
+  asserting what the error is *not* allowed to say: `AtMost` names the count and the limit but
+  never the items, `ExcludesValues` reports how many forbidden values appeared and never which
+  — a redaction check reporting "the output still contains 4111-1111-1111-1111" has leaked the
+  thing it was asked to remove, into a string every caller logs — and `Satisfies` names the
+  rule but never the value. `Satisfies` refuses a nil predicate and an unnamed rule rather
+  than treating either as a pass: a rule that cannot fail silently weakens the contract of
+  every call that registered it, and an unnamed one gives the repair loop nothing to feed
+  back.
+  **`OneOf` is deliberately not implemented**, and the reasoning is recorded at the bottom of
+  `invariants.go`. It is `MemberOf` in different words; `MemberOf` covers canonical value
+  comparison and `CategoryIn` covers the case-folded string enum. A third spelling is the
+  fourth membership test AGENTS.md forbids, and the failure it causes is two call sites
+  disagreeing about whether "Urgent" is "urgent".
+  **Still open, and it is the Revised line's actual demand:** `Invariant[In, Out]` needs
+  **A-001**'s descriptor to hang on, and a caller-supplied invariant does not yet run *inside*
+  the kernel — so a domain rule cannot participate in the repair loop, and the added Verify
+  case (a caller invariant failing then passing, visible as a repair with both attempts
+  billed) cannot be written yet. The functions exist; the registration seam does not.
 - [x] **A-010** — Repair loop: a decode or invariant failure feeds the error back and retries
   within the existing budget, aggregating usage across attempts into `Meta`. Closes **CF-01**.
   Depends on **A-009**.
@@ -765,6 +786,36 @@ port nothing yet except one operation as the proof.
   that observes a caller's later mutation is a bug nobody can see (TRU-16).
   *Verify (added):* branching a builder does not affect its sibling; mutating an input
   concurrently with `Run` is caught under `-race`.
+- [x] **A-014** — Option structs are copied field by field, so every field added since they
+  were written is silently dropped. `applyDefaults` (`internal/ops/utils.go`) and the
+  `toOpOptions()` methods (`internal/ops/options.go`) each copy a fixed list, and the list has
+  not kept up: `MaxOutputTokens`, `CacheIdentity`, `ResponseFormat`, `JSONSchema`, and
+  `SchemaName` are all set by a caller and then thrown away on the way to the provider.
+  Found while verifying **ST-003**: `schemaflux.Format(data, template, OpOptions{MaxOutputTokens: 321})`
+  sends the tier default of 2000, not 321.
+  This is worse than a missing feature. It makes **P-009**'s cache identity and **ST-003**'s
+  ceiling unreachable from the legacy and builder entrypoints while both look implemented and
+  both have passing tests, because the tests drive `CallLLM` directly. It is also the exact
+  failure `dead_options_test.go` exists to catch, and it slipped past because the field *is*
+  read — one layer below the one that dropped it.
+  *Verify:* every exported field on `OpOptions` survives a round trip through `applyDefaults`
+  and through every `toOpOptions()`, asserted by reflection over the struct rather than by a
+  hand-written list — a hand-written list is what created this.
+  **Fixed in the same session it was found.** `applyDefaults` now merges by reflection: every
+  non-zero field on the incoming options wins, and the `TransformMode`/`Smart` defaults are
+  applied afterwards only where the caller chose nothing — which is safe to check *after* the
+  merge precisely because **A-005** gave `Mode` and `Speed` real unset values.
+  `mergeEmbeddedOpOptions` turned out to be safe already, because it starts from the whole
+  embedded struct rather than copying named fields; that is now pinned by a test, since the
+  obvious tidy-up is to rewrite it in the style that just failed.
+  Evidence: `internal/ops/optionsurvival_test.go`. The survival tests walk the struct by
+  reflection and compare field by field, so adding a field to `OpOptions` and forgetting the
+  merge fails the build. A fixture test asserts the fixture itself populates every field —
+  otherwise the survival test would silently stop covering the new one, which is the same
+  failure one level up.
+  **Not done:** the layering rule is still "a non-zero field wins", so a caller cannot set a
+  field back to its zero value through this path. That was true of the hand-written version
+  too, and **A-005**'s `Opt[T]` is the answer; this task did not widen its scope to that.
 
 ---
 
@@ -1086,7 +1137,7 @@ tests.
   misrouted before) and `TestDetectFormatStillRecognisesRealDocuments` (11 cases), plus
   `TestFormatHintsWinOverDetection` — an explicit hint still overrides every structural rule,
   because the caller knows what they have.
-- [ ] **OP-401** — Collapse the `X` / `XWithMetadata` twins into one operation returning
+- [x] **OP-401** — Collapse the `X` / `XWithMetadata` twins into one operation returning
   `Result[T]` (`text.go:95/166`, `269/353`, `467/547`, `659/733`), each pair duplicating ~40
   identical lines. Closes **T-01**.
   **Partial — the duplication is gone; the API collapse waits on A-006.**
@@ -1098,6 +1149,33 @@ tests.
   bytes each operation sends are byte-identical before and after.
   `TestTextTwinsSendTheSameOptions` compares the steering the twins *actually send* rather
   than their source, because looking alike is not the property that matters.
+  **Now complete — the API collapse, once A-006 landed.** Each text operation has two forms
+  instead of three: the plain one returning what the caller asked for, and `SummarizeResult`,
+  `RewriteResult`, `TranslateResult`, `ExpandResult` returning `Result[T]`, built the same way
+  `ExtractResult` and `SortResult` are — a thin wrapper around the same execution, not a
+  second implementation of it, because an envelope built down a parallel path describes a
+  different call. The four `XWithMetadata` twins are deprecated and still work.
+  What the collapse is *for*: the twins' extra was a `Metadata map[string]any` beside the
+  payload, which is precisely the shape where a model's claim and a measured token count
+  become indistinguishable. `Meta` separates them, and the model's self-score stays on the
+  payload named `Model*`.
+  **Breaking rename, stated plainly:** the payload types were named `SummarizeResult`,
+  `RewriteResult`, `TranslateResult`, `ExpandResult`, which are the names the new functions
+  need. They are now `Summary`, `Rewritten`, `Translation`, `Expansion`. A type and a function
+  cannot share a name, so this could not be done with a deprecation window — code naming those
+  types breaks at compile time, which is the loudest and cheapest way for it to break. The
+  module has no tags (**DI-001**), so every consumer is on a pseudo-version and pinned by
+  commit; if that stops being true, this is the kind of change that needs a version to hang
+  it on.
+  Evidence: `text_envelope_test.go`, 19 cases through the exported API with a scripted
+  provider — each of the four returns its value and an envelope naming its own operation;
+  each returns the envelope *on failure too*, since a caller who gets only an error cannot
+  tell a refusal that cost nothing from one that burned three attempts; the deprecated twin
+  and the new form return the same text, confidence, and compression ratio for the same
+  response, which is what makes this a collapse rather than a rewrite; the model's confidence
+  is reachable on the payload and appears in no `Meta.Check`; and no cost or token count is
+  invented when the provider reports none. `testdata/api_surface.txt` moves by exactly four
+  added functions and four renamed types.
   What remains is the API collapse — one operation returning `Result[T]` instead of two
   differing only in return type. That needs **A-006**'s `Result[T]`, which does not exist
   yet, and inventing a fifth result shape in the meantime would be the opposite of the
@@ -1574,7 +1652,7 @@ tests.
   suite — a flaky test in a rate limiter is worse than no test.
   `mw` measures 80.1% statements and was added to `scripts/coverage_floor.py`'s package list,
   so it counts from now on.
-- [ ] **MW-004** — `mw.Cache`: response cache keyed on a hash of model, tier, mode, prompt
+- [x] **MW-004** — `mw.Cache`: response cache keyed on a hash of model, tier, mode, prompt
   bytes, and schema, so exact-duplicate calls cost zero. Closes **Gap-07**.
   **Revised (TRU-10):** the key must carry the complete semantic execution identity —
   operation and prompt versions, schema hash, normalized options, input digest, provider and
@@ -1583,8 +1661,67 @@ tests.
   opt-in and partitioned by tenant and data policy; caching on *similar* inputs stays off by
   default and is not a v1 feature. A cache hit appears in provenance and in cost accounting
   as a hit, never as a zero-cost call.
-- [ ] **MW-005** — `mw.Budget` enforcing **PR-005**. Closes **CF-08**.
-- [ ] **MW-006** — `mw.RedactEgress` so payloads can be scrubbed before they leave.
+  **Done, with two axes honestly absent.** `mw/cache.go`. The key reuses P-009's
+  `promptCacheKeyFor` output for the operation/prompt-version/schema half rather than deriving
+  a second opinion about what identifies a call, and adds: schema hash independently (so the
+  axis holds for calls that never set `CacheIdentity`), provider, resolved model, temperature,
+  max tokens, response format, and the tenant/data-policy partition, supplied through
+  `mw.WithCachePartition`. An unpartitioned call gets the zero partition, which is its own
+  group rather than a merge into a stated one.
+  It diverges from `promptCacheKeyFor` in exactly one place, and the divergence is the point:
+  the input digest here *includes steering*. A prefix-cache miss costs a slower first token,
+  so CA-002 drops steering from that key; an exact-result cache cannot tolerate the same
+  choice, because a steered call is a different question and returning the unsteered answer to
+  it is the fail-open this list exists to remove.
+  **Absent axes are named, not dropped:** seed, required contract level, and decoder version
+  appear in the key as the fixed strings `seed:absent`, `contract:absent`, `decoder:absent`.
+  `llm.CompletionRequest` has no seed field; `ContractLevel` is decided in `internal/ops`,
+  above the `Handler` seam this middleware wraps; and the decoder has no versioned identity
+  yet. A literal placeholder is visibly missing where an empty string is indistinguishable
+  from a real empty value.
+  Opt-in, exact-match only — no similarity caching, per the Revised line. Concurrent identical
+  misses coalesce onto one provider call, and a coalesced follower shares the leader's error
+  rather than retrying or being handed a fabricated success. Failed calls are never stored.
+  Evidence: `mw/cache_test.go`, 30 cases — thirteen key-derivation tests, one per axis, each
+  proving only that axis moves the key; order-independence of the schema hash; reproducibility
+  across identical calls; partition isolation including unpartitioned-versus-stated; TTL
+  expiry on a fake clock with no sleeps; and `TestCacheThroughChainWithScriptedProvider` for
+  the composition.
+  **Not done, and it is the Revised line's cost-accounting requirement:** a hit is visible
+  through the `mw.WithCacheStats` callback, but nothing populates `types.Meta`, so an operation
+  that does not wire the callback sees a hit as an honestly-zero-token call —
+  indistinguishable from a call that genuinely needed no tokens. Closing it needs a `CacheHit`
+  field on `llm.CompletionResponse` carried into `Meta`, which is a change under `internal/`
+  and is filed rather than smuggled in here. `FinishReason` is deliberately left untouched on
+  a hit: `ClassifyCompletion` reads it to detect truncation, and overwriting it with a cache
+  marker would hide a real truncation on every replay.
+- [x] **MW-005** — `mw.Budget` enforcing **PR-005**. Closes **CF-08**.
+  **Done.** `mw/budget.go`. The estimate is checked and the reservation taken inside one
+  critical section, so two goroutines cannot both pass a check that together exceeds the
+  ceiling — a ceiling two callers can both walk through is not a ceiling.
+  `TestBudgetConcurrentCallsCannotBothPassAnExceedingCheck` was verified by splitting the
+  check from the reserve, watching it fail with two successes, and putting it back.
+  After the call the reservation is reconciled to the measured cost; an unpriced model keeps
+  the pre-call estimate rather than being zeroed, because an unpriced call is not a free one
+  (**PR-001**). The refusal is a `types.OperationError` of the existing `KindBudgetExceeded`,
+  not a new sentinel. 12 cases, plus composition through `mw.Chain`.
+  **Stated limitation:** on a provider error the reservation is released, which assumes the
+  failed call was not billed. That holds for every provider in this module, which returns a
+  zero-value response on every error path, and the assumption is written at the release site
+  rather than left for someone to rediscover.
+- [x] **MW-006** — `mw.RedactEgress` so payloads can be scrubbed before they leave.
+  **Done.** `mw/redact.go` scrubs the system and user prompts before the wrapped provider is
+  reached, with the credential shapes as built-ins and `WithPattern`, `WithFunc`,
+  `WithMarker`, and `WithoutBuiltins` for callers.
+  The three redaction lists in this repository — `scripts/secret_scan.py`, the cassette
+  writer, and this — stay separate *on purpose*, and the reasoning is in the file: they guard
+  three different moments (a commit-time file scan, a fixture-write guard, a live egress
+  guard), and importing the test-support package from production middleware would invert the
+  dependency direction. That is a decision to keep them in step by review, and it is written
+  down so the next person changing one knows the other two exist.
+  `TestRedactEgressLeavesOrdinaryTextUntouched` is the over-redaction guard, verified against
+  a deliberately broad pattern that mangled the prose. 10+ cases plus a `Chain` case asserting
+  the credential is redacted on every retried attempt, not just the first.
 - [ ] **MW-007** — `mw.Metrics` exporting to OpenTelemetry, already a direct dependency.
   Closes the export half of the metrics gap.
   **Revised (ARC-17, ARC-18):** the direction is wrong as stated. Core defines small observer
@@ -1593,7 +1730,7 @@ tests.
   SDK, an exporter, an endpoint, or a sampler, and never owns their shutdown — a library
   that configures the host's telemetry stack cannot be embedded twice. That also means OTel
   leaves the core's dependency set. See **OB-001**.
-- [ ] **MW-008** — `mw.Fallback` for provider failover. Closes the rest of **Gap-09**.
+- [x] **MW-008** — `mw.Fallback` for provider failover. Closes the rest of **Gap-09**.
   **Revised (TRU-12, ARC-24):** failover is not free substitution. A fallback route must
   meet the same minimum capabilities and the same data policy as the route it replaces — a
   private-region failure may not fall back to a public provider — and it may not silently
@@ -1601,6 +1738,28 @@ tests.
   deterministic validation) is allowed only by explicit policy and is recorded as delivered.
   A fallback's own failure is classified on its own terms, not hidden behind the original.
   Depends on **CP-001** for the capability data this decision needs.
+  **Done for the half that can be honest today.** `mw/fallback.go`. A `FallbackRoute` carries
+  declared capabilities and a data-policy classification, and a route that does not meet the
+  primary's declared requirement is **never called** — not called and rejected afterwards,
+  which would already have sent the payload to a provider the policy forbids. Verified by
+  disabling the eligibility check and watching
+  `TestFallbackNeverCallsAnAlternateLackingRequiredSchemaSupport` and
+  `TestFallbackNeverCallsAnAlternateWithAMismatchedDataPolicy` fail. A named schema
+  degradation requires the explicit `AllowSchemaDegradation()` option, so a downgrade is a
+  decision rather than a side effect. An alternate's own failure is returned on its own terms
+  — `TestFallbackReturnsLastFailureWhenEveryRouteFails` asserts the alternate's provider
+  survives in the error rather than being hidden behind the primary's. 15 cases plus a `Chain`
+  composition with `Retry`.
+  **Not enforced, and both gaps are in the file's doc comment rather than only here:**
+  (1) **CP-001** does not exist, so there is no capability or policy *introspection* — every
+  requirement is a caller-declared label, and an undeclared requirement enforces nothing. That
+  is documented rather than silent, but a caller who declares nothing gets no protection.
+  (2) The Revised line's "recorded as delivered" is not done: `AllowSchemaDegradation` gates
+  the substitution, but the response carries no marker of the degradation, because the
+  `Result`/`Meta` envelope lives a layer above the `llm.Provider` seam `mw` operates at. It
+  needs plumbing from **A-001**/**A-006**, not a fix in this file. Until then a permitted
+  degradation is invisible downstream, which is the weaker half of the requirement and is
+  named here so it is not mistaken for done.
 
 ## Prompt caching
 
@@ -1642,9 +1801,27 @@ tests.
   list is about. The caller-facing iterator owns a bounded buffer, is cancelable, and
   documents whether items arrive in input or completion order; stopping iteration cancels
   the remaining work unless the caller explicitly detaches it.
-- [ ] **ST-003** — Remove the hardcoded output ceilings (4000/2000/1000 by tier,
+- [x] **ST-003** — Remove the hardcoded output ceilings (4000/2000/1000 by tier,
   `config.go:206-218`) in favor of a per-call option, and make truncation return
   `ErrTruncated` rather than surfacing as a parse error. Closes **I-09**.
+  **Done.** `OpOptions.MaxOutputTokens` is the per-call ceiling; the tier value stays as the
+  default when the caller sets nothing, so no existing call changes behaviour, and the exact
+  tier defaults are pinned by a test so a future edit to them is deliberate.
+  Truncation is now detected where the response is read, before the decoder sees the body, and
+  classified `KindOutputTruncated` through the existing `ClassifyCompletion` and sentinel —
+  no second opinion was added. It is not retried: a truncated answer is not a transient
+  failure, and retrying it spends money to be cut off again.
+  **A real provider bug found doing it:** `AnthropicProvider.Complete` hardcoded
+  `FinishReason: "stop"` and discarded Anthropic's `stop_reason` entirely, so an Anthropic
+  response cut off at the ceiling was indistinguishable from a complete one and surfaced as a
+  parse failure — the caller was told their model was broken when the answer had simply been
+  cut off. It now parses `stop_reason` and maps `max_tokens` to truncation.
+  Evidence: 12 tests across `internal/config`, `internal/ops`, `internal/llm`, and a root
+  integration file — the override reaches `llm.CompletionRequest.MaxTokens`, beats a larger
+  tier default, is ignored when negative; `length` and `max_tokens` both produce
+  `errors.Is(err, types.ErrOutputTruncated)`; truncation is not retried; a normal `stop` is
+  unaffected; and `TestNoDeadOptionFields` confirms the new option is genuinely read rather
+  than being a lie in the shape of an API.
 
 ## Infrastructure papercuts
 
@@ -1703,7 +1880,23 @@ Each takes an `Op` and returns an `Op`. Build after M05, because `Vote` needs co
 results, `Escalate` needs a failure signal that is not "the model said something odd," and
 `MapReduce` needs invariants to validate the merge.
 
-- [ ] **CF-001** — `flux.Escalate(op, from, to)`. Closes **CF-02**.
+- [x] **CF-001** — `flux.Escalate(op, from, to)`. Closes **CF-02**.
+  **Done** as `Escalate(ctx, first, stronger, accept)` over a `Step[T]`, so it composes any
+  operation or caller function rather than being written once per operation
+  (`internal/ops/combinators.go`). It escalates for two distinct reasons and says which in
+  `EscalationRecord.Reason`: the first step failed, or it succeeded and the caller's `accept`
+  turned the answer down. A nil `accept` makes it a pure failure route.
+  **A terminal failure does not escalate.** A malformed request, a policy refusal, an
+  exhausted budget, or a bad credential fails identically on a stronger model, so escalating
+  spends real money to buy nothing — the disposition comes from `types.OperationError` via
+  `llm.Classify`, not a second opinion. An *unclassifiable* error does escalate, deliberately:
+  an error this library has never seen should get the second route rather than be ruled out by
+  a classifier that did not recognise it.
+  Evidence: `internal/ops/combinators_test.go` — the accepted answer never calls the stronger
+  step (asserted by call count, because "it returned the cheap answer" does not prove the
+  expensive one was not also paid for); four terminal kinds each refuse to escalate and keep
+  their classification on the way out; both failures appear in the error when neither route
+  works; a cancelled context runs nothing.
 - [ ] **CF-002** — `flux.Vote(op, n, rule)` — and the first honest confidence number in the
   library, derived from sample agreement. Closes **CF-03**.
   **Revised (TRU-27):** agreement is a policy, not a proof — correlated models share
@@ -1712,7 +1905,19 @@ results, `Escalate` needs a failure signal that is not "the model said something
   then selection, evidence-weighted comparison, adjudicator model) and **must be able to
   abstain**, returning `ErrReviewRequired` rather than the majority answer. Evidence and
   invariants still apply to the winner; a vote does not substitute for them.
-- [ ] **CF-003** — `flux.Until(op, pred, max)`. Closes **CF-05**.
+- [x] **CF-003** — `flux.Until(op, pred, max)`. Closes **CF-05**.
+  **Done.** `Until(ctx, step, pred, max)` returns the first answer satisfying the predicate,
+  the number of attempts, and an error when they run out.
+  **Running out is an error**, classified `KindRepairExhausted`. The obvious alternative —
+  return the last answer and let the caller decide — is the fail-open this list exists to
+  remove: the last answer is by definition one that failed the predicate, so returning it as a
+  success means the caller who wrote the condition is the one who never learns it was
+  violated. The rejected answer is returned *alongside* the error, so it can be inspected but
+  not used by accident.
+  A nil predicate, zero attempts, and a negative maximum are all refused rather than treated
+  as "run once": each silently drops the check the caller asked for. A terminal failure stops
+  the loop instead of spending the whole budget on a call that cannot succeed, and
+  cancellation is honoured between attempts.
 - [x] **CF-004** — `flux.MapReduce(op, chunk, merge)` with bounded concurrency. Closes
   **CF-04**; unblocks **OP-108**. **Done `debaf6e`.**
 - [ ] **CF-005** — `flux.Checkpoint(store, runID)`. Closes **CF-06**, and replaces the
@@ -1726,7 +1931,15 @@ results, `Escalate` needs a failure signal that is not "the model said something
   or policy requires a human. That is a successful safety outcome, not a failure, and it is
   the alternative to looping the model until it says something acceptable. The library
   supplies the structure and the callback; it does not build an approval workflow.
-- [ ] **CF-007** — `flux.Fallback(a, b)`.
+- [x] **CF-007** — `flux.Fallback(a, b)`.
+  **Done, as one line over Escalate** rather than a second implementation. Two functions that
+  each decide whether an error is worth another route eventually disagree, and the
+  disagreement only appears under the failure they were both written for. `Fallback` is
+  `Escalate` with no `accept`, so it has no opinion about the quality of a successful primary
+  — which is exactly what distinguishes it from `Escalate`, and is asserted.
+  Note this is the *combinator*; `mw.Fallback` (**MW-008**) is provider failover at the
+  middleware seam, with capability and data-policy eligibility. Same word, two layers, and
+  they are not interchangeable.
 - [ ] **CF-008** — Retire or reimplement `Decide`, `Guard`, `Match`, and `Pipeline` on the
   combinators. `Guard` currently issues an unannounced LLM call with a hardcoded 2-second
   timeout and no options (`procedural.go:143-180`). Closes **P-03**, **P-10**. Addresses **CF-09**.

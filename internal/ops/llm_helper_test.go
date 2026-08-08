@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -348,6 +349,203 @@ func TestCallLLMDoesNotRetryNonRetryableFailures(t *testing.T) {
 	}
 	if provider.attempts != 1 {
 		t.Fatalf("expected 1 attempt, got %d", provider.attempts)
+	}
+}
+
+// ST-003. The tier ceiling used to be the only ceiling: config.GetMaxTokens
+// was the sole input to CallLLM's request, so a caller who wanted a longer or
+// shorter answer than their tier's default had no way to ask (I-09). These
+// prove the per-call override actually reaches llm.CompletionRequest.MaxTokens
+// rather than being a field that compiles and does nothing.
+func TestCallLLMMaxOutputTokensOverrideReachesRequest(t *testing.T) {
+	provider := &captureProvider{}
+
+	_, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast, MaxOutputTokens: 777},
+	)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if provider.req.MaxTokens != 777 {
+		t.Fatalf("MaxTokens = %d, want the per-call override of 777", provider.req.MaxTokens)
+	}
+}
+
+// An override on the Smart tier -- whose default (4000) is the largest -- must
+// still win. Proves the option is not merely clamping a smaller number in.
+func TestCallLLMMaxOutputTokensOverrideBeatsSmartTierDefault(t *testing.T) {
+	provider := &captureProvider{}
+
+	_, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Smart, MaxOutputTokens: 50},
+	)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if provider.req.MaxTokens != 50 {
+		t.Fatalf("MaxTokens = %d, want the per-call override of 50, not the Smart tier default", provider.req.MaxTokens)
+	}
+}
+
+// A caller who never touches MaxOutputTokens must keep getting exactly the
+// ceiling their tier always sent -- deleting the default outright would change
+// every existing call's behaviour, which this task does not ask for.
+func TestCallLLMMaxOutputTokensZeroUsesTierDefault(t *testing.T) {
+	cases := []struct {
+		name   string
+		tier   types.Speed
+		wantMT int
+	}{
+		{"smart", types.Smart, config.GetMaxTokens(types.Smart)},
+		{"fast", types.Fast, config.GetMaxTokens(types.Fast)},
+		{"quick", types.Quick, config.GetMaxTokens(types.Quick)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &captureProvider{}
+			_, err := CallLLM(
+				context.Background(),
+				provider,
+				`You are a concise assistant.`,
+				`Summarize this text.`,
+				types.OpOptions{Intelligence: tc.tier},
+			)
+			if err != nil {
+				t.Fatalf("CallLLM() error = %v", err)
+			}
+			if provider.req.MaxTokens != tc.wantMT {
+				t.Fatalf("MaxTokens = %d, want the %s tier default of %d", provider.req.MaxTokens, tc.name, tc.wantMT)
+			}
+		})
+	}
+}
+
+// A negative override is not a caller opinion, it is a mistake -- the tier
+// default must still apply rather than being sent to the provider verbatim.
+func TestCallLLMMaxOutputTokensNegativeIgnored(t *testing.T) {
+	provider := &captureProvider{}
+
+	_, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast, MaxOutputTokens: -5},
+	)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if want := config.GetMaxTokens(types.Fast); provider.req.MaxTokens != want {
+		t.Fatalf("MaxTokens = %d, want the Fast tier default of %d for a negative override", provider.req.MaxTokens, want)
+	}
+}
+
+// A truncated finish reason must classify as types.KindOutputTruncated and
+// reach the caller via errors.Is(err, types.ErrOutputTruncated), not surface as
+// whatever ParseJSON would have said about the cut-off body three layers away.
+func TestCallLLMTruncatedFinishReasonProducesTruncationError(t *testing.T) {
+	provider := &captureProvider{
+		resp: llm.CompletionResponse{Content: `{"partial":`, FinishReason: "length"},
+	}
+
+	got, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast},
+	)
+	if err == nil {
+		t.Fatalf("expected a truncation error, got success with content %q", got)
+	}
+	if !errors.Is(err, types.ErrOutputTruncated) {
+		t.Errorf("errors.Is(err, types.ErrOutputTruncated) = false; err = %v", err)
+	}
+	if kind := types.KindOf(err); kind != types.KindOutputTruncated {
+		t.Errorf("KindOf(err) = %v, want KindOutputTruncated", kind)
+	}
+	if got != "" {
+		t.Errorf("expected no content on a truncated response, got %q", got)
+	}
+}
+
+// max_tokens is OpenAI's other truncation finish reason (length is the other);
+// both must classify identically.
+func TestCallLLMMaxTokensFinishReasonProducesTruncationError(t *testing.T) {
+	provider := &captureProvider{
+		resp: llm.CompletionResponse{Content: `{"partial":`, FinishReason: "max_tokens"},
+	}
+
+	_, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast},
+	)
+	if !errors.Is(err, types.ErrOutputTruncated) {
+		t.Errorf("errors.Is(err, types.ErrOutputTruncated) = false; err = %v", err)
+	}
+}
+
+// Truncation is a property of the answer, not the transport: sending the
+// identical request again asks the same question of the same model and gets
+// cut off the same way, so it must not consume the retry budget the way a 500
+// or a rate limit does.
+func TestCallLLMTruncatedFinishReasonIsNotRetried(t *testing.T) {
+	provider := &captureProvider{
+		responses: []llm.CompletionResponse{
+			{Content: `{"partial":`, FinishReason: "length"},
+			{Content: `{"complete":true}`, FinishReason: "stop"},
+		},
+	}
+
+	_, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast},
+	)
+	if err == nil {
+		t.Fatal("expected the truncation error, not a retried success")
+	}
+	if !errors.Is(err, types.ErrOutputTruncated) {
+		t.Errorf("errors.Is(err, types.ErrOutputTruncated) = false; err = %v", err)
+	}
+	if provider.attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 -- a truncation must not be retried", provider.attempts)
+	}
+}
+
+// A normal "stop" finish with a complete body must be entirely unaffected by
+// the truncation check -- the classifier must not fire on the common case.
+func TestCallLLMNormalStopFinishIsUnaffected(t *testing.T) {
+	provider := &captureProvider{
+		resp: llm.CompletionResponse{Content: `{"ok":true}`, FinishReason: "stop"},
+	}
+
+	got, err := CallLLM(
+		context.Background(),
+		provider,
+		`You are a concise assistant.`,
+		`Summarize this text.`,
+		types.OpOptions{Intelligence: types.Fast},
+	)
+	if err != nil {
+		t.Fatalf("CallLLM() error = %v", err)
+	}
+	if got != `{"ok":true}` {
+		t.Fatalf("got = %q, want the untouched content", got)
 	}
 }
 

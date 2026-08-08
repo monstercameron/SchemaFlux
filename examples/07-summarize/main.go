@@ -1,6 +1,6 @@
 // Example: 07-summarize
 //
-// Operation: Summarize / SummarizeWithMetadata - Condense text with insights
+// Operation: Summarize / SummarizeResult - Condense text with insights
 //
 // Input: Long article about AI in Healthcare (~2000 characters)
 //
@@ -133,11 +133,12 @@ socioeconomic status.
 	metadataOpts.LengthUnit = "sentences"
 	metadataOpts.OpOptions.Intelligence = schemaflux.Fast
 
-	result, err := schemaflux.SummarizeWithMetadata(article, metadataOpts)
+	envelope, err := schemaflux.SummarizeResult(article, metadataOpts)
 	if err != nil {
-		schemaflux.GetLogger().Error("SummarizeWithMetadata failed", "error", err)
+		schemaflux.GetLogger().Error("SummarizeResult failed", "error", err)
 		os.Exit(1)
 	}
+	result := envelope.Value
 
 	fmt.Println("\n✅ Summary with Metadata:")
 	fmt.Println("---")

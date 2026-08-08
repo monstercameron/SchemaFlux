@@ -147,6 +147,32 @@ func TestNonOpenAIProvidersGetTheirOwnModels(t *testing.T) {
 	}
 }
 
+// ST-003. GetMaxTokens becomes the DEFAULT ceiling once ops.CallLLM's per-call
+// MaxOutputTokens override exists, not the only one -- but a caller who never
+// touches the option must see exactly the ceiling they always got. Pinning the
+// exact numbers (not just "positive", which TestTierParametersAreDefinedForEveryTier
+// already checks) is what catches a refactor that quietly changes what
+// "unchanged" means.
+func TestGetMaxTokensExactTierDefaultsUnchanged(t *testing.T) {
+	cases := []struct {
+		name string
+		tier types.Speed
+		want int
+	}{
+		{"smart", types.Smart, 4000},
+		{"fast", types.Fast, 2000},
+		{"quick", types.Quick, 1000},
+		{"unset falls back to fast's ceiling", types.TierUnset, 2000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := GetMaxTokens(tc.tier); got != tc.want {
+				t.Errorf("GetMaxTokens(%v) = %d, want %d", tc.tier, got, tc.want)
+			}
+		})
+	}
+}
+
 // Temperature and token ceilings must be defined for every tier.
 func TestTierParametersAreDefinedForEveryTier(t *testing.T) {
 	for _, speed := range []types.Speed{types.Smart, types.Fast, types.Quick} {

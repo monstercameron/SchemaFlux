@@ -248,11 +248,11 @@ type (
 	PivotResult[U any] = ops.PivotResult[U]
 
 	// Text operation result types with metadata
-	SummarizeResult        = ops.SummarizeResult
-	RewriteResult          = ops.RewriteResult
-	TranslateResult        = ops.TranslateResult
+	Summary                = ops.Summary
+	Rewritten              = ops.Rewritten
+	Translation            = ops.Translation
 	TranslationAlternative = ops.TranslationAlternative
-	ExpandResult           = ops.ExpandResult
+	Expansion              = ops.Expansion
 
 	// Extended operation result types with metadata
 	FormatResult       = ops.FormatResult
@@ -663,8 +663,25 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 //	result, err := schemaflux.SummarizeWithMetadata(longText, schemaflux.NewSummarizeOptions())
 //	fmt.Printf("Summary: %s\nKey points: %v\nCompression: %.0f%%\n",
 //	    result.Text, result.KeyPoints, result.CompressionRatio*100)
-func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult, error) {
+//
+// Deprecated: use SummarizeResult, which returns the same Summary inside a
+// Result whose Meta separates what the runtime measured from what the
+// model claimed. This shape carries a Metadata map instead, where the two
+// are indistinguishable. See OP-401.
+func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error) {
 	return ops.SummarizeWithMetadata(input, opts)
+}
+
+// SummarizeResult summarizes text and returns the answer with the record of how it ran:
+// what the call cost, how many attempts it took, and the model's own claims
+// kept apart from the measurements.
+//
+// Example:
+//
+//	result, err := schemaflux.SummarizeResult(text, schemaflux.NewSummarizeOptions())
+//	fmt.Println(result.Value.Text, result.Meta.Cost)
+func SummarizeResult(input string, opts SummarizeOptions) (Result[Summary], error) {
+	return ops.SummarizeResult(input, opts)
 }
 
 // Rewrite rewrites text according to specified instructions.
@@ -684,8 +701,25 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 //	result, err := schemaflux.RewriteWithMetadata(text, schemaflux.NewRewriteOptions().WithTargetTone("professional"))
 //	fmt.Printf("Rewritten: %s\nChanges: %v\nTone: %s\n",
 //	    result.Text, result.ChangesMade, result.ToneAchieved)
-func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, error) {
+//
+// Deprecated: use RewriteResult, which returns the same Rewritten inside a
+// Result whose Meta separates what the runtime measured from what the
+// model claimed. This shape carries a Metadata map instead, where the two
+// are indistinguishable. See OP-401.
+func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
 	return ops.RewriteWithMetadata(input, opts)
+}
+
+// RewriteResult rewrites text and returns the answer with the record of how it ran:
+// what the call cost, how many attempts it took, and the model's own claims
+// kept apart from the measurements.
+//
+// Example:
+//
+//	result, err := schemaflux.RewriteResult(text, schemaflux.NewRewriteOptions())
+//	fmt.Println(result.Value.Text, result.Meta.Cost)
+func RewriteResult(input string, opts RewriteOptions) (Result[Rewritten], error) {
+	return ops.RewriteResult(input, opts)
 }
 
 // Translate translates text to a target language.
@@ -705,8 +739,25 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 //	result, err := schemaflux.TranslateWithMetadata(text, schemaflux.NewTranslateOptions().WithTargetLanguage("French"))
 //	fmt.Printf("Translation: %s\nDetected language: %s\nConfidence: %.0f%%\n",
 //	    result.Text, result.SourceLanguageDetected, result.ModelConfidence*100)
-func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult, error) {
+//
+// Deprecated: use TranslateResult, which returns the same Translation inside a
+// Result whose Meta separates what the runtime measured from what the
+// model claimed. This shape carries a Metadata map instead, where the two
+// are indistinguishable. See OP-401.
+func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, error) {
 	return ops.TranslateWithMetadata(input, opts)
+}
+
+// TranslateResult translates text and returns the answer with the record of how it ran:
+// what the call cost, how many attempts it took, and the model's own claims
+// kept apart from the measurements.
+//
+// Example:
+//
+//	result, err := schemaflux.TranslateResult(text, schemaflux.NewTranslateOptions())
+//	fmt.Println(result.Value.Text, result.Meta.Cost)
+func TranslateResult(input string, opts TranslateOptions) (Result[Translation], error) {
+	return ops.TranslateResult(input, opts)
 }
 
 // Expand expands brief text into more detailed content.
@@ -726,8 +777,25 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 //	result, err := schemaflux.ExpandWithMetadata(briefText, schemaflux.NewExpandOptions())
 //	fmt.Printf("Expanded: %s\nExpansion ratio: %.1fx\nAdded: %v\n",
 //	    result.Text, result.ExpansionRatio, result.AddedContent)
-func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) {
+//
+// Deprecated: use ExpandResult, which returns the same Expansion inside a
+// Result whose Meta separates what the runtime measured from what the
+// model claimed. This shape carries a Metadata map instead, where the two
+// are indistinguishable. See OP-401.
+func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
 	return ops.ExpandWithMetadata(input, opts)
+}
+
+// ExpandResult expands text and returns the answer with the record of how it ran:
+// what the call cost, how many attempts it took, and the model's own claims
+// kept apart from the measurements.
+//
+// Example:
+//
+//	result, err := schemaflux.ExpandResult(text, schemaflux.NewExpandOptions())
+//	fmt.Println(result.Value.Text, result.Meta.Cost)
+func ExpandResult(input string, opts ExpandOptions) (Result[Expansion], error) {
+	return ops.ExpandResult(input, opts)
 }
 
 // Suggest generates context-aware suggestions.
@@ -1399,4 +1467,48 @@ func Assemble[T any](parts []any, opts ...ComposeOptions) (ComposeResult[T], err
 //	})
 func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) {
 	return ops.Pivot[T, U](input, opts...)
+}
+
+// Step is one attempt at producing a value, for the control-flow combinators
+// below. It takes the context rather than closing over one, so a combinator
+// that runs it more than once can still be cancelled between attempts.
+type Step[T any] = ops.Step[T]
+
+// EscalationRecord reports whether Escalate had to run the stronger step, and
+// why.
+type EscalationRecord = ops.EscalationRecord
+
+// Escalate runs first, and runs stronger only when it has to: when first
+// failed in a way a different route could survive, or when it succeeded and
+// accept turned the answer down. A nil accept means any successful answer is
+// kept, which makes Escalate a pure failure route.
+//
+// A terminal failure does not escalate. A malformed request or a policy
+// refusal fails the same way on a stronger model, so escalating spends real
+// money to buy nothing.
+//
+// Example:
+//
+//	answer, record, err := schemaflux.Escalate(ctx,
+//	    func(ctx context.Context) (Verdict, error) { return classifyFast(ctx, ticket) },
+//	    func(ctx context.Context) (Verdict, error) { return classifySmart(ctx, ticket) },
+//	    func(v Verdict) bool { return v.ModelConfidence >= 0.8 })
+func Escalate[T any](ctx context.Context, first, stronger Step[T], accept func(T) bool) (T, EscalationRecord, error) {
+	return ops.Escalate(ctx, first, stronger, accept)
+}
+
+// Fallback runs primary, and alternate if primary fails. It is Escalate with
+// no accept function, so the two cannot disagree about which failures are
+// worth another route.
+func Fallback[T any](ctx context.Context, primary, alternate Step[T]) (T, error) {
+	return ops.Fallback(ctx, primary, alternate)
+}
+
+// Until runs step until the answer satisfies pred, and returns an error when
+// the attempts run out. Running out is a failure: the last answer is by
+// definition one that failed the predicate, and returning it as a success
+// means the caller who wrote the predicate never learns it was violated. The
+// rejected answer is returned alongside the error for inspection.
+func Until[T any](ctx context.Context, step Step[T], pred func(T) bool, max int) (T, int, error) {
+	return ops.Until(ctx, step, pred, max)
 }

@@ -629,7 +629,13 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		Usage struct {
+		// StopReason is Anthropic's finish-reason field. "max_tokens" means the
+		// response was cut off at the ceiling, exactly like OpenAI's "length" --
+		// it used to be discarded and every response reported "stop"
+		// unconditionally, which made a truncated answer indistinguishable from
+		// a complete one until it failed to parse three layers away (I-09).
+		StopReason string `json:"stop_reason"`
+		Usage      struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
@@ -652,11 +658,16 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 		}
 	}
 
+	finishReason := response.StopReason
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
 	return CompletionResponse{
 		Content:      content,
 		Provider:     provider.Name(),
 		Model:        response.Model,
-		FinishReason: "stop",
+		FinishReason: finishReason,
 		Usage: types.TokenUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,

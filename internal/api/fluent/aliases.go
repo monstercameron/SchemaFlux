@@ -35,13 +35,13 @@ type (
 	ParseOptions               = ops.ParseOptions
 	ParseResult[T any]         = ops.ParseResult[T]
 	SummarizeOptions           = ops.SummarizeOptions
-	SummarizeResult            = ops.SummarizeResult
+	Summary                    = ops.Summary
 	RewriteOptions             = ops.RewriteOptions
-	RewriteResult              = ops.RewriteResult
+	Rewritten                  = ops.Rewritten
 	TranslateOptions           = ops.TranslateOptions
-	TranslateResult            = ops.TranslateResult
+	Translation                = ops.Translation
 	ExpandOptions              = ops.ExpandOptions
-	ExpandResult               = ops.ExpandResult
+	Expansion                  = ops.Expansion
 	SuggestOptions             = ops.SuggestOptions
 	SuggestStrategy            = ops.SuggestStrategy
 	RedactOptions              = ops.RedactOptions
@@ -220,7 +220,7 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 	return ops.Summarize(input, opts)
 }
 
-func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult, error) {
+func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error) {
 	return ops.SummarizeWithMetadata(input, opts)
 }
 
@@ -228,7 +228,7 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 	return ops.Rewrite(input, opts)
 }
 
-func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, error) {
+func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
 	return ops.RewriteWithMetadata(input, opts)
 }
 
@@ -236,7 +236,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 	return ops.Translate(input, opts)
 }
 
-func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult, error) {
+func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, error) {
 	return ops.TranslateWithMetadata(input, opts)
 }
 
@@ -244,7 +244,7 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 	return ops.Expand(input, opts)
 }
 
-func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) {
+func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
 	return ops.ExpandWithMetadata(input, opts)
 }
 

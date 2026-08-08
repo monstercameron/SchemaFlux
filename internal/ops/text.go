@@ -9,8 +9,8 @@ import (
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// SummarizeResult contains the summary with metadata
-type SummarizeResult struct {
+// Summary contains the summary with metadata
+type Summary struct {
 	// Text is the summarized content
 	Text string `json:"text"`
 
@@ -31,8 +31,8 @@ type SummarizeResult struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-// RewriteResult contains the rewritten text with metadata
-type RewriteResult struct {
+// Rewritten contains the rewritten text with metadata
+type Rewritten struct {
 	// Text is the rewritten content
 	Text string `json:"text"`
 
@@ -49,8 +49,8 @@ type RewriteResult struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-// TranslateResult contains the translation with metadata
-type TranslateResult struct {
+// Translation contains the translation with metadata
+type Translation struct {
 	// Text is the translated content
 	Text string `json:"text"`
 
@@ -74,8 +74,8 @@ type TranslationAlternative struct {
 	Context     string `json:"context,omitempty"`
 }
 
-// ExpandResult contains the expanded text with metadata
-type ExpandResult struct {
+// Expansion contains the expanded text with metadata
+type Expansion struct {
 	// Text is the expanded content
 	Text string `json:"text"`
 
@@ -139,14 +139,18 @@ Rules:
 
 // SummarizeWithMetadata creates a summary with additional metadata including
 // compression ratio, key points extracted, and confidence score.
-func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult, error) {
+// Deprecated: use SummarizeResult, which returns the same Summary inside a
+// types.Result. The envelope keeps what the runtime measured apart from
+// what the model claimed, which the Metadata map on this shape cannot.
+// See OP-401.
+func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting summarize with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("SummarizeWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return SummarizeResult{}, fmt.Errorf("invalid options: %w", err)
+		return Summary{}, fmt.Errorf("invalid options: %w", err)
 	}
 
 	// Build summarization instructions
@@ -174,7 +178,7 @@ Rules:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("SummarizeWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return SummarizeResult{}, types.SummarizeError{
+		return Summary{}, types.SummarizeError{
 			InputShape: types.DescribeValue(input),
 			Length:     len(input),
 			Reason:     err.Error(),
@@ -196,7 +200,7 @@ Rules:
 		// directly, without the shared fence stripping, so any fenced response
 		// took this path.
 		log.Error("SummarizeWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return SummarizeResult{}, fmt.Errorf("summarize: could not parse the summary response: %w", err)
+		return Summary{}, fmt.Errorf("summarize: could not parse the summary response: %w", err)
 	}
 
 	// TargetLength was requested in the prompt and never checked, so an
@@ -207,7 +211,7 @@ Rules:
 	if err := WithinLength(parsed.Text, opts.TargetLength, LengthUnit(opts.LengthUnit), summaryLengthTolerance); err != nil {
 		log.Error("SummarizeWithMetadata result is longer than requested",
 			"requestID", opts.CommonOptions.RequestID, "error", err)
-		return SummarizeResult{}, fmt.Errorf("summarize: %w", err)
+		return Summary{}, fmt.Errorf("summarize: %w", err)
 	}
 
 	// Runes, not bytes. A summary of Japanese text measured in bytes reports a
@@ -218,7 +222,7 @@ Rules:
 		compressionRatio = float64(len([]rune(parsed.Text))) / float64(inputRunes)
 	}
 
-	result := SummarizeResult{
+	result := Summary{
 		Text:             parsed.Text,
 		CompressionRatio: compressionRatio,
 		KeyPoints:        parsed.KeyPoints,
@@ -276,14 +280,18 @@ Rules:
 
 // RewriteWithMetadata rewrites text with additional metadata including
 // what changes were made, the achieved tone, and confidence score.
-func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, error) {
+// Deprecated: use RewriteResult, which returns the same Rewritten inside a
+// types.Result. The envelope keeps what the runtime measured apart from
+// what the model claimed, which the Metadata map on this shape cannot.
+// See OP-401.
+func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting rewrite with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("RewriteWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return RewriteResult{}, fmt.Errorf("invalid options: %w", err)
+		return Rewritten{}, fmt.Errorf("invalid options: %w", err)
 	}
 
 	// Build rewrite instructions
@@ -313,7 +321,7 @@ Rules:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("RewriteWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return RewriteResult{}, types.RewriteError{
+		return Rewritten{}, types.RewriteError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
 			Err:        err,
@@ -329,10 +337,10 @@ Rules:
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return RewriteResult{}, fmt.Errorf("rewrite: could not parse the rewrite response: %w", err)
+		return Rewritten{}, fmt.Errorf("rewrite: could not parse the rewrite response: %w", err)
 	}
 
-	result := RewriteResult{
+	result := Rewritten{
 		Text:            parsed.Text,
 		ChangesMade:     parsed.ChangesMade,
 		ToneAchieved:    parsed.ToneAchieved,
@@ -390,14 +398,18 @@ Rules:
 
 // TranslateWithMetadata translates text with additional metadata including
 // detected source language, confidence, and alternative translations.
-func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult, error) {
+// Deprecated: use TranslateResult, which returns the same Translation inside a
+// types.Result. The envelope keeps what the runtime measured apart from
+// what the model claimed, which the Metadata map on this shape cannot.
+// See OP-401.
+func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting translate with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input), "targetLang", opts.TargetLanguage)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("TranslateWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return TranslateResult{}, fmt.Errorf("invalid options: %w", err)
+		return Translation{}, fmt.Errorf("invalid options: %w", err)
 	}
 
 	// Build translation instructions
@@ -429,7 +441,7 @@ Rules:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("TranslateWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return TranslateResult{}, types.TranslateError{
+		return Translation{}, types.TranslateError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
 			Err:        err,
@@ -445,10 +457,10 @@ Rules:
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("TranslateWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return TranslateResult{}, fmt.Errorf("translate: could not parse the translation response: %w", err)
+		return Translation{}, fmt.Errorf("translate: could not parse the translation response: %w", err)
 	}
 
-	result := TranslateResult{
+	result := Translation{
 		Text:                   parsed.Text,
 		SourceLanguageDetected: parsed.SourceLanguageDetected,
 		ModelConfidence:        parsed.ModelConfidence,
@@ -506,14 +518,18 @@ Rules:
 
 // ExpandWithMetadata expands text with additional metadata including
 // expansion ratio, what content was added, and confidence score.
-func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) {
+// Deprecated: use ExpandResult, which returns the same Expansion inside a
+// types.Result. The envelope keeps what the runtime measured apart from
+// what the model claimed, which the Metadata map on this shape cannot.
+// See OP-401.
+func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting expand with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("ExpandWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return ExpandResult{}, fmt.Errorf("invalid options: %w", err)
+		return Expansion{}, fmt.Errorf("invalid options: %w", err)
 	}
 
 	// Build expansion instructions
@@ -541,7 +557,7 @@ Rules:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("ExpandWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return ExpandResult{}, types.ExpandError{
+		return Expansion{}, types.ExpandError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
 			Err:        err,
@@ -556,12 +572,12 @@ Rules:
 	}
 	if err := ParseJSONStrict(response, &parsed); err != nil {
 		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return ExpandResult{}, fmt.Errorf("expand: could not parse the expansion response: %w", err)
+		return Expansion{}, fmt.Errorf("expand: could not parse the expansion response: %w", err)
 	}
 
 	expansionRatio := float64(len(parsed.Text)) / float64(len(input))
 
-	result := ExpandResult{
+	result := Expansion{
 		Text:            parsed.Text,
 		ExpansionRatio:  expansionRatio,
 		AddedContent:    parsed.AddedContent,
