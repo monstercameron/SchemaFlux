@@ -1488,7 +1488,7 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   touches. 268 tracked files were converted in the working tree.
   *Verify:* `gofmt -l .` is empty; `go build ./...`, `go vet ./...`, and `go test ./...`
   (13 packages) are green after the conversion.
-- [ ] **CI-004** — Make the numbered examples a release gate. 19 of 45 fail under the local
+- [x] **CI-004** — Make the numbered examples a release gate. 19 of 45 fail under the local
   provider today because the mock returns `Mock response for: ...`, incompatible with the JSON
   contracts of `Rank`, `Enrich`, `Predict`, `Verify`, and `Question`. Depends on **TI-001**.
   **Inventory, inherited from `PRODUCTION_TODO.md` when **DOC-003** folded it in.** As of that
@@ -1504,6 +1504,29 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   no JSON contract. **TI-001**'s scripted provider is the fix; this list is the acceptance
   criterion. The numbers are from 2026-03-06 and several of these operations have changed
   since — re-measure before relying on them.
+  **Done — the gate is live at 33 of 45, up from 26, and it is ratcheted rather than
+  all-or-nothing.**
+  The mock was the problem, exactly as the task said. It guessed the answer from keywords in
+  the prompt and said `Mock response for: ...` when it recognised none — a shape no operation
+  asks for. It does not need to guess: every structured operation states its contract, either
+  as the JSON Schema the strict path has sent since **P-005** or as the JSON template the
+  prompt-only operations embed in their system prompt. `internal/llm/mockshape.go` reads
+  whichever is there and answers with that shape, honouring `format` annotations so a
+  `time.Time` field gets an RFC3339 string rather than the word "mock".
+  Collection operations needed one more idea. Their contract is *relational* — Choose must
+  return an item it was given, Sort a permutation, Cluster a partition — so a shape-correct
+  answer still fails, correctly, against the invariants added in **OP-105** and **OP-107**.
+  The mock answers with the **identity transformation**, which satisfies all of them by
+  construction and is a legitimate answer to "sort these".
+  **The gate is ratcheted for a reason.** Waiting for all forty-five before turning anything
+  on leaves the thirty-three that work unprotected, which is how they became nineteen
+  failures in the first place. `scripts/examples_gate.py` fails the build when a passing
+  example breaks **and** when a failing one starts passing without being recorded — a quiet
+  improvement nobody writes down is one somebody re-breaks.
+  The twelve still failing are listed in `.audit/examples_expected.txt` with the error each
+  one produces. They fall into two groups: operations whose response shape the mock cannot
+  derive (`Transform`, `Generate`, `Compress`), and operations where identity is not a valid
+  answer (`Cluster` over a partition it did not compute). Filed as **CI-008**.
 - [x] **CI-005** — Coverage floor, ratcheted from the current measured value rather than set
   aspirationally.
   **Done — 62.2%, measured.** `scripts/coverage_floor.py`, run by the `quality` job.
@@ -2226,6 +2249,15 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
+
+- [ ] **CI-008** — Close the twelve numbered examples still failing under the local provider,
+  listed with their errors in `.audit/examples_expected.txt`. Two groups, and they want
+  different fixes: `Transform`, `Generate`, `Compress`, `Decompose`, `Enrich`, `Normalize`,
+  `Synthesize`, `Predict`, `Verify`, and `Question` declare their response shape in prose the
+  mock cannot read — the fix is for those operations to declare a schema (**S-002**), which
+  they should do anyway; `Choose` and `Cluster` need an answer the mock can only give by
+  understanding the operation, which argues for the examples using `schemafluxtest` instead.
+  *Verify:* `python scripts/examples_gate.py --update` records 45 of 45.
 
 - [ ] **OP-308** — Apply **OP-302**'s deterministic diff to `Pivot`, `Enrich`, and
   `Normalize`, which report the same model-authored `Lost` / `Inferred` / `Changes` audit

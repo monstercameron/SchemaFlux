@@ -813,8 +813,19 @@ func (provider *LocalProvider) Complete(ctx context.Context, req CompletionReque
 	}, nil
 }
 
-// mockResponse generates a mock response for testing
+// mockResponse generates a mock response for testing.
+//
+// The shape comes from what the request declared -- a JSON Schema, or the JSON
+// template the prompt-only operations embed in their system prompt -- because
+// guessing from keywords is what made this provider answer
+// `Mock response for: ...` to nineteen of the forty-five numbered examples. See
+// mockshape.go. The keyword branches below remain as the fallback for requests
+// that declare neither.
 func (provider *LocalProvider) mockResponse(req CompletionRequest) string {
+	if shaped := mockShapedResponse(req); shaped != "" {
+		return shaped
+	}
+
 	// Analyze the prompt to generate appropriate mock responses
 	userPrompt := strings.ToLower(req.UserPrompt)
 

@@ -89,11 +89,15 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-      # The examples are documentation that compiles. CI-004 makes them a
-      # behavioural gate; this is the cheaper half that catches an API change
-      # breaking every example.
       - name: Examples build
         run: go build ./examples/...
+
+      # CI-004. The examples are the documented feature set, and a documented
+      # feature that does not run is a claim. Ratcheted: an example that passes
+      # and then breaks fails the build, and so does one that starts passing
+      # without being recorded.
+      - name: Examples run
+        run: python3 scripts/examples_gate.py
 
       # CI-005. The floor is what was measured, and it only moves up.
       - name: Coverage floor
