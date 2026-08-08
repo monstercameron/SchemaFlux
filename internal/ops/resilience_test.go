@@ -493,3 +493,66 @@ func TestIdempotencyContextCanceledMidRunIsClassified(t *testing.T) {
 		t.Fatalf("history length = %d, want 2 (the failing attempt plus the cancellation check)", len(history))
 	}
 }
+
+// A probe that reports after the breaker has already re-opened must still give
+// its half-open slot back.
+//
+// Before this, report's state switch reached the decrement only in the
+// CircuitHalfOpen case, and its CircuitOpen case deliberately did nothing --
+// so a probe whose call outlived the transition consumed a slot permanently.
+// Nothing failed loudly: the breaker simply admitted fewer probes on every
+// subsequent recovery, until at HalfOpenMaxCalls leaked slots it admitted none
+// and the endpoint could never be found healthy again. A circuit breaker that
+// silently stops probing is indistinguishable from one that is working.
+func TestAProbeReportingAfterAReopenReleasesItsSlot(t *testing.T) {
+	clk := newBreakerClock()
+	const maxProbes = 2
+	b := NewCircuitBreaker(CircuitBreakerConfig{
+		FailureThreshold: 1, SuccessThreshold: 100,
+		HalfOpenMaxCalls: maxProbes, OpenDuration: time.Minute, Now: clk.Now,
+	})
+	const key = "flaky"
+
+	// Trip it, then cross into half-open.
+	first, err := b.Allow(key)
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	first(false)
+	clk.advance(time.Minute)
+
+	// Admit both probes.
+	probeA, err := b.Allow(key)
+	if err != nil {
+		t.Fatalf("first probe refused: %v", err)
+	}
+	probeB, err := b.Allow(key)
+	if err != nil {
+		t.Fatalf("second probe refused: %v", err)
+	}
+
+	// probeA fails, which re-opens the breaker while probeB is still running.
+	probeA(false)
+	if state := b.State(key); state != CircuitOpen {
+		t.Fatalf("State = %v, want Open after a failed probe", state)
+	}
+
+	// probeB now reports into an Open breaker. Its slot has to come back.
+	probeB(true)
+
+	// Next recovery window: both slots must be available again.
+	clk.advance(time.Minute)
+	for i := 0; i < maxProbes; i++ {
+		report, err := b.Allow(key)
+		if err != nil {
+			t.Fatalf("probe %d of %d refused after a full recovery window; a slot leaked when a probe reported into an open breaker: %v",
+				i+1, maxProbes, err)
+		}
+		defer report(true)
+	}
+
+	// And the bound still holds -- releasing slots must not have removed it.
+	if _, err := b.Allow(key); err == nil {
+		t.Error("a third probe was admitted against a bound of two")
+	}
+}

@@ -189,10 +189,25 @@ func (b *CircuitBreaker) Allow(key string) (report func(success bool), err error
 	case CircuitHalfOpen:
 		if st.state != CircuitHalfOpen {
 			// First observer to notice the open period elapsed performs the
-			// Open -> HalfOpen transition and resets the probe counters.
+			// Open -> HalfOpen transition.
+			//
+			// halfOpenInFlight is deliberately NOT reset here, and that is the
+			// fix for a real overshoot: probes admitted in a previous half-open
+			// window can still be running when the breaker re-opens and then
+			// half-opens again, and zeroing the counter handed their slots out a
+			// second time. With a bound of 3 that produced 4 concurrent probes
+			// against an endpoint the breaker had already decided was fragile --
+			// caught by chaos_resilience_test.go's peak-tracking test, which
+			// measures the highest concurrency actually reached rather than
+			// trusting the counter.
+			//
+			// The counter is safe to carry across the transition because every
+			// admitted probe decrements it exactly once on report, in every
+			// state -- see report below. Allow's contract already requires the
+			// caller to report exactly once, which is what makes a
+			// non-resetting counter correct rather than a leak.
 			st.state = CircuitHalfOpen
 			st.consecutiveOK = 0
-			st.halfOpenInFlight = 0
 		}
 		if st.halfOpenInFlight >= b.cfg.HalfOpenMaxCalls {
 			b.mu.Unlock()
@@ -203,16 +218,27 @@ func (b *CircuitBreaker) Allow(key string) (report func(success bool), err error
 			}
 		}
 		st.halfOpenInFlight++
+		b.mu.Unlock()
+		// probe: true -- this call holds one of the bounded half-open slots and
+		// must give it back whatever the breaker's state is by then.
+		return func(success bool) { b.report(key, success, true) }, nil
 	case CircuitClosed:
 		// falls through to reporting below
 	}
 	b.mu.Unlock()
 
-	return func(success bool) { b.report(key, success) }, nil
+	return func(success bool) { b.report(key, success, false) }, nil
 }
 
 // report records a call's outcome against key's state.
-func (b *CircuitBreaker) report(key string, success bool) {
+//
+// probe says whether this call was admitted as a half-open probe and therefore
+// holds one of the bounded slots. It is released FIRST and unconditionally,
+// before any state-specific handling, because the state can have changed since
+// the probe was admitted -- a probe that started half-open and reports after the
+// breaker re-opened still has to give its slot back, and the old code's
+// state-switch never reached the decrement in that case.
+func (b *CircuitBreaker) report(key string, success bool, probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -221,11 +247,12 @@ func (b *CircuitBreaker) report(key string, success bool) {
 		return // Allow was never called for this key; nothing to update.
 	}
 
+	if probe && st.halfOpenInFlight > 0 {
+		st.halfOpenInFlight--
+	}
+
 	switch st.state {
 	case CircuitHalfOpen:
-		if st.halfOpenInFlight > 0 {
-			st.halfOpenInFlight--
-		}
 		if success {
 			st.consecutiveOK++
 			if st.consecutiveOK >= b.cfg.SuccessThreshold {
