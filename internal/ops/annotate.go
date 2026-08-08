@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -193,7 +192,7 @@ func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert input to string
@@ -324,7 +323,7 @@ func AnnotateStruct[T any, U any](input T, opts AnnotateOptions) (U, error) {
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Get type information

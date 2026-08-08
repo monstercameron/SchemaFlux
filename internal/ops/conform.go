@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -156,7 +155,7 @@ func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformRe
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel := operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert input to JSON

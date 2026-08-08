@@ -379,7 +379,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert data to JSON for validation
@@ -1127,7 +1127,7 @@ func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], er
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert data to string representation

@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -202,7 +201,7 @@ func Compress[T any](input T, opts CompressOptions) (CompressResult[T], error) {
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert input to string for size calculation

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -221,7 +220,7 @@ func Rank[T any](items []T, opts RankOptions) (RankResult[T], error) {
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert items to JSON

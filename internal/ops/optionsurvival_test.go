@@ -29,6 +29,8 @@ func nonZeroOpOptions() types.OpOptions {
 		Mode:            types.Strict,
 		Intelligence:    types.Quick,
 		Model:           "pinned-model",
+		ExactFields:     true,
+		CompleteFields:  true,
 		Context:         context.Background(),
 		RequestID:       "req-1",
 		CorrelationID:   "corr-1",

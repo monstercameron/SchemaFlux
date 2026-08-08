@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -250,7 +249,7 @@ func Predict[T any](historicalData any, opts PredictOptions) (PredictResult[T], 
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Marshal historical data

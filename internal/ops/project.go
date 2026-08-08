@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -188,7 +187,7 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel := operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert input to JSON, with the excluded fields removed before anything

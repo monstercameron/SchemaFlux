@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -164,7 +163,7 @@ func Resolve[T any](sources []T, opts ...ResolveOptions) (ResolveResult[T], erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel := operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert sources to JSON with indices

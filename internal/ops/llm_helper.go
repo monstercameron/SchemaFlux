@@ -818,6 +818,29 @@ func operationContext(caller context.Context, timeout time.Duration) (context.Co
 	if caller == nil {
 		caller = context.Background()
 	}
+	// A deadline the caller already set is the budget. DX-008.
+	//
+	// This used to layer the default timeout on unconditionally, and
+	// context.WithTimeout takes the earlier of the two -- so a caller's SHORTER
+	// deadline survived and a LONGER one was silently cut to 30 seconds. That
+	// contradicts A-004's Revised line, "a deadline always wins", in the one
+	// direction where the caller loses.
+	//
+	// Worse, it was not even uniform. Extract and Generate route through the
+	// generic op runner, which never touched the context, so a 90-second
+	// deadline reached the provider intact; Summarize and Choose came through
+	// here and saw 30. Same library, same call shape, two different answers to
+	// "how long do I get", and nothing anywhere saying which applied. Reported
+	// from ArticleFlux, whose interest pass runs on a deliberate 90-second
+	// budget -- raised from 20 after the entity pass timed out every time -- and
+	// whose digest and categorise paths were being cut to 30 without a word.
+	//
+	// The default is a floor for callers who expressed no opinion, not a
+	// ceiling on callers who did. A caller who wants both states the shorter
+	// one, which is what a deadline already means.
+	if _, alreadyBounded := caller.Deadline(); alreadyBounded {
+		return context.WithCancel(caller)
+	}
 	if timeout <= 0 {
 		timeout = config.GetTimeout()
 	}

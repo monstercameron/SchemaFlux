@@ -100,6 +100,28 @@ type OpOptions struct {
 	// Mode determines the reasoning approach (Strict/Transform/Creative).
 	Mode Mode
 
+	// ExactFields and CompleteFields are Strict's two rules, separated so a
+	// caller can ask for either without the other (DX-007).
+	//
+	// Strict has always meant both at once: reject a property the schema does
+	// not name, AND refuse an answer with any required field left empty. They
+	// are unrelated checks bundled under one word, and the bundle is a trap in
+	// both directions. A caller reaching for Strict wanting exact decoding gets
+	// mandatory non-empty fields as an unannounced second effect -- reported
+	// from ArticleFlux, which had Strict on four operations whose contracts
+	// tolerate an extra field, so a model that answered the question and also
+	// volunteered a confidence score failed the whole call. On the batched ones
+	// that discarded sixty good answers over one key nobody would have read.
+	// Going the other way, a caller who drops Strict to tolerate that extra
+	// field silently loses the required-field check too.
+	//
+	// These are additive: Strict still implies both, and setting either alone
+	// turns on that rule without the other. There is deliberately no way to
+	// subtract a rule from Strict, because both halves are reachable directly
+	// and "Strict except not really" is a worse thing to read than either.
+	ExactFields    bool
+	CompleteFields bool
+
 	// Intelligence sets the quality/speed tradeoff (Smart/Fast/Quick).
 	Intelligence Speed
 

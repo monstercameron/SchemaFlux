@@ -38,7 +38,12 @@ func ExtractResult[T any](input any, opts ExtractOptions) (types.Result[T], erro
 // for the schema. Nothing in this library asks for evidence yet, and claiming
 // otherwise would make DeliveredContract look like a degradation on every call.
 func requestedContractFor(opts ExtractOptions) types.ContractLevel {
-	if opts.toOpOptions().Mode == types.Strict {
+	// Either half of Strict, asked for on its own, is still asking for a check
+	// beyond the schema (DX-007). Reading only Mode here would report a
+	// structural contract for a call that did run an invariant check, which is
+	// the envelope lying in the direction that matters least but still lying.
+	opt := opts.toOpOptions()
+	if opt.Mode == types.Strict || opt.ExactFields || opt.CompleteFields {
 		return types.ContractSchemaAndInvariantChecked
 	}
 	return types.ContractSchemaConstrained
@@ -66,12 +71,25 @@ func deliveredContractFor(opts ExtractOptions, err error) (types.ContractLevel, 
 		{Name: "schema", Passed: true},
 	}
 
-	if opts.toOpOptions().Mode == types.Strict {
+	// The checks listed are the ones that RAN, which is the whole point of
+	// reporting delivered separately from requested. Before DX-007 the two
+	// rules could only be asked for together, so naming both whenever Mode was
+	// Strict was accurate; now that either can be had alone, listing both would
+	// be claiming a check the call did not perform.
+	opt := opts.toOpOptions()
+	exact := opt.Mode == types.Strict || opt.ExactFields
+	complete := opt.Mode == types.Strict || opt.CompleteFields
+
+	if exact {
 		checks = append(checks,
 			types.Check{Name: "exact decode", Passed: true},
-			types.Check{Name: "required fields", Passed: true},
 			types.Check{Name: "numeric fidelity", Passed: true},
 		)
+	}
+	if complete {
+		checks = append(checks, types.Check{Name: "required fields", Passed: true})
+	}
+	if exact || complete {
 		return types.ContractSchemaAndInvariantChecked, checks
 	}
 

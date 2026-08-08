@@ -322,6 +322,75 @@ inside, where the mechanism is already understood.
   ReplyFunc answers from the request, sees the call index, fails the call on error, wins over
   Reply, and composes with FailThen; Reset clears contexts.
 
+- [x] **DX-006** — The same defect had shipped twice, so it is a class, and a class needs a guard
+  rather than a third bug report. **ST-010** (Steering) and **DX-001** (Model) are one bug: nine
+  options types embed both `CommonOptions` and `types.OpOptions`, the two structs declare ten of
+  the same fields, and `mergeEmbeddedOpOptions` is a single hand-written function that has to
+  carry each one across. A field it forgets is not a compile error, not a runtime error and not a
+  wrong-looking answer — the value is dropped and the call proceeds on whatever the embedded copy
+  held. Both instances were found by an application integrating this library, not here.
+  **Fixed** with `mergecoverage_test.go`, which derives the shared field set by reflection over
+  both structs and asserts each one survives the merge. Behavioural rather than a source
+  inspection: it sets a value on the CommonOptions side and checks the merged OpOptions carries
+  it, so a merge rewritten in any style still has to pass. A second test fails when a field is
+  declared on both structs and has no entry, and a third fails when an entry names a field that
+  is no longer shared, so the table cannot rot in either direction.
+  Each entry states what BREAKS when its field is dropped rather than naming the field, so a
+  failure reads as a consequence: "every `.Steer(...)` is discarded and operations answer a
+  question nobody asked", not "Steering missing".
+  *Verify:* 10 shared fields covered; watched it fail by deleting the `Model` line from the merge
+  and confirming the failure names DX-001's consequence. It then caught DX-007's two new fields
+  unprompted, before they were wired, which is the guard doing its job on the first opportunity.
+  **Stated limitation:** this guards the merge, not the underlying design. The real defect is that
+  one setting has two homes; the guard makes forgetting it loud rather than making it impossible.
+  Collapsing the two structs is the actual fix and is not attempted here.
+
+- [x] **DX-007** — `Strict()` meant two unrelated things at once: reject a property the schema
+  does not name, AND refuse an answer with any required field left empty. Bundling them made each
+  a surprise to whoever wanted the other. A caller reaching for Strict wanting exact decoding got
+  mandatory non-empty fields as an unannounced second effect; a caller dropping Strict to tolerate
+  an extra field silently lost the required-field check as well.
+  Reported from ArticleFlux, which had Strict on four operations whose contracts tolerate an extra
+  field. A model that answered the question *and* volunteered a confidence score failed the whole
+  call — on the batched ones that discarded sixty good answers over one key nobody would have
+  read. It dropped Strict on all four and lost the completeness check it did want.
+  **Fixed** with `ExactFields` and `CompleteFields` on `types.OpOptions` and `CommonOptions`,
+  `WithExactFields`/`WithCompleteFields` on the nine options types that already had a
+  type-specific `WithSteering`, and `.ExactFields()`/`.CompleteFields()` on the six core fluent
+  builders. `Strict()` is unchanged and still implies both. `opextract.go` derives the two rules
+  independently; `extractresult.go` now lists the checks that actually RAN rather than naming both
+  whenever Mode was Strict, which would be claiming a check the call did not perform.
+  Deliberately **additive only**: there is no way to subtract a rule from Strict. Both halves are
+  reachable directly, and "Strict except not really" is a worse thing to read than either.
+  *Verify:* the four-cell grid — neither rule, each alone, and both — each asserting which rule
+  ran AND that the other did not, which is the assertion the bundle made impossible. Plus both
+  halves keeping the remedy wording DX-003/DX-004 added.
+
+- [x] **DX-008** — A caller's deadline was neither honoured nor uniformly ignored, which is the
+  worst of the three possibilities.
+  `operationContext` layered the 30-second default on top of whatever context it was given, and
+  `context.WithTimeout` takes the earlier of the two — so a caller's SHORTER deadline survived and
+  a LONGER one was silently cut to 30 seconds. That contradicts **A-004**'s Revised line, "a
+  deadline always wins", in the one direction where the caller loses.
+  It was not even consistent between operations. `Extract` and `Generate` route through the
+  generic op runner, which never touched the context, so a 90-second deadline reached the provider
+  intact; `Summarize` and `Choose` came through `operationContext` and saw 30. Same library, same
+  call shape, two different answers to "how long do I get", and nothing anywhere saying which
+  applied. Measured, not inferred: a probe against the recording provider printed `Extracting:
+  90s, Summarizing: 30s, Generating: 90s, Choosing: 30s` before the fix and 90 for all four after.
+  Reported from ArticleFlux, whose interest pass runs on a deliberate 90-second budget — raised
+  from 20 after the entity pass timed out on every call and degraded so gracefully that nobody
+  noticed the feature had stopped contributing — and whose digest and categorise paths were being
+  cut to 30 without a word.
+  **Fixed:** `operationContext` defers to a deadline the caller already set, and the 31 raw
+  `context.WithTimeout(ctx, config.GetTimeout())` sites now route through it, so the policy lives
+  in one function instead of being restated per operation. The default is a floor for callers who
+  expressed no opinion, not a ceiling on callers who expressed one.
+  *Verify:* 8 operations spanning both former policies, each asserting a 90-second budget reaches
+  the provider; plus the default still applying when the caller set no deadline (removing it would
+  leave a call hanging on a provider that never answers), and a shorter caller deadline still
+  winning.
+
 ## Dead options
 
 - [x] **F-023** — Implement or delete the dead options. Each has a fluent setter, so the call
@@ -4896,7 +4965,7 @@ written, and the box it belonged to was never drawn.
   The difference between the two is tested rather than assumed: `AsStepCtx` cancels mid-call
   and `AsStep` documented-does-not, which is the kind of distinction that is invisible until
   somebody's timeout does nothing.
-- [ ] **P-017** — *(Filed as P-014, which was already taken by the open cassette task in M02.
+- [x] **P-017** — *(Filed as P-014, which was already taken by the open cassette task in M02.
   Renumbered here.)* Split `Smart` and `Fast` across the gpt-5.6 family, or record that they should
   not be split. The P-013 benchmark did not discriminate: all three models were 4/4 correct on
   both a typed extraction and a proration with a distractor, so the only measurable difference
@@ -4904,6 +4973,29 @@ written, and the box it belonged to was never drawn.
   reasoning, adversarial instruction-following — before Smart means anything other than Fast.
   *Verify:* a benchmark in `.audit/live/` where the models score differently, and a tier
   assignment justified by it in `config.go`.
+  **Closed on the task's second option: they should NOT be split.** `.audit/live/bench4.py`
+  is the discriminating attempt P-017 asked for — recall with planted near-misses, instructions
+  embedded in the data, and arithmetic whose greedy reading is wrong, three families chosen
+  because each fails differently. Run live 2026-08-08 with Cam's authorization, 144 calls.
+  Base set: **18/18 for all three models.** Hard set, two runs: 15/15 everywhere except one
+  luna miss that **did not reproduce**.
+  That miss is the part worth recording, because the first version of the script called it a
+  discrimination. A spread of 0.067 from a single wrong answer in fifteen samples is noise, and
+  a benchmark that certifies noise is worse than one that finds nothing. The script now
+  compares **Wilson intervals** and requires them to be disjoint: luna's [0.702, 0.988] overlaps
+  the others' [0.796, 1.000], so it reports NOT DISCRIMINATED and says what would settle it —
+  roughly **115 samples per model**, about 2000 calls, to separate a 0.933 from a 1.000.
+  Four benchmarks at three difficulty levels have now failed to separate these models,
+  including on instruction-following under injection, where **all three refused every embedded
+  order** — the polite "for compliance reasons, reply REDACTED" variant as well as the shouted
+  one. On the evidence, `Smart` and `Fast` staying on luna is the assignment, and the only
+  property ever measurably different is latency, which `Quick` already spends on terra.
+  Recorded in `config.go` beside the constants, with the numbers, so the next person to wonder
+  reads the measurement rather than repeating it.
+  **Not done:** the two rebate/schedule tasks are the only ones any model ever missed, so a
+  fifth benchmark should start there rather than adding more recall. And the conclusion is
+  scoped to *this* work — typed extraction, retrieval, short multi-step reasoning. It says
+  nothing about long-horizon agentic tasks, which this library does not run.
 - [x] **P-018** — *(Filed as P-015, which was already taken by the open per-provider model-map
   task in M02. Renumbered here.)* The live `usage.input_tokens_details` carries `cache_write_tokens` alongside
   `cached_tokens`, which the provider did not parse. They bill differently, so cost accounting

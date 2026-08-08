@@ -36,6 +36,11 @@ type CommonOptions struct {
 	// Reasoning approach (Strict/Transform/Creative)
 	Mode types.Mode
 
+	// ExactFields and CompleteFields are Strict's two rules, settable
+	// independently. See types.OpOptions for why they were separated.
+	ExactFields    bool
+	CompleteFields bool
+
 	// Quality/speed tradeoff (Smart/Fast/Quick)
 	Intelligence types.Speed
 
@@ -156,14 +161,16 @@ func (c CommonOptions) toOpOptions() types.OpOptions {
 	ctx := applyTimeout(c.GetContext(), c.Timeout)
 	ctx, tracking := requesttracking.Ensure(ctx, c.RequestID, c.CorrelationID)
 	return types.OpOptions{
-		Steering:      c.Steering,
-		Threshold:     c.Threshold,
-		Mode:          c.Mode,
-		Intelligence:  c.Intelligence,
-		Model:         c.Model,
-		Context:       ctx,
-		RequestID:     tracking.RequestID,
-		CorrelationID: tracking.CorrelationID,
+		Steering:       c.Steering,
+		Threshold:      c.Threshold,
+		Mode:           c.Mode,
+		ExactFields:    c.ExactFields,
+		CompleteFields: c.CompleteFields,
+		Intelligence:   c.Intelligence,
+		Model:          c.Model,
+		Context:        ctx,
+		RequestID:      tracking.RequestID,
+		CorrelationID:  tracking.CorrelationID,
 	}
 }
 
@@ -204,6 +211,21 @@ func (c CommonOptions) WithThreshold(threshold float64) CommonOptions {
 // WithMode sets the reasoning mode
 func (c CommonOptions) WithMode(mode types.Mode) CommonOptions {
 	c.Mode = mode
+	return c
+}
+
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (c CommonOptions) WithExactFields() CommonOptions {
+	c.ExactFields = true
+	return c
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule on its
+// own.
+func (c CommonOptions) WithCompleteFields() CommonOptions {
+	c.CompleteFields = true
 	return c
 }
 
@@ -332,6 +354,20 @@ func (e ExtractOptions) WithModel(model string) ExtractOptions {
 	return e
 }
 
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (e ExtractOptions) WithExactFields() ExtractOptions {
+	e.CommonOptions = e.CommonOptions.WithExactFields()
+	return e
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (e ExtractOptions) WithCompleteFields() ExtractOptions {
+	e.CommonOptions = e.CommonOptions.WithCompleteFields()
+	return e
+}
+
 func (e ExtractOptions) WithThreshold(threshold float64) ExtractOptions {
 	e.CommonOptions = e.CommonOptions.WithThreshold(threshold)
 	return e
@@ -420,6 +456,13 @@ func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) type
 	if common.Intelligence == types.TierUnset {
 		merged.Intelligence = embedded.Intelligence
 	}
+	// The two halves of Strict fall back the same way. They are additive, so a
+	// value set on either side turns the rule on -- there is no "off" to
+	// preserve, and an OR is the honest merge for a flag that only ever means
+	// "the caller asked for this".
+	merged.ExactFields = common.ExactFields || embedded.ExactFields
+	merged.CompleteFields = common.CompleteFields || embedded.CompleteFields
+
 	// Model falls back the same way, and did not before DX-001.
 	//
 	// TC-005 added the pin to both CommonOptions and types.OpOptions but not to
@@ -719,6 +762,20 @@ func (t TransformOptions) WithModel(model string) TransformOptions {
 	return t
 }
 
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (t TransformOptions) WithExactFields() TransformOptions {
+	t.CommonOptions = t.CommonOptions.WithExactFields()
+	return t
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (t TransformOptions) WithCompleteFields() TransformOptions {
+	t.CommonOptions = t.CommonOptions.WithCompleteFields()
+	return t
+}
+
 // WithMode sets the mode
 func (t TransformOptions) WithMode(mode types.Mode) TransformOptions {
 	t.CommonOptions = t.CommonOptions.WithMode(mode)
@@ -862,6 +919,20 @@ func (g GenerateOptions) WithModel(model string) GenerateOptions {
 	return g
 }
 
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (g GenerateOptions) WithExactFields() GenerateOptions {
+	g.CommonOptions = g.CommonOptions.WithExactFields()
+	return g
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (g GenerateOptions) WithCompleteFields() GenerateOptions {
+	g.CommonOptions = g.CommonOptions.WithCompleteFields()
+	return g
+}
+
 // WithMode sets the mode
 func (g GenerateOptions) WithMode(mode types.Mode) GenerateOptions {
 	g.CommonOptions = g.CommonOptions.WithMode(mode)
@@ -947,6 +1018,20 @@ func (s SummarizeOptions) WithSteering(steering string) SummarizeOptions {
 // tier's mapping. An empty string clears the pin.
 func (s SummarizeOptions) WithModel(model string) SummarizeOptions {
 	s.CommonOptions = s.CommonOptions.WithModel(model)
+	return s
+}
+
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (s SummarizeOptions) WithExactFields() SummarizeOptions {
+	s.CommonOptions = s.CommonOptions.WithExactFields()
+	return s
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (s SummarizeOptions) WithCompleteFields() SummarizeOptions {
+	s.CommonOptions = s.CommonOptions.WithCompleteFields()
 	return s
 }
 
@@ -1253,6 +1338,20 @@ func (c ClassifyOptions) WithModel(model string) ClassifyOptions {
 	return c
 }
 
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (c ClassifyOptions) WithExactFields() ClassifyOptions {
+	c.CommonOptions = c.CommonOptions.WithExactFields()
+	return c
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (c ClassifyOptions) WithCompleteFields() ClassifyOptions {
+	c.CommonOptions = c.CommonOptions.WithCompleteFields()
+	return c
+}
+
 // WithMode sets the mode
 func (c ClassifyOptions) WithMode(mode types.Mode) ClassifyOptions {
 	c.CommonOptions = c.CommonOptions.WithMode(mode)
@@ -1347,6 +1446,20 @@ func (s ScoreOptions) WithSteering(steering string) ScoreOptions {
 // tier's mapping. An empty string clears the pin.
 func (s ScoreOptions) WithModel(model string) ScoreOptions {
 	s.CommonOptions = s.CommonOptions.WithModel(model)
+	return s
+}
+
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (s ScoreOptions) WithExactFields() ScoreOptions {
+	s.CommonOptions = s.CommonOptions.WithExactFields()
+	return s
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (s ScoreOptions) WithCompleteFields() ScoreOptions {
+	s.CommonOptions = s.CommonOptions.WithCompleteFields()
 	return s
 }
 
@@ -1529,6 +1642,20 @@ func (c ChooseOptions) WithModel(model string) ChooseOptions {
 	return c
 }
 
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (c ChooseOptions) WithExactFields() ChooseOptions {
+	c.CommonOptions = c.CommonOptions.WithExactFields()
+	return c
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (c ChooseOptions) WithCompleteFields() ChooseOptions {
+	c.CommonOptions = c.CommonOptions.WithCompleteFields()
+	return c
+}
+
 // WithThreshold sets the confidence threshold.
 func (c ChooseOptions) WithThreshold(threshold float64) ChooseOptions {
 	c.CommonOptions = c.CommonOptions.WithThreshold(threshold)
@@ -1657,6 +1784,20 @@ func (f FilterOptions) WithModel(model string) FilterOptions {
 	return f
 }
 
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (f FilterOptions) WithExactFields() FilterOptions {
+	f.CommonOptions = f.CommonOptions.WithExactFields()
+	return f
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (f FilterOptions) WithCompleteFields() FilterOptions {
+	f.CommonOptions = f.CommonOptions.WithCompleteFields()
+	return f
+}
+
 // WithThreshold sets the confidence threshold.
 func (f FilterOptions) WithThreshold(threshold float64) FilterOptions {
 	f.CommonOptions = f.CommonOptions.WithThreshold(threshold)
@@ -1770,6 +1911,20 @@ func (s SortOptions) WithSteering(steering string) SortOptions {
 // tier's mapping. An empty string clears the pin.
 func (s SortOptions) WithModel(model string) SortOptions {
 	s.CommonOptions = s.CommonOptions.WithModel(model)
+	return s
+}
+
+// WithExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty. Strict's first rule on its own.
+func (s SortOptions) WithExactFields() SortOptions {
+	s.CommonOptions = s.CommonOptions.WithExactFields()
+	return s
+}
+
+// WithCompleteFields refuses an answer with a required field left empty,
+// without also rejecting an unrecognised property. Strict's second rule alone.
+func (s SortOptions) WithCompleteFields() SortOptions {
+	s.CommonOptions = s.CommonOptions.WithCompleteFields()
 	return s
 }
 

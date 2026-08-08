@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -252,7 +251,7 @@ func Normalize[T any](input T, opts NormalizeOptions) (NormalizeResult[T], error
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Get type information

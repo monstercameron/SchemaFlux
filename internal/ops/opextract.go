@@ -83,7 +83,14 @@ func newExtractOp[T any](opt types.OpOptions, systemPrompt, userPrompt string) O
 			Decode: func(body string) (T, error) {
 				var attempt T
 
-				if mode == types.Strict {
+				// Strict's two rules, asked separately (DX-007). Strict still
+				// means both; either can now be had without the other, because
+				// they check unrelated things and bundling them made each one a
+				// surprise to whoever wanted the other.
+				exact := mode == types.Strict || opt.ExactFields
+				complete := mode == types.Strict || opt.CompleteFields
+
+				if exact {
 					// Unchanged from the pre-port Extract: an unrecognised
 					// property, a repeated key, a second value, or a body
 					// past the limits is a failure rather than something
@@ -91,14 +98,14 @@ func newExtractOp[T any](opt types.OpOptions, systemPrompt, userPrompt string) O
 					if err := DecodeExact(body, &attempt, DecodeLimits{}); err != nil {
 						return attempt, err
 					}
+				} else if err := ParseJSONStrict(body, &attempt); err != nil {
+					return attempt, err
+				}
+
+				if complete {
 					if err := ValidateExtractedData(attempt); err != nil {
 						return attempt, err
 					}
-					return attempt, nil
-				}
-
-				if err := ParseJSONStrict(body, &attempt); err != nil {
-					return attempt, err
 				}
 				return attempt, nil
 			},

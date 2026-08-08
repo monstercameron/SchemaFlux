@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -194,7 +193,7 @@ func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel := operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert input to JSON

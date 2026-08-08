@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -110,7 +109,7 @@ func matchesStringCondition(ctx context.Context, input any, condition string) (b
 		return false, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel := operationContext(ctx, 0)
 	defer cancel()
 
 	inputStr := fmt.Sprintf("%v", input)

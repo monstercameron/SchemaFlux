@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -136,7 +135,7 @@ func Classify[T any, C ~string](input T, opts ClassifyOptions) (ClassifyResult[C
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	// Convert input to string representation
@@ -416,7 +415,7 @@ func Score[T any](input T, opts ScoreOptions) (ScoreResult, error) {
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	inputStr := formatInput(input)
@@ -605,7 +604,7 @@ func Compare[T any](itemA, itemB T, opts CompareOptions) (CompareResult[T], erro
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	itemAString := formatInput(itemA)
@@ -817,7 +816,7 @@ func Similar[T any](itemA, itemB T, opts SimilarOptions) (SimilarResult, error) 
 	}
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
+	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
 
 	itemAString := formatInput(itemA)

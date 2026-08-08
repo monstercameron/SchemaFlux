@@ -75,6 +75,31 @@ func (r ExtractRequest[T]) Strict() ExtractRequest[T] {
 	return r
 }
 
+// ExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty.
+//
+// Strict's first rule on its own (DX-007). Strict means both, and the two check
+// unrelated things: a caller who wanted exact decoding was getting mandatory
+// non-empty fields as an unannounced second effect, and one who dropped Strict
+// to tolerate an extra field silently lost the required-field check as well.
+func (r ExtractRequest[T]) ExactFields() ExtractRequest[T] {
+	r.opts = r.opts.WithExactFields()
+	return r
+}
+
+// CompleteFields refuses an answer with a required field left empty, without
+// also rejecting an unrecognised property.
+//
+// Strict's second rule on its own (DX-007). This is the half most callers
+// actually want: a model that answers the question and also volunteers a field
+// nobody asked for has still answered it, and failing the whole call over that
+// is expensive on batched operations -- sixty good answers discarded over one
+// key that would never have been read.
+func (r ExtractRequest[T]) CompleteFields() ExtractRequest[T] {
+	r.opts = r.opts.WithCompleteFields()
+	return r
+}
+
 func (r ExtractRequest[T]) Smart() ExtractRequest[T] {
 	r.opts = r.opts.WithIntelligence(Smart)
 	return r
@@ -186,6 +211,31 @@ func (r TransformRequest[T, U]) Strict() TransformRequest[T, U] {
 	return r
 }
 
+// ExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty.
+//
+// Strict's first rule on its own (DX-007). Strict means both, and the two check
+// unrelated things: a caller who wanted exact decoding was getting mandatory
+// non-empty fields as an unannounced second effect, and one who dropped Strict
+// to tolerate an extra field silently lost the required-field check as well.
+func (r TransformRequest[T, U]) ExactFields() TransformRequest[T, U] {
+	r.opts = r.opts.WithExactFields()
+	return r
+}
+
+// CompleteFields refuses an answer with a required field left empty, without
+// also rejecting an unrecognised property.
+//
+// Strict's second rule on its own (DX-007). This is the half most callers
+// actually want: a model that answers the question and also volunteers a field
+// nobody asked for has still answered it, and failing the whole call over that
+// is expensive on batched operations -- sixty good answers discarded over one
+// key that would never have been read.
+func (r TransformRequest[T, U]) CompleteFields() TransformRequest[T, U] {
+	r.opts = r.opts.WithCompleteFields()
+	return r
+}
+
 func (r TransformRequest[T, U]) Creative() TransformRequest[T, U] {
 	r.opts = r.opts.WithMode(Creative)
 	return r
@@ -294,6 +344,31 @@ func (r GenerateRequest[T]) Steer(steering string) GenerateRequest[T] {
 
 func (r GenerateRequest[T]) Strict() GenerateRequest[T] {
 	r.opts = r.opts.WithMode(Strict)
+	return r
+}
+
+// ExactFields rejects a property the schema does not name, without also
+// requiring every field to be non-empty.
+//
+// Strict's first rule on its own (DX-007). Strict means both, and the two check
+// unrelated things: a caller who wanted exact decoding was getting mandatory
+// non-empty fields as an unannounced second effect, and one who dropped Strict
+// to tolerate an extra field silently lost the required-field check as well.
+func (r GenerateRequest[T]) ExactFields() GenerateRequest[T] {
+	r.opts = r.opts.WithExactFields()
+	return r
+}
+
+// CompleteFields refuses an answer with a required field left empty, without
+// also rejecting an unrecognised property.
+//
+// Strict's second rule on its own (DX-007). This is the half most callers
+// actually want: a model that answers the question and also volunteers a field
+// nobody asked for has still answered it, and failing the whole call over that
+// is expensive on batched operations -- sixty good answers discarded over one
+// key that would never have been read.
+func (r GenerateRequest[T]) CompleteFields() GenerateRequest[T] {
+	r.opts = r.opts.WithCompleteFields()
 	return r
 }
 
