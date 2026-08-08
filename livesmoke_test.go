@@ -85,6 +85,37 @@ func TestLiveSmokeAcrossTheModelFamily(t *testing.T) {
 		})
 	}
 
+	// One harder prompt, to answer P-012's "including reasoning tokens" clause
+	// with evidence rather than with an assumption.
+	//
+	// The short prompts above report reasoning_tokens of 0, and that is not a
+	// bug: supportsReasoningControls returns false for the 5.6 family, so this
+	// library sends no reasoning block at all. Whether the API produces
+	// reasoning tokens anyway, unprompted, on a problem that needs them is a
+	// question only a call can answer -- and it is worth one call, because the
+	// alternative is a task closed on a guess about what the field does.
+	t.Run("reasoning-tokens-on-a-hard-problem", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		resp, err := recorder.Complete(ctx, schemaflux.CompletionRequest{
+			Model: smokeModels()[0],
+			UserPrompt: "A train leaves A at 09:00 averaging 72 km/h. Another leaves B at 09:40 " +
+				"averaging 90 km/h toward A. A and B are 411 km apart. At what clock time do they meet? " +
+				"Answer with the time only.",
+		})
+		if err != nil {
+			t.Fatalf("live call failed: %v", err)
+		}
+
+		assertSmokeProperties(t, smokeModels()[0], resp.Content, resp.Usage)
+		// Recorded, not asserted. A test that demanded a positive count here
+		// would be asserting a property of the provider's internals that this
+		// library does not request and cannot control.
+		t.Logf("reasoning_tokens on a multi-step problem = %d (cached=%d, total=%d)",
+			resp.Usage.ReasoningTokens, resp.Usage.CachedTokens, resp.Usage.TotalTokens)
+	})
+
 	if err := recorder.Save(); err != nil {
 		t.Fatalf("saving cassettes: %v", err)
 	}

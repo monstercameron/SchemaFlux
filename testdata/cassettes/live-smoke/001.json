@@ -1,0 +1,19 @@
+{
+  "recorded_at": "2026-08-08T09:13:23.0335986Z",
+  "provider": "openai",
+  "model": "gpt-5.6-sol",
+  "request": {
+    "system_prompt": "",
+    "user_prompt": "Reply with a single short sentence confirming you received this message.",
+    "has_json_schema": false
+  },
+  "response": {
+    "content": "I received your message.",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 18,
+      "completion_tokens": 9,
+      "total_tokens": 27
+    }
+  }
+}

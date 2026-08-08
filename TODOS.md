@@ -462,17 +462,46 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   name prefixes and will silently misclassify the new IDs.
   *Verify:* unit test per model ID asserts the expected capability flags; **P-013** confirms
   them against the live API.
-- [ ] **P-012** `[LIVE]` — Live smoke: one `/v1/responses` call per 5.6 model, asserting
+- [x] **P-012** `[LIVE]` — Live smoke: one `/v1/responses` call per 5.6 model, asserting
   HTTP 200, non-empty message text, and populated usage including reasoning tokens.
   Blocked on **B-01**.
+  **Done, run live on 2026-08-08 with Cam's explicit authorization.** All three models answered
+  (luna 0.98s, sol 1.10s, terra 1.02s), each with non-empty text and populated usage.
+  The reasoning-token clause needed its own call to answer honestly. The three short prompts
+  report `reasoning_tokens = 0`, and that is **not** a parsing bug — `supportsReasoningControls`
+  returns false for the 5.6 family, so this library sends no reasoning block at all. Whether
+  the API produces them anyway, on a problem that needs them, is a question only a call could
+  settle: a multi-step rate problem returned **reasoning_tokens = 100** of 172 total. So the
+  field is real, the provider populates it, and the parser carries it — none of which could
+  have been asserted from the short prompts without guessing.
+  Recorded rather than asserted as a threshold: demanding a positive count would assert a
+  property of the provider's internals this library does not request and cannot control.
 - [x] **P-013** `[LIVE]` — Capability matrix across `luna` / `sol` / `terra`: strict
   `json_schema` support, temperature acceptance, reasoning-effort acceptance, cached-token
   reporting, and observed latency and cost per model. This is the evidence **P-010** and
   **P-011** need. Record the results in the task, not from memory. Blocked on **B-01**.
-- [ ] **P-014** — Record the responses from P-012 and P-013 as cassettes (**TI-003**) so the
+- [x] **P-014** — Record the responses from P-012 and P-013 as cassettes (**TI-003**) so the
   golden tests above run in CI without credits, forever. P-013's *findings* are now pinned as
   unit tests (`internal/llm/capabilities_test.go`), so a regression in the predicates is caught
   without credits; what remains is replaying real response *bodies*.
+  **Done.** Four cassettes in `testdata/cassettes/live-smoke/`, recorded by the same run that
+  satisfied P-012 — the smoke test records while it asserts, so the information was paid for
+  once rather than twice.
+  P-013's raw bodies in `.audit/live/` could **not** be converted into cassettes, and the
+  reason is worth keeping: that directory is gitignored because the bodies carry account
+  identifiers, and the bodies do not echo the request that produced them. Reconstructing the
+  prompts from the bench scripts would have produced a fixture whose request half was invented
+  — the same fabricated-evidence problem as a made-up field report, in a file that would then
+  be trusted as a recording. Recording afresh was cheaper than being wrong.
+  Cassettes are safe to commit where the raw bodies are not, because a cassette is a
+  projection: content, finish reason, usage, and nothing else — no response ids, no account
+  fields, no headers. `Recorder.Save` refuses to write a credential-shaped string, and
+  `TestCommittedCassettesCarryNoCredentialsOrAccountIdentifiers` re-checks the committed tree,
+  because the first check runs at record time on one machine and the second runs in CI on
+  whatever is actually there.
+  The replay asserts through the **same helper** the live run uses, so the fixture cannot drift
+  into checking something the live call does not — which is the usual way a recording stops
+  standing in for the thing it recorded.
 
 ## Other providers
 

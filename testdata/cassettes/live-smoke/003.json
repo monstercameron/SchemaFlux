@@ -1,0 +1,20 @@
+{
+  "recorded_at": "2026-08-08T09:13:26.0233715Z",
+  "provider": "openai",
+  "model": "gpt-5.6-luna",
+  "request": {
+    "system_prompt": "",
+    "user_prompt": "A train leaves A at 09:00 averaging 72 km/h. Another leaves B at 09:40 averaging 90 km/h toward A. A and B are 411 km apart. At what clock time do they meet? Answer with the time only.",
+    "has_json_schema": false
+  },
+  "response": {
+    "content": "11:54:27 AM",
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 60,
+      "completion_tokens": 112,
+      "total_tokens": 172,
+      "reasoning_tokens": 100
+    }
+  }
+}
