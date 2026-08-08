@@ -1,6 +1,7 @@
 package schemaflux_test
 
 import (
+	"strings"
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
@@ -129,6 +130,48 @@ func TestIntegrationStrictModeAcceptsAFaithfulAnswer(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 	if result.Number != "INV-4417" || result.Total != 1284.5 {
+		t.Errorf("decoded %+v", result)
+	}
+}
+
+// S-010 at the public boundary. The point is not that the type is refused --
+// it is that it is refused *before* the call, so a caller finds out from
+// reflection rather than from a bill.
+func TestIntegrationARejectedTypeCostsNoProviderCall(t *testing.T) {
+	type unusable struct {
+		Name  string `json:"name"`
+		Extra any    `json:"extra"`
+	}
+
+	provider := withScriptedProvider(t, `{"name":"Ada","extra":1}`, nil)
+
+	_, err := schemaflux.Extract[unusable]("some text", schemaflux.NewExtractOptions())
+	if err == nil {
+		t.Fatal("Extract accepted a type with an any field")
+	}
+	if len(provider.requests) != 0 {
+		t.Errorf("the provider was called %d times for a type no answer could satisfy", len(provider.requests))
+	}
+	if !strings.Contains(err.Error(), "No provider call was made") {
+		t.Errorf("the error does not say the call was skipped: %v", err)
+	}
+}
+
+// A restricted type still works, because restricted means "with a documented
+// limit", not "refused".
+func TestIntegrationARestrictedTypeStillRuns(t *testing.T) {
+	type withLabels struct {
+		Name   string            `json:"name"`
+		Labels map[string]string `json:"labels"`
+	}
+
+	withScriptedProvider(t, `{"name":"Ada","labels":{"team":"platform"}}`, nil)
+
+	result, err := schemaflux.Extract[withLabels]("some text", schemaflux.NewExtractOptions())
+	if err != nil {
+		t.Fatalf("Extract refused a map-valued type: %v", err)
+	}
+	if result.Labels["team"] != "platform" {
 		t.Errorf("decoded %+v", result)
 	}
 }

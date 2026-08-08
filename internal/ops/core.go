@@ -135,6 +135,21 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// it. Sending only the prose was the difference between a contract and a
 	// polite request.
 	targetType := reflect.TypeOf(result)
+
+	// Refuse a type no answer could satisfy, before paying for the answer.
+	// An `any` field produces a schema saying "interface {}", the model
+	// guesses, and the decode either fails or succeeds into something
+	// meaningless -- a provider call and a bill spent to discover something
+	// reflection knows for free. S-010.
+	if err := PreflightType(targetType); err != nil {
+		return result, types.ExtractError{
+			InputShape: types.DescribeValue(input),
+			TargetType: fmt.Sprintf("%v", targetType),
+			Reason:     err.Error(),
+			Err:        err,
+		}
+	}
+
 	typeInfo := GenerateTypeSchema(targetType)
 
 	opt.ResponseFormat = "json"

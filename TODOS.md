@@ -1232,7 +1232,7 @@ tests.
   **Not closed by this:** registered decimal and Money types. Detecting the loss is what makes
   a caller reach for them; providing them is a public-API decision that belongs with
   **S-010**'s type support matrix.
-- [ ] **S-010** — Type support matrix, enforced at preflight rather than discovered at
+- [x] **S-010** — Type support matrix, enforced at preflight rather than discovered at
   runtime. Four levels: full (structs, slices, arrays, pointers, scalars, enums, registered
   time/decimal types), restricted (string-keyed maps, bounded recursion, embedded fields,
   custom marshalers — documented limits or a registered adapter), opaque (blob wrappers,
@@ -1241,6 +1241,29 @@ tests.
   Closes **TRU-09**. Depends on **S-001**, which already caps depth and names cycles.
   *Verify:* one case per level; a rejected type produces an error naming the field and the
   reason, and makes no provider call.
+  **Done** — `internal/ops/typesupport.go`, four levels with the line drawn at what a caller
+  can do about it: **full** (schema and decode both exact), **restricted** (works with a
+  documented limit — a map has no field names, recursion is cut at a depth, a custom
+  marshaler's wire form is not derivable from its Go shape), **opaque** (carried, not
+  described), **rejected** (no schema can be produced, so no answer could satisfy it).
+  `Extract` refuses a rejected type **before the call**, and the message says so: the
+  difference between "your type is wrong" and "your type is wrong and you were billed" is
+  the whole point. An `any` field used to produce a schema saying `interface {}`, the model
+  guessed, and the decode either failed or succeeded into something meaningless — a provider
+  call spent to discover what reflection knows for free.
+  **The worst finding wins, not the first.** A struct with one rejected field is rejected
+  whatever else it holds; reporting a restricted map while a channel sits two fields down
+  wastes the trip. Fields excluded with `json:"-"` are not part of the contract and cannot
+  break it.
+  *Verify:* `internal/ops/typesupport_test.go` — 12 classification cases across all four
+  levels, the worst-wins rule with its path, preflight refusing and permitting, rejection
+  found three levels deep, and excluded fields not counting. Integration:
+  `TestIntegrationARejectedTypeCostsNoProviderCall` asserts **zero** provider calls, and
+  `TestIntegrationARestrictedTypeStillRuns` asserts restricted means limited rather than
+  refused.
+  **Follows from S-009:** a `float32` money field is a type choice this matrix is the right
+  place to flag, and it is currently classified full. Flagging it needs a notion of what a
+  field is *for*, which a Go type does not carry — filed as **S-012**.
 - [ ] **S-011** — Schema evolution rules and migrations. Adding an optional field is
   decode-compatible but changes prompt behaviour and cache identity; adding a required
   field, changing a type, enum, precision, or evidence requirement is a new contract
@@ -2366,6 +2389,18 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
+
+- [ ] **S-012** — Flag `float32` for money-shaped fields in the type support matrix.
+  **S-009** established that a float32 price silently loses cents and that the round-trip
+  check cannot see it, because Go marshals a float32 as the shortest decimal that round-trips
+  as a float32. The matrix is the right place to catch it, and today it classifies float32 as
+  full support.
+  The obstacle is that a Go type does not say what a field is *for*: `float32` is fine for a
+  temperature and wrong for a price, and the difference is the field's meaning. Options are a
+  tag (`schemaflux:"money"`), a registered `Money` type, or classifying every float32 as
+  restricted and letting the caller decide. The third is cheapest and the noisiest.
+  *Verify:* a struct with a float32 price is flagged; one with a float32 temperature is not,
+  or the rule is documented as covering both.
 
 - [ ] **CI-008** — Close the twelve numbered examples still failing under the local provider,
   listed with their errors in `.audit/examples_expected.txt`. Two groups, and they want
