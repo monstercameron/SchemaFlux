@@ -119,7 +119,7 @@ func (p Provenance) FullyTraced() bool {
 // `go build`/`go test` without -ldflags) leaves Main.Version at "(devel)",
 // which is meaningless as provenance -- this constant is at least a
 // deliberate, single place to bump when it stops being one.
-const Version = "v0.1.0-dev"
+const Version = "v1.0.0"
 
 // NewResultID generates an opaque, unique identifier for one result.
 // Sixteen random bytes, hex-encoded: enough that two results colliding is

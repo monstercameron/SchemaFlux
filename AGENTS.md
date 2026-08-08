@@ -129,9 +129,18 @@ staticcheck ./...              # must be clean
 python scripts/secret_scan.py
 python scripts/coverage_floor.py
 python scripts/examples_gate.py
+python scripts/deprecation_policy.py --check
+python scripts/acceptance_checklist.py --check
+python scripts/release_gate.py --check
 python .audit/traceability.py
 go test . -run TestPublicAPISurface
 ```
+
+This list is the same one in CONTRIBUTING.md and the same set of jobs in
+`.github/workflows/ci.yml`. It had drifted into three different lists, so a
+contributor could run everything either document asked for, pass, and still be
+surprised by CI — which trains people to treat a red build as noise. If you add
+a CI job, add it in all three places or the drift starts again.
 
 Three of these are ratcheted rather than absolute — the coverage floor, the example gate, and the API snapshot. They only move deliberately:
 

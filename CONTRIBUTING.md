@@ -87,9 +87,13 @@ staticcheck ./...              # must be clean
 python scripts/secret_scan.py
 python scripts/coverage_floor.py
 python scripts/examples_gate.py
+python scripts/deprecation_policy.py --check
+python scripts/acceptance_checklist.py --check
 python scripts/release_gate.py --check
 python .audit/traceability.py
 go test . -run TestPublicAPISurface
+govulncheck ./...              # CI runs it; findings are stdlib-level today
+(cd examples/smarttodo && go test ./...)   # its own module, not covered by ./...
 ```
 
 Four of these are **ratcheted** rather than absolute — the coverage floor, the

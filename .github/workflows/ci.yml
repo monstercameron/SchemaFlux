@@ -30,7 +30,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
-        go: [stable, oldstable]
+        # Only `stable`. `oldstable` was here and did nothing: go.mod declares
+        # go 1.25.0 with no toolchain directive, and since Go 1.21 the default
+        # GOTOOLCHAIN=auto silently downloads and switches to whatever go.mod
+        # requires whenever the installed toolchain is older. So the oldstable
+        # leg fetched 1.25 and re-ran the stable leg's tests under a label
+        # claiming otherwise -- a matrix entry that costs CI minutes and tests
+        # nothing. Restoring real old-Go coverage means lowering the go.mod
+        # directive, which is a compatibility decision, not a CI one.
+        go: [stable]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

@@ -37,10 +37,38 @@ Common builder methods available on most typed LLM builders:
 - `Smart()`
 - `Fast()`
 - `Quick()`
+- `Model(...)`
 - `Context(...)`
 - `RequestID(...)` when the underlying option type supports request IDs
+- `CorrelationID(...)` when the underlying option type supports it
 
 Use `Configure(...)` when you need a specialized option that does not have a dedicated fluent shortcut.
+
+### Strict mode
+
+On extract/transform/generate builders, `Strict()` turns on both of the
+following at once. They can also be set independently:
+
+- `ExactFields()` rejects a response containing a property the target
+  struct's schema does not name.
+- `CompleteFields()` rejects a response that leaves a required field empty.
+
+`Strict()` is not a third, separate check — it is shorthand for `ExactFields()
++ CompleteFields()` together.
+
+### Model selection
+
+`Intelligence(...)` (and its `Smart()`, `Fast()`, `Quick()` shortcuts) picks a
+speed/quality tier, which the library resolves to a concrete model per
+provider. As of this writing, on the default OpenAI-shaped configuration both
+`Smart` and `Fast` resolve to `gpt-5.6-luna`, and `Quick` resolves to
+`gpt-5.6-terra`; check `internal/config/config.go` before relying on the exact
+mapping, since it is a resolution table, not a guarantee tied to the tier
+names.
+
+`Model(...)` pins the exact model string for a single call, bypassing the tier
+mapping entirely. An empty string clears the pin and restores whatever tier
+was set. This is the way to reach a model the tier system does not name.
 
 ## Builder Catalog
 

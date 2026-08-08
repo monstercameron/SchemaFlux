@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 TODOS = Path(__file__).resolve().parent.parent / "TODOS.md"
+ADR_DIR = Path(__file__).resolve().parent.parent / "docs" / "adr"
 
 # REL-001's ladder, including its Revised restatement. Each rung names the
 # milestones that must be closed before it may be tagged.
@@ -47,6 +48,20 @@ MILESTONE = re.compile(r"^# (M\d+)\b")
 OPEN_BOX = re.compile(r"^- \[ \]")
 DONE_BOX = re.compile(r"^- \[x\]")
 
+# RC-003's section 19 acceptance ledger lives inside M17 and is written with the
+# same checkbox syntax as a task, so this counted its unchecked criteria as open
+# milestone work. That is a category error, and it made v1.0.0 unreachable by
+# construction: two of those criteria need `-race` on a platform the maintainer
+# does not have and one needs six vendors' credentials, so the ledger will never
+# be all-checked and the rung would never be earned however much work got done.
+#
+# Ledger lines are excluded from the milestone count and gated separately, and
+# harder -- see acceptance_ok below. The ledger is not unfinished work; it is a
+# published statement of what a release does and does not deliver, and the right
+# question to ask of it is "does every unchecked box carry a reason and an ADR",
+# not "is it empty".
+LEDGER_LINE = re.compile(r"^- \[[ x]\] 19\.\d+\.\d+ ")
+
 
 def milestone_status(text: str) -> dict[str, tuple[int, int]]:
     """Return {milestone: (open, done)}."""
@@ -60,6 +75,8 @@ def milestone_status(text: str) -> dict[str, tuple[int, int]]:
             status.setdefault(current, [0, 0])
             continue
         if current is None:
+            continue
+        if LEDGER_LINE.match(line):
             continue
         if OPEN_BOX.match(line):
             status[current][0] += 1
@@ -100,6 +117,47 @@ def rung_index(version: str) -> int:
     return -1
 
 
+def acceptance_ok(text: str) -> tuple[bool, list[str]]:
+    """RC-003's rule, enforced: every unchecked section 19 criterion at v1.0.0
+    must cite an ADR document that exists.
+
+    This is the compensating check for excluding ledger lines from the milestone
+    count. Without it, dropping them would be a straightforward weakening -- the
+    gate would stop noticing the ledger entirely. With it the ledger is checked
+    on the thing that actually matters, which is not whether a box is ticked but
+    whether an untricked one is *accounted for*: a stated reason, and a document
+    a reader can go and disagree with.
+
+    A reason alone is not enough at v1.0.0. Inline prose is easy to write and
+    easy to leave stale; an ADR has a date, a decision, and consequences, and
+    somebody has to look at it again to change it.
+    """
+    problems: list[str] = []
+    for line in text.splitlines():
+        if not LEDGER_LINE.match(line) or not line.startswith("- [ ]"):
+            continue
+
+        # "- [ ] 19.1.1 - ..." splits to [-, [, ], 19.1.1], so the id is index 3.
+        criterion = line.split()[3]
+        if "ADR:" not in line:
+            problems.append(f"{criterion}: unchecked with no ADR citation")
+            continue
+
+        cited = re.findall(r"docs/adr/(\d{4})[-\w]*\.md", line)
+        if not cited:
+            problems.append(
+                f"{criterion}: cites a reason but names no ADR document; "
+                "at v1.0.0 the reason has to live somewhere a reader can find it"
+            )
+            continue
+
+        for number in cited:
+            if not list(ADR_DIR.glob(f"{number}-*.md")):
+                problems.append(f"{criterion}: cites docs/adr/{number}-*.md, which does not exist")
+
+    return not problems, problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -109,8 +167,18 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    status = milestone_status(TODOS.read_text(encoding="utf-8"))
+    todos = TODOS.read_text(encoding="utf-8")
+    status = milestone_status(todos)
     highest, blocking = earned(status)
+
+    # The section 19 gate. It applies from v1.0.0 onward, because that is the
+    # rung RC-003 attaches it to: before 1.0 the ledger is a plan, at 1.0 it is
+    # a promise, and a promise with an unexplained gap in it is the thing this
+    # refuses.
+    accepted, acceptance_problems = acceptance_ok(todos)
+    if highest is not None and rung_index(highest) >= rung_index("v1.0.0") and not accepted:
+        highest = LADDER[rung_index("v1.0.0") - 1][0]
+        blocking = ["section 19 acceptance ledger"]
 
     print("milestones:")
     for name in sorted(status, key=lambda n: int(n[1:])):
@@ -130,6 +198,12 @@ def main() -> int:
     tags = existing_tags()
     print(f"tags present: {', '.join(tags) if tags else 'none'}")
 
+    if acceptance_problems:
+        print()
+        print("section 19 ledger problems (these block v1.0.0 and above):")
+        for problem in acceptance_problems:
+            print(f"  {problem}")
+
     if not args.check:
         return 0
 
@@ -143,6 +217,11 @@ def main() -> int:
             continue
         if index > ceiling:
             unearned.append(tag)
+
+    if acceptance_problems:
+        print()
+        print("REFUSED: the section 19 ledger is not accounted for; v1.0.0 cannot be earned.")
+        return 1
 
     if unearned:
         print()

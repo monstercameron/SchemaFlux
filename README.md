@@ -4,6 +4,19 @@ SchemaFlux is a Go library for typed LLM operations.
 
 It gives you a single public API built around fluent request builders so application code stays readable while retries, structured output contracts, logging, metrics, and cost tracking stay centralized.
 
+**Status: v1.0.0.** The public API listed in `testdata/api_surface.txt` is
+stable under the deprecation policy below — a snapshot test fails the build if
+it changes, so an addition or a removal is a reviewed decision rather than a
+side effect. Every behaviour claim in this README is backed by a test in the
+repository.
+
+Twelve of the project's own 32 acceptance criteria are not met at 1.0. They are
+listed with a reason each in `TODOS.md`, and
+[ADR 0005](docs/adr/0005-shipping-1-0-with-twelve-unmet-criteria.md) says why
+the version ships anyway. The short version is in
+[What 1.0 does not include](#what-10-does-not-include) below; read it before
+depending on this for anything load-bearing.
+
 ## Install
 
 ```bash
@@ -700,9 +713,47 @@ the file contains.
 - Prefer collection-aware builders when they exist instead of scattering raw single-call logic across application code.
 - The local provider is useful for tests and smoke runs, not for proving semantic correctness.
 
+## What 1.0 does not include
+
+The version number is a compatibility promise about the public Go API. It is
+not a claim that everything this project set out to build is finished. What is
+missing, honestly:
+
+**Two things cannot be verified on the maintainer's machine.** `-race` does not
+run on windows/arm64, so the race and full-CI-gate criteria are *unverified*
+rather than unmet — `-shuffle=on` is used throughout and is genuinely weaker, as
+it reorders tests without instrumenting memory access. The CI matrix covers
+ubuntu, macos, and windows; a green run there is what closes these.
+
+**Only OpenAI is live-verified.** Its smoke test ran across three models and the
+responses are committed as cassettes, so those assertions replay for free. The
+other six registered providers — anthropic, openrouter, cerebras, deepseek,
+qwen, zai — have never been called against their real endpoints. They are
+implemented and unit-tested; they are not proven.
+
+**Five operations have not been lowered onto the `Op` descriptor.** Question,
+Predict, Cluster, Compress, and Decompose still call the provider directly, so
+they declare no invariants and no batch algebra, and contract negotiation does
+not reach them. Everything else does.
+
+**Process-wide state still exists.** A `Client` owns an immutable per-call
+snapshot — provider, budget, scheduler, data policy — so two clients no longer
+interfere. But `ops.defaultProvider` remains for callers who never build a
+client, and the observer and cache policy are still process-wide.
+
+**Evidence does not join to lineage.** A claim resolves to the result that
+produced it, and separately to a source span, but nothing connects the two: a
+three-stage pipeline does not resolve back to a byte range in the original
+input.
+
+**No alert definitions ship.** Runbooks for twelve incident classes do, and they
+name the dashboard panels, but alerts are deployment-specific and this library
+ships no deployment.
+
 ## Documentation
 
 - [API reference](docs/reference/API.md)
+- [Architecture decisions](docs/adr/) — why the awkward choices are the way they are
 - [Examples](examples/)
 - [Task list](TODOS.md) — what is being built, in what order, with the evidence for what is done
 
