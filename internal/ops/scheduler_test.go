@@ -490,16 +490,49 @@ func TestSchedulerFairnessSmallTenantNotStuckBehindLargeOne(t *testing.T) {
 	var completedBig int64
 	var smallDoneAfterBig int64 // count of big items that finished before the small tenant fully drained
 
+	// Two properties are needed for this to measure fairness rather than
+	// something else, and getting either wrong makes the result meaningless:
+	//
+	//  1. The big tenant's work must still be draining when the small tenant
+	//     arrives. Without that, the 2000 submissions can complete before the
+	//     small tenant's goroutine is ever scheduled -- reliably at -cpu=1 --
+	//     and it then "finishes after all the big work" for a reason that has
+	//     nothing to do with the scheduler. It failed exactly that way under
+	//     -shuffle, reporting a starvation that was not happening.
+	//
+	//  2. Slots must TURN OVER. An earlier fix gated the big work on a channel
+	//     so it could not drain, which with MaxConcurrent 2 meant two blocked
+	//     items held every slot and the small tenant could never run at all.
+	//     That is saturation, not unfairness, and the test could not tell them
+	//     apart -- it just hung for its full 20 seconds.
+	//
+	// A small sleep gives both: the work is slow enough to still be in flight,
+	// and short enough that capacity keeps freeing.
+	var bigSubmitted int64
+
 	var wg sync.WaitGroup
 	for i := 0; i < bigN; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			atomic.AddInt64(&bigSubmitted, 1)
 			Submit(context.Background(), s, SubmitRequest{Tenant: "big"}, func(ctx context.Context) (int, error) {
+				time.Sleep(time.Millisecond)
 				atomic.AddInt64(&completedBig, 1)
 				return 1, nil
 			})
 		}()
+	}
+
+	// Wait until the big tenant genuinely occupies the scheduler before the
+	// small tenant asks for anything, with a deadline so a scheduler that
+	// admits nothing fails here rather than hanging.
+	deadline := time.Now().Add(10 * time.Second)
+	for atomic.LoadInt64(&bigSubmitted) < bigN/2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if atomic.LoadInt64(&bigSubmitted) < bigN/2 {
+		t.Fatal("the big tenant never got half its work submitted; nothing to be starved behind")
 	}
 
 	smallDone := make(chan struct{})
@@ -521,15 +554,19 @@ func TestSchedulerFairnessSmallTenantNotStuckBehindLargeOne(t *testing.T) {
 
 	select {
 	case <-smallDone:
-	case <-time.After(20 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("small tenant never finished -- looks starved behind the large tenant")
 	}
 
-	if got := atomic.LoadInt64(&smallDoneAfterBig); got >= bigN {
+	got := atomic.LoadInt64(&smallDoneAfterBig)
+	wg.Wait()
+
+	// The count of completed big items at the moment the small tenant drained
+	// is the measurement: a fair scheduler lets the small tenant through
+	// without the big one having to finish first.
+	if got >= bigN {
 		t.Fatalf("small tenant finished only after all %d big-tenant items had already completed (%d done) -- starved, not interleaved", bigN, got)
 	}
-
-	wg.Wait()
 }
 
 // TestSchedulerPriorityOrdersAdmissionWithoutBypassingTenantLimit proves

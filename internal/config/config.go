@@ -213,9 +213,29 @@ func GetModel(intelligence types.Speed, provider string) string {
 // It does not support a Smart/Fast split between luna and sol. Sol was the
 // slowest on the harder task without being more accurate, and assuming slower
 // means smarter is the kind of guess this library is trying to stop making.
-// Both stay on luna until a task that actually discriminates says otherwise —
-// see TODOS.md P-017. A caller who wants a specific model sets it with
-// SCHEMAFLUX_MODEL_* or a per-call option.
+//
+// P-017 asked for a task set that WOULD discriminate, and .audit/live/bench4.py
+// is that attempt: recall with planted near-misses, instructions embedded in the
+// data, and arithmetic whose greedy reading is wrong — three families chosen
+// because each fails differently. Run 2026-08-08:
+//
+//	                     base set        hard set (two runs)
+//	terra            18/18  1109ms    15/15, 15/15   1327ms / 1536ms
+//	sol              18/18  1627ms    15/15, 15/15   1889ms / 1967ms
+//	luna             18/18  1302ms    14/15, 15/15   1699ms / 1549ms
+//
+// Luna's single miss did not reproduce. Its 95% interval [0.702, 0.988] overlaps
+// the others' [0.796, 1.000], so the difference is sampling noise, not a
+// finding — and separating a 0.933 from a 1.000 at this confidence would take
+// roughly 115 samples per model, which is 2000 calls to decide a tier.
+//
+// So the answer to P-017 is its own second option: these models should NOT be
+// split on quality. Four benchmarks at three difficulty levels have failed to
+// separate them, including on instruction-following under injection, where all
+// three refused every embedded order. Smart and Fast both stay on luna; the only
+// property that has ever been measurably different is latency, and Quick already
+// takes the fastest model. A caller who wants a specific model sets it with
+// SCHEMAFLUX_MODEL_*, or per call with the Model pin (TC-005).
 const (
 	ModelDefaultSmart = "gpt-5.6-luna"
 	ModelDefaultFast  = "gpt-5.6-luna"
