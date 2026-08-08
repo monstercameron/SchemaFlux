@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -436,7 +437,38 @@ func inferResponseFormat(systemPrompt string) string {
 	return "text"
 }
 
+// promptReinforcementEnvVar turns the reinforcement block off.
+//
+// It is on by default and prepended to *every* request, JSON or not, so a
+// caller pays for it on every call whether or not their model needs it. Making
+// it opt-out is the half of S-007 that can be settled without spending: whether
+// it still *helps* is a question about model behaviour, and answering it needs
+// a live A/B against a pinned corpus, which is RC-002's kind of measurement and
+// costs money by construction.
+//
+// What can be said without a provider: the block is 3 lines and about 60 tokens
+// for a non-JSON request, 6 lines and about 110 for a JSON one, on every call.
+// A caller who has measured their own prompts and found it unnecessary can now
+// stop paying for it.
+const promptReinforcementEnvVar = "SCHEMAFLUX_PROMPT_REINFORCEMENT"
+
+// promptReinforcementEnabled reports whether the reinforcement block is added.
+// Anything but an explicit "0"/"false"/"off" leaves it on, because turning it
+// off by accident changes behaviour silently.
+func promptReinforcementEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(promptReinforcementEnvVar))) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
+}
+
 func strengthenSystemPrompt(systemPrompt, responseFormat string) string {
+	if !promptReinforcementEnabled() {
+		return strings.TrimSpace(systemPrompt)
+	}
+
 	baseRules := strings.TrimSpace(`Perform the semantic task faithfully using the provided input.
 Do not merely restate schemas, field names, or type descriptions.
 Infer, compare, rank, validate, transform, or summarize based on the actual content.`)

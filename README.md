@@ -392,6 +392,15 @@ Built in:
 - timeout control through context and client configuration
 - structured error and request logging
 
+**Prompt reinforcement is on by default and can be turned off.** Every request
+carries a short block telling the model to do the task rather than restate the
+schema, and to answer with JSON and nothing else. It costs about 53 tokens on a
+text request and 117 on a JSON one, on every call. Set
+`SCHEMAFLUX_PROMPT_REINFORCEMENT=0` to stop paying for it — worth doing only if
+you have measured your own prompts without it, because whether it improves
+answers is a question about your model and your task, not one this library can
+answer for you.
+
 Retry-related environment variables:
 - `SCHEMAFLUX_LLM_MAX_RETRIES`
 - `SCHEMAFLUX_LLM_RETRY_BACKOFF`

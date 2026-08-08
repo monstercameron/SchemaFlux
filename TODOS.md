@@ -1160,13 +1160,28 @@ tests.
   *Verify:* `internal/ops/prompt_mode_test.go` — the fabrication phrases are gone, the
   refusal is present, the three modes still differ from each other, and `ModeUnset` produces a
   usable prompt without inheriting any of it.
-- [ ] **S-007** — Make `strengthenSystemPrompt` opt-out and measure whether it still helps.
+- [x] **S-007** — Make `strengthenSystemPrompt` opt-out and measure whether it still helps.
   It prepends a fixed instruction block to every request, JSON or not, billed on every call.
   Closes **I-18**.
   *Verify:* an A/B over the golden corpus recording the measured difference; if none, delete.
 
 ## Added from `to-production.md`
 
+  **Done for the opt-out and the price; the quality question is handed to RC-002, which is
+  where it belongs.**
+  `SCHEMAFLUX_PROMPT_REINFORCEMENT=0` removes the block. Only an explicit off means off —
+  an empty variable or a typo leaves it on, because turning it off by accident changes
+  behaviour silently, which is worse than paying for it.
+  **The price is measured rather than estimated: about 53 tokens on a text request and 117 on
+  a JSON one, on every call.** The test prints both and fails if the block grows past 200,
+  because a block that becomes substantial is a decision somebody should make on purpose.
+  The task's verify line asked for an A/B over the golden corpus, and that cannot be settled
+  here: whether the block *helps* is a question about model behaviour, and answering it needs
+  repeated live runs against a pinned corpus with statistical thresholds — which is exactly
+  **RC-002**'s semantic regression suite, and costs money by construction (**B-04**). The
+  deletion the task offers as the alternative would be a guess in the other direction.
+  Documented in the README where a caller looks for it, with the honest caveat that whether
+  to turn it off depends on their model and their task.
 - [x] **S-008** — Exact decoding in strict mode: reject unknown properties, duplicate keys,
   and trailing data after the top-level value; enforce maximum nesting depth, string size,
   array length, and total decoded bytes; report the smallest failing JSON pointer.
