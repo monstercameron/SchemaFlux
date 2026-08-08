@@ -15,6 +15,16 @@ import (
 	"github.com/monstercameron/schemaflux/telemetry"
 )
 
+// extractPromptVersion is Extract's contract version for cache-key purposes.
+// It is a deliberate act, like SchemaVersionDefault: bump it when something
+// about how Extract turns a response into a value changes -- the repair
+// policy, the strict-decode limits, which errors are treated as retryable --
+// even when the change touches no prompt literal and produces the identical
+// schema hash. Without a version separate from those two, a behavioural
+// change would be invisible to the cache key and an old cached prefix would
+// keep being served under a new contract. P-009.
+const extractPromptVersion = "v1"
+
 // Extract converts unstructured data into strongly-typed Go structs using LLM interpretation.
 // It handles various input formats (string, JSON, structs) and maps them to the target type.
 //
@@ -162,7 +172,15 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// result can all say which contract produced an answer. The Go type's name
 	// is not that: it changes when a field is renamed and does not change when
 	// a field's type changes. S-002.
-	opt.SchemaID = DescribeSchema(targetType).String()
+	schemaDescriptor := DescribeSchema(targetType)
+	opt.SchemaID = schemaDescriptor.String()
+
+	// The provider-facing cache key's operation-and-schema half. extractPromptVersion
+	// is bumped when Extract's contract changes in a way that is not visible in
+	// the schema hash or the rendered prompt bytes -- e.g. the repair policy or
+	// the strict/transform decode path below -- so that a cache entry from
+	// before the change is never served after it. P-009.
+	opt.CacheIdentity = SchemaCacheKey("extract", extractPromptVersion, schemaDescriptor)
 
 	// Convert input to string format for LLM processing
 	inputStr, err := NormalizeInput(input)

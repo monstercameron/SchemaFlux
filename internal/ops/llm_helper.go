@@ -114,6 +114,16 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	effectiveSystemPrompt := applySteering(systemPrompt, opts.Steering)
 	responseFormat := resolveResponseFormat(opts.ResponseFormat, effectiveSystemPrompt)
 
+	// stableSystemPrompt is what actually forms the request's cacheable prefix:
+	// the reinforcement boilerplate plus the operation's rendered template,
+	// WITHOUT steering. applySteering appends steering as a suffix rather than
+	// splicing it into the middle (CA-002 still owes a real Stable/Volatile
+	// split, but the suffix placement already means the prefix up to here does
+	// not move when only steering changes), so building the cache key from this
+	// instead of the final SystemPrompt is what keeps a per-call steering
+	// change from minting a new key -- see promptCacheKeyFor.
+	stableSystemPrompt := strengthenSystemPrompt(systemPrompt, responseFormat)
+
 	req := llm.CompletionRequest{
 		Model:          model,
 		SystemPrompt:   strengthenSystemPrompt(effectiveSystemPrompt, responseFormat),
@@ -123,6 +133,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		ResponseFormat: responseFormat,
 		JSONSchema:     opts.JSONSchema,
 		SchemaName:     opts.SchemaName,
+		PromptCacheKey: promptCacheKeyFor(opts, model, responseFormat, stableSystemPrompt),
 	}
 
 	start := time.Now()
@@ -275,6 +286,59 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	)
 
 	return resp.Content, nil
+}
+
+// promptCacheKeyFor builds the identity sent to the provider as its
+// prompt-cache-key hint (the OpenAI Responses `prompt_cache_key`; see
+// promptCacheKeyFor's caller and OpenAIProvider.Complete).
+//
+// (op, tier) used to be treated as enough identity for this. It is not: two
+// prompt revisions, or two schema versions, both map to the same (op, tier)
+// pair, so a key built from just that routes the second release's request to
+// a server holding the FIRST release's prefix. The read misses, the call pays
+// full price, and nothing about the failure is visible -- it just looks like
+// caching stopped helping. This key instead covers everything that actually
+// determines the bytes of the stable prefix:
+//
+//   - identity: opts.CacheIdentity, the operation-and-schema identity built by
+//     ops.SchemaCacheKey (S-002 built that function for exactly this and
+//     MW-004; reusing it here rather than a second scheme is deliberate).
+//     Empty for operations that do not yet compute a schema identity -- the
+//     template hash below still keeps those operations' keys apart from each
+//     other, just without the operation-name and schema-version axis.
+//   - model: a cache entry written by one model's tokenizer is not addressed
+//     the same way by another's; two different models must never share a key.
+//   - responseFormat and template: digestOf(stableSystemPrompt) changes the
+//     instant a prompt literal changes, which is what makes an edited prompt
+//     mint a new key instead of silently reusing a stale one.
+//   - opts.Mode: several operations render a different template per mode
+//     (BuildExtractSystemPrompt is one), so this is largely redundant with the
+//     template digest -- it is kept anyway for operations whose behavior
+//     depends on mode without the template text differing.
+//
+// Steering is deliberately absent. It is the one per-call, human-authored
+// piece of the request, appended to the system prompt AFTER the caller passes
+// it here (applySteering), so folding it in would change the key on every
+// single call and defeat the entire point of naming a STABLE prefix. CA-002.
+func promptCacheKeyFor(opts types.OpOptions, model, responseFormat, stableSystemPrompt string) string {
+	identity := strings.TrimSpace(opts.CacheIdentity)
+	if identity == "" {
+		identity = "-"
+	}
+
+	parts := []string{
+		identity,
+		strings.TrimSpace(model),
+		digestOf(stableSystemPrompt),
+		opts.Mode.String(),
+		responseFormat,
+	}
+	for i, part := range parts {
+		if part == "" {
+			parts[i] = "-"
+		}
+	}
+	return strings.Join(parts, ":")
 }
 
 func validateLLMCompletion(resp llm.CompletionResponse) error {

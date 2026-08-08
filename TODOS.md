@@ -274,7 +274,7 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   *Verify:* request body asserts `"store": false` unless explicitly overridden. **Done** —
   `TestStoreIsFalseByDefault` / `TestStoreCanBeTurnedOn`; `store: false` accepted live by all
   three 5.6 models.
-- [ ] **P-009** — Send `prompt_cache_key` derived from `(op, T, tier)` so repeat requests
+- [x] **P-009** — Send `prompt_cache_key` derived from `(op, T, tier)` so repeat requests
   route to a server holding the prefix. Depends on **CA-002**.
   *Verify:* recorded request contains a stable key across two identical calls and a different
   key across different ops.
@@ -285,6 +285,24 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   keyed on something coarser than the thing being cached.
   *Verify (added):* editing a prompt literal changes the key; changing only steering does
   not, because steering is volatile and lives outside the stable prefix (**CA-002**).
+  **Done.** `types.OpOptions.CacheIdentity` carries the operation-and-schema half of the key,
+  built by `ops.SchemaCacheKey("extract", extractPromptVersion, DescribeSchema(T))` in
+  `internal/ops/core.go`. `promptCacheKeyFor` (`internal/ops/llm_helper.go:323`) combines it
+  with the resolved model, the digest of the *stable* system prompt, the mode, and the
+  response format, and sets `llm.CompletionRequest.PromptCacheKey`; `OpenAIProvider.Complete`
+  sends it as `prompt_cache_key` only when non-empty. The digest is taken before
+  `applySteering` runs, which is what makes the Revised line's steering requirement hold
+  rather than merely being asserted. Evidence: `internal/ops/promptcachekey_test.go` (10
+  cases — stability, and a different key for a different identity, schema version, model,
+  edited template, response format, and mode); `internal/llm/provider_cache_test.go` (the
+  field reaches the wire, and is omitted when empty); `provider_cache_key_integration_test.go`
+  drives the whole path `schemaflux.Extract` → ops → provider → HTTP and asserts a stable key
+  across identical calls, a different key across schemas, and the same key when only steering
+  differs.
+  **Not done:** only `Extract` populates `CacheIdentity` today, because it is the only
+  operation carrying a Go-type schema. The other operations still get a valid key — the
+  template digest, model, and mode axes all differentiate them — but not the operation-name
+  and schema-version axes. Extending it is per-operation work, not a redesign.
 - [x] **P-010** — Update the tier mapping to the 5.6 family confirmed live:
   `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` (`internal/config/config.go:194-203`).
   Assign Smart/Fast/Quick by measured capability and price, not by guessing from the names —
@@ -351,11 +369,21 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   pins that one too. **Not closed by this:** `ErrNoModelMapping` lives in `internal/config`,
   so an external consumer can match the message but not the sentinel. That is **A-007**'s
   taxonomy, not a second sentinel here.
-- [ ] **P-016** — The Anthropic provider hardcodes `max_tokens: 1024` before conditionally
+- [x] **P-016** — The Anthropic provider hardcodes `max_tokens: 1024` before conditionally
   overriding it (`provider.go:383`, `394-396`) and never sends `cache_control`. Wire the real
   ceiling and add prompt-cache breakpoints. Depends on **CA-003**. Addresses **Gap-10**.
   *Verify:* recorded request asserts the configured ceiling and a breakpoint on the last
   stable block.
+  **Done.** `AnthropicProvider.Complete` now uses `req.MaxTokens` and falls back to
+  `anthropicFallbackMaxTokens` (1024) *only* when the caller set nothing — the old code wrote
+  1024 first and conditionally overwrote it, which meant a caller-set ceiling was correct by
+  accident of ordering. One `ephemeral` `cache_control` breakpoint is placed on the last
+  stable block: the system prompt, sent as a content-block array when present, otherwise the
+  user message block. One breakpoint of Anthropic's four. Evidence:
+  `internal/llm/provider_cache_test.go` — the ceiling is honoured across five values, the
+  fallback applies only when unset, the breakpoint lands on the system block, it lands on the
+  user block when there is no system prompt, and a regression case asserts the user message
+  stays a plain string when the system block already carries the breakpoint.
 
 ---
 
@@ -1778,6 +1806,24 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, issue templates, an ADR directory. Those are
   new Markdown files, and the standing rule is that a new Markdown file needs you to ask for
   it by name. Filed as **PS-010**.
+- [x] **DI-001** — Prove the module is actually consumable with `go get`, rather than assuming
+  it because it builds here. Added after the fact, per the rule that work the list does not
+  contain gets an entry and a check in the same commit.
+  **Done.** Verified from a scratch module outside the repository (`go mod init`, a `replace`
+  at the local checkout, `go mod tidy`, `go build`): a consumer imports and compiles against
+  `schemaflux.NewClient`, `NewExtractOptions`, `Extract[T]`, the `pricing` and
+  `schemafluxtest` subpackages, and `mw.Chain`/`RateLimit`/`Retry`. The binary runs and fails
+  with the expected "no LLM provider configured", which is the correct behaviour with no key,
+  not a build defect. Checked specifically: no `replace` in the root `go.mod` (the only ones
+  are in `examples/smarttodo/go.mod`, and a nested module's replace never applies to anyone
+  importing the parent — that module builds clean); every re-exported type in `schemaflux.go`
+  is a genuine `type X = internal.X` alias, so no signature forces a caller to name a type
+  they cannot import; `mw`'s exported surface leaks nothing unaliased; and an import of
+  `internal/ops` from outside is refused by Go's own rule, as it should be.
+  **Not done:** there are no git tags, so `@latest` resolves to a pseudo-version off HEAD.
+  That works, but a `v0.1.0` needs your call on when the API is stable enough to name. Also
+  unverified: `go.mod` declares `go 1.25.0` and the only toolchain here is 1.26.3, so the
+  floor is asserted rather than tested.
 - [x] **CI-001** — Run `go build`, `go vet`, `gofmt -l`, and the full suite on every push.
   **Revised (PRD-01, PRD-17):** the required gate is wider, and each addition catches a
   class the others miss: `go test -race`, `go test -shuffle=on -count=10` (order-dependent
