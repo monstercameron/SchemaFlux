@@ -217,7 +217,85 @@ type CritiqueResult struct {
 //	    WithAudience("general public").
 //	    WithStyle("constructive").
 //	    WithMaxIssues(5))
+//
+// Deprecated: use CritiqueWithModel, which returns the shared
+// types.JudgmentResult and whose name says what Critique's did not -- that
+// this evaluation is model-assisted, not a deterministic check. See OP-206
+// (ARC-22, TRU-30).
 func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
+	return critiqueCore(input, opts)
+}
+
+// CritiqueWithModel evaluates content the same way the deprecated Critique
+// does -- against the requested criteria or rubric, with the same style,
+// severity filter, and issue cap -- and reports it as a
+// types.JudgmentResult: Verdict is derived from the issues found (Fail if
+// any is "critical", Mixed if issues exist without one, Pass if none),
+// CriteriaScores and TopPriorities travel in ModelClaims, and
+// ModelOverallScore becomes ModelConfidence -- it is the model's own account
+// of its evaluation, not a measurement of the content, and belongs beside
+// the rest of what the model claimed rather than next to Verdict.
+//
+// Behavior -- which issues and positives are produced -- is identical to
+// the deprecated Critique; only the result shape differs.
+func CritiqueWithModel[T any](input T, opts CritiqueOptions) (types.JudgmentResult[T], error) {
+	cr, err := critiqueCore(input, opts)
+	if err != nil {
+		return types.JudgmentResult[T]{}, err
+	}
+	return critiqueResultToJudgment(input, cr), nil
+}
+
+// critiqueResultToJudgment translates CritiqueResult into the shared shape.
+func critiqueResultToJudgment[T any](input T, cr CritiqueResult) types.JudgmentResult[T] {
+	issues := make([]types.JudgmentIssue, 0, len(cr.Issues))
+	verdict := types.VerdictPass
+	for _, issue := range cr.Issues {
+		severity := normalizeSeverity(issue.Severity)
+		if severity == "critical" {
+			verdict = types.VerdictFail
+		} else if verdict == types.VerdictPass {
+			verdict = types.VerdictMixed
+		}
+		issues = append(issues, types.JudgmentIssue{
+			Subject:    issue.Criterion,
+			Category:   issue.Criterion,
+			Severity:   severity,
+			Message:    issue.Description,
+			Suggestion: firstNonEmpty(issue.Fix, issue.Suggestion),
+			Evidence:   evidenceSlice(issue.Location),
+		})
+	}
+
+	return types.JudgmentResult[T]{
+		Subject:         input,
+		Verdict:         verdict,
+		Issues:          issues,
+		Summary:         cr.Summary,
+		ModelConfidence: cr.ModelOverallScore,
+		ModelClaims: map[string]any{
+			"criteria_scores": cr.CriteriaScores,
+			"positives":       cr.Positives,
+			"top_priorities":  cr.TopPriorities,
+		},
+	}
+}
+
+// firstNonEmpty returns fix when it is set, falling back to suggestion.
+// CritiqueIssue carries both a concrete fix and a softer suggestion;
+// JudgmentIssue has one Suggestion field, and the fix -- being the more
+// actionable of the two -- takes priority rather than being dropped.
+func firstNonEmpty(fix, suggestion string) string {
+	if fix != "" {
+		return fix
+	}
+	return suggestion
+}
+
+// critiqueCore is Critique's original implementation, unchanged. The
+// deprecated Critique and the new CritiqueWithModel both call this so
+// neither can silently drift from the other.
+func critiqueCore[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting critique operation")
 

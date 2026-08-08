@@ -139,7 +139,11 @@ func TestCallLLMLeavesTextOpsAsText(t *testing.T) {
 	}
 }
 
-func TestCallLLMAppliesSteeringToSystemPrompt(t *testing.T) {
+// CA-002. Steering used to be appended to the system prompt, so the block a
+// provider caches was different bytes on every call that steered differently,
+// and a prefix cache that never sees the same prefix twice never hits. It goes
+// in the user message now.
+func TestCallLLMPutsSteeringInTheVolatileSegment(t *testing.T) {
 	provider := &captureProvider{}
 
 	_, err := CallLLM(
@@ -157,11 +161,52 @@ func TestCallLLMAppliesSteeringToSystemPrompt(t *testing.T) {
 		t.Fatalf("CallLLM() error = %v", err)
 	}
 
-	if !strings.Contains(provider.req.SystemPrompt, "Additional instructions:") {
-		t.Fatalf("system prompt missing steering section: %q", provider.req.SystemPrompt)
+	if !strings.Contains(provider.req.UserPrompt, "Additional instructions:") {
+		t.Fatalf("user prompt missing steering section: %q", provider.req.UserPrompt)
 	}
-	if !strings.Contains(provider.req.SystemPrompt, "Return only a JSON array of matching strings.") {
-		t.Fatalf("system prompt missing steering content: %q", provider.req.SystemPrompt)
+	if !strings.Contains(provider.req.UserPrompt, "Return only a JSON array of matching strings.") {
+		t.Fatalf("user prompt missing steering content: %q", provider.req.UserPrompt)
+	}
+	if strings.Contains(provider.req.SystemPrompt, "Additional instructions:") {
+		t.Fatalf("steering is still in the cacheable system block: %q", provider.req.SystemPrompt)
+	}
+
+	// The caller's own content still ends the message. Every prompt this
+	// library writes puts the data last and several things downstream find it
+	// that way.
+	if !strings.HasSuffix(strings.TrimSpace(provider.req.UserPrompt), "Filter these items.") {
+		t.Fatalf("steering displaced the caller's content from the end: %q", provider.req.UserPrompt)
+	}
+}
+
+// The property CA-002 exists for: two calls that differ only in steering send
+// a byte-identical system prompt, so the provider's prefix cache can hit.
+func TestSteeringDoesNotMoveTheCacheablePrefix(t *testing.T) {
+	base := types.OpOptions{Intelligence: types.Fast, Mode: types.TransformMode}
+
+	first := &captureProvider{}
+	steered := base
+	steered.Steering = "Prefer the shortest answer."
+	if _, err := CallLLM(context.Background(), first, "You are a filtering expert.", "Filter these.", steered); err != nil {
+		t.Fatalf("CallLLM: %v", err)
+	}
+
+	second := &captureProvider{}
+	steeredDifferently := base
+	steeredDifferently.Steering = "Prefer the most detailed answer, and explain yourself at length."
+	if _, err := CallLLM(context.Background(), second, "You are a filtering expert.", "Filter these.", steeredDifferently); err != nil {
+		t.Fatalf("CallLLM: %v", err)
+	}
+
+	if first.req.SystemPrompt != second.req.SystemPrompt {
+		t.Errorf("the system prompt moved when only steering changed: %q vs %q",
+			first.req.SystemPrompt, second.req.SystemPrompt)
+	}
+	if first.req.UserPrompt == second.req.UserPrompt {
+		t.Error("the two calls sent identical user prompts; the steering never reached the request at all")
+	}
+	if first.req.PromptCacheKey != second.req.PromptCacheKey {
+		t.Error("the prompt cache key moved when only steering changed")
 	}
 }
 

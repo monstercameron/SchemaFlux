@@ -118,7 +118,14 @@ func kindFromText(message string) types.ErrorKind {
 // as a complete one, and the finish reason is the only thing that says so.
 func ClassifyCompletion(resp CompletionResponse) types.ErrorKind {
 	switch strings.ToLower(resp.FinishReason) {
-	case "length", "max_tokens", "incomplete", "truncated":
+	// "max_output_tokens" is the Responses API's actual incomplete reason and
+	// was missing from this list, so the one provider this library targets
+	// first reported a truncated answer as KindUnknown -- ST-003's whole point
+	// is that a cut-off answer is not a parse failure, and against real OpenAI
+	// it was neither. The existing provider test only asserted the raw
+	// FinishReason string and never fed it through here, which is how a list
+	// of four spellings missed the one that ships.
+	case "length", "max_tokens", "max_output_tokens", "incomplete", "truncated":
 		return types.KindOutputTruncated
 	case "content_filter":
 		return types.KindPolicyViolation

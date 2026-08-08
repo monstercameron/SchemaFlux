@@ -1,8 +1,122 @@
 package ops
 
 import (
+	"context"
 	"testing"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+const verifyMockResponse = `{
+	"overall_verdict": "mixed",
+	"overall_confidence": 0.6,
+	"claims": [
+		{"claim": "Water boils at 100C", "verdict": "verified", "confidence": 0.95, "evidence": ["standard reference"]},
+		{"claim": "The capital of France is London", "verdict": "false", "confidence": 0.99, "reasoning": "Paris is the capital", "evidence": ["geography reference"], "corrections": "The capital of France is Paris"}
+	],
+	"logic_issues": [
+		{"type": "non_sequitur", "description": "conclusion does not follow", "location": "paragraph 2", "severity": "major"}
+	],
+	"consistency_issues": [
+		{"type": "contradiction", "description": "two dates disagree", "conflicting_items": ["date A", "date B"], "suggestion": "reconcile the dates"}
+	],
+	"summary": "Mostly accurate with one false claim",
+	"trust_score": 0.5
+}`
+
+func installVerifyResponse(t *testing.T) {
+	t.Helper()
+	previousCaller, previousProvider := currentHooks()
+	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+		return verifyMockResponse, nil
+	})
+	t.Cleanup(func() {
+		setLLMCaller(previousCaller)
+		SetDefaultProvider(previousProvider)
+	})
+}
+
+// TestVerifyWithModelMatchesLegacyVerify proves the collapse is
+// behavior-preserving: for the same response, VerifyWithModel's Verdict and
+// Issues describe the same findings the deprecated Verify's OverallVerdict
+// and Claims did.
+func TestVerifyWithModelMatchesLegacyVerify(t *testing.T) {
+	installVerifyResponse(t)
+
+	opts := NewVerifyOptions().WithMinConfidence(0)
+
+	legacy, err := Verify("some claims", opts)
+	if err != nil {
+		t.Fatalf("Verify failed: %v", err)
+	}
+	judged, err := VerifyWithModel("some claims", opts)
+	if err != nil {
+		t.Fatalf("VerifyWithModel failed: %v", err)
+	}
+
+	if legacy.OverallVerdict != "mixed" {
+		t.Fatalf("expected legacy overall_verdict mixed, got %s", legacy.OverallVerdict)
+	}
+	if judged.Verdict != types.VerdictMixed {
+		t.Errorf("expected VerdictMixed, got %v", judged.Verdict)
+	}
+
+	// Only the false claim, plus the logic and consistency issues, should
+	// become JudgmentIssues -- the verified claim is not a finding.
+	wantIssues := 1 /* false claim */ + len(legacy.LogicIssues) + len(legacy.ConsistencyIssues)
+	if len(judged.Issues) != wantIssues {
+		t.Fatalf("expected %d issues, got %d: %+v", wantIssues, len(judged.Issues), judged.Issues)
+	}
+
+	var foundClaim, foundLogic, foundConsistency bool
+	for _, issue := range judged.Issues {
+		switch {
+		case issue.Subject == "The capital of France is London":
+			foundClaim = true
+			if issue.Severity != "error" {
+				t.Errorf("expected false claim severity 'error', got %q", issue.Severity)
+			}
+			if issue.ModelConfidence != 0.99 {
+				t.Errorf("expected per-claim ModelConfidence 0.99, got %v", issue.ModelConfidence)
+			}
+		case issue.Category == "logic:non_sequitur":
+			foundLogic = true
+		case issue.Category == "consistency:contradiction":
+			foundConsistency = true
+		}
+	}
+	if !foundClaim || !foundLogic || !foundConsistency {
+		t.Fatalf("expected claim, logic, and consistency issues, got %+v", judged.Issues)
+	}
+
+	// The model's overall confidence and trust score are claims, reachable
+	// but segregated from Verdict and Issues.
+	if judged.ModelConfidence != legacy.ModelOverallConfidence {
+		t.Errorf("expected ModelConfidence %v, got %v", legacy.ModelOverallConfidence, judged.ModelConfidence)
+	}
+	if judged.ModelClaims["trust_score"] != legacy.ModelTrustScore {
+		t.Errorf("expected trust_score claim %v, got %v", legacy.ModelTrustScore, judged.ModelClaims["trust_score"])
+	}
+}
+
+// TestVerifyWithModelVerdictMapping proves every overall_verdict value maps
+// onto the reduced Verdict vocabulary without silently defaulting a value
+// this operation does not recognize to VerdictPass.
+func TestVerifyWithModelVerdictMapping(t *testing.T) {
+	cases := map[string]types.Verdict{
+		"verified":       types.VerdictPass,
+		"false":          types.VerdictFail,
+		"partially_true": types.VerdictMixed,
+		"misleading":     types.VerdictMixed,
+		"unverifiable":   types.VerdictUnknown,
+		"nonsense":       types.VerdictUnknown,
+	}
+	for overall, want := range cases {
+		if got := verifyVerdict(overall); got != want {
+			t.Errorf("verifyVerdict(%q) = %v, want %v", overall, got, want)
+		}
+	}
+}
 
 func TestVerifyOptions(t *testing.T) {
 	t.Run("NewVerifyOptions creates valid defaults", func(t *testing.T) {

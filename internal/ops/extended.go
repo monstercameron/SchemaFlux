@@ -167,6 +167,15 @@ type ValidateResult[T any] struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// Deprecated: use ValidateHybrid, which returns the shared
+// types.JudgmentResult instead of this operation's own ValidateResult, or
+// ValidateDeterministically when every rule is a Go-decidable field rule and
+// no provider call should ever happen. Validate's old name did not say
+// which of those two it was -- a caller reading "Validate(x, opts)" could
+// not tell, without reading FieldRules and Rules, whether this was about to
+// make a network call. See OP-206 (ARC-22, TRU-30): a model-assisted review
+// must not be spelled the same as a deterministic check.
+//
 // Validate checks if data meets specified criteria using LLM interpretation.
 //
 // Type parameter T specifies the type being validated.
@@ -198,6 +207,159 @@ type ValidateResult[T any] struct {
 //	        "password": "at least 8 characters, one uppercase, one number",
 //	    }))
 func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
+	return validateHybridCore(data, opts)
+}
+
+// ValidateHybrid checks data against deterministic field rules and, when
+// anything remains that Go cannot decide (free-text Rules, SchemaHints, or a
+// FieldRules entry applyDeterministicRules does not understand), a model.
+// It is the model-assisted twin of ValidateDeterministically and returns the
+// shared types.JudgmentResult instead of ValidateResult, so a caller
+// handling "the judgment came back bad" can write that once against
+// JudgmentResult rather than once per operation's own field names.
+//
+// Behavior is identical to the deprecated Validate: same deterministic
+// rules applied first, same provider-call shortcut when nothing is left for
+// a model to decide, same failOn semantics deciding the verdict. Only the
+// result shape differs.
+func ValidateHybrid[T any](data T, opts ValidateOptions) (types.JudgmentResult[T], error) {
+	vr, err := validateHybridCore(data, opts)
+	if err != nil {
+		return types.JudgmentResult[T]{}, err
+	}
+	return validateResultToJudgment(data, vr), nil
+}
+
+// ValidateDeterministically checks data against FieldRules that Go can
+// decide exactly -- "email", "iso3166-alpha2", "min:18", and the rest
+// applyDeterministicRules understands -- and makes no provider call, ever.
+// Not "no provider call when it turns out nothing needed one": if opts.Rules
+// is non-empty, opts.SchemaHints is non-empty, or a FieldRules entry is not
+// one applyDeterministicRules recognizes, this returns an error rather than
+// silently skipping what it cannot decide or silently sending it to a
+// model anyway. A validator that quietly drops a rule it cannot check is
+// reporting success on data it never actually validated -- exactly the
+// failure AGENTS.md's "never fail open" rule exists to prevent.
+//
+// Use ValidateHybrid when Rules, SchemaHints, or a judgment-call field rule
+// are part of what needs checking.
+func ValidateDeterministically[T any](data T, opts ValidateOptions) (types.JudgmentResult[T], error) {
+	var zero types.JudgmentResult[T]
+
+	if err := opts.Validate(); err != nil {
+		return zero, fmt.Errorf("invalid options: %w", err)
+	}
+
+	if strings.TrimSpace(opts.Rules) != "" {
+		return zero, fmt.Errorf("validate deterministically: Rules is free text and requires model judgment; use ValidateHybrid")
+	}
+	if len(opts.SchemaHints) > 0 {
+		return zero, fmt.Errorf("validate deterministically: SchemaHints requires model judgment; use ValidateHybrid")
+	}
+
+	issues, remaining := applyDeterministicRules(data, opts.FieldRules)
+	if len(remaining) > 0 {
+		return zero, fmt.Errorf("validate deterministically: field rules for %v are not decidable in Go; use ValidateHybrid",
+			sortedKeys(remaining))
+	}
+
+	verdict := types.VerdictPass
+	if len(issues) > 0 {
+		verdict = types.VerdictFail
+	}
+
+	var jIssues []types.JudgmentIssue
+	for _, issue := range issues {
+		jIssues = append(jIssues, types.JudgmentIssue{
+			Subject:  issue.Field,
+			Severity: normalizeSeverity(issue.Severity),
+			Message:  issue.Message,
+			Evidence: evidenceSlice(issue.Explanation),
+		})
+	}
+
+	return types.JudgmentResult[T]{
+		Subject: data,
+		Verdict: verdict,
+		Issues:  jIssues,
+		Summary: fmt.Sprintf("checked %d field rules deterministically", len(opts.FieldRules)),
+		// ModelConfidence is left at its zero value deliberately: no model
+		// was consulted, so there is no claim to report, and reporting 0.0
+		// as though it were a low-confidence score would misstate that.
+	}, nil
+}
+
+// validateResultToJudgment translates ValidateResult[T] -- Validate's own
+// bool-plus-three-severities shape -- into the shared types.JudgmentResult.
+// Errors, warnings, and info are concatenated in that order because that is
+// the order ValidateResult already reported certainty in: deterministic
+// findings first, then the model's errors, then its lesser findings.
+func validateResultToJudgment[T any](data T, vr ValidateResult[T]) types.JudgmentResult[T] {
+	verdict := types.VerdictPass
+	if !vr.Valid {
+		verdict = types.VerdictFail
+	}
+
+	var issues []types.JudgmentIssue
+	issues = append(issues, validationIssuesToJudgment(vr.Errors)...)
+	issues = append(issues, validationIssuesToJudgment(vr.Warnings)...)
+	issues = append(issues, validationIssuesToJudgment(vr.Info)...)
+
+	claims := map[string]any{}
+	if vr.Corrected != nil {
+		// Corrected is the model's proposed fix. Nothing here verified that
+		// applying it actually resolves the issues found, so it is a claim
+		// -- not a delivered result -- and lives beside ModelConfidence
+		// rather than as a field of its own on JudgmentResult.
+		claims["corrected"] = vr.Corrected
+	}
+	if v, ok := vr.Metadata["deterministic_only"]; ok {
+		claims["deterministic_only"] = v
+	}
+	if len(claims) == 0 {
+		claims = nil
+	}
+
+	return types.JudgmentResult[T]{
+		Subject:         data,
+		Verdict:         verdict,
+		Issues:          issues,
+		Summary:         vr.Summary,
+		ModelConfidence: vr.ModelConfidence,
+		ModelClaims:     claims,
+	}
+}
+
+// validationIssuesToJudgment converts one severity bucket of
+// ValidationIssue into JudgmentIssue. Severity is read from the issue
+// itself (deterministic issues and the model's own issues both set it)
+// rather than from which bucket it came from, so a model that mislabels an
+// error as a warning is not silently relabelled back by this conversion --
+// the disagreement, if any, is the model's, and normalizeSeverity only
+// folds the vocabulary, not the model's judgment about severity.
+func validationIssuesToJudgment(issues []ValidationIssue) []types.JudgmentIssue {
+	if len(issues) == 0 {
+		return nil
+	}
+	out := make([]types.JudgmentIssue, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, types.JudgmentIssue{
+			Subject:    issue.Field,
+			Severity:   normalizeSeverity(issue.Severity),
+			Message:    issue.Message,
+			Suggestion: issue.Suggestion,
+			Evidence:   evidenceSlice(issue.Explanation),
+		})
+	}
+	return out
+}
+
+// validateHybridCore is Validate's original implementation, unchanged. Both
+// the deprecated Validate and the new ValidateHybrid call this so they
+// cannot drift: a difference between what the old name returns and what the
+// new name returns would recreate the two-return-types-that-execute-
+// differently problem T-01 already names.
+func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 	log := logger.GetLogger()
 	log.Debug("Starting validate operation")
 

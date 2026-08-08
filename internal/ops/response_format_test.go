@@ -147,22 +147,33 @@ func TestResolveResponseFormat(t *testing.T) {
 	}
 }
 
-// Steering is caller-supplied text that is appended to the system prompt, so it
-// can still reach the inference. That is a narrower path than the whole user
-// prompt, and it is the caller instructing the library rather than data flowing
-// through it — but it is worth pinning as a known property rather than a
-// surprise.
-func TestSteeringReachesTheSystemPromptDeliberately(t *testing.T) {
+// This test used to pin the opposite property: steering was appended to the
+// system prompt, so a caller's steering could set the response format, and
+// that was recorded as "deliberate" -- meaning known, not chosen.
+//
+// CA-002 moved steering into the user message, and the inference now reads the
+// system prompt alone. That is the same rule resolveResponseFormat already
+// applied to the user prompt and for the same reason: the library writes every
+// system prompt, so inferring from it is inferring from its own words, while
+// steering is text a caller supplies. A caller who needs a format says so with
+// ResponseFormat, which is exact, rather than by hoping a phrase in their
+// steering is noticed.
+func TestSteeringNoLongerSetsTheResponseFormat(t *testing.T) {
 	opts := types.OpOptions{Steering: "Return a JSON object with the summary."}
 
-	got := capturedFormat(t, "Summarize the input in two sentences.", "plain input", opts)
-	if got != "json" {
-		t.Errorf("format = %q; steering is part of the system prompt and may set the format", got)
+	if got := capturedFormat(t, "Summarize the input in two sentences.", "plain input", opts); got != "text" {
+		t.Errorf("format = %q; steering is caller text and must not switch the format", got)
 	}
 
-	// And an operation that declares its format is not at the mercy of it.
-	opts.ResponseFormat = "text"
-	if got := capturedFormat(t, "Summarize the input.", "plain input", opts); got != "text" {
-		t.Errorf("a declared format must beat steering, got %q", got)
+	// Declaring it still works, and is the supported way to ask.
+	opts.ResponseFormat = "json"
+	if got := capturedFormat(t, "Summarize the input.", "plain input", opts); got != "json" {
+		t.Errorf("a declared format was not honoured, got %q", got)
+	}
+
+	// And an operation whose own system prompt asks for JSON is unaffected --
+	// that is the library's own words, which is what the inference reads.
+	if got := capturedFormat(t, `Respond ONLY with valid JSON in this format: {"text": "..."}`, "plain input", types.OpOptions{}); got != "json" {
+		t.Errorf("the library's own JSON prompt stopped inferring json, got %q", got)
 	}
 }

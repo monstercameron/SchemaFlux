@@ -29,7 +29,7 @@ func TestRedactEgressScrubsOpenAIKeyFromUserPrompt(t *testing.T) {
 	capture := &redactCapturingProvider{}
 	wrapped := RedactEgress()(capture)
 
-	key := "sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345"
+	key := "sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345" // secret-scan: allow
 	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{
 		UserPrompt: "Here is my key: " + key + " please use it.",
 	})
@@ -48,7 +48,7 @@ func TestRedactEgressScrubsAnthropicKeyFromSystemPrompt(t *testing.T) {
 	capture := &redactCapturingProvider{}
 	wrapped := RedactEgress()(capture)
 
-	key := "sk-ant-api03-Xy7ZqW2mNb8Vc4Lk1Jh6Gf3Ds9Pa5Rt0"
+	key := "sk-ant-api03-Xy7ZqW2mNb8Vc4Lk1Jh6Gf3Ds9Pa5Rt0" // secret-scan: allow
 	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{
 		SystemPrompt: "credential=" + key,
 	})
@@ -121,7 +121,7 @@ func TestRedactEgressWithoutBuiltinsLeavesKnownKeyShapesAlone(t *testing.T) {
 	capture := &redactCapturingProvider{}
 	wrapped := RedactEgress(WithoutBuiltins())(capture)
 
-	key := "sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345"
+	key := "sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345" // secret-scan: allow
 	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{UserPrompt: key}); err != nil {
 		t.Fatalf("Complete returned an error: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRedactEgressWithMarkerOverridesTheDefault(t *testing.T) {
 	wrapped := RedactEgress(WithMarker("<<gone>>"))(capture)
 
 	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{
-		UserPrompt: "key: sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345",
+		UserPrompt: "key: sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345", // secret-scan: allow
 	})
 	if err != nil {
 		t.Fatalf("Complete returned an error: %v", err)
@@ -201,7 +201,7 @@ func TestRedactEgressDelegatesNameCostAndRetryPolicy(t *testing.T) {
 // exercised, not just the bare middleware function -- and a retried call
 // must still be redacted on every attempt, not just the first.
 func TestRedactEgressThroughChainWithScriptedProvider(t *testing.T) {
-	key := "sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345"
+	key := "sk-proj-Ab3dEfGh1jKlMn0pQrStUvWxYz9012345" // secret-scan: allow
 	seen := []string{}
 	var capture llm.Provider = completeFunc(func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
 		seen = append(seen, req.UserPrompt)

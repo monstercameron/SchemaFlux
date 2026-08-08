@@ -897,6 +897,11 @@ func CompleteField[T any](data T, opts CompleteFieldOptions) (CompleteFieldResul
 //	        fmt.Printf("Error: %s\n", err.Message)
 //	    }
 //	}
+//
+// Deprecated: use ValidateHybrid, or ValidateDeterministically when every rule is Go-decidable
+// and no provider call should ever happen. The old name did not say whether the
+// check was deterministic or model-assisted, so a caller could not tell from
+// the call site whether it was about to make a network request. See OP-206.
 func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 	return ops.Validate(data, opts)
 }
@@ -1236,6 +1241,10 @@ func MatchOne[S any, T any](source S, targets []T, opts MatchOptions) ([]MatchPa
 // Example:
 //
 //	result, err := schemaflux.Critique(essay, schemaflux.NewCritiqueOptions().WithAspects([]string{"clarity", "argument_strength"}))
+//
+// Deprecated: use CritiqueWithModel, whose name says that this review is
+// model-assisted rather than a deterministic check, and which returns the
+// shared JudgmentResult instead of this operation's own shape. See OP-206.
 func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 	return ops.Critique(input, opts)
 }
@@ -1263,6 +1272,10 @@ func Predict[T any](historicalData any, opts PredictOptions) (PredictResult[T], 
 // Example:
 //
 //	result, err := schemaflux.Verify("The Earth is flat.", schemaflux.NewVerifyOptions().WithMode("factual"))
+//
+// Deprecated: use VerifyWithModel, whose name says that this review is
+// model-assisted rather than a deterministic check, and which returns the
+// shared JudgmentResult instead of this operation's own shape. See OP-206.
 func Verify(input string, opts VerifyOptions) (VerifyResult, error) {
 	return ops.Verify(input, opts)
 }
@@ -1432,6 +1445,10 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 //	    Policies:   []string{"PII must be encrypted", "Amounts must balance"},
 //	    Categories: []string{"security", "compliance"},
 //	})
+//
+// Deprecated: use AuditWithModel, whose name says that this review is
+// model-assisted rather than a deterministic check, and which returns the
+// shared JudgmentResult instead of this operation's own shape. See OP-206.
 func Audit[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
 	return ops.Audit[T](data, opts...)
 }
@@ -1511,4 +1528,174 @@ func Fallback[T any](ctx context.Context, primary, alternate Step[T]) (T, error)
 // rejected answer is returned alongside the error for inspection.
 func Until[T any](ctx context.Context, step Step[T], pred func(T) bool, max int) (T, int, error) {
 	return ops.Until(ctx, step, pred, max)
+}
+
+// --- Judgment operations (OP-206).
+//
+// Validate, Verify, Audit, and Critique were one operation shape -- verdict,
+// issues, summary -- wearing four vocabularies with four sets of field names.
+// They share JudgmentResult now, and the model-assisted ones say so in their
+// names: a review a model performed must not be spelled the same as a check
+// Go decided, because the call site is where a reader decides whether a
+// network request is about to happen.
+type (
+	// JudgmentResult is the shared shape: what was judged, the verdict, the
+	// issues found, the evidence, and the model's own claims kept apart from
+	// all of it.
+	JudgmentResult[T any] = types.JudgmentResult[T]
+
+	// JudgmentIssue is one finding.
+	JudgmentIssue = types.JudgmentIssue
+
+	// Verdict is the overall finding: Pass, Fail, Mixed, or Unknown.
+	Verdict = types.Verdict
+)
+
+const (
+	VerdictUnknown = types.VerdictUnknown
+	VerdictPass    = types.VerdictPass
+	VerdictFail    = types.VerdictFail
+	VerdictMixed   = types.VerdictMixed
+)
+
+// ValidateDeterministically checks a value against rules Go can decide by
+// itself and makes no provider call at all. A rule it cannot decide is an
+// error rather than something quietly handed to a model, so a caller who
+// wanted a deterministic check cannot accidentally be sold a judgement.
+func ValidateDeterministically[T any](data T, opts ValidateOptions) (JudgmentResult[T], error) {
+	return ops.ValidateDeterministically(data, opts)
+}
+
+// ValidateHybrid decides in Go what it can and asks a model about the rest.
+// This is what Validate always did; the name now says so.
+func ValidateHybrid[T any](data T, opts ValidateOptions) (JudgmentResult[T], error) {
+	return ops.ValidateHybrid(data, opts)
+}
+
+// VerifyWithModel checks claims with a model. The verdict is the model's, and
+// the name says so.
+func VerifyWithModel(input string, opts VerifyOptions) (JudgmentResult[any], error) {
+	return ops.VerifyWithModel(input, opts)
+}
+
+// AuditWithModel inspects a value with a model against the audit's criteria.
+func AuditWithModel[T any](data T, opts ...AuditOptions) (JudgmentResult[T], error) {
+	return ops.AuditWithModel(data, opts...)
+}
+
+// CritiqueWithModel reviews a value with a model.
+func CritiqueWithModel[T any](input T, opts CritiqueOptions) (JudgmentResult[T], error) {
+	return ops.CritiqueWithModel(input, opts)
+}
+
+// --- Sampling, checkpointing, and review (CF-002, CF-005, CF-006).
+
+type (
+	// Reconciler decides what a set of samples agrees on, and may decline to
+	// decide. Agreement is a policy, not a proof: correlated models share
+	// hallucinations, so samples agreeing on an invented figure are samples
+	// that are uniformly wrong.
+	Reconciler[T any] = ops.Reconciler[T]
+
+	// ReconcileOutcome is a reconciler's answer, including its right to abstain.
+	ReconcileOutcome[T any] = ops.ReconcileOutcome[T]
+
+	// VoteOptions configures sampling.
+	VoteOptions = ops.VoteOptions
+
+	// VoteRecord reports what the samples did. AgreementRate is named for what
+	// it measures -- how many samples agreed -- and is not a probability that
+	// the winner is correct.
+	VoteRecord = ops.VoteRecord
+
+	// CheckpointStore is where a resumable run keeps its progress. Callers
+	// implement it; this library does not choose a database for them.
+	CheckpointStore = ops.CheckpointStore
+
+	// CheckpointRecord is one stored step.
+	CheckpointRecord = ops.CheckpointRecord
+
+	// CheckpointOutcome says whether a step was resumed, and whether the input
+	// had changed since it was stored.
+	CheckpointOutcome = ops.CheckpointOutcome
+
+	// ApprovalGate is the caller's decision point.
+	ApprovalGate[T any] = ops.ApprovalGate[T]
+
+	// ApprovalOutcome is what the gate decided.
+	ApprovalOutcome = ops.ApprovalOutcome
+
+	// ReviewPacket is what a run hands back when it stops and asks for a human.
+	// It carries references and shapes rather than the caller's values, because
+	// a review packet that embeds the records leaks them into whatever handles
+	// it.
+	ReviewPacket[T any] = types.ReviewPacket[T]
+
+	// ReviewRequiredError carries a ReviewPacket and matches ErrReviewRequired.
+	ReviewRequiredError[T any] = types.ReviewRequiredError[T]
+)
+
+// Vote runs a step several times and asks a reconciler what they agree on.
+//
+// The reconciler may abstain, returning ErrReviewRequired rather than the
+// majority answer -- which is the point: stopping and saying "these did not
+// agree" is a better outcome than handing back a plurality as though it were
+// a finding.
+func Vote[T any](ctx context.Context, samples int, step Step[T], reconcile Reconciler[T], opts VoteOptions) (T, VoteRecord, error) {
+	return ops.Vote(ctx, samples, step, reconcile, opts)
+}
+
+// ExactAgreement is a reconciler that requires min samples to be identical.
+func ExactAgreement[T comparable](min int) Reconciler[T] {
+	return ops.ExactAgreement[T](min)
+}
+
+// Checkpoint runs a step once per run, storing its result so a resumed run
+// does not repeat work whose side effect already happened. A resume against a
+// changed input is detected rather than silently accepted.
+func Checkpoint[T any](ctx context.Context, store CheckpointStore, runID, step string, input any, produce Step[T]) (T, CheckpointOutcome, error) {
+	return ops.Checkpoint(ctx, store, runID, step, input, produce)
+}
+
+// NewMemoryCheckpointStore returns an in-process store, which is what tests
+// and single-process runs want.
+func NewMemoryCheckpointStore() *ops.MemoryCheckpointStore {
+	return ops.NewMemoryCheckpointStore()
+}
+
+// Approve runs a step and puts its result to a gate, returning
+// ErrReviewRequired with a ReviewPacket when the gate declines or when
+// automated recovery has run out.
+//
+// That is a successful safety outcome, not a failure: it is the alternative to
+// looping a model until it says something acceptable.
+func Approve[T any](ctx context.Context, step Step[T], gate ApprovalGate[T], inputRefs []string) (T, error) {
+	return ops.Approve(ctx, step, gate, inputRefs)
+}
+
+// --- Streaming (ST-001, ST-002).
+
+// TextStream is the caller-facing handle for a streaming text operation. Its
+// buffer is bounded, breaking out of All cancels the remaining work unless
+// Detach was called first, and items arrive in completion order.
+type TextStream = ops.TextStream
+
+// StreamSummarize summarizes text, delivering it as it arrives.
+func StreamSummarize(input string, opts SummarizeOptions) (*TextStream, error) {
+	return ops.StreamSummarize(input, opts)
+}
+
+// StreamRewrite rewrites text, delivering it as it arrives.
+func StreamRewrite(input string, opts RewriteOptions) (*TextStream, error) {
+	return ops.StreamRewrite(input, opts)
+}
+
+// StreamTranslate translates text, delivering it as it arrives.
+func StreamTranslate(input string, opts TranslateOptions) (*TextStream, error) {
+	return ops.StreamTranslate(input, opts)
+}
+
+// StreamExpand expands text, delivering it as it arrives.
+func StreamExpand(input string, opts ExpandOptions) (*TextStream, error) {
+	return ops.StreamExpand(input, opts)
 }

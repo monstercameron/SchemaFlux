@@ -268,6 +268,9 @@ func CompleteField[T any](input T, opts CompleteFieldOptions) (CompleteFieldResu
 	return ops.CompleteField[T](context.Background(), input, opts)
 }
 
+// Deprecated: use ValidateHybrid or ValidateDeterministically. This surface keeps the old spelling for now;
+// the operation is the same one, and renaming the fluent builders is API-04's
+// job rather than OP-206's. See OP-206 for why the name matters.
 func Validate[T any](input T, opts ValidateOptions) (ValidateResult[T], error) {
 	return ops.Validate[T](input, opts)
 }
@@ -332,6 +335,9 @@ func MatchOne[S any, T any](source S, targets []T, opts MatchOptions) ([]MatchPa
 	return ops.MatchOne[S, T](source, targets, opts)
 }
 
+// Deprecated: use CritiqueWithModel. This surface keeps the old spelling for now;
+// the operation is the same one, and renaming the fluent builders is API-04's
+// job rather than OP-206's. See OP-206 for why the name matters.
 func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 	return ops.Critique[T](input, opts)
 }
@@ -344,6 +350,9 @@ func Predict[T any](input any, opts PredictOptions) (PredictResult[T], error) {
 	return ops.Predict[T](input, opts)
 }
 
+// Deprecated: use VerifyWithModel. This surface keeps the old spelling for now;
+// the operation is the same one, and renaming the fluent builders is API-04's
+// job rather than OP-206's. See OP-206 for why the name matters.
 func Verify(input string, opts VerifyOptions) (VerifyResult, error) {
 	return ops.Verify(input, opts)
 }
@@ -384,6 +393,9 @@ func Project[T any, U any](input T, opts ProjectOptions) (ProjectResult[U], erro
 	return ops.Project[T, U](input, opts)
 }
 
+// Deprecated: use AuditWithModel. This surface keeps the old spelling for now;
+// the operation is the same one, and renaming the fluent builders is API-04's
+// job rather than OP-206's. See OP-206 for why the name matters.
 func Audit[T any](input T, opts AuditOptions) (AuditResult[T], error) {
 	return ops.Audit[T](input, opts)
 }

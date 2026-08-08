@@ -107,7 +107,7 @@ func main() {
 		StorageType:    "plain_text", // VIOLATION: Not encrypted!
 	}
 
-	pciResult, err := schemaflux.Audit[PaymentRecord](paymentRecord, schemaflux.AuditOptions{
+	pciResult, err := schemaflux.AuditWithModel[PaymentRecord](paymentRecord, schemaflux.AuditOptions{
 		Policies: []string{
 			"Full card number (PAN) must not be stored unmasked - only last 4 digits allowed",
 			"CVV/CVC must never be stored after authorization",
@@ -123,15 +123,13 @@ func main() {
 		fmt.Printf("PCI audit failed: %v\n", err)
 	} else {
 		fmt.Printf("PCI-DSS Audit Results:\n")
-		fmt.Printf("  Passes Audit: %v\n", pciResult.Summary.PassesAudit)
-		fmt.Printf("  Critical Issues: %v\n", pciResult.Summary.Critical)
-		fmt.Printf("  Total Findings: %d\n", pciResult.Summary.TotalFindings)
+		fmt.Printf("  Verdict: %s\n", pciResult.Verdict)
+		fmt.Printf("  Total Findings: %d\n", len(pciResult.Issues))
 		fmt.Printf("\nFindings:\n")
-		for _, f := range pciResult.Findings {
-			severity := getSeverityLabel(f.Severity)
-			fmt.Printf("  %s [%s] %s\n", severity, f.Field, f.Issue)
-			if f.Recommendation != "" {
-				fmt.Printf("    → %s\n", f.Recommendation)
+		for _, issue := range pciResult.Issues {
+			fmt.Printf("  %s [%s] %s\n", severityLabel(issue.Severity), issue.Subject, issue.Message)
+			if issue.Suggestion != "" {
+				fmt.Printf("    → %s\n", issue.Suggestion)
 			}
 		}
 	}
@@ -155,7 +153,7 @@ func main() {
 		AccessLog:      "", // VIOLATION: No access log!
 	}
 
-	gdprResult, err := schemaflux.Audit[UserProfile](userProfile, schemaflux.AuditOptions{
+	gdprResult, err := schemaflux.AuditWithModel[UserProfile](userProfile, schemaflux.AuditOptions{
 		Policies: []string{
 			"Explicit consent must be obtained for personal data processing",
 			"Consent date must be recorded",
@@ -171,19 +169,26 @@ func main() {
 		fmt.Printf("GDPR audit failed: %v\n", err)
 	} else {
 		fmt.Printf("GDPR Audit Results:\n")
-		fmt.Printf("  Passes Audit: %v\n", gdprResult.Summary.PassesAudit)
-		fmt.Printf("  Total Findings: %d\n", gdprResult.Summary.TotalFindings)
+		fmt.Printf("  Verdict: %s\n", gdprResult.Verdict)
+		fmt.Printf("  Total Findings: %d\n", len(gdprResult.Issues))
+
+		byCategory := map[string]int{}
+		for _, issue := range gdprResult.Issues {
+			byCategory[issue.Category]++
+		}
 		fmt.Printf("\nBy Category:\n")
-		for cat, count := range gdprResult.Summary.ByCategory {
+		for cat, count := range byCategory {
 			fmt.Printf("  %s: %d\n", cat, count)
 		}
+
 		fmt.Printf("\nCritical Findings:\n")
-		for _, f := range gdprResult.Findings {
-			if f.Severity >= 0.7 {
-				fmt.Printf("  [%s] %s\n", f.Field, f.Issue)
-				if f.Recommendation != "" {
-					fmt.Printf("    Fix: %s\n", f.Recommendation)
-				}
+		for _, issue := range gdprResult.Issues {
+			if issue.Severity != "critical" && issue.Severity != "error" {
+				continue
+			}
+			fmt.Printf("  [%s] %s\n", issue.Subject, issue.Message)
+			if issue.Suggestion != "" {
+				fmt.Printf("    Fix: %s\n", issue.Suggestion)
 			}
 		}
 	}
@@ -206,7 +211,7 @@ func main() {
 		CashFlow:    2800000,
 	}
 
-	finResult, err := schemaflux.Audit[QuarterlyFinancials](financials, schemaflux.AuditOptions{
+	finResult, err := schemaflux.AuditWithModel[QuarterlyFinancials](financials, schemaflux.AuditOptions{
 		Policies: []string{
 			"Gross Profit must equal Revenue minus COGS",
 			"Net Income before tax must equal Gross Profit minus Operating Expenses",
@@ -222,16 +227,16 @@ func main() {
 		fmt.Printf("Financial audit failed: %v\n", err)
 	} else {
 		fmt.Printf("Financial Consistency Audit (%s):\n", financials.Period)
-		fmt.Printf("  Passes Audit: %v\n", finResult.Summary.PassesAudit)
-		fmt.Printf("  Consistency Issues: %d\n", finResult.Summary.TotalFindings)
+		fmt.Printf("  Verdict: %s\n", finResult.Verdict)
+		fmt.Printf("  Consistency Issues: %d\n", len(finResult.Issues))
 		fmt.Printf("\nDiscrepancies Found:\n")
-		for _, f := range finResult.Findings {
-			fmt.Printf("  [%s] %s\n", f.Field, f.Issue)
-			if f.Evidence != "" {
-				fmt.Printf("    Evidence: %s\n", f.Evidence)
+		for _, issue := range finResult.Issues {
+			fmt.Printf("  [%s] %s\n", issue.Subject, issue.Message)
+			for _, evidence := range issue.Evidence {
+				fmt.Printf("    Evidence: %s\n", evidence)
 			}
-			if f.Recommendation != "" {
-				fmt.Printf("    Fix: %s\n", f.Recommendation)
+			if issue.Suggestion != "" {
+				fmt.Printf("    Fix: %s\n", issue.Suggestion)
 			}
 		}
 	}
@@ -239,13 +244,17 @@ func main() {
 	fmt.Println("\n=== Audit Example Complete ===")
 }
 
-func getSeverityLabel(severity float64) string {
-	switch {
-	case severity >= 0.9:
+// severityLabel renders the shared four-level severity. Audit used to report
+// a 0.0-1.0 float and each caller picked its own thresholds for what "high"
+// meant; the levels are mapped once in Go now, so two readers of the same
+// audit cannot disagree about whether a finding was critical.
+func severityLabel(severity string) string {
+	switch severity {
+	case "critical":
 		return "🔴 CRITICAL"
-	case severity >= 0.7:
+	case "error":
 		return "🟠 HIGH"
-	case severity >= 0.5:
+	case "warning":
 		return "🟡 MEDIUM"
 	default:
 		return "🔵 LOW"

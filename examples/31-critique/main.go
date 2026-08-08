@@ -62,25 +62,28 @@ func main() {
 		WithStyle("constructive").
 		WithIntelligence(types.Smart)
 
-	result, err := ops.Critique(presentation, opts)
+	// CritiqueWithModel, not Critique: the name says the review is a model's
+	// opinion rather than a check the library decided.
+	result, err := ops.CritiqueWithModel(presentation, opts)
 	if err != nil {
 		log.Fatalf("Critique failed: %v", err)
 	}
 
-	fmt.Println("OUTPUT: CritiqueResult")
-	fmt.Printf("  ModelOverallScore: %.2f/1.00\n", result.ModelOverallScore)
-	fmt.Println("  CriteriaScores:")
-	for criterion, score := range result.CriteriaScores {
-		fmt.Printf("    %s: %.2f\n", criterion, score)
-	}
+	fmt.Println("OUTPUT: JudgmentResult")
+	fmt.Printf("  Verdict: %s\n", result.Verdict)
 	fmt.Println("  Issues:")
 	for i, issue := range result.Issues {
-		fmt.Printf("    %d. [%s] %s\n", i+1, issue.Severity, issue.Description)
+		fmt.Printf("    %d. [%s/%s] %s\n", i+1, issue.Category, issue.Severity, issue.Message)
 		if issue.Suggestion != "" {
 			fmt.Printf("       Suggestion: %s\n", issue.Suggestion)
 		}
 	}
 	fmt.Printf("  Summary: %q\n", result.Summary)
+	// The model's scores are claims and live apart from the verdict.
+	fmt.Printf("  Model-claimed confidence: %.2f\n", result.ModelConfidence)
+	if scores, ok := result.ModelClaims["criteria_scores"]; ok {
+		fmt.Printf("  Model-claimed criteria scores: %v\n", scores)
+	}
 	fmt.Println()
 
 	// Business Use Case: Code review
@@ -108,18 +111,18 @@ func main() {
 		WithIncludeFixes(true).
 		WithIntelligence(types.Smart)
 
-	codeResult, err := ops.Critique(code, codeOpts)
+	codeResult, err := ops.CritiqueWithModel(code, codeOpts)
 	if err != nil {
 		log.Fatalf("Code critique failed: %v", err)
 	}
 
-	fmt.Println("OUTPUT: CritiqueResult")
-	fmt.Printf("  ModelOverallScore: %.2f\n", codeResult.ModelOverallScore)
+	fmt.Println("OUTPUT: JudgmentResult")
+	fmt.Printf("  Verdict: %s\n", codeResult.Verdict)
 	fmt.Println("  Issues:")
 	for i, issue := range codeResult.Issues {
-		fmt.Printf("    %d. [%s] %s\n", i+1, issue.Severity, issue.Description)
-		if issue.Fix != "" {
-			fmt.Printf("       Fix: %s\n", issue.Fix)
+		fmt.Printf("    %d. [%s/%s] %s\n", i+1, issue.Category, issue.Severity, issue.Message)
+		if issue.Suggestion != "" {
+			fmt.Printf("       Suggestion: %s\n", issue.Suggestion)
 		}
 	}
 

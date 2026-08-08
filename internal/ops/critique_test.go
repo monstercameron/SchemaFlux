@@ -1,8 +1,122 @@
 package ops
 
 import (
+	"context"
 	"testing"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+const critiqueMockResponse = `{
+	"overall_score": 0.55,
+	"criteria_scores": {"clarity": 0.6, "evidence": 0.5},
+	"issues": [
+		{"criterion": "evidence", "severity": "critical", "description": "no citations", "location": "paragraph 2", "fix": "add a source"},
+		{"criterion": "clarity", "severity": "minor", "description": "run-on sentence", "suggestion": "split into two sentences"}
+	],
+	"positives": [
+		{"criterion": "structure", "description": "clear intro"}
+	],
+	"summary": "Needs citations, otherwise readable.",
+	"top_priorities": ["add citations"]
+}`
+
+func installCritiqueResponse(t *testing.T) {
+	t.Helper()
+	previousCaller, previousProvider := currentHooks()
+	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+		return critiqueMockResponse, nil
+	})
+	t.Cleanup(func() {
+		setLLMCaller(previousCaller)
+		SetDefaultProvider(previousProvider)
+	})
+}
+
+// TestCritiqueWithModelMatchesLegacyCritique proves the collapse is
+// behavior-preserving: for the same response, CritiqueWithModel's Issues
+// describe the same findings the deprecated Critique's Issues did, and its
+// Verdict reflects the critical issue present.
+func TestCritiqueWithModelMatchesLegacyCritique(t *testing.T) {
+	installCritiqueResponse(t)
+
+	opts := NewCritiqueOptions().WithCriteria([]string{"clarity", "evidence"})
+
+	legacy, err := Critique("some essay", opts)
+	if err != nil {
+		t.Fatalf("Critique failed: %v", err)
+	}
+	judged, err := CritiqueWithModel("some essay", opts)
+	if err != nil {
+		t.Fatalf("CritiqueWithModel failed: %v", err)
+	}
+
+	if len(judged.Issues) != len(legacy.Issues) {
+		t.Fatalf("expected %d issues, got %d", len(legacy.Issues), len(judged.Issues))
+	}
+	if judged.Verdict != types.VerdictFail {
+		t.Errorf("expected VerdictFail (a critical issue is present), got %v", judged.Verdict)
+	}
+
+	var foundFix, foundSuggestion bool
+	for _, issue := range judged.Issues {
+		switch issue.Subject {
+		case "evidence":
+			foundFix = true
+			if issue.Suggestion != "add a source" {
+				t.Errorf("expected the fix to win over an absent suggestion, got %q", issue.Suggestion)
+			}
+			if issue.Severity != "critical" {
+				t.Errorf("expected severity 'critical', got %q", issue.Severity)
+			}
+		case "clarity":
+			foundSuggestion = true
+			if issue.Suggestion != "split into two sentences" {
+				t.Errorf("expected the suggestion when no fix is present, got %q", issue.Suggestion)
+			}
+		}
+	}
+	if !foundFix || !foundSuggestion {
+		t.Fatalf("expected both issues represented, got %+v", judged.Issues)
+	}
+
+	// ModelOverallScore is a claim, reachable but kept apart from Verdict.
+	if judged.ModelConfidence != legacy.ModelOverallScore {
+		t.Errorf("expected ModelConfidence %v, got %v", legacy.ModelOverallScore, judged.ModelConfidence)
+	}
+	if judged.ModelClaims["top_priorities"] == nil {
+		t.Error("expected top_priorities to travel in ModelClaims")
+	}
+}
+
+// TestCritiqueWithModelVerdictWithoutCritical proves Verdict is Mixed, not
+// Fail, when issues exist but none is critical -- Fail is reserved for a
+// critical finding, matching how a caller would actually want to gate on
+// this.
+func TestCritiqueWithModelVerdictWithoutCritical(t *testing.T) {
+	previousCaller, previousProvider := currentHooks()
+	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+		return `{
+			"overall_score": 0.8,
+			"criteria_scores": {"clarity": 0.8},
+			"issues": [{"criterion": "clarity", "severity": "minor", "description": "typo"}],
+			"summary": "Mostly good."
+		}`, nil
+	})
+	t.Cleanup(func() {
+		setLLMCaller(previousCaller)
+		SetDefaultProvider(previousProvider)
+	})
+
+	opts := NewCritiqueOptions().WithCriteria([]string{"clarity"})
+	judged, err := CritiqueWithModel("text", opts)
+	if err != nil {
+		t.Fatalf("CritiqueWithModel failed: %v", err)
+	}
+	if judged.Verdict != types.VerdictMixed {
+		t.Errorf("expected VerdictMixed, got %v", judged.Verdict)
+	}
+}
 
 func TestCritiqueOptions(t *testing.T) {
 	t.Run("NewCritiqueOptions creates valid defaults", func(t *testing.T) {

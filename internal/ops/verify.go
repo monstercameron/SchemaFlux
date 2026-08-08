@@ -203,6 +203,11 @@ type VerifyResult struct {
 	Metadata               map[string]any      `json:"metadata,omitempty"`
 }
 
+// Deprecated: use VerifyWithModel, which returns the shared
+// types.JudgmentResult and whose name says what Verify's did not -- that
+// this is a model-assisted review, not a deterministic check. See OP-206
+// (ARC-22, TRU-30).
+//
 // Verify fact-checks claims against knowledge sources and checks for consistency.
 // Different from Validate (schema/rule checking) - Verify checks factual accuracy.
 //
@@ -224,6 +229,124 @@ type VerifyResult struct {
 //	    WithDomain("medical").
 //	    WithTrustedSources([]string{"PubMed", "WHO"}))
 func Verify(input any, opts VerifyOptions) (VerifyResult, error) {
+	return verifyCore(input, opts)
+}
+
+// VerifyWithModel fact-checks claims against knowledge sources using a
+// model, and reports the result as a types.JudgmentResult: Verdict is
+// derived from the model's overall_verdict, Issues holds every claim that
+// was not verified plus every logic and consistency problem found, and the
+// model's trust score and per-claim confidences travel in ModelClaims and
+// JudgmentIssue.ModelConfidence rather than sitting beside the verdict as
+// though a model's self-report and a fact-check were the same kind of
+// thing.
+//
+// Behavior -- which claims are found, what verdict each gets, what the
+// logic and consistency checks report -- is identical to the deprecated
+// Verify; only the result shape and the confidence floor's error wrapping
+// differ.
+func VerifyWithModel(input any, opts VerifyOptions) (types.JudgmentResult[any], error) {
+	vr, err := verifyCore(input, opts)
+	if err != nil {
+		return types.JudgmentResult[any]{}, err
+	}
+	return verifyResultToJudgment(input, vr), nil
+}
+
+// verifyVerdict maps Verify's five-word verdict vocabulary onto the shared
+// four-value Verdict. "mixed" and "misleading" both become VerdictMixed:
+// each describes a claim that is neither cleanly right nor cleanly wrong,
+// and forcing them into Pass or Fail would overstate or understate what the
+// model actually found.
+func verifyVerdict(overall string) types.Verdict {
+	switch overall {
+	case "verified":
+		return types.VerdictPass
+	case "false":
+		return types.VerdictFail
+	case "partially_true", "misleading", "mixed":
+		return types.VerdictMixed
+	case "unverifiable":
+		return types.VerdictUnknown
+	default:
+		return types.VerdictUnknown
+	}
+}
+
+// verifyResultToJudgment translates VerifyResult into the shared shape.
+// Only claims the model did not mark "verified" become issues -- a claim it
+// found accurate is not a finding to report as wrong, and treating every
+// claim (verified or not) as an "issue" would make Issues mean something
+// different for Verify than it does for the other three operations feeding
+// JudgmentResult.
+func verifyResultToJudgment(input any, vr VerifyResult) types.JudgmentResult[any] {
+	var issues []types.JudgmentIssue
+	var evidence []string
+
+	for _, claim := range vr.Claims {
+		evidence = append(evidence, claim.Evidence...)
+		if claim.Verdict == "verified" {
+			continue
+		}
+		severity := "warning"
+		switch claim.Verdict {
+		case "false":
+			severity = "error"
+		case "unverifiable":
+			severity = "info"
+		}
+		msg := claim.Reasoning
+		if msg == "" {
+			msg = claim.Corrections
+		}
+		issues = append(issues, types.JudgmentIssue{
+			Subject:         claim.Claim,
+			Category:        "fact:" + claim.Verdict,
+			Severity:        severity,
+			Message:         msg,
+			Suggestion:      claim.Corrections,
+			Evidence:        claim.Evidence,
+			ModelConfidence: claim.ModelConfidence,
+		})
+	}
+
+	for _, li := range vr.LogicIssues {
+		issues = append(issues, types.JudgmentIssue{
+			Subject:  li.Location,
+			Category: "logic:" + li.Type,
+			Severity: normalizeSeverity(li.Severity),
+			Message:  li.Description,
+		})
+	}
+
+	for _, ci := range vr.ConsistencyIssues {
+		issues = append(issues, types.JudgmentIssue{
+			Category:   "consistency:" + ci.Type,
+			Severity:   "warning",
+			Message:    ci.Description,
+			Suggestion: ci.Suggestion,
+			Evidence:   ci.Items,
+		})
+	}
+
+	return types.JudgmentResult[any]{
+		Subject:         input,
+		Verdict:         verifyVerdict(vr.OverallVerdict),
+		Issues:          issues,
+		Evidence:        evidence,
+		Summary:         vr.Summary,
+		ModelConfidence: vr.ModelOverallConfidence,
+		ModelClaims: map[string]any{
+			"trust_score": vr.ModelTrustScore,
+			"claims":      vr.Claims,
+		},
+	}
+}
+
+// verifyCore is Verify's original implementation, unchanged. The
+// deprecated Verify and the new VerifyWithModel both call this so neither
+// can silently drift from the other.
+func verifyCore(input any, opts VerifyOptions) (VerifyResult, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting verify operation")
 

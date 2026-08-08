@@ -86,30 +86,14 @@ func main() {
 		WithStrictness("strict").
 		WithIntelligence(types.Smart)
 
-	result1, err := ops.Verify(input1, opts)
+	// VerifyWithModel, not Verify: the name says a model produced this
+	// verdict, rather than the library having checked anything.
+	result1, err := ops.VerifyWithModel(input1, opts)
 	if err != nil {
 		log.Fatalf("Verification failed: %v", err)
 	}
 
-	fmt.Println("OUTPUT: VerifyResult{")
-	fmt.Printf("  OverallVerdict:    %q,\n", result1.OverallVerdict)
-	fmt.Printf("  ModelOverallConfidence: %.2f,\n", result1.ModelOverallConfidence)
-	fmt.Printf("  ModelTrustScore:        %.2f,\n", result1.ModelTrustScore)
-	fmt.Printf("  Summary:           %q,\n", truncate(result1.Summary, 100))
-	fmt.Println("  Claims: []ClaimVerification{")
-	for _, c := range result1.Claims {
-		fmt.Printf("    {Claim: %q, Verdict: %q, ModelConfidence: %.2f, Corrections: %q},\n",
-			truncate(c.Claim, 40), c.Verdict, c.ModelConfidence, truncate(c.Corrections, 50))
-	}
-	fmt.Println("  },")
-	if len(result1.ConsistencyIssues) > 0 {
-		fmt.Println("  ConsistencyIssues: []ConsistencyIssue{")
-		for _, i := range result1.ConsistencyIssues {
-			fmt.Printf("    {Type: %q, Description: %q},\n", i.Type, truncate(i.Description, 60))
-		}
-		fmt.Println("  },")
-	}
-	fmt.Println("}")
+	printJudgment(result1)
 	fmt.Println()
 
 	// ==================== USE CASE 2: Resume Verification ====================
@@ -160,22 +144,12 @@ func main() {
 		WithStrictness("strict").
 		WithIntelligence(types.Smart)
 
-	result2, err := ops.Verify(input2, opts2)
+	result2, err := ops.VerifyWithModel(input2, opts2)
 	if err != nil {
 		log.Fatalf("Resume verification failed: %v", err)
 	}
 
-	fmt.Println("OUTPUT: VerifyResult{")
-	fmt.Printf("  OverallVerdict:    %q,\n", result2.OverallVerdict)
-	fmt.Printf("  ModelOverallConfidence: %.2f,\n", result2.ModelOverallConfidence)
-	fmt.Printf("  ModelTrustScore:        %.2f,\n", result2.ModelTrustScore)
-	fmt.Println("  Claims: []ClaimVerification{")
-	for _, c := range result2.Claims {
-		fmt.Printf("    {Claim: %q, Verdict: %q, ModelConfidence: %.2f, Corrections: %q},\n",
-			truncate(c.Claim, 50), c.Verdict, c.ModelConfidence, truncate(c.Corrections, 40))
-	}
-	fmt.Println("  },")
-	fmt.Println("}")
+	printJudgment(result2)
 	fmt.Println()
 
 	// ==================== USE CASE 3: Marketing Claims Compliance ====================
@@ -223,24 +197,38 @@ func main() {
 		WithStrictness("strict").
 		WithIntelligence(types.Smart)
 
-	result3, err := ops.Verify(input3, opts3)
+	result3, err := ops.VerifyWithModel(input3, opts3)
 	if err != nil {
 		log.Fatalf("Marketing verification failed: %v", err)
 	}
 
-	fmt.Println("OUTPUT: VerifyResult{")
-	fmt.Printf("  OverallVerdict:    %q,\n", result3.OverallVerdict)
-	fmt.Printf("  ModelOverallConfidence: %.2f,\n", result3.ModelOverallConfidence)
-	fmt.Printf("  ModelTrustScore:        %.2f,\n", result3.ModelTrustScore)
-	fmt.Println("  Claims: []ClaimVerification{")
-	for _, c := range result3.Claims {
-		fmt.Printf("    {Claim: %q, Verdict: %q, ModelConfidence: %.2f, Corrections: %q},\n",
-			truncate(c.Claim, 45), c.Verdict, c.ModelConfidence, truncate(c.Corrections, 40))
-	}
-	fmt.Println("  },")
-	fmt.Println("}")
+	printJudgment(result3)
 
 	fmt.Println("\n=== Verify Example Complete ===")
+}
+
+// printJudgment renders the shared shape every review operation returns now.
+// The verdict and the issues are the finding; the model's own scores are
+// printed under a heading that says they are claims, because they were
+// produced by the same process that produced the finding being scored.
+func printJudgment(result types.JudgmentResult[any]) {
+	fmt.Println("OUTPUT: JudgmentResult{")
+	fmt.Printf("  Verdict: %s,\n", result.Verdict)
+	if result.Summary != "" {
+		fmt.Printf("  Summary: %q,\n", truncate(result.Summary, 100))
+	}
+	fmt.Println("  Issues: []JudgmentIssue{")
+	for _, issue := range result.Issues {
+		fmt.Printf("    {Subject: %q, Category: %q, Severity: %q, Message: %q},\n",
+			truncate(issue.Subject, 45), issue.Category, issue.Severity, truncate(issue.Message, 50))
+	}
+	fmt.Println("  },")
+	fmt.Println("  -- claimed by the model, not measured --")
+	fmt.Printf("  ModelConfidence: %.2f,\n", result.ModelConfidence)
+	for name, claim := range result.ModelClaims {
+		fmt.Printf("  ModelClaims[%q]: %v,\n", name, claim)
+	}
+	fmt.Println("}")
 }
 
 func truncate(s string, max int) string {

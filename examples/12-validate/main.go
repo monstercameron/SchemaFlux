@@ -152,37 +152,39 @@ Validation Rules:
 		fmt.Printf("   Age: %d\n", tc.data.Age)
 		fmt.Printf("   Country: %s\n", tc.data.Country)
 
-		// Validate using the new typed API
-		result, err := schemaflux.Validate[UserRegistration](tc.data, opts)
+		// ValidateHybrid decides in Go what it can and asks a model about the
+		// rest. The name says which of the two this is;
+		// ValidateDeterministically is the one that never makes a network call.
+		result, err := schemaflux.ValidateHybrid[UserRegistration](tc.data, opts)
 		if err != nil {
 			schemaflux.GetLogger().Error("Validation error", "error", err)
 			continue
 		}
 
-		if result.Valid {
+		if result.Verdict == schemaflux.VerdictPass {
 			fmt.Println()
 			fmt.Println("   ✅ VALID - Registration accepted")
-			fmt.Printf("   ModelConfidence: %.0f%%\n", result.ModelConfidence*100)
+			// Labelled as the model's claim rather than printed beside the
+			// verdict as though the library had measured it.
+			fmt.Printf("   Model-claimed confidence: %.0f%%\n", result.ModelConfidence*100)
 		} else {
 			fmt.Println()
 			fmt.Println("   ❌ INVALID - Issues found:")
 
-			// Display errors (critical issues)
-			for _, issue := range result.Errors {
-				fmt.Printf("      ❌ [%s] %s\n", issue.Field, issue.Message)
+			// One list now, with the severity on each issue, instead of three
+			// lists the caller had to know the names of.
+			for _, issue := range result.Issues {
+				marker := "ℹ️ "
+				switch issue.Severity {
+				case "critical", "error":
+					marker = "❌"
+				case "warning":
+					marker = "⚠️ "
+				}
+				fmt.Printf("      %s [%s] %s\n", marker, issue.Subject, issue.Message)
 				if issue.Suggestion != "" {
 					fmt.Printf("         💡 Suggestion: %s\n", issue.Suggestion)
 				}
-			}
-
-			// Display warnings
-			for _, issue := range result.Warnings {
-				fmt.Printf("      ⚠️  [%s] %s\n", issue.Field, issue.Message)
-			}
-
-			// Display info
-			for _, issue := range result.Info {
-				fmt.Printf("      ℹ️  %s\n", issue.Message)
 			}
 		}
 

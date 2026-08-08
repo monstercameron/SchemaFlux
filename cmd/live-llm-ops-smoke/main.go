@@ -381,11 +381,11 @@ func testCompleteField() error {
 func testValidate() error {
 	opts := schemaflux.NewValidateOptions()
 	opts.Rules = "email must be valid and age must be at least 18"
-	out, err := schemaflux.Validate(map[string]any{"email": "bad-email", "age": 14}, opts)
+	out, err := schemaflux.ValidateHybrid(map[string]any{"email": "bad-email", "age": 14}, opts)
 	if err != nil {
 		return err
 	}
-	return req(!out.Valid, "validate should flag invalid data")
+	return req(out.Verdict != schemaflux.VerdictPass, "validate should flag invalid data")
 }
 func testValidateLegacy() error {
 	// This function exists to smoke-test the deprecated path against a live
@@ -578,7 +578,7 @@ func testMatchOne() error {
 func testCritique() error {
 	opts := schemaflux.NewCritiqueOptions()
 	opts.Criteria = []string{"clarity", "specificity"}
-	out, err := schemaflux.Critique("This plan is probably good and we should maybe move fast somehow.", opts)
+	out, err := schemaflux.CritiqueWithModel("This plan is probably good and we should maybe move fast somehow.", opts)
 	if err != nil {
 		return err
 	}
@@ -607,11 +607,11 @@ func testVerify() error {
 	opts.CheckFacts = false
 	opts.CheckLogic = true
 	opts.CheckConsistency = true
-	out, err := schemaflux.Verify("All premium users get priority support. Alex is a premium user. Therefore Alex gets priority support.", opts)
+	out, err := schemaflux.VerifyWithModel("All premium users get priority support. Alex is a premium user. Therefore Alex gets priority support.", opts)
 	if err != nil {
 		return err
 	}
-	return req(out.Summary != "" && out.ModelOverallConfidence > 0, "verify output invalid")
+	return req(out.Verdict != schemaflux.VerdictUnknown, "verify output invalid")
 }
 func testVerifyClaim() error {
 	opts := schemaflux.NewVerifyOptions()
@@ -685,11 +685,11 @@ func testProject() error {
 	return req(s(out.Projected["user_id"]) != "" && s(out.Projected["display_name"]) != "", "project invalid")
 }
 func testAudit() error {
-	out, err := schemaflux.Audit(map[string]any{"id": "1", "email": "sam@example.com", "password": "plaintext-password", "ssn": "123-45-6789"}, schemaflux.AuditOptions{Policies: []string{"passwords must not be stored in plain text", "ssn must be protected"}, Categories: []string{"security", "compliance"}, Intelligence: schemaflux.Fast})
+	out, err := schemaflux.AuditWithModel(map[string]any{"id": "1", "email": "sam@example.com", "password": "plaintext-password", "ssn": "123-45-6789"}, schemaflux.AuditOptions{Policies: []string{"passwords must not be stored in plain text", "ssn must be protected"}, Categories: []string{"security", "compliance"}, Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
 	}
-	return req(len(out.Findings) > 0, "audit returned no findings")
+	return req(len(out.Issues) > 0, "audit returned no findings")
 }
 func testAssemble() error {
 	out, err := schemaflux.Assemble[map[string]any]([]any{map[string]any{"name": "Acme"}, map[string]any{"industry": "Software"}, map[string]any{"summary": "Builds workflow tools for finance teams."}}, schemaflux.ComposeOptions{MergeStrategy: "smart", FillGaps: true, Intelligence: schemaflux.Fast})

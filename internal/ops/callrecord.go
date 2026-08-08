@@ -85,7 +85,25 @@ func envelopeFrom(records []*types.ResultMetadata, operation string) types.Meta 
 	// the answer -- model, provider, request ID.
 	meta := types.MetaFrom(records[len(records)-1])
 	meta.Operation = operation
+
+	// Everything the loop below accumulates has to start at zero, because
+	// MetaFrom already copied the last record's figures in as the seed. It did
+	// not for Attempts -- that reset was here from the start -- but Usage and
+	// Cost were left seeded and then added again, so the final attempt was
+	// counted twice: every single-call operation reported exactly double its
+	// tokens and double its money, and a caller reading Meta.Cost was reading a
+	// number that was wrong for every request this library has ever made.
+	//
+	// It went unnoticed because nothing compared the envelope against the
+	// provider's own usage figure; the tests asserted that a cost appeared, not
+	// that it was the right one.
 	meta.Attempts = 0
+	meta.Usage = types.TokenUsage{}
+	// PricingSource is carried across the reset rather than recomputed: it
+	// names where the rate card came from, which is a property of the run and
+	// not a figure to be summed, and the loop below never sets it.
+	pricingSource := meta.Cost.PricingSource
+	meta.Cost = types.CostInfo{PricingSource: pricingSource}
 
 	// Every attempt counts toward the total, and one unpriced attempt makes the
 	// whole figure an underestimate.
@@ -130,6 +148,14 @@ func envelopeFrom(records []*types.ResultMetadata, operation string) types.Meta 
 	meta.Cost.Priced = sawCost && priced
 	if !meta.Cost.Priced {
 		meta.Cost.PricingSource = ""
+	}
+
+	// CA-006. Measured from what the provider reported, not estimated: the
+	// share of prompt tokens it said came from its own prefix cache. Guarded
+	// against a provider that reports usage with no prompt tokens at all,
+	// where the ratio is undefined rather than zero.
+	if meta.Usage.PromptTokens > 0 {
+		meta.CacheHitRatio = float64(meta.Usage.CachedTokens) / float64(meta.Usage.PromptTokens)
 	}
 
 	return meta

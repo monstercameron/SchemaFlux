@@ -115,3 +115,41 @@ func TestClassifyCompletion(t *testing.T) {
 		})
 	}
 }
+
+// The Responses API reports a cut-off answer as "max_output_tokens", which was
+// missing from the list this switch matches on -- so against the one provider
+// this library targets first, a truncated answer classified as KindUnknown and
+// ST-003's truncation handling never fired. The provider test that looked at
+// truncation only asserted the raw FinishReason string and never fed it
+// through the classifier, which is how a list of four spellings missed the one
+// that actually ships.
+func TestEveryTruncationSpellingClassifiesAsTruncated(t *testing.T) {
+	spellings := []string{
+		"length",            // Chat Completions
+		"max_tokens",        // Anthropic
+		"max_output_tokens", // Responses API -- the one that was missing
+		"incomplete",
+		"truncated",
+		"MAX_OUTPUT_TOKENS", // case is folded
+	}
+
+	for _, reason := range spellings {
+		t.Run(reason, func(t *testing.T) {
+			got := ClassifyCompletion(CompletionResponse{
+				FinishReason: reason,
+				Content:      "a partial answer",
+			})
+			if got != types.KindOutputTruncated {
+				t.Errorf("ClassifyCompletion(%q) = %v, want KindOutputTruncated", reason, got)
+			}
+		})
+	}
+}
+
+func TestACompleteAnswerIsNotClassifiedAsTruncated(t *testing.T) {
+	for _, reason := range []string{"stop", "end_turn", "completed", ""} {
+		if got := ClassifyCompletion(CompletionResponse{FinishReason: reason, Content: "done"}); got == types.KindOutputTruncated {
+			t.Errorf("ClassifyCompletion(%q) reported truncation for a complete answer", reason)
+		}
+	}
+}

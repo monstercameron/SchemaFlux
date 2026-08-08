@@ -118,23 +118,39 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		maxTokens = opts.MaxOutputTokens
 	}
 	temperature := config.GetTemperature(opts.Mode)
-	effectiveSystemPrompt := applySteering(systemPrompt, opts.Steering)
-	responseFormat := resolveResponseFormat(opts.ResponseFormat, effectiveSystemPrompt)
+	// The response format is inferred from the system prompt alone, which this
+	// library writes. It used to be inferred from the system prompt *with
+	// steering already appended*, so a caller whose steering mentioned JSON
+	// silently switched their text operation into JSON mode -- the same
+	// data-controls-the-control-path defect resolveResponseFormat's comment
+	// describes for the user prompt, one argument over.
+	responseFormat := resolveResponseFormat(opts.ResponseFormat, systemPrompt)
 
-	// stableSystemPrompt is what actually forms the request's cacheable prefix:
-	// the reinforcement boilerplate plus the operation's rendered template,
-	// WITHOUT steering. applySteering appends steering as a suffix rather than
-	// splicing it into the middle (CA-002 still owes a real Stable/Volatile
-	// split, but the suffix placement already means the prefix up to here does
-	// not move when only steering changes), so building the cache key from this
-	// instead of the final SystemPrompt is what keeps a per-call steering
-	// change from minting a new key -- see promptCacheKeyFor.
+	// CA-002: the system prompt is the stable segment and steering is the
+	// volatile one, so they go in different places.
+	//
+	// Steering used to be appended to the system block, which meant the block
+	// a provider caches was different bytes on every call that steered
+	// differently -- and a prefix cache that never sees the same prefix twice
+	// is a cache that never hits. It goes in the user message now, where a
+	// per-call instruction belongs: two calls differing only in steering send a
+	// byte-identical system prompt.
+	//
+	// Before the caller's content, not after it. Instruction-after-data is the
+	// more injection-resistant order in the abstract, but every prompt this
+	// library writes ends with the data -- "Items:\n[...]" -- and several
+	// things downstream depend on that, including the shape-answering local
+	// provider, which finds the items by taking the last JSON array in the
+	// message. Putting steering last silently changed what "the items" were
+	// and made a MapReduce return nothing. The ordering is a real trade-off
+	// and this is the side of it that does not break the format everything
+	// else already agreed on.
 	stableSystemPrompt := strengthenSystemPrompt(systemPrompt, responseFormat)
 
 	req := llm.CompletionRequest{
 		Model:          model,
-		SystemPrompt:   strengthenSystemPrompt(effectiveSystemPrompt, responseFormat),
-		UserPrompt:     userPrompt,
+		SystemPrompt:   stableSystemPrompt,
+		UserPrompt:     applySteering(userPrompt, opts.Steering),
 		Temperature:    float64(temperature),
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,
@@ -271,6 +287,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	}
 
 	usage := resp.Usage
+	noteCacheReads(req.PromptCacheKey, usage)
 	cost := pricing.CalculateCost(&usage, actualModel, actualProvider)
 	metadata := &types.ResultMetadata{
 		RequestID:     requestID,
@@ -513,12 +530,17 @@ func waitForRetry(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-func applySteering(systemPrompt, steering string) string {
+// applySteering attaches the caller's per-call instructions to the volatile
+// segment -- the user message -- and returns it unchanged when there are none.
+//
+// It used to attach them to the system prompt, which is the segment providers
+// cache. See CA-002 and the comment at the call site.
+func applySteering(userPrompt, steering string) string {
 	steering = strings.TrimSpace(steering)
 	if steering == "" {
-		return systemPrompt
+		return userPrompt
 	}
-	return strings.TrimSpace(systemPrompt + "\n\nAdditional instructions:\n" + steering)
+	return strings.TrimSpace("Additional instructions:\n" + steering + "\n\n" + userPrompt)
 }
 
 // resolveResponseFormat decides whether to ask the provider for structured
@@ -622,4 +644,75 @@ func operationContext(caller context.Context, timeout time.Duration) (context.Co
 		timeout = config.GetTimeout()
 	}
 	return context.WithTimeout(caller, timeout)
+}
+
+// CA-006's diagnostic half.
+//
+// A prompt cache that is doing nothing looks exactly like one that is working:
+// the calls succeed, the answers are right, and the only difference is the
+// bill. The failure is usually silent and structural -- a prefix under the
+// provider's minimum cacheable length, or a stable segment that is not
+// actually stable -- so nothing errors and nobody finds out until somebody
+// reads an invoice.
+//
+// So: count how many times each cache key has been sent, and say something
+// once when a key that has been sent several times has never had a single
+// cached token reported back.
+const cacheReadWarnAfter = 3
+
+// cacheReadTrackerCap bounds the map. This is a diagnostic, and a diagnostic
+// that grows without limit in a long-running process is a worse bug than the
+// one it reports. At the cap the table is dropped wholesale rather than
+// evicted cleverly: losing the counts means at worst a warning arrives later
+// than it could have.
+const cacheReadTrackerCap = 512
+
+var (
+	cacheReadMu     sync.Mutex
+	cacheReadCounts = map[string]int{}
+	cacheReadWarned = map[string]bool{}
+)
+
+func noteCacheReads(cacheKey string, usage types.TokenUsage) {
+	if cacheKey == "" {
+		return
+	}
+
+	cacheReadMu.Lock()
+	defer cacheReadMu.Unlock()
+
+	if len(cacheReadCounts) >= cacheReadTrackerCap {
+		cacheReadCounts = map[string]int{}
+		cacheReadWarned = map[string]bool{}
+	}
+
+	if usage.CachedTokens > 0 {
+		// It is working. Forget the key rather than keep counting it.
+		delete(cacheReadCounts, cacheKey)
+		delete(cacheReadWarned, cacheKey)
+		return
+	}
+
+	cacheReadCounts[cacheKey]++
+	if cacheReadCounts[cacheKey] < cacheReadWarnAfter || cacheReadWarned[cacheKey] {
+		return
+	}
+	cacheReadWarned[cacheKey] = true
+
+	// The key, not the prompt: the prompt is built from the caller's data and
+	// this is a log line.
+	logger.GetLogger().Warn(
+		"prompt cache is reporting no cached tokens for a prefix that keeps repeating",
+		"cacheKey", cacheKey,
+		"calls", cacheReadCounts[cacheKey],
+		"likelyCause", "the stable prefix may be below the provider's minimum cacheable length, or something per-call is still inside it")
+}
+
+// resetCacheReadTracking exists for tests, which would otherwise leak counts
+// into each other and produce a warning whose cause is another test.
+func resetCacheReadTracking() {
+	cacheReadMu.Lock()
+	defer cacheReadMu.Unlock()
+	cacheReadCounts = map[string]int{}
+	cacheReadWarned = map[string]bool{}
 }

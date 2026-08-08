@@ -109,6 +109,17 @@ type Meta struct {
 	Usage TokenUsage
 	Cost  CostInfo
 
+	// CacheHitRatio is the share of this request's prompt tokens the provider
+	// reported serving from its own prefix cache: CachedTokens over
+	// PromptTokens, measured from what the provider said, never estimated.
+	//
+	// Zero means the provider reported no cached tokens -- which is also what
+	// a provider that reports nothing at all produces, so a persistent zero on
+	// repeated identical prefixes is the signal that caching is silently doing
+	// nothing rather than proof that it is. That is the case CA-006 asks to be
+	// diagnosed rather than left to be discovered on a bill.
+	CacheHitRatio float64
+
 	// Attempts is every provider call this answer took, including retries and
 	// repairs. Repairs counts the subset that were repairs -- a distinction
 	// that matters because they are different failures with different fixes.

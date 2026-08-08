@@ -82,6 +82,137 @@ func TestValidate(t *testing.T) {
 	})
 }
 
+// TestValidateDeterministicallyNoProviderCall proves the naming half of
+// OP-206: ValidateDeterministically must never call a provider, not merely
+// happen not to need one for a given input. A caller reading the old
+// Validate name could not tell whether it was about to make a network call;
+// this asserts the call count, not just the result, so a future change that
+// silently sends a fully-decidable rule set to a model would fail this test
+// even if the model happened to agree with the deterministic answer.
+func TestValidateDeterministicallyNoProviderCall(t *testing.T) {
+	calls := 0
+	setLLMCaller(func(ctx context.Context, system, user string, opts types.OpOptions) (string, error) {
+		calls++
+		return mockLLMResponse(ctx, system, user, opts)
+	})
+
+	t.Run("AllRulesDecidable_NoIssues", func(t *testing.T) {
+		calls = 0
+		person := Person{Name: "John", Age: 30}
+		opts := NewValidateOptions().WithFieldRules(map[string]string{"age": "min:18"})
+		result, err := ValidateDeterministically(person, opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 0 {
+			t.Fatalf("expected 0 provider calls, got %d", calls)
+		}
+		if result.Verdict != types.VerdictPass {
+			t.Errorf("expected VerdictPass, got %v", result.Verdict)
+		}
+		if len(result.Issues) != 0 {
+			t.Errorf("expected no issues, got %v", result.Issues)
+		}
+	})
+
+	t.Run("AllRulesDecidable_WithIssue", func(t *testing.T) {
+		calls = 0
+		person := Person{Name: "Jane", Age: 10}
+		opts := NewValidateOptions().WithFieldRules(map[string]string{"age": "min:18"})
+		result, err := ValidateDeterministically(person, opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 0 {
+			t.Fatalf("expected 0 provider calls, got %d", calls)
+		}
+		if result.Verdict != types.VerdictFail {
+			t.Errorf("expected VerdictFail, got %v", result.Verdict)
+		}
+		if len(result.Issues) != 1 {
+			t.Fatalf("expected 1 issue, got %d", len(result.Issues))
+		}
+		if result.Issues[0].Subject != "age" {
+			t.Errorf("expected issue subject 'age', got %q", result.Issues[0].Subject)
+		}
+	})
+
+	t.Run("RejectsFreeTextRules", func(t *testing.T) {
+		calls = 0
+		person := Person{Name: "Jane", Age: 30}
+		opts := NewValidateOptions().WithRules("must be a reasonable person")
+		_, err := ValidateDeterministically(person, opts)
+		if err == nil {
+			t.Fatal("expected an error when Rules requires model judgment")
+		}
+		if calls != 0 {
+			t.Fatalf("expected 0 provider calls even on rejection, got %d", calls)
+		}
+	})
+
+	t.Run("RejectsUndecidableFieldRule", func(t *testing.T) {
+		calls = 0
+		person := Person{Name: "Jane", Age: 30}
+		opts := NewValidateOptions().WithFieldRules(map[string]string{"name": "sounds professional"})
+		_, err := ValidateDeterministically(person, opts)
+		if err == nil {
+			t.Fatal("expected an error for a field rule Go cannot decide")
+		}
+		if calls != 0 {
+			t.Fatalf("expected 0 provider calls even on rejection, got %d", calls)
+		}
+	})
+}
+
+// TestValidateHybridMatchesLegacyValidate proves the collapse is
+// behavior-preserving: for the same response, ValidateHybrid's Verdict and
+// Issues describe the same finding the deprecated Validate's Valid and
+// Errors did, just in the shared shape.
+func TestValidateHybridMatchesLegacyValidate(t *testing.T) {
+	setLLMCaller(func(ctx context.Context, system, user string, opts types.OpOptions) (string, error) {
+		return `{
+			"valid": false,
+			"errors": [{"field": "age", "severity": "error", "message": "Age is outside valid range", "suggestion": "Set age between 18 and 100"}],
+			"warnings": [],
+			"info": [],
+			"confidence": 0.9,
+			"summary": "Age validation failed"
+		}`, nil
+	})
+
+	person := Person{Name: "Jane", Age: 150}
+	opts := NewValidateOptions().WithRules("age must be reasonable")
+
+	legacy, err := Validate(person, opts)
+	if err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+
+	hybrid, err := ValidateHybrid(person, opts)
+	if err != nil {
+		t.Fatalf("ValidateHybrid failed: %v", err)
+	}
+
+	if legacy.Valid {
+		t.Fatal("expected legacy Valid=false")
+	}
+	if hybrid.Verdict != types.VerdictFail {
+		t.Errorf("expected VerdictFail, got %v", hybrid.Verdict)
+	}
+	if len(hybrid.Issues) != len(legacy.Errors) {
+		t.Fatalf("expected %d issues, got %d", len(legacy.Errors), len(hybrid.Issues))
+	}
+	if hybrid.Issues[0].Subject != legacy.Errors[0].Field {
+		t.Errorf("expected subject %q, got %q", legacy.Errors[0].Field, hybrid.Issues[0].Subject)
+	}
+	if hybrid.Issues[0].Message != legacy.Errors[0].Message {
+		t.Errorf("expected message %q, got %q", legacy.Errors[0].Message, hybrid.Issues[0].Message)
+	}
+	if hybrid.ModelConfidence != legacy.ModelConfidence {
+		t.Errorf("expected ModelConfidence %v, got %v", legacy.ModelConfidence, hybrid.ModelConfidence)
+	}
+}
+
 func TestFormat(t *testing.T) {
 	setupMockClient()
 

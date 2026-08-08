@@ -1030,7 +1030,7 @@ tests.
   path asserted by counting calls; a model saying "valid" failing to overrule the email
   check; the no-values-in-messages rule; and a rule naming a field the data lacks being an
   error rather than a pass.
-- [ ] **OP-206** — Collapse `Validate` / `Verify` / `Audit` / `Critique` / `Score` onto one
+- [x] **OP-206** — Collapse `Validate` / `Verify` / `Audit` / `Critique` / `Score` onto one
   result shape. Five vocabularies for one operation shape (verdict + issues + summary) with
   different field names is the verb-explosion problem in its clearest form. Closes **A-08**.
   Coordinate with **PS-002**.
@@ -1041,6 +1041,35 @@ tests.
   model-assisted review must not be spelled the same as a deterministic check. `Validate`
   becomes `ValidateDeterministically` and `ValidateHybrid`; `Verify`, `Audit`, and
   `Critique` become model-assisted review and say so in the name.
+  **Done for four of the five, with a ruling on the fifth.**
+  `types.JudgmentResult[T]` carries subject, verdict, issues, evidence, and summary, with the
+  model's confidence and other claims in their own compartment — the point of the shape is
+  that a deterministic verdict and a model's self-score cannot sit next to each other looking
+  like the same kind of thing. `JudgmentIssue` maps Validate's four severity levels, Audit's
+  0.0-1.0 float, and Critique's three-level spelling onto one set of levels, decided in Go
+  rather than left for a model to spell three ways.
+  The renames the Revised line requires: `Validate` splits into `ValidateDeterministically`
+  (Go-only, and it *errors* rather than quietly consulting a model when a rule is not
+  decidable) and `ValidateHybrid`; `Verify`, `Audit`, and `Critique` become `VerifyWithModel`,
+  `AuditWithModel`, `CritiqueWithModel`. Every old name still works and is deprecated pointing
+  at its replacement. Each operation's original body was extracted unchanged into an
+  unexported core that both names call, so the old and new spellings cannot drift apart.
+  Evidence: each ported operation is asserted to return the *same* verdict and issues as its
+  deprecated twin for the same scripted response, which is what makes this a collapse rather
+  than a rewrite; `TestValidateDeterministicallyNoProviderCall` asserts a call **count** of
+  zero across four paths, including the rejection paths, because "it returned a result" does
+  not prove no network request happened.
+  **`Score` is deliberately not folded in, and this is the ruling.** Its output is a rating
+  with a per-criterion breakdown, not a verdict with issues. Forcing it into the judgment
+  shape would either drop the number — the entire point of the operation — or invent a
+  verdict from a threshold nobody chose. Note also that the Revised line's renaming list names
+  `Verify`, `Audit`, and `Critique` and does not name `Score`.
+  **Related defect, filed not fixed:** every field on `ScoreResult` is a model claim — the
+  value, the normalized value, the breakdown, the strengths — and none of them is named
+  `Model*`. That is the same naming rule this task enforced elsewhere, unenforced there.
+  **Also not done:** `JudgmentResult` is a bespoke shape rather than a `Result[T]` with a
+  `Meta`, so these four operations report no runtime facts. Wiring that in needs **A-001**'s
+  descriptor and is a larger change than this one.
 
 ## Structured data
 
@@ -1769,14 +1798,52 @@ tests.
   (`analysis.go:95`) produce different prompt bytes on every call — defeating any prefix cache
   and making runs irreproducible. Addresses **Gap-04**.
   *Verify:* **TI-005** passes.
-- [ ] **CA-002** — Split `Prompt` into `Stable` and `Volatile` segments; move steering and all
+- [x] **CA-002** — Split `Prompt` into `Stable` and `Volatile` segments; move steering and all
   option-derived clauses out of the system prompt and into the user message. `applySteering`
   currently appends per-call text to the system block (`llm_helper.go:291`), invalidating the
   prefix on every call.
   *Verify:* two calls differing only in steering share a byte-identical stable prefix.
-- [ ] **CA-003** — Provider-specific cache wiring: `cache_control` breakpoints on the last
+  **Done.** Steering — and the option-derived clauses the text operations route through it —
+  now go in the user message; the system prompt is the stable segment and holds only what the
+  library wrote. `TestSteeringDoesNotMoveTheCacheablePrefix` is the Verify line: two calls
+  differing only in steering send a byte-identical system prompt and the same
+  `PromptCacheKey`, while their user prompts differ, so the test cannot pass by the steering
+  never arriving at all.
+  **A second defect fell out of it.** Response format was inferred from the system prompt
+  *with steering already appended*, so a caller whose steering mentioned JSON silently
+  switched their text operation into JSON mode. That is the same data-controls-the-control-path
+  defect `resolveResponseFormat`'s own comment describes for the user prompt, one argument
+  over. The inference now reads the library's own words only.
+  `TestSteeringReachesTheSystemPromptDeliberately` pinned the old behaviour and has been
+  replaced by `TestSteeringNoLongerSetsTheResponseFormat`. That is a deliberate reversal of a
+  recorded property, not an accident: "deliberate" in the old test meant known, not chosen,
+  and a caller who needs a format has `ResponseFormat`, which is exact.
+  **Placement, and the trade-off:** steering goes *before* the caller's content, not after.
+  Instruction-after-data resists injection better in the abstract, but every prompt this
+  library writes ends with the data, and things downstream depend on that — the shape-
+  answering local provider finds the items by taking the last JSON array in the message.
+  Putting steering last made a MapReduce silently return nothing. The comment at the call site
+  records the trade-off rather than pretending there wasn't one.
+  **Golden prompts moved**, deliberately and for every operation with steering or
+  option-derived clauses. That is a behaviour change with no Go API change to show for it,
+  which is exactly what the golden snapshot exists to make visible.
+- [x] **CA-003** — Provider-specific cache wiring: `cache_control` breakpoints on the last
   stable block for Anthropic (max 4), byte-identical prefixes plus `prompt_cache_key` for
   OpenAI. Depends on **P-009**, **P-016**.
+  **Done, as the sum of its three parts, and only now that the third landed.** Anthropic gets
+  one `ephemeral` `cache_control` breakpoint on the last stable block — the system block when
+  present, otherwise the user block — one of the four permitted (**P-016**). OpenAI gets
+  `prompt_cache_key`, covering operation and prompt version, schema hash, resolved model,
+  mode, and response format (**P-009**). And the prefix is now actually byte-identical across
+  calls that differ only in steering (**CA-002**), which is what makes the other two worth
+  sending: a correct cache key attached to a prefix that changes every call is a precise
+  identifier for something that is never reused.
+  Evidence: `internal/llm/provider_cache_test.go` for both providers' wire formats, and
+  `TestSteeringDoesNotMoveTheCacheablePrefix` for the prefix stability the wiring depends on.
+  **Not verified here:** that any of it produces a measured cache hit against a live provider.
+  That is **CA-004**, which is `[LIVE]` and blocked on **B-01** — nothing in this task can be
+  confirmed by a test that never leaves the machine, and the honest statement is that the
+  requests are now shaped correctly, not that caching is working.
 - [ ] **CA-004** — Consolidate per-operation invariant content (schema, exemplars, rules) into
   the stable zone so it crosses the minimum cacheable prefix. Below the floor — 1024 tokens on
   OpenAI, 512–4096 on Anthropic depending on model — caching silently does nothing, and
@@ -1786,15 +1853,85 @@ tests.
 - [ ] **CA-005** — Fan-out ordering primitive: send one request, await first token, then
   release the rest. A cache entry is only readable after the first response begins streaming,
   so a naive parallel fan-out has every worker pay a full write.
-- [ ] **CA-006** — Surface `Meta.CacheHitRatio` and emit a diagnostic when repeated identical
+- [x] **CA-006** — Surface `Meta.CacheHitRatio` and emit a diagnostic when repeated identical
   prefixes report zero cache reads.
+  **Done, both halves.** `Meta.CacheHitRatio` is `CachedTokens / PromptTokens` over every
+  attempt in the request, measured from what the provider reported and never estimated —
+  `CachedTokens` was already plumbed from the Responses API through `envelopeFrom`, so nothing
+  had to be invented to compute it. A provider reporting no prompt tokens gives zero rather
+  than a division by zero, and the field's comment says plainly that zero is also what a
+  provider that reports nothing produces, so the number cannot be read as proof caching works.
+  The diagnostic is the half that matters: a prompt cache doing nothing looks exactly like one
+  that is working — the calls succeed, the answers are right, and the only difference is the
+  bill. `noteCacheReads` counts calls per cache key and warns once when a key has repeated
+  three times without a single cached token, naming the likely cause (a prefix below the
+  provider's minimum cacheable length, or something per-call still inside the stable segment).
+  It logs the key, never the prompt, because the prompt is built from the caller's data.
+  The tracker is bounded at 512 keys and drops the table wholesale at the cap: a diagnostic
+  that grows without limit in a long-running process is a worse bug than the one it reports.
+  Evidence: `internal/ops/cachereads_test.go` — the ratio across four cached/uncached splits,
+  across retries, and undefined-not-zero when nothing was reported; the diagnostic fires at
+  the threshold and not before, fires once rather than per call, stops entirely once a cached
+  read appears, ignores calls with no cache key, stays under its cap when given three times
+  that many keys, and survives eight concurrent writers.
 
 ## Streaming and long output
 
-- [ ] **ST-001** — Add streaming to the `Provider` interface and implement it for the
+- [x] **ST-001** — Add streaming to the `Provider` interface and implement it for the
   Responses API. Closes **Gap-01**.
-- [ ] **ST-002** — Expose streaming on text operations, with the non-streaming path
+  **Done as a capability interface, not a required method**, and the reason is concrete: a new
+  method on `Provider` breaks every implementation in this repository — the test double, the
+  cassette player and recorder, every middleware wrapper, every mock — and a library that
+  breaks its own test-support package to add an optional feature has made the feature
+  expensive for everyone who did not want it. `llm.StreamingProvider` embeds `Provider` and
+  adds `CompleteStream`; the call site type-asserts, and a provider that cannot stream gets
+  `KindUnsupportedCapability` rather than a buffered call dressed up as a stream.
+  `Complete` and `CompleteStream` now decode into one shared type and pass through one shared
+  classification function, so the buffered and streamed paths cannot disagree about what a
+  failure was — asserted directly: the same 429 classifies identically both ways.
+  A stream that dies partway is an error, never a `Done` chunk assembled from partial text. A
+  connection that closes with no terminal event gets `ErrStreamIncomplete`.
+  Evidence: 11 cases in `internal/llm/provider_stream_test.go`, driven by an `httptest.Server`
+  emitting real SSE frames rather than a hand-mocked reader, because the framing is where this
+  goes wrong. Includes: streamed content equals the buffered content for the same response;
+  the streamed wire request differs from the buffered one only by `"stream":true`; breaking
+  the loop makes the *server* observe the disconnect; malformed SSE is an error rather than a
+  skipped frame.
+  **Not done:** only the OpenAI Responses API streams. Anthropic and the OpenAI-compatible and
+  local providers correctly report unsupported. `ErrStreamIncomplete` classifies as
+  `KindUnknown` — there is no kind for it, so it fails closed but without a precise name.
+- [x] **ST-002** — Expose streaming on text operations, with the non-streaming path
   implemented in terms of it. Addresses **Gap-01**.
+  **Done for two of the three modes; the third is deliberately absent.** `ops.TextStream` is
+  the caller-facing handle behind `StreamSummarize`, `StreamRewrite`, `StreamTranslate`, and
+  `StreamExpand`. Raw text and provider events are the two modes that exist.
+  **Validated items is not implemented, on purpose.** Nothing in this library streams a
+  collection today, and building item-level streaming by decoding a partial JSON prefix off a
+  token stream is precisely the fail-open the Revised line names: a token stream is not a
+  partial typed result. It is recorded as a gap in the package doc rather than shipped as a
+  half-measure.
+  The Revised line's four iterator requirements all hold and are each tested rather than
+  asserted: the buffer is bounded at 32 and a fast producer with no consumer stalls at the
+  buffer size instead of racing ahead; breaking out of the range cancels the remaining work;
+  `Detach` is the explicit opt-out and keeps the producer running; and the ordering — completion
+  order — is documented on the type.
+  **The non-streaming path is not implemented in terms of the streaming one**, and the honest
+  reason is in the code: `streamLLM` builds its request through the *same* helpers `CallLLM`
+  uses, so the two cannot silently diverge, but rewiring `CallLLM` itself was out of the
+  agent's file scope. A test asserts the two entry points agree for the same response instead.
+  `streamLLM` also does not retry, deliberately: a stream that fails partway has already shown
+  the caller text, so re-sending would duplicate or silently replace what they saw. That is a
+  different operation from retrying a buffered call, and it is documented rather than
+  inherited by accident.
+  Evidence: 12 cases in `internal/ops/streaming_test.go`.
+  **A real defect found doing this:** `ClassifyCompletion` matched `length`, `max_tokens`,
+  `incomplete`, and `truncated` — but the Responses API's actual incomplete reason is
+  `max_output_tokens`, which was in none of them. So against the one provider this library
+  targets first, **ST-003**'s truncation handling never fired and a cut-off answer classified
+  as `KindUnknown`. The existing provider test asserted the raw `FinishReason` string and never
+  fed it through the classifier, which is how a list of four spellings missed the one that
+  ships. Fixed, with `TestEveryTruncationSpellingClassifiesAsTruncated` covering all of them
+  plus case folding, and a companion asserting a complete answer is never called truncated.
   **Revised (TRU-13, TRU-14):** three streaming modes, kept apart because they promise
   different things: raw text, provider events, and *validated items* — a token stream is not
   a partial typed result, and presenting one as the other is the same fail-open the whole
@@ -1897,7 +2034,7 @@ results, `Escalate` needs a failure signal that is not "the model said something
   expensive one was not also paid for); four terminal kinds each refuse to escalate and keep
   their classification on the way out; both failures appear in the error when neither route
   works; a cancelled context runs nothing.
-- [ ] **CF-002** — `flux.Vote(op, n, rule)` — and the first honest confidence number in the
+- [x] **CF-002** — `flux.Vote(op, n, rule)` — and the first honest confidence number in the
   library, derived from sample agreement. Closes **CF-03**.
   **Revised (TRU-27):** agreement is a policy, not a proof — correlated models share
   hallucinations, so three samples agreeing on an invented figure is three samples wrong.
@@ -1920,9 +2057,23 @@ results, `Escalate` needs a failure signal that is not "the model said something
   cancellation is honoured between attempts.
 - [x] **CF-004** — `flux.MapReduce(op, chunk, merge)` with bounded concurrency. Closes
   **CF-04**; unblocks **OP-108**. **Done `debaf6e`.**
-- [ ] **CF-005** — `flux.Checkpoint(store, runID)`. Closes **CF-06**, and replaces the
+- [x] **CF-005** — `flux.Checkpoint(store, runID)`. Closes **CF-06**, and replaces the
   declared-but-unimplemented `PipelineOptions.SaveProgress`.
-- [ ] **CF-006** — `flux.Approve(gate)`. Closes **CF-07**; required before **F-025**'s shell
+  **Done.** `Checkpoint(ctx, store, runID, step, input, produce)` runs a step once and stores
+  its result, so a resumed run does not repeat work whose side effect already happened —
+  asserted by call count, not by comparing return values, because a replayed side effect
+  returns the right value too. `CheckpointStore` is a two-method interface the caller
+  implements; `MemoryCheckpointStore` covers tests and single-process runs. No database, no
+  file format, no new dependency.
+  The case that matters: a resume against *changed* input is detected and recomputed rather
+  than silently served from the old record. Identity covers the run, the step, and a hash of
+  the input.
+  **`PipelineOptions.SaveProgress` did not need removing** — it was already deleted under
+  **F-023**, and `dead_options_test.go` asserts its absence at compile time. The task's premise
+  was stale; nothing was wired to a dead option.
+  **Limitation:** inputs are fingerprinted with `encoding/json`, so an input that does not
+  marshal fails loudly rather than checkpointing something it cannot identify.
+- [x] **CF-006** — `flux.Approve(gate)`. Closes **CF-07**; required before **F-025**'s shell
   tool may be enabled.
   **Revised (TRU-26):** approval is one use of a more general terminal outcome. Automated
   recovery stops — with `ErrReviewRequired` and a `ReviewPacket{Candidate, InputRefs,
@@ -1931,6 +2082,21 @@ results, `Escalate` needs a failure signal that is not "the model said something
   or policy requires a human. That is a successful safety outcome, not a failure, and it is
   the alternative to looping the model until it says something acceptable. The library
   supplies the structure and the callback; it does not build an approval workflow.
+  **Done.** `types.ReviewPacket[T]{Candidate, InputRefs, Evidence, FailedChecks, Attempts,
+  SuggestedAction}` and `ReviewRequiredError[T]`, which reaches the existing
+  `ErrReviewRequired` through `errors.Is` — no second sentinel was added. `Approve` runs a step
+  and puts the result to a caller-supplied gate.
+  `InputRefs`, not inputs: a review packet that embeds the caller's records leaks them into
+  whatever handles the review, which is likely a queue, a log, or a human's screen. A test
+  asserts the packet's `Error()` prints neither the candidate nor the refs.
+  **A judgement call to flag:** `Approve` also converts a step's own terminal failures —
+  `KindRepairExhausted`, `KindInvariantViolation`, `KindEvidenceViolation`,
+  `KindSchemaViolation` — into the same review outcome, so an exhausted repair loop composed
+  under `Approve` becomes "this needs a human" rather than a bare error. That is an
+  extrapolation of the Revised line's "approval is one use of a more general terminal
+  outcome"; it is defensible and it is broader than a literal reading of "wraps a gate".
+  Everything else — configuration, auth, timeout, cancellation — passes through untouched.
+  No workflow, queue, or UI was built, per the Revised line.
 - [x] **CF-007** — `flux.Fallback(a, b)`.
   **Done, as one line over Escalate** rather than a second implementation. Two functions that
   each decide whether an error is worth another route eventually disagree, and the

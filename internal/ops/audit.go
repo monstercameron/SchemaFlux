@@ -143,7 +143,77 @@ type AuditResult[T any] struct {
 //	    Deep: true,
 //	})
 //	fmt.Printf("Total findings: %d, Critical: %v\n", result.Summary.TotalFindings, result.Summary.Critical)
+//
+// Deprecated: use AuditWithModel, which returns the shared
+// types.JudgmentResult and whose name says what Audit's did not -- that
+// this inspection is model-assisted, not a deterministic check. See OP-206
+// (ARC-22, TRU-30).
 func Audit[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
+	return auditCore(data, opts...)
+}
+
+// AuditWithModel performs the same model-assisted inspection as the
+// deprecated Audit -- policy violations, anomalies, and issues across the
+// requested categories -- and reports it as a types.JudgmentResult: Verdict
+// reflects AuditSummary.PassesAudit, and each AuditFinding becomes a
+// JudgmentIssue with its 0.0-1.0 severity float mapped onto the same
+// critical/error/warning/info levels AuditSummary itself uses, so the two
+// views of one audit cannot disagree about which findings are critical.
+//
+// Behavior -- which findings are produced, how they are filtered by
+// Threshold -- is identical to the deprecated Audit; only the result shape
+// differs.
+func AuditWithModel[T any](data T, opts ...AuditOptions) (types.JudgmentResult[T], error) {
+	ar, err := auditCore(data, opts...)
+	if err != nil {
+		return types.JudgmentResult[T]{}, err
+	}
+	return auditResultToJudgment(ar), nil
+}
+
+// auditResultToJudgment translates AuditResult[T] into the shared shape.
+func auditResultToJudgment[T any](ar AuditResult[T]) types.JudgmentResult[T] {
+	verdict := types.VerdictPass
+	if !ar.Summary.PassesAudit {
+		verdict = types.VerdictFail
+	}
+
+	issues := make([]types.JudgmentIssue, 0, len(ar.Findings))
+	for _, f := range ar.Findings {
+		issues = append(issues, types.JudgmentIssue{
+			Subject:    f.Field,
+			Category:   f.Category,
+			Severity:   severityFromFraction(f.Severity),
+			Message:    f.Issue,
+			Suggestion: f.Recommendation,
+			Evidence:   evidenceSlice(f.Evidence),
+		})
+	}
+
+	summary := fmt.Sprintf("%d finding(s) across %d categor(ies), critical=%v",
+		ar.Summary.TotalFindings, len(ar.Summary.ByCategory), ar.Summary.Critical)
+
+	return types.JudgmentResult[T]{
+		Subject: ar.Original,
+		Verdict: verdict,
+		Issues:  issues,
+		Summary: summary,
+		ModelClaims: map[string]any{
+			"by_severity": ar.Summary.BySeverity,
+			"by_category": ar.Summary.ByCategory,
+			"critical":    ar.Summary.Critical,
+		},
+		// Audit's findings carry no result-level model confidence -- each
+		// AuditFinding is a severity judgement, not a scored claim -- so
+		// ModelConfidence is left at its zero value rather than invented
+		// from the findings.
+	}
+}
+
+// auditCore is Audit's original implementation, unchanged. The deprecated
+// Audit and the new AuditWithModel both call this so neither can silently
+// drift from the other.
+func auditCore[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
 	log := logger.GetLogger()
 	log.Debug("Starting audit operation")
 

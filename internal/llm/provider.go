@@ -1,12 +1,14 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"os"
 	"sort"
@@ -32,6 +34,53 @@ type Provider interface {
 
 	// RetryPolicy returns provider-specific retry settings.
 	RetryPolicy() (maxRetries int, backoff time.Duration)
+}
+
+// StreamChunk is one event from a streaming completion.
+type StreamChunk struct {
+	// Delta is the incremental text this event adds. Empty on the final
+	// event and on any event that carries no text of its own.
+	Delta string
+
+	// Done marks the final event of a successful stream. Response is
+	// populated only here -- a chunk is either an incremental Delta or the
+	// terminal Done carrying the whole answer, never both, and a stream
+	// that ends any other way (see StreamingProvider) yields an error
+	// instead of a Done chunk, never a Done chunk built from whatever text
+	// happened to arrive before it broke.
+	Done bool
+
+	// Response is the accumulated completion. Its Content is the full
+	// answer, not just the last Delta, so a caller that only wants the
+	// whole text never has to concatenate deltas by hand.
+	Response CompletionResponse
+}
+
+// StreamingProvider is implemented by a Provider that can stream a
+// completion.
+//
+// It is deliberately not a method on Provider itself. Adding a required
+// method there breaks every existing implementation of Provider in this
+// repository -- schemafluxtest's Provider and Player/Recorder, mw's
+// wrappers, and every mock a test constructs -- none of which this change
+// may touch. A caller that wants to stream type-asserts a Provider for this
+// interface; a provider that does not implement it is a provider that
+// cannot stream, and the caller is told so via KindUnsupportedCapability
+// rather than being handed a buffered Complete dressed up as a stream of
+// one chunk, which would hide the difference between "this provider streams"
+// and "this provider doesn't" behind an identical-looking success.
+type StreamingProvider interface {
+	Provider
+
+	// CompleteStream streams a completion.
+	//
+	// A stream that fails partway has delivered a partial answer, and a
+	// partial answer is a failure, not a short success: the sequence never
+	// yields a Done chunk built from an incomplete response, and any error
+	// -- before the first byte, mid-stream, or a connection that closes
+	// with no terminal event at all -- is reported as an error, not folded
+	// into whatever text arrived first.
+	CompleteStream(ctx context.Context, req CompletionRequest) iter.Seq2[StreamChunk, error]
 }
 
 // CompletionRequest represents a unified request format
@@ -141,22 +190,125 @@ func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 	}, nil
 }
 
-// Complete sends a completion request to OpenAI using the Responses API
-func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	// Use the new Responses API (POST /v1/responses)
-	// Since go-openai v1.20.4 doesn't support this endpoint, we implement it manually.
+// responsesAPIResponse is the shape of a POST /v1/responses payload -- the
+// body of a buffered call, and the payload the "response.completed" /
+// "response.incomplete" SSE events carry in a streamed one. Both paths
+// decode into this one type instead of two independently-maintained shapes,
+// so a field the streaming event forgets to mirror is a compile error
+// instead of a silent gap between "streamed" and "buffered" behaviour.
+type responsesAPIResponse struct {
+	ID               string `json:"id"`
+	Status           string `json:"status"`
+	IncompleteReason struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details"`
+	Output []struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
+	Usage struct {
+		InputTokens        int `json:"input_tokens"`
+		OutputTokens       int `json:"output_tokens"`
+		TotalTokens        int `json:"total_tokens"`
+		InputTokensDetails struct {
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens"`
+		} `json:"input_tokens_details"`
+		OutputTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
+	} `json:"usage"`
+	Model string `json:"model"`
+}
 
-	url := "https://api.openai.com/v1/responses"
-	if provider.config.BaseURL != "" {
-		url = strings.TrimRight(provider.config.BaseURL, "/") + "/responses"
+// content extracts the answer only. A reasoning model returns `reasoning`
+// items alongside the `message` item; concatenating every item prefixes the
+// answer with reasoning prose, which corrupts a JSON payload.
+func (r *responsesAPIResponse) content() string {
+	var builder strings.Builder
+	for _, output := range r.Output {
+		if output.Type != "" && output.Type != "message" {
+			continue
+		}
+		for _, item := range output.Content {
+			// Older payloads omit the content type; treat that as text.
+			if item.Type != "" && item.Type != "output_text" {
+				continue
+			}
+			builder.WriteString(item.Text)
+		}
+	}
+	return builder.String()
+}
+
+// finishReason derives the finish reason the same way for a buffered
+// response and a streamed one's terminal event -- a truncated answer must
+// be distinguishable from a complete one in both.
+func (r *responsesAPIResponse) finishReason() string {
+	if r.Status != "incomplete" {
+		return "stop"
+	}
+	if r.IncompleteReason.Reason != "" {
+		return r.IncompleteReason.Reason
+	}
+	return "incomplete"
+}
+
+func (r *responsesAPIResponse) toCompletionResponse(providerName string) CompletionResponse {
+	return CompletionResponse{
+		Content:      r.content(),
+		Provider:     providerName,
+		Model:        r.Model,
+		FinishReason: r.finishReason(),
+		Usage: types.TokenUsage{
+			PromptTokens:     r.Usage.InputTokens,
+			CompletionTokens: r.Usage.OutputTokens,
+			TotalTokens:      r.Usage.TotalTokens,
+			CachedTokens:     r.Usage.InputTokensDetails.CachedTokens,
+			CacheWriteTokens: r.Usage.InputTokensDetails.CacheWriteTokens,
+			ReasoningTokens:  r.Usage.OutputTokensDetails.ReasoningTokens,
+		},
+	}
+}
+
+// classifyResponsesResult turns a decoded Responses API payload into either a
+// usable CompletionResponse or the error describing why it is not one.
+//
+// Both Complete and CompleteStream call this for the identical payload
+// shape -- a buffered response body and a streamed one's terminal event --
+// which is what keeps a streamed failure classified the same way as a
+// buffered one for the same cause: there is only one function that decides,
+// not a second opinion that only runs on the streaming path.
+func classifyResponsesResult(r *responsesAPIResponse, providerName string) (CompletionResponse, error) {
+	if len(r.Output) == 0 {
+		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
 	}
 
+	if r.content() == "" {
+		if r.Status == "incomplete" && r.IncompleteReason.Reason != "" {
+			return CompletionResponse{}, fmt.Errorf("OpenAI response incomplete: %s", r.IncompleteReason.Reason)
+		}
+		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
+	}
+
+	return r.toCompletionResponse(providerName), nil
+}
+
+// buildResponsesRequestBody constructs the JSON body shared by the buffered
+// and streamed calls to the Responses API. `stream` adds the one field that
+// turns a normal response into an SSE one; everything else -- schema,
+// reasoning controls, cache key -- is built identically for both, because a
+// caller streaming the exact same request as a buffered call must produce
+// the exact same request on the wire.
+func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest, stream bool) map[string]interface{} {
 	input := req.UserPrompt
 	if req.ResponseFormat == "json" && !strings.Contains(strings.ToLower(input), "json") {
 		input = "Return valid JSON only.\n\n" + input
 	}
 
-	// Construct request body
 	requestBody := map[string]interface{}{
 		"model":        req.Model,
 		"input":        input,
@@ -167,6 +319,9 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		// notes -- through a model: the caller opted into an extraction, not
 		// into retention. Off by default; Store(true) is opt-in.
 		"store": provider.config.Store,
+	}
+	if stream {
+		requestBody["stream"] = true
 	}
 
 	if req.Temperature > 0 && supportsTemperature(req.Model) {
@@ -213,23 +368,45 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 	if len(textConfig) > 0 {
 		requestBody["text"] = textConfig
 	}
+	return requestBody
+}
 
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("failed to marshal request: %w", err)
+// newResponsesHTTPRequest builds the outgoing HTTP request for either call
+// shape, sharing header and URL construction so the two cannot drift.
+func (provider *OpenAIProvider) newResponsesHTTPRequest(ctx context.Context, req CompletionRequest, stream bool) (*http.Request, error) {
+	url := "https://api.openai.com/v1/responses"
+	if provider.config.BaseURL != "" {
+		url = strings.TrimRight(provider.config.BaseURL, "/") + "/responses"
 	}
 
-	// Create HTTP request
+	jsonData, err := json.Marshal(provider.buildResponsesRequestBody(req, stream))
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+provider.config.APIKey)
-
 	if provider.config.OrgID != "" {
 		httpReq.Header.Set("OpenAI-Organization", provider.config.OrgID)
+	}
+	if stream {
+		httpReq.Header.Set("Accept", "text/event-stream")
+	}
+	return httpReq, nil
+}
+
+// Complete sends a completion request to OpenAI using the Responses API
+func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
+	// Use the new Responses API (POST /v1/responses)
+	// Since go-openai v1.20.4 doesn't support this endpoint, we implement it manually.
+	httpReq, err := provider.newResponsesHTTPRequest(ctx, req, false)
+	if err != nil {
+		return CompletionResponse{}, err
 	}
 
 	resp, err := provider.httpClient.Do(httpReq)
@@ -246,91 +423,183 @@ func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequ
 		return CompletionResponse{}, NewAPIError("openai", req.Model, resp.StatusCode, string(bodyBytes))
 	}
 
-	// Parse response
-	var response struct {
-		ID               string `json:"id"`
-		Status           string `json:"status"`
-		IncompleteReason struct {
-			Reason string `json:"reason"`
-		} `json:"incomplete_details"`
-		Output []struct {
-			Type    string `json:"type"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-		Usage struct {
-			InputTokens        int `json:"input_tokens"`
-			OutputTokens       int `json:"output_tokens"`
-			TotalTokens        int `json:"total_tokens"`
-			InputTokensDetails struct {
-				CachedTokens     int `json:"cached_tokens"`
-				CacheWriteTokens int `json:"cache_write_tokens"`
-			} `json:"input_tokens_details"`
-			OutputTokensDetails struct {
-				ReasoningTokens int `json:"reasoning_tokens"`
-			} `json:"output_tokens_details"`
-		} `json:"usage"`
-		Model string `json:"model"`
-	}
-
+	var response responsesAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return CompletionResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if len(response.Output) == 0 {
-		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
-	}
+	return classifyResponsesResult(&response, provider.Name())
+}
 
-	// Extract the answer only. A reasoning model returns `reasoning` items
-	// alongside the `message` item; concatenating every item prefixes the
-	// answer with reasoning prose, which corrupts a JSON payload.
-	var builder strings.Builder
-	for _, output := range response.Output {
-		if output.Type != "" && output.Type != "message" {
-			continue
+// ErrStreamIncomplete reports a stream that ended without either a terminal
+// event or a transport error -- the connection simply stopped. It is not a
+// truncation (that arrives as a normal terminal event carrying
+// finish_reason "length"/"incomplete", classified by ClassifyCompletion
+// exactly like a buffered truncated response) and it is not a decodable
+// provider error either: something between here and the provider dropped
+// the rest of the answer, and the partial text collected so far must never
+// be handed back as if it were the complete one.
+var ErrStreamIncomplete = errors.New("stream ended before a completion event arrived")
+
+// CompleteStream implements StreamingProvider for the Responses API.
+//
+// The returned sequence is pull-based end to end: nothing is read from the
+// socket ahead of the consumer's next iteration of the range loop, because
+// each SSE frame is decoded and handed to `yield` synchronously from inside
+// the same call stack that is blocked reading the socket. A consumer that
+// stops ranging (a `break`) makes the next `yield` call return false, which
+// this stops on immediately -- there is no separate goroutine here to leak
+// and no read-ahead buffer to drain.
+func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionRequest) iter.Seq2[StreamChunk, error] {
+	return func(yield func(StreamChunk, error) bool) {
+		httpReq, err := provider.newResponsesHTTPRequest(ctx, req, true)
+		if err != nil {
+			yield(StreamChunk{}, err)
+			return
 		}
-		for _, item := range output.Content {
-			// Older payloads omit the content type; treat that as text.
-			if item.Type != "" && item.Type != "output_text" {
+
+		resp, err := provider.httpClient.Do(httpReq)
+		if err != nil {
+			yield(StreamChunk{}, fmt.Errorf("OpenAI stream request failed: %w", err))
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			// Classified exactly like Complete's non-200 path -- the status
+			// line arrives before any SSE framing, so a rejected request
+			// looks identical to a caller whether or not they asked to
+			// stream it.
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			if isRateLimited(resp.StatusCode) {
+				yield(StreamChunk{}, rateLimitError("openai", req.Model, resp, string(bodyBytes)))
+				return
+			}
+			yield(StreamChunk{}, NewAPIError("openai", req.Model, resp.StatusCode, string(bodyBytes)))
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		// SSE frames are small individually, but a "response.completed"
+		// event carries the whole answer as one line; the default 64KiB
+		// token limit truncates any answer longer than that silently inside
+		// bufio, which would look like a parse error three layers away. 4MiB
+		// matches the largest answer this library's own tier ceilings can
+		// produce.
+		scanner.Buffer(make([]byte, 64*1024), 4<<20)
+
+		var dataLines []string
+		terminal := false
+
+		// flush decodes one complete SSE event (the data: lines collected
+		// since the last blank line) and dispatches it. It returns false
+		// when the consumer asked to stop (yield returned false) so the
+		// caller can unwind without reading further.
+		flush := func() bool {
+			if len(dataLines) == 0 {
+				return true
+			}
+			payload := strings.Join(dataLines, "\n")
+			dataLines = nil
+			if payload == "[DONE]" {
+				return true
+			}
+
+			var envelope struct {
+				Type     string                `json:"type"`
+				Delta    string                `json:"delta"`
+				Response *responsesAPIResponse `json:"response"`
+				Error    *struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+					Code    any    `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+				// A frame that is not JSON at all is a framing bug, not a
+				// content decision -- report it rather than skip it.
+				terminal = true
+				return yield(StreamChunk{}, fmt.Errorf("openai: could not parse stream event: %w", err))
+			}
+
+			switch envelope.Type {
+			case "response.output_text.delta":
+				if envelope.Delta == "" {
+					return true
+				}
+				return yield(StreamChunk{Delta: envelope.Delta}, nil)
+
+			case "response.completed", "response.incomplete":
+				terminal = true
+				if envelope.Response == nil {
+					return yield(StreamChunk{}, fmt.Errorf("openai: %s carried no response", envelope.Type))
+				}
+				completion, err := classifyResponsesResult(envelope.Response, provider.Name())
+				if err != nil {
+					return yield(StreamChunk{}, err)
+				}
+				return yield(StreamChunk{Done: true, Response: completion}, nil)
+
+			case "response.failed", "error":
+				terminal = true
+				apiErr := NewAPIError("openai", req.Model, 0, payload)
+				if envelope.Error != nil && apiErr.Message == "" {
+					apiErr.Message = truncateMessage(envelope.Error.Message)
+					apiErr.Type = envelope.Error.Type
+					apiErr.Code = scalarString(envelope.Error.Code)
+				}
+				return yield(StreamChunk{}, apiErr)
+
+			default:
+				// Every other event type (response.created,
+				// response.output_item.added, reasoning deltas, ...) carries
+				// nothing this library surfaces yet. Skipping it is not the
+				// same as skipping a delta or a terminal event -- those two
+				// are the only kinds that carry the answer.
+				return true
+			}
+		}
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				if !flush() {
+					return
+				}
+				if terminal {
+					return
+				}
 				continue
 			}
-			builder.WriteString(item.Text)
+			if after, ok := strings.CutPrefix(line, "data:"); ok {
+				dataLines = append(dataLines, strings.TrimPrefix(after, " "))
+			}
+			// Any other field (event:, id:, retry:, or a comment line
+			// starting with ':') is SSE framing this library does not need
+			// -- dispatch reads the event's own "type" from the JSON
+			// payload, not the SSE "event:" line, so the two cannot disagree.
+		}
+
+		if err := scanner.Err(); err != nil {
+			yield(StreamChunk{}, fmt.Errorf("openai stream read failed: %w", err))
+			return
+		}
+
+		// The body ended; flush whatever the final blank-line-less frame
+		// held (a well-formed SSE stream always ends its last event with a
+		// blank line, but this guards a server that does not).
+		if !flush() {
+			return
+		}
+		if !terminal {
+			// The connection closed cleanly with neither a terminal event
+			// nor a transport error. Any deltas already yielded were real,
+			// but there is no Done chunk to hand back -- that is exactly the
+			// "partial answer presented as a short success" this interface
+			// exists to prevent.
+			yield(StreamChunk{}, fmt.Errorf("openai: %w", ErrStreamIncomplete))
 		}
 	}
-	content := builder.String()
-
-	if content == "" {
-		if response.Status == "incomplete" && response.IncompleteReason.Reason != "" {
-			return CompletionResponse{}, fmt.Errorf("OpenAI response incomplete: %s", response.IncompleteReason.Reason)
-		}
-		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
-	}
-
-	// A truncated answer must be distinguishable from a complete one.
-	finishReason := "stop"
-	if response.Status == "incomplete" {
-		finishReason = response.IncompleteReason.Reason
-		if finishReason == "" {
-			finishReason = "incomplete"
-		}
-	}
-
-	return CompletionResponse{
-		Content:      content,
-		Provider:     provider.Name(),
-		Model:        response.Model,
-		FinishReason: finishReason,
-		Usage: types.TokenUsage{
-			PromptTokens:     response.Usage.InputTokens,
-			CompletionTokens: response.Usage.OutputTokens,
-			TotalTokens:      response.Usage.TotalTokens,
-			CachedTokens:     response.Usage.InputTokensDetails.CachedTokens,
-			CacheWriteTokens: response.Usage.InputTokensDetails.CacheWriteTokens,
-			ReasoningTokens:  response.Usage.OutputTokensDetails.ReasoningTokens,
-		},
-	}, nil
 }
 
 // Name returns the provider name
