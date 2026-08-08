@@ -706,6 +706,32 @@ environment.** A variable already exported in the shell keeps its value, so
 `SCHEMAFLUX_API_KEY=… go run ./cmd/app` behaves as expected regardless of what
 the file contains.
 
+## Repository layout
+
+```
+*.go            the public API — package schemaflux
+internal/       implementation; not importable by consumers
+mw/             optional middleware (cache, retry, circuit breaker)
+pricing/        cost calculation and budgets
+telemetry/      logging, metrics, tracing seams
+schemafluxtest/ fakes, recorder, and cassette replay for testing your code
+cmd/            a live smoke command
+examples/       45 runnable examples, plus smarttodo (its own module)
+```
+
+The Go files at the repository root **are** the library. For a Go module, the
+package at the root is what `import "github.com/monstercameron/schemaflux"`
+resolves to, so the public API has to live there — moving it into `pkg/` would
+change the import path to `.../schemaflux/pkg` and break every consumer.
+
+That is worth stating because the widely-copied `pkg/`/`cmd/` layout comes from
+`golang-standards/project-layout`, which is not a Go standard, is not endorsed
+by the Go team, and is aimed at applications rather than libraries. The standard
+library, and most Go libraries, put the package at the root. Four files do the
+job here: `schemaflux.go` (entry points), `fluent.go` (builder re-exports),
+`client.go` (the client), and `catalog.go` (the operation catalogue). Everything
+else is under `internal/`, which the compiler enforces as private.
+
 ## Design Notes
 
 - The root package is the public facade for downstream Go projects.

@@ -32,9 +32,14 @@ PACKAGES = [
     "./telemetry/...",
     "./schemafluxtest/...",
     "./mw/...",
-    "./core/...",
-    "./debug/...",
 ]
+
+# ./core/... and ./debug/... were here and are gone. Both were top-level
+# packages that nothing in the module imported, and core/doc.go even declared
+# itself "Package schemaflux" while the package clause said `core` -- a
+# vestigial copy of the root package's doc comment. They contributed statements
+# to this denominator without any consumer being able to reach them, which is
+# the wrong direction for a coverage number to be wrong in.
 
 # How far coverage may fall before the check fails.
 #
