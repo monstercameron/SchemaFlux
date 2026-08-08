@@ -1,15 +1,16 @@
-package schemaflux_test
+package tests
 
 import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // A-006. `(T, error)` cannot say what an answer cost, how many attempts it
 // took, which contract was delivered, or which checks the library ran.
 func TestExtractResultCarriesTheRecord(t *testing.T) {
-	provider := withScriptedProvider(t, invoiceJSON, nil)
+	provider := testfixtures.WithScriptedProvider(t, invoiceJSON, nil)
 
 	result, err := schemaflux.ExtractResult[invoice]("Invoice INV-4417",
 		schemaflux.NewExtractOptions())
@@ -40,9 +41,9 @@ func TestExtractResultCarriesTheRecord(t *testing.T) {
 	if meta.Elapsed < 0 {
 		t.Errorf("Elapsed = %v", meta.Elapsed)
 	}
-	if len(provider.requests) != meta.Attempts {
+	if len(provider.Requests()) != meta.Attempts {
 		t.Errorf("the envelope reports %d attempts and the provider saw %d",
-			meta.Attempts, len(provider.requests))
+			meta.Attempts, len(provider.Requests()))
 	}
 }
 
@@ -50,23 +51,23 @@ func TestExtractResultCarriesTheRecord(t *testing.T) {
 // that execute differently is how the two drift -- this library has four such
 // pairs already.
 func TestTheTwoFormsSendTheSameRequest(t *testing.T) {
-	plain := withScriptedProvider(t, invoiceJSON, nil)
+	plain := testfixtures.WithScriptedProvider(t, invoiceJSON, nil)
 	if _, err := schemaflux.Extract[invoice]("Invoice INV-4417", schemaflux.NewExtractOptions()); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 
-	detailed := withScriptedProvider(t, invoiceJSON, nil)
+	detailed := testfixtures.WithScriptedProvider(t, invoiceJSON, nil)
 	if _, err := schemaflux.ExtractResult[invoice]("Invoice INV-4417", schemaflux.NewExtractOptions()); err != nil {
 		t.Fatalf("ExtractResult: %v", err)
 	}
 
-	if len(plain.requests) != 1 || len(detailed.requests) != 1 {
-		t.Fatalf("call counts differ: plain %d, detailed %d", len(plain.requests), len(detailed.requests))
+	if len(plain.Requests()) != 1 || len(detailed.Requests()) != 1 {
+		t.Fatalf("call counts differ: plain %d, detailed %d", len(plain.Requests()), len(detailed.Requests()))
 	}
-	if plain.requests[0].SystemPrompt != detailed.requests[0].SystemPrompt {
+	if plain.Requests()[0].SystemPrompt != detailed.Requests()[0].SystemPrompt {
 		t.Error("the two forms send different system prompts")
 	}
-	if plain.requests[0].UserPrompt != detailed.requests[0].UserPrompt {
+	if plain.Requests()[0].UserPrompt != detailed.Requests()[0].UserPrompt {
 		t.Error("the two forms send different user prompts")
 	}
 }
@@ -74,7 +75,7 @@ func TestTheTwoFormsSendTheSameRequest(t *testing.T) {
 // Requested versus delivered is the field worth reading: asking for a strict
 // contract and receiving a structural one is exactly the case to notice.
 func TestTheEnvelopeReportsWhatWasDelivered(t *testing.T) {
-	withScriptedProvider(t, invoiceJSON, nil)
+	testfixtures.WithScriptedProvider(t, invoiceJSON, nil)
 
 	strict, err := schemaflux.ExtractResult[invoice]("Invoice INV-4417",
 		schemaflux.NewExtractOptions().WithMode(schemaflux.Strict))
@@ -94,7 +95,7 @@ func TestTheEnvelopeReportsWhatWasDelivered(t *testing.T) {
 		t.Errorf("Checks = %+v, want the strict checks named", strict.Meta.Checks)
 	}
 
-	withScriptedProvider(t, invoiceJSON, nil)
+	testfixtures.WithScriptedProvider(t, invoiceJSON, nil)
 	transform, err := schemaflux.ExtractResult[invoice]("Invoice INV-4417",
 		schemaflux.NewExtractOptions().WithMode(schemaflux.TransformMode))
 	if err != nil {
@@ -108,7 +109,7 @@ func TestTheEnvelopeReportsWhatWasDelivered(t *testing.T) {
 // A failure still produces an envelope, because a failure is the case where the
 // record matters most.
 func TestAFailureStillCarriesARecord(t *testing.T) {
-	withScriptedProvider(t, "I'm sorry, I can't help with that.", nil)
+	testfixtures.WithScriptedProvider(t, "I'm sorry, I can't help with that.", nil)
 
 	result, err := schemaflux.ExtractResult[invoice]("Invoice INV-4417",
 		schemaflux.NewExtractOptions())
@@ -127,7 +128,7 @@ func TestAFailureStillCarriesARecord(t *testing.T) {
 // cost means the answer, not the last try at it.
 func TestUsageSumsAcrossAttempts(t *testing.T) {
 	// The first body is unusable, so the repair loop tries again.
-	provider := withScriptedProviderReplies(t,
+	provider := testfixtures.WithScriptedProviderReplies(t,
 		"not json at all",
 		invoiceJSON,
 	)
@@ -138,7 +139,7 @@ func TestUsageSumsAcrossAttempts(t *testing.T) {
 		t.Fatalf("ExtractResult: %v", err)
 	}
 
-	if len(provider.requests) < 2 {
+	if len(provider.Requests()) < 2 {
 		t.Skip("the repair loop did not run a second attempt; nothing to sum")
 	}
 	if result.Meta.Attempts < 2 {

@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"os"
@@ -103,7 +103,7 @@ func TestREADMEDocumentsTheBreakingChanges(t *testing.T) {
 
 func readREADME(t *testing.T) string {
 	t.Helper()
-	raw, err := os.ReadFile("README.md")
+	raw, err := os.ReadFile("../README.md")
 	if err != nil {
 		t.Fatalf("reading README.md: %v", err)
 	}

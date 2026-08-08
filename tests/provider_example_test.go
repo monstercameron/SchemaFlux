@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"errors"

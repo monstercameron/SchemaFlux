@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // This is the M01 exit gate. For every exported operation that reaches a
@@ -316,7 +317,7 @@ func faultCases() []faultCase {
 func TestFaultInjectionProviderError(t *testing.T) {
 	for _, tc := range faultCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, "", errors.New("provider unavailable"))
+			testfixtures.WithScriptedProvider(t, "", errors.New("provider unavailable"))
 
 			if err := tc.run(); err == nil {
 				t.Fatal("a provider that never completed must produce an error")
@@ -332,7 +333,7 @@ func TestFaultInjectionMalformedBody(t *testing.T) {
 			if reason, exempt := survivesSchemaViolation[tc.name]; exempt && isTextPassthrough(reason) {
 				t.Skipf("%s returns the model's text verbatim, so prose is a valid answer", tc.name)
 			}
-			withScriptedProvider(t, malformedBody, nil)
+			testfixtures.WithScriptedProvider(t, malformedBody, nil)
 
 			if err := tc.run(); err == nil {
 				t.Fatal("an unparseable body must produce an error")
@@ -346,7 +347,7 @@ func TestFaultInjectionMalformedBody(t *testing.T) {
 func TestFaultInjectionSchemaViolatingBody(t *testing.T) {
 	for _, tc := range faultCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, schemaViolatingBody, nil)
+			testfixtures.WithScriptedProvider(t, schemaViolatingBody, nil)
 
 			err := tc.run()
 			reason, exempt := survivesSchemaViolation[tc.name]
@@ -365,7 +366,7 @@ func TestFaultInjectionSchemaViolatingBody(t *testing.T) {
 func TestFaultInjectionEmptyBody(t *testing.T) {
 	for _, tc := range faultCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, "", nil)
+			testfixtures.WithScriptedProvider(t, "", nil)
 
 			if err := tc.run(); err == nil {
 				t.Fatal("an empty body must produce an error")
@@ -386,7 +387,7 @@ func TestFaultInjectionTruncatedBody(t *testing.T) {
 				if reason, exempt := survivesSchemaViolation[tc.name]; exempt && isTextPassthrough(reason) {
 					t.Skipf("%s returns the model's text verbatim, so a truncated string is a short answer", tc.name)
 				}
-				withScriptedProvider(t, body, nil)
+				testfixtures.WithScriptedProvider(t, body, nil)
 
 				if err := tc.run(); err == nil {
 					t.Fatal("a truncated body must produce an error, not a decode of what arrived")
@@ -428,7 +429,7 @@ func TestFaultInjectionDiffKeepsTheStructuralResultAndReportsTheMissingSummary(t
 
 	for _, fault := range faults {
 		t.Run(fault.name, func(t *testing.T) {
-			withScriptedProvider(t, fault.body, fault.err)
+			testfixtures.WithScriptedProvider(t, fault.body, fault.err)
 
 			result, err := schemaflux.Diff(
 				versioned{Name: "a", Count: 1},
@@ -457,7 +458,7 @@ func TestDiffReportsAWorkingSummary(t *testing.T) {
 		Count int    `json:"count"`
 	}
 
-	withScriptedProvider(t, `{"summary":"the count went up","significance":"minor"}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"summary":"the count went up","significance":"minor"}`, nil)
 
 	result, err := schemaflux.Diff(
 		versioned{Name: "a", Count: 1},

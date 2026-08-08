@@ -1,10 +1,11 @@
-package schemaflux_test
+package tests
 
 import (
 	"strings"
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 type invoice struct {
@@ -36,7 +37,7 @@ func TestIntegrationExtractSeesThroughModelPackaging(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, nil)
+			testfixtures.WithScriptedProvider(t, tc.body, nil)
 
 			result, err := schemaflux.Extract[invoice]("Invoice INV-4417 from Northwind Traders, $1284.50", schemaflux.NewExtractOptions())
 			if err != nil {
@@ -57,7 +58,7 @@ func TestIntegrationExtractStillRefusesProse(t *testing.T) {
 		"<html><body>502 Bad Gateway</body></html>",
 		"",
 	} {
-		withScriptedProvider(t, body, nil)
+		testfixtures.WithScriptedProvider(t, body, nil)
 
 		if _, err := schemaflux.Extract[invoice]("Invoice INV-4417", schemaflux.NewExtractOptions()); err == nil {
 			t.Errorf("Extract accepted a body with no JSON: %q", body)
@@ -69,7 +70,7 @@ func TestIntegrationExtractStillRefusesProse(t *testing.T) {
 // really is invalid. What must not happen is the extractor quietly returning
 // the part it liked and the decode succeeding on half an answer.
 func TestIntegrationTruncatedBodyIsAnError(t *testing.T) {
-	withScriptedProvider(t, `{"number":"INV-4417","total":`, nil)
+	testfixtures.WithScriptedProvider(t, `{"number":"INV-4417","total":`, nil)
 
 	if _, err := schemaflux.Extract[invoice]("Invoice INV-4417", schemaflux.NewExtractOptions()); err == nil {
 		t.Error("Extract accepted a truncated body")
@@ -91,7 +92,7 @@ func TestIntegrationStrictModeRejectsOverproduction(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, nil)
+			testfixtures.WithScriptedProvider(t, tc.body, nil)
 
 			_, err := schemaflux.Extract[invoice]("Invoice INV-4417",
 				schemaflux.NewExtractOptions().WithMode(schemaflux.Strict))
@@ -106,7 +107,7 @@ func TestIntegrationStrictModeRejectsOverproduction(t *testing.T) {
 // field is exactly wrong for an operation whose contract permits one. The two
 // modes have to differ here or Strict means nothing.
 func TestIntegrationTransformModeToleratesAnExtraField(t *testing.T) {
-	withScriptedProvider(t,
+	testfixtures.WithScriptedProvider(t,
 		`{"number":"INV-4417","total":1284.5,"vendor":"Northwind","note":"paid"}`, nil)
 
 	result, err := schemaflux.Extract[invoice]("Invoice INV-4417",
@@ -122,7 +123,7 @@ func TestIntegrationTransformModeToleratesAnExtraField(t *testing.T) {
 // And the faithful answer still works in Strict mode, so the contract is
 // exactness rather than pessimism.
 func TestIntegrationStrictModeAcceptsAFaithfulAnswer(t *testing.T) {
-	withScriptedProvider(t, invoiceJSON, nil)
+	testfixtures.WithScriptedProvider(t, invoiceJSON, nil)
 
 	result, err := schemaflux.Extract[invoice]("Invoice INV-4417",
 		schemaflux.NewExtractOptions().WithMode(schemaflux.Strict))
@@ -143,14 +144,14 @@ func TestIntegrationARejectedTypeCostsNoProviderCall(t *testing.T) {
 		Extra any    `json:"extra"`
 	}
 
-	provider := withScriptedProvider(t, `{"name":"Ada","extra":1}`, nil)
+	provider := testfixtures.WithScriptedProvider(t, `{"name":"Ada","extra":1}`, nil)
 
 	_, err := schemaflux.Extract[unusable]("some text", schemaflux.NewExtractOptions())
 	if err == nil {
 		t.Fatal("Extract accepted a type with an any field")
 	}
-	if len(provider.requests) != 0 {
-		t.Errorf("the provider was called %d times for a type no answer could satisfy", len(provider.requests))
+	if len(provider.Requests()) != 0 {
+		t.Errorf("the provider was called %d times for a type no answer could satisfy", len(provider.Requests()))
 	}
 	if !strings.Contains(err.Error(), "No provider call was made") {
 		t.Errorf("the error does not say the call was skipped: %v", err)
@@ -165,7 +166,7 @@ func TestIntegrationARestrictedTypeStillRuns(t *testing.T) {
 		Labels map[string]string `json:"labels"`
 	}
 
-	withScriptedProvider(t, `{"name":"Ada","labels":{"team":"platform"}}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"name":"Ada","labels":{"team":"platform"}}`, nil)
 
 	result, err := schemaflux.Extract[withLabels]("some text", schemaflux.NewExtractOptions())
 	if err != nil {

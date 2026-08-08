@@ -709,28 +709,38 @@ the file contains.
 ## Repository layout
 
 ```
-*.go            the public API — package schemaflux
+schemaflux.go   entry points          fluent.go       builder re-exports     |  the public API — package schemaflux
+client.go       the client             |
+catalog.go      the operation catalogue/
+
+tests/          the black-box suite — 29 files, package tests
 internal/       implementation; not importable by consumers
 mw/             optional middleware (cache, retry, circuit breaker)
 pricing/        cost calculation and budgets
 telemetry/      logging, metrics, tracing seams
-schemafluxtest/ fakes, recorder, and cassette replay for testing your code
+schemafluxtest/ fakes, recorder, and cassette replay for testing YOUR code
 cmd/            a live smoke command
 examples/       45 runnable examples, plus smarttodo (its own module)
 ```
 
-The Go files at the repository root **are** the library. For a Go module, the
-package at the root is what `import "github.com/monstercameron/schemaflux"`
-resolves to, so the public API has to live there — moving it into `pkg/` would
-change the import path to `.../schemaflux/pkg` and break every consumer.
+Four source files at the root, and nine tests beside them. Those nine are
+`package schemaflux` because they exercise unexported identifiers — Go requires
+a package's own tests to sit in its directory, so they cannot move. Everything
+that only touches the public API lives in `tests/` instead.
 
-That is worth stating because the widely-copied `pkg/`/`cmd/` layout comes from
+The source files stay at the root because for a Go module the root package is
+what `import "github.com/monstercameron/schemaflux"` resolves to. Moving it into
+`pkg/` would change the import path to `.../schemaflux/pkg` and break every
+consumer. The widely-copied `pkg/`+`cmd/` layout comes from
 `golang-standards/project-layout`, which is not a Go standard, is not endorsed
-by the Go team, and is aimed at applications rather than libraries. The standard
-library, and most Go libraries, put the package at the root. Four files do the
-job here: `schemaflux.go` (entry points), `fluent.go` (builder re-exports),
-`client.go` (the client), and `catalog.go` (the operation catalogue). Everything
-else is under `internal/`, which the compiler enforces as private.
+by the Go team, and targets applications rather than libraries; the standard
+library puts packages at the root too.
+
+Fixtures shared between the two test packages live in `internal/testfixtures`,
+because a copy in each is how two fixtures that are meant to be identical drift
+apart and start proving different things. That is distinct from
+`schemafluxtest`, which is for consumers testing code built on this library —
+one is allowed to know things about the implementation, the other must not.
 
 ## Design Notes
 

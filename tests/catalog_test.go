@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"os"
@@ -9,7 +9,7 @@ import (
 )
 
 // PS-002. The catalogue is only worth having if it cannot fall behind the
-// surface it describes, so it is checked against `testdata/api_surface.txt` —
+// surface it describes, so it is checked against `../testdata/api_surface.txt` —
 // the snapshot that already fails the build when the public API moves.
 //
 // Without this, the catalogue is a comment: correct on the day it was written
@@ -23,7 +23,7 @@ import (
 func exportedFunctions(t *testing.T) []string {
 	t.Helper()
 
-	raw, err := os.ReadFile("testdata/api_surface.txt")
+	raw, err := os.ReadFile("../testdata/api_surface.txt")
 	if err != nil {
 		t.Fatalf("reading the API surface snapshot: %v", err)
 	}

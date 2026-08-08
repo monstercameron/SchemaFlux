@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 type internalUser struct {
@@ -58,18 +59,18 @@ func TestIntegrationProjectWithholdsExcludedValues(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := withScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"confidence":0.9}`, nil)
+			provider := testfixtures.WithScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"confidence":0.9}`, nil)
 
 			if _, err := schemaflux.Project[internalUser, publicProfile](
 				sampleUser(), schemaflux.ProjectOptions{Exclude: tc.exclude}); err != nil {
 				t.Fatalf("Project: %v", err)
 			}
-			if len(provider.requests) == 0 {
+			if len(provider.Requests()) == 0 {
 				t.Fatal("no request was recorded")
 			}
 
 			var sent strings.Builder
-			for _, request := range provider.requests {
+			for _, request := range provider.Requests() {
 				sent.WriteString(renderRequest(request))
 			}
 			body := sent.String()
@@ -90,7 +91,7 @@ func TestIntegrationProjectWithholdsExcludedValues(t *testing.T) {
 
 // The projection itself still works, and reports what it mapped.
 func TestIntegrationProjectProducesTheProfile(t *testing.T) {
-	withScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},
+	testfixtures.WithScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},
 	                          "mappings":[{"source_field":"id","target_field":"user_id","method":"rename"}],
 	                          "lost":["email"],"confidence":0.91}`, nil)
 
@@ -109,7 +110,7 @@ func TestIntegrationProjectProducesTheProfile(t *testing.T) {
 
 // A projection that carries an excluded value back is an error, not a result.
 func TestIntegrationProjectRefusesALeakedValue(t *testing.T) {
-	withScriptedProvider(t, fmt.Sprintf(
+	testfixtures.WithScriptedProvider(t, fmt.Sprintf(
 		`{"projected":{"user_id":"u1","display_name":"Ada (%s)"},"confidence":0.9}`, testHash), nil)
 
 	result, err := schemaflux.Project[internalUser, publicProfile](
@@ -125,7 +126,7 @@ func TestIntegrationProjectRefusesALeakedValue(t *testing.T) {
 
 // A provider failure is still an error rather than an empty profile.
 func TestIntegrationProjectPropagatesProviderErrors(t *testing.T) {
-	withScriptedProvider(t, "I'm sorry, I can't help with that.", nil)
+	testfixtures.WithScriptedProvider(t, "I'm sorry, I can't help with that.", nil)
 
 	if _, err := schemaflux.Project[internalUser, publicProfile](
 		sampleUser(), schemaflux.ProjectOptions{Exclude: []string{"ssn"}}); err == nil {
@@ -138,9 +139,7 @@ func TestIntegrationProjectPropagatesProviderErrors(t *testing.T) {
 // never reach the provider. It runs under go test with a scripted provider: no
 // credential, no spend.
 func Example_projectWithholdsFields() {
-	provider := &scriptedProvider{
-		body: `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"confidence":0.93}`,
-	}
+	provider := testfixtures.NewScripted(`{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"confidence":0.93}`)
 	schemaflux.NewClient("example-key").WithProviderInstance(provider)
 
 	result, err := schemaflux.Project[internalUser, publicProfile](
@@ -157,7 +156,7 @@ func Example_projectWithholdsFields() {
 
 	fmt.Println("profile:", result.Projected.DisplayName)
 
-	sent := renderRequest(provider.requests[0])
+	sent := renderRequest(provider.Requests()[0])
 	fmt.Println("request contains the SSN:", strings.Contains(sent, testSSN))
 	fmt.Println("request contains the email:", strings.Contains(sent, "ada@example.com"))
 

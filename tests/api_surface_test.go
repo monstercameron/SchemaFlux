@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"go/ast"
@@ -24,10 +24,13 @@ import (
 //
 // An environment variable rather than a flag, because `go test` parses its own
 // flags first and an unknown one fails the run before the test sees it.
-const apiSnapshotPath = "testdata/api_surface.txt"
+const apiSnapshotPath = "../testdata/api_surface.txt"
 
 func TestPublicAPISurface(t *testing.T) {
-	current := strings.Join(exportedSurface(t, "."), "\n") + "\n"
+	// "..", not ".": this file lives in tests/ now, and the surface being
+	// snapshotted is the root package's. Pointing it at "." would snapshot this
+	// test package and cheerfully report that the public API is empty.
+	current := strings.Join(exportedSurface(t, ".."), "\n") + "\n"
 
 	if updateAPISnapshot() {
 		if err := os.MkdirAll(filepath.Dir(apiSnapshotPath), 0o755); err != nil {

@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 type department struct {
@@ -46,7 +47,7 @@ func TestIntegrationDecideDoesNotDefaultToTheFirstBranch(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, tc.err)
+			testfixtures.WithScriptedProvider(t, tc.body, tc.err)
 
 			chosen, result, err := schemaflux.Decide(context.Background(), "an invoice question", departments())
 			if err == nil {
@@ -64,7 +65,7 @@ func TestIntegrationDecideDoesNotDefaultToTheFirstBranch(t *testing.T) {
 
 // With a fallback configured the router keeps working, and says so.
 func TestIntegrationDecideFallbackIsLabelled(t *testing.T) {
-	withScriptedProvider(t, "", errors.New("provider unavailable"))
+	testfixtures.WithScriptedProvider(t, "", errors.New("provider unavailable"))
 
 	chosen, result, err := schemaflux.Decide(context.Background(), "an invoice question", departments(),
 		schemaflux.NewDecideOptions().WithFallback(0))
@@ -78,7 +79,7 @@ func TestIntegrationDecideFallbackIsLabelled(t *testing.T) {
 
 // A well-formed answer routes correctly.
 func TestIntegrationDecideRoutes(t *testing.T) {
-	withScriptedProvider(t, `{"selected":1,"explanation":"the customer is disputing an invoice","confidence":0.9}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"selected":1,"explanation":"the customer is disputing an invoice","confidence":0.9}`, nil)
 
 	chosen, result, err := schemaflux.Decide(context.Background(), "invoice dispute", departments())
 	if err != nil {
@@ -102,7 +103,7 @@ func TestIntegrationMatchDoesNotDefaultOnFailure(t *testing.T) {
 		{"error_page", "<html>502</html>", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, tc.err)
+			testfixtures.WithScriptedProvider(t, tc.body, tc.err)
 
 			defaulted := false
 			matched, err := schemaflux.Match(context.Background(), "a ticket",
@@ -121,7 +122,7 @@ func TestIntegrationMatchDoesNotDefaultOnFailure(t *testing.T) {
 
 // A leading Otherwise must not shadow the cases written after it.
 func TestIntegrationOtherwiseDoesNotShadowLaterCases(t *testing.T) {
-	withScriptedProvider(t, "true", nil)
+	testfixtures.WithScriptedProvider(t, "true", nil)
 
 	ran := ""
 	matched, err := schemaflux.Match(context.Background(), "a ticket",
@@ -141,9 +142,7 @@ func TestIntegrationOtherwiseDoesNotShadowLaterCases(t *testing.T) {
 // department. It runs under go test with a scripted provider: no credential,
 // no spend.
 func Example_decideRouting() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: `{"selected":1,"explanation":"the customer is disputing an invoice","confidence":0.91}`,
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"selected":1,"explanation":"the customer is disputing an invoice","confidence":0.91}`))
 
 	chosen, decision, err := schemaflux.Decide(
 		context.Background(),
@@ -168,9 +167,7 @@ func Example_decideRouting() {
 // fallback configured, the router reports the outage instead of routing every
 // ticket to the first department.
 func Example_decideFailsClosed() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		err: errors.New("provider unavailable"),
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewFailing(errors.New("provider unavailable")))
 
 	chosen, decision, err := schemaflux.Decide(context.Background(), "an invoice question", departments())
 
@@ -187,7 +184,7 @@ func Example_decideFailsClosed() {
 // Example_matchRouting shows the case form, and that the default branch is
 // evaluated last no matter where it is written.
 func Example_matchRouting() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{body: "true"})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted("true"))
 
 	var routed strings.Builder
 	matched, err := schemaflux.Match(context.Background(), "My card was charged twice.",

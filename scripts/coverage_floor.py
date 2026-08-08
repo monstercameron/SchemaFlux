@@ -58,7 +58,16 @@ def measure():
     os.close(handle)
 
     result = subprocess.run(
-        ["go", "test", "-coverprofile=" + profile] + PACKAGES,
+        # -coverpkg is what keeps this number meaningful after the black-box
+        # tests moved to ./tests/. Without it, `go test` credits coverage only
+        # to the package under test, so 29 test files exercising the library
+        # from an external package would have counted for nothing and the floor
+        # would have collapsed for a reason that had nothing to do with the
+        # tests. With it, coverage measures the library's statements regardless
+        # of which package's tests reached them, which is the question the floor
+        # was always asking.
+        ["go", "test", "-coverpkg=" + ",".join(PACKAGES),
+         "-coverprofile=" + profile] + PACKAGES + ["./tests/..."],
         capture_output=True, text=True,
     )
     if result.returncode != 0:

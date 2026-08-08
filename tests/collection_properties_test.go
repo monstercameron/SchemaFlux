@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // TI-007. The collection invariants, as properties over random inputs rather
@@ -103,7 +104,7 @@ func TestPropertyFilterReturnsASubset(t *testing.T) {
 			answer = append(answer, answer[0])
 		}
 
-		withScriptedProvider(t, encodeJSON(t, idListBody{IDs: answer}), nil)
+		testfixtures.WithScriptedProvider(t, encodeJSON(t, idListBody{IDs: answer}), nil)
 
 		kept, err := schemaflux.Filter(items, schemaflux.NewFilterOptions().WithCriteria("cheap"))
 		if err != nil {
@@ -152,7 +153,7 @@ func TestPropertySortReturnsAPermutation(t *testing.T) {
 			answer[0] = idFor(len(items) + 3)
 		}
 
-		withScriptedProvider(t, encodeJSON(t, idListBody{IDs: answer}), nil)
+		testfixtures.WithScriptedProvider(t, encodeJSON(t, idListBody{IDs: answer}), nil)
 
 		sorted, err := schemaflux.Sort(items, schemaflux.NewSortOptions().WithCriteria("cheapest first"))
 		if err != nil {
@@ -189,7 +190,7 @@ func TestPropertyChooseReturnsAMember(t *testing.T) {
 			id = idFor(len(items) + 3)
 		}
 
-		withScriptedProvider(t, encodeJSON(t, idBody{ID: id}), nil)
+		testfixtures.WithScriptedProvider(t, encodeJSON(t, idBody{ID: id}), nil)
 
 		chosen, err := schemaflux.Choose(items, schemaflux.NewChooseOptions().WithSteering("the best one"))
 		if err != nil {
@@ -244,7 +245,7 @@ func TestPropertyClusterPartitionsTheInput(t *testing.T) {
 			`{"clusters":[{"name":"a","indices":%s},{"name":"b","indices":%s}],"outlier_indices":%s,"quality":0.8}`,
 			encodeJSON(t, first), encodeJSON(t, second), encodeJSON(t, outliers))
 
-		withScriptedProvider(t, body, nil)
+		testfixtures.WithScriptedProvider(t, body, nil)
 
 		result, err := schemaflux.Cluster(items, schemaflux.NewClusterOptions())
 		if err != nil {

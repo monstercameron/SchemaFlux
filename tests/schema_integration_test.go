@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // A record with fields the caller has excluded from JSON. If the schema
@@ -22,17 +23,17 @@ type patient struct {
 // End to end: the prompt the stack actually sends must not name an excluded
 // field.
 func TestIntegrationExcludedFieldsNeverReachTheProvider(t *testing.T) {
-	provider := withScriptedProvider(t, `{"name":"Ada","diagnosis":"none"}`, nil)
+	provider := testfixtures.WithScriptedProvider(t, `{"name":"Ada","diagnosis":"none"}`, nil)
 
 	if _, err := schemaflux.Extract[patient]("Ada, no diagnosis", schemaflux.NewExtractOptions()); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	if len(provider.requests) == 0 {
+	if len(provider.Requests()) == 0 {
 		t.Fatal("no request was recorded")
 	}
 
 	var sent strings.Builder
-	for _, request := range provider.requests {
+	for _, request := range provider.Requests() {
 		sent.WriteString(renderRequest(request))
 	}
 	body := sent.String()
@@ -58,7 +59,7 @@ func TestIntegrationRepeatedCallsSendIdenticalBytes(t *testing.T) {
 		"foxtrot": "f", "golf": "g", "hotel": "h", "india": "i", "juliet": "j",
 	}
 
-	provider := withScriptedProvider(t, `{"name":"Ada","diagnosis":"none"}`, nil)
+	provider := testfixtures.WithScriptedProvider(t, `{"name":"Ada","diagnosis":"none"}`, nil)
 
 	for run := 0; run < 20; run++ {
 		opts := schemaflux.NewExtractOptions()
@@ -68,12 +69,12 @@ func TestIntegrationRepeatedCallsSendIdenticalBytes(t *testing.T) {
 		}
 	}
 
-	if len(provider.requests) < 2 {
-		t.Fatalf("expected repeated requests, got %d", len(provider.requests))
+	if len(provider.Requests()) < 2 {
+		t.Fatalf("expected repeated requests, got %d", len(provider.Requests()))
 	}
 
-	first := renderRequest(provider.requests[0])
-	for i, request := range provider.requests[1:] {
+	first := renderRequest(provider.Requests()[0])
+	for i, request := range provider.Requests()[1:] {
 		if got := renderRequest(request); got != first {
 			t.Fatalf("request %d differs from the first; a map is being rendered unsorted", i+1)
 		}
@@ -88,7 +89,7 @@ func renderRequest(request schemaflux.CompletionRequest) string {
 // of JSON is also kept out of the prompt. It runs under go test with a scripted
 // provider: no credential, no spend.
 func Example_extractOmitsExcludedFields() {
-	provider := &scriptedProvider{body: `{"name":"Ada Lovelace","diagnosis":"none"}`}
+	provider := testfixtures.NewScripted(`{"name":"Ada Lovelace","diagnosis":"none"}`)
 	schemaflux.NewClient("example-key").WithProviderInstance(provider)
 
 	record, err := schemaflux.Extract[patient](
@@ -101,7 +102,7 @@ func Example_extractOmitsExcludedFields() {
 
 	fmt.Println("name:", record.Name)
 
-	sent := renderRequest(provider.requests[0])
+	sent := renderRequest(provider.Requests()[0])
 	fmt.Println("prompt mentions SSN:", strings.Contains(sent, "SSN"))
 	fmt.Println("prompt mentions diagnosis:", strings.Contains(sent, "diagnosis"))
 

@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"encoding/json"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // capturingResponsesAPI stands up a fake OpenAI Responses endpoint like
@@ -55,7 +56,7 @@ type cacheKeyCompany struct {
 // carrying the same prompt_cache_key, so a repeat request can route to the
 // server that already holds its stable prefix.
 func TestIntegrationPromptCacheKeyStableAcrossIdenticalCalls(t *testing.T) {
-	_, captured := capturingResponsesAPI(t, message(`{"name":"Ada Lovelace","age":36}`))
+	_, captured := capturingResponsesAPI(t, testfixtures.ResponsesMessage(`{"name":"Ada Lovelace","age":36}`))
 
 	for i := 0; i < 2; i++ {
 		if _, err := schemaflux.Extract[cacheKeyPerson]("Ada Lovelace is 36.", schemaflux.NewExtractOptions()); err != nil {
@@ -84,12 +85,12 @@ func TestIntegrationPromptCacheKeyDiffersAcrossSchemas(t *testing.T) {
 	// Each type needs a server answering with a body that type can actually
 	// decode into -- a schema violation would retry and fail before a request
 	// worth comparing ever got recorded.
-	_, capturedPerson := capturingResponsesAPI(t, message(`{"name":"Ada Lovelace","age":36}`))
+	_, capturedPerson := capturingResponsesAPI(t, testfixtures.ResponsesMessage(`{"name":"Ada Lovelace","age":36}`))
 	if _, err := schemaflux.Extract[cacheKeyPerson]("Ada Lovelace is 36.", schemaflux.NewExtractOptions()); err != nil {
 		t.Fatalf("Extract person: %v", err)
 	}
 
-	_, capturedCompany := capturingResponsesAPI(t, message(`{"legal":"Ada Lovelace Analytical Engines Ltd"}`))
+	_, capturedCompany := capturingResponsesAPI(t, testfixtures.ResponsesMessage(`{"legal":"Ada Lovelace Analytical Engines Ltd"}`))
 	if _, err := schemaflux.Extract[cacheKeyCompany]("Ada Lovelace's company.", schemaflux.NewExtractOptions()); err != nil {
 		t.Fatalf("Extract company: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestIntegrationPromptCacheKeyDiffersAcrossSchemas(t *testing.T) {
 // call would mint a fresh key, because steering is the one piece of the
 // request a caller is expected to vary from call to call.
 func TestIntegrationPromptCacheKeyIgnoresSteering(t *testing.T) {
-	_, captured := capturingResponsesAPI(t, message(`{"name":"Ada Lovelace","age":36}`))
+	_, captured := capturingResponsesAPI(t, testfixtures.ResponsesMessage(`{"name":"Ada Lovelace","age":36}`))
 
 	if _, err := schemaflux.Extract[cacheKeyPerson]("Ada Lovelace is 36.", schemaflux.NewExtractOptions()); err != nil {
 		t.Fatalf("Extract without steering: %v", err)

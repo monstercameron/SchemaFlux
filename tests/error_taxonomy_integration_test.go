@@ -1,10 +1,11 @@
-package schemaflux_test
+package tests
 
 import (
 	"errors"
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // A-007 at the public boundary. The point of a taxonomy is that a consumer can
@@ -32,7 +33,7 @@ func TestConsumersCanBranchOnFailureKind(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, tc.err)
+			testfixtures.WithScriptedProvider(t, tc.body, tc.err)
 
 			_, err := schemaflux.Extract[invoice]("Invoice INV-4417", schemaflux.NewExtractOptions())
 			if err == nil {
@@ -50,7 +51,7 @@ func TestConsumersCanBranchOnFailureKind(t *testing.T) {
 // A provider failure classifies as something a caller can act on, and the
 // disposition helpers agree with it.
 func TestProviderFailuresCarryADisposition(t *testing.T) {
-	withScriptedProvider(t, "", errors.New("connection refused"))
+	testfixtures.WithScriptedProvider(t, "", errors.New("connection refused"))
 
 	_, err := schemaflux.Extract[invoice]("Invoice INV-4417", schemaflux.NewExtractOptions())
 	if err == nil {

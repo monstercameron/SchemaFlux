@@ -1,82 +1,18 @@
-package schemaflux_test
+package tests
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
-
-// scriptedProvider is a Provider that returns canned bodies. It is the seam a
-// consumer needs in order to test code built on this library without reaching a
-// paid endpoint, and it exercises the whole stack: public API -> ops -> llm.
-type scriptedProvider struct {
-	body string
-	err  error
-
-	// bodies answers with a different body per call, for tests that need the
-	// repair loop to see a second answer.
-	bodies []string
-
-	// requests records what the stack actually sent.
-	requests []schemaflux.CompletionRequest
-}
-
-func (p *scriptedProvider) Complete(_ context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
-	p.requests = append(p.requests, req)
-	if p.err != nil {
-		return schemaflux.CompletionResponse{}, p.err
-	}
-	body := p.body
-	if len(p.bodies) > 0 {
-		index := len(p.requests) - 1
-		if index >= len(p.bodies) {
-			index = len(p.bodies) - 1
-		}
-		body = p.bodies[index]
-	}
-
-	return schemaflux.CompletionResponse{
-		Content:      body,
-		Provider:     p.Name(),
-		Model:        req.Model,
-		FinishReason: "stop",
-	}, nil
-}
-
-// Name reports "local", the name the library reserves for an in-process test
-// double. It is not cosmetic: a provider whose name has no model mapping
-// resolves to no model at all and every call errors, which is FL-001 working as
-// intended. A test double that invents a provider name would be asserting
-// against a configuration no caller should ship.
-func (p *scriptedProvider) Name() string                                      { return "local" }
-func (p *scriptedProvider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
-func (p *scriptedProvider) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
-
-// withScriptedProviderReplies installs a provider that answers with a different
-// body per call, so a test can exercise the repair loop -- one unusable answer,
-// then a good one.
-func withScriptedProviderReplies(t *testing.T, bodies ...string) *scriptedProvider {
-	t.Helper()
-	provider := &scriptedProvider{bodies: bodies}
-	schemaflux.NewClient("test-key").WithProviderInstance(provider)
-	return provider
-}
-
-func withScriptedProvider(t *testing.T, body string, err error) *scriptedProvider {
-	t.Helper()
-	provider := &scriptedProvider{body: body, err: err}
-	schemaflux.NewClient("test-key").WithProviderInstance(provider)
-	return provider
-}
 
 // End to end through the exported API: a well-formed body produces a populated
 // result.
 func TestIntegrationSummarizeWithMetadataSucceeds(t *testing.T) {
-	withScriptedProvider(t, `{"text":"A short summary.","key_points":["first","second"],"confidence":0.88}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"text":"A short summary.","key_points":["first","second"],"confidence":0.88}`, nil)
 
 	result, err := schemaflux.SummarizeWithMetadata(
 		"A considerably longer piece of source material that needs condensing.",
@@ -106,7 +42,7 @@ func TestIntegrationMalformedBodyIsAnErrorAtThePublicAPI(t *testing.T) {
 	}
 	for _, body := range bodies {
 		t.Run(strings.TrimSpace(body[:min(len(body), 12)]), func(t *testing.T) {
-			withScriptedProvider(t, body, nil)
+			testfixtures.WithScriptedProvider(t, body, nil)
 			result, err := schemaflux.SummarizeWithMetadata("input", schemaflux.NewSummarizeOptions())
 			if err == nil {
 				t.Fatalf("expected an error, got %+v", result)
@@ -120,7 +56,7 @@ func TestIntegrationMalformedBodyIsAnErrorAtThePublicAPI(t *testing.T) {
 
 // A provider error must surface at the public boundary.
 func TestIntegrationProviderErrorSurfaces(t *testing.T) {
-	withScriptedProvider(t, "", fmt.Errorf("upstream exploded"))
+	testfixtures.WithScriptedProvider(t, "", fmt.Errorf("upstream exploded"))
 
 	if _, err := schemaflux.SummarizeWithMetadata("input", schemaflux.NewSummarizeOptions()); err == nil {
 		t.Fatal("a provider error must reach the caller")
@@ -130,16 +66,16 @@ func TestIntegrationProviderErrorSurfaces(t *testing.T) {
 // The stack must actually send the prompt and honour the model tier. This is
 // the assertion that catches a request being built from the wrong options.
 func TestIntegrationRequestCarriesPromptAndModel(t *testing.T) {
-	provider := withScriptedProvider(t, `{"text":"s","confidence":0.5}`, nil)
+	provider := testfixtures.WithScriptedProvider(t, `{"text":"s","confidence":0.5}`, nil)
 
 	const marker = "UNIQUE-MARKER-STRING"
 	if _, err := schemaflux.SummarizeWithMetadata(marker, schemaflux.NewSummarizeOptions()); err != nil {
 		t.Fatalf("SummarizeWithMetadata: %v", err)
 	}
-	if len(provider.requests) == 0 {
+	if len(provider.Requests()) == 0 {
 		t.Fatal("the provider received no request")
 	}
-	req := provider.requests[0]
+	req := provider.Requests()[0]
 	if !strings.Contains(req.UserPrompt, marker) {
 		t.Error("the user prompt does not contain the input")
 	}
@@ -156,7 +92,7 @@ func TestIntegrationRequestCarriesPromptAndModel(t *testing.T) {
 
 // Every operation in the family behaves the same way at the boundary.
 func TestIntegrationWholeTextFamilyFailsClosed(t *testing.T) {
-	withScriptedProvider(t, "not json at all", nil)
+	testfixtures.WithScriptedProvider(t, "not json at all", nil)
 
 	if _, err := schemaflux.SummarizeWithMetadata("x", schemaflux.NewSummarizeOptions()); err == nil {
 		t.Error("summarize")
@@ -183,9 +119,7 @@ func min(a, b int) int {
 // operation. It uses a scripted provider so it executes in CI with no
 // credential and no spend, and `go test` verifies its output.
 func Example_summarizeWithMetadata() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: `{"text":"Costs rose 12% on higher freight.","key_points":["freight up","margin down"],"confidence":0.91}`,
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"text":"Costs rose 12% on higher freight.","key_points":["freight up","margin down"],"confidence":0.91}`))
 
 	result, err := schemaflux.SummarizeWithMetadata(
 		"Quarterly report: freight costs increased sharply, compressing margin...",
@@ -209,9 +143,7 @@ func Example_summarizeWithMetadata() {
 // response the operation cannot parse is an error, not a result carrying an
 // invented confidence.
 func Example_summarizeFailsClosed() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: "I'm sorry, I can't summarise that.",
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted("I'm sorry, I can't summarise that."))
 
 	result, err := schemaflux.SummarizeWithMetadata("input", schemaflux.NewSummarizeOptions())
 	fmt.Println("error is nil:", err == nil)

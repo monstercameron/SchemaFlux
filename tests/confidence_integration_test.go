@@ -1,10 +1,11 @@
-package schemaflux_test
+package tests
 
 import (
 	"strings"
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 // OP-201 at the public boundary. MinConfidence has a non-zero default on these
@@ -16,7 +17,7 @@ func TestIntegrationClassifyEnforcesItsConfidenceFloor(t *testing.T) {
 		WithMinConfidence(0.8)
 
 	t.Run("below the floor is refused", func(t *testing.T) {
-		withScriptedProvider(t, `{"category":"billing","confidence":0.2,"reasoning":"a guess"}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"category":"billing","confidence":0.2,"reasoning":"a guess"}`, nil)
 
 		result, err := schemaflux.Classify[string, string]("my card was declined", opts)
 		if err == nil {
@@ -28,7 +29,7 @@ func TestIntegrationClassifyEnforcesItsConfidenceFloor(t *testing.T) {
 	})
 
 	t.Run("above the floor is accepted", func(t *testing.T) {
-		withScriptedProvider(t, `{"category":"billing","confidence":0.95,"reasoning":"clear"}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"category":"billing","confidence":0.95,"reasoning":"clear"}`, nil)
 
 		result, err := schemaflux.Classify[string, string]("my card was declined", opts)
 		if err != nil {
@@ -40,7 +41,7 @@ func TestIntegrationClassifyEnforcesItsConfidenceFloor(t *testing.T) {
 	})
 
 	t.Run("a zero floor accepts anything", func(t *testing.T) {
-		withScriptedProvider(t, `{"category":"billing","confidence":0.01,"reasoning":"barely"}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"category":"billing","confidence":0.01,"reasoning":"barely"}`, nil)
 
 		zeroFloor := schemaflux.NewClassifyOptions().
 			WithCategories([]string{"billing", "technical"}).
@@ -65,7 +66,7 @@ func TestIntegrationClassifyRefusesACategoryItWasNotOffered(t *testing.T) {
 		`{"category":"","confidence":0.99}`,
 		`{"category":"I think this is billing","confidence":0.99}`,
 	} {
-		withScriptedProvider(t, body, nil)
+		testfixtures.WithScriptedProvider(t, body, nil)
 
 		if _, err := schemaflux.Classify[string, string]("my card was declined", opts); err == nil {
 			t.Errorf("Classify accepted a category it never offered: %s", body)
@@ -76,7 +77,7 @@ func TestIntegrationClassifyRefusesACategoryItWasNotOffered(t *testing.T) {
 // Case is normalised rather than rejected, because a caller comparing against
 // their own constants needs "Billing" and "billing" to be one answer.
 func TestIntegrationClassifyNormalisesCase(t *testing.T) {
-	withScriptedProvider(t, `{"category":"BILLING","confidence":0.99}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"category":"BILLING","confidence":0.99}`, nil)
 
 	result, err := schemaflux.Classify[string, string]("my card was declined",
 		schemaflux.NewClassifyOptions().
@@ -92,14 +93,14 @@ func TestIntegrationClassifyNormalisesCase(t *testing.T) {
 
 // Verify's floor defaults to 0.7 and was prompt-only too.
 func TestIntegrationVerifyEnforcesItsConfidenceFloor(t *testing.T) {
-	withScriptedProvider(t,
+	testfixtures.WithScriptedProvider(t,
 		`{"overall_verdict":"verified","overall_confidence":0.3,"trust_score":0.3,"summary":"weak"}`, nil)
 
 	if _, err := schemaflux.Verify("the sky is green", schemaflux.NewVerifyOptions()); err == nil {
 		t.Error("Verify accepted a verification the model scored at 0.3 against its 0.7 default floor")
 	}
 
-	withScriptedProvider(t,
+	testfixtures.WithScriptedProvider(t,
 		`{"overall_verdict":"verified","overall_confidence":0.9,"trust_score":0.9,"summary":"strong"}`, nil)
 
 	if _, err := schemaflux.Verify("the sky is blue", schemaflux.NewVerifyOptions()); err != nil {

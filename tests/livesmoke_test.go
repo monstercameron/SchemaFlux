@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 // Doing them as two separate exercises would mean paying twice for the same
 // information, so this records while it asserts: the smoke test runs through a
 // `schemafluxtest.Recorder`, and what it observed is written to
-// `testdata/cassettes/` on the way out. The replay test below then re-asserts
+// `../testdata/cassettes/` on the way out. The replay test below then re-asserts
 // the same properties against those files on every ordinary `go test ./...`.
 //
 // To record (this SPENDS MONEY — one call per model):
@@ -37,7 +37,7 @@ import (
 // precisely because they are a projection: content, finish reason, and usage —
 // no response ids, no account fields, no headers — and Recorder.Save refuses to
 // write one that still looks like it contains a credential.
-const cassetteDir = "testdata/cassettes/live-smoke"
+const cassetteDir = "../testdata/cassettes/live-smoke"
 
 // smokeModels are the three models P-013 measured. Overridable so this is not
 // stale the moment the family changes.

@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"fmt"
@@ -24,7 +24,7 @@ import (
 // Regenerate deliberately:
 //
 //	SCHEMAFLUX_UPDATE_PROMPTS=1 go test . -run TestGoldenPrompts
-const goldenPromptsPath = "testdata/golden_prompts.txt"
+const goldenPromptsPath = "../testdata/golden_prompts.txt"
 
 // The inputs are fixed and boring on purpose: the subject is the prompt, and a
 // varying input would make every diff unreadable.

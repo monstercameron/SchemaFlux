@@ -1,10 +1,11 @@
-package schemaflux_test
+package tests
 
 import (
 	"fmt"
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 type customer struct {
@@ -32,7 +33,7 @@ func TestIntegrationValidateFailsClosedAtThePublicAPI(t *testing.T) {
 
 	for _, tc := range bodies {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, nil)
+			testfixtures.WithScriptedProvider(t, tc.body, nil)
 
 			result, err := schemaflux.Validate(
 				customer{Email: "nope", Country: "ZZ", Age: 3},
@@ -50,7 +51,7 @@ func TestIntegrationValidateFailsClosedAtThePublicAPI(t *testing.T) {
 
 // A well-formed negative verdict is reported faithfully.
 func TestIntegrationValidateReportsIssues(t *testing.T) {
-	withScriptedProvider(t, `{"valid": false, "errors": [
+	testfixtures.WithScriptedProvider(t, `{"valid": false, "errors": [
 	  {"field":"age","severity":"error","message":"must be at least 18"},
 	  {"field":"country","severity":"error","message":"must be ISO alpha-2"}
 	], "summary":"two errors"}`, nil)
@@ -71,7 +72,7 @@ func TestIntegrationValidateReportsIssues(t *testing.T) {
 
 // And a clean record passes.
 func TestIntegrationValidateAcceptsCleanRecord(t *testing.T) {
-	withScriptedProvider(t, `{"valid": true, "summary": "no issues"}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"valid": true, "summary": "no issues"}`, nil)
 
 	result, err := schemaflux.Validate(
 		customer{Email: "a@b.com", Country: "US", Age: 30},
@@ -86,7 +87,7 @@ func TestIntegrationValidateAcceptsCleanRecord(t *testing.T) {
 
 // A provider failure must reach the caller rather than becoming a verdict.
 func TestIntegrationValidatePropagatesProviderError(t *testing.T) {
-	withScriptedProvider(t, "", fmt.Errorf("provider unavailable"))
+	testfixtures.WithScriptedProvider(t, "", fmt.Errorf("provider unavailable"))
 
 	result, err := schemaflux.Validate(customer{}, schemaflux.NewValidateOptions().WithRules("any"))
 	if err == nil {
@@ -101,9 +102,7 @@ func TestIntegrationValidatePropagatesProviderError(t *testing.T) {
 // a response the operation cannot parse is an error rather than a pass. It runs
 // under go test with a scripted provider: no credential, no spend.
 func Example_validateGate() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: `{"valid": false, "errors": [{"field":"age","severity":"error","message":"must be at least 18"}], "summary":"one error"}`,
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"valid": false, "errors": [{"field":"age","severity":"error","message":"must be at least 18"}], "summary":"one error"}`))
 
 	result, err := schemaflux.Validate(
 		customer{Email: "ada@example.com", Country: "GB", Age: 12},
@@ -126,9 +125,7 @@ func Example_validateGate() {
 // Example_validateFailsClosed is the counterpart: an unparseable response is an
 // error, so a gate written as `if !result.Valid` cannot be silently bypassed.
 func Example_validateFailsClosed() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: "The data is invalid because the age is below 18.",
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted("The data is invalid because the age is below 18."))
 
 	result, err := schemaflux.Validate(
 		customer{Age: 12},
@@ -145,7 +142,7 @@ func Example_validateFailsClosed() {
 // Validity derivation must hold at the public boundary too: a response claiming
 // valid alongside errors is not a pass.
 func TestIntegrationValidateDerivesValidityFromIssues(t *testing.T) {
-	withScriptedProvider(t, `{"valid":true,"errors":[{"field":"age","severity":"error","message":"below 18"}]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"valid":true,"errors":[{"field":"age","severity":"error","message":"below 18"}]}`, nil)
 
 	result, err := schemaflux.Validate(customer{Age: 3}, schemaflux.NewValidateOptions().WithRules("age >= 18"))
 	if err != nil {
@@ -159,7 +156,7 @@ func TestIntegrationValidateDerivesValidityFromIssues(t *testing.T) {
 // AutoCorrect surfaces a correction, and reports one that does not fit.
 func TestIntegrationValidateCorrections(t *testing.T) {
 	t.Run("usable", func(t *testing.T) {
-		withScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad age"}],"corrected":{"email":"a@b.com","country":"US","age":21}}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad age"}],"corrected":{"email":"a@b.com","country":"US","age":21}}`, nil)
 		result, err := schemaflux.Validate(customer{Age: 3}, schemaflux.NewValidateOptions().WithRules("age >= 18"))
 		if err != nil {
 			t.Fatalf("Validate: %v", err)
@@ -170,7 +167,7 @@ func TestIntegrationValidateCorrections(t *testing.T) {
 	})
 
 	t.Run("unusable_is_reported", func(t *testing.T) {
-		withScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad"}],"corrected":{"age":"twenty-one"}}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad"}],"corrected":{"age":"twenty-one"}}`, nil)
 		if _, err := schemaflux.Validate(customer{}, schemaflux.NewValidateOptions().WithRules("any")); err == nil {
 			t.Fatal("a correction that does not fit the type must be reported")
 		}
@@ -180,9 +177,7 @@ func TestIntegrationValidateCorrections(t *testing.T) {
 // Example_validateAutoCorrect shows the correction path, which is the reason to
 // reach for AutoCorrect at all.
 func Example_validateAutoCorrect() {
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: `{"valid":false,"errors":[{"field":"country","severity":"error","message":"must be ISO alpha-2"}],"corrected":{"email":"ada@example.com","country":"GB","age":36}}`,
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"valid":false,"errors":[{"field":"country","severity":"error","message":"must be ISO alpha-2"}],"corrected":{"email":"ada@example.com","country":"GB","age":36}}`))
 
 	result, err := schemaflux.Validate(
 		customer{Email: "ada@example.com", Country: "Great Britain", Age: 36},

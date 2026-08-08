@@ -1,4 +1,4 @@
-package schemaflux_test
+package tests
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
 type lineItem struct {
@@ -52,7 +53,7 @@ func TestIntegrationChooseRefusesAnAlteredEcho(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, nil)
+			testfixtures.WithScriptedProvider(t, tc.body, nil)
 
 			chosen, err := schemaflux.Choose(invoiceLines(),
 				schemaflux.NewChooseOptions().WithSteering("the most expensive line"))
@@ -70,7 +71,7 @@ func TestIntegrationChooseRefusesAnAlteredEcho(t *testing.T) {
 // -- named by id, never reproduced by the model.
 func TestIntegrationChooseReturnsTheCallersRecord(t *testing.T) {
 	lines := invoiceLines()
-	withScriptedProvider(t, `{"id":"i-000002"}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"id":"i-000002"}`, nil)
 
 	chosen, err := schemaflux.Choose(lines, schemaflux.NewChooseOptions().WithSteering("most expensive"))
 	if err != nil {
@@ -88,7 +89,7 @@ func TestIntegrationFilterReturnsASubset(t *testing.T) {
 	lines := invoiceLines()
 
 	t.Run("faithful_subset", func(t *testing.T) {
-		withScriptedProvider(t, `{"ids":["i-000003","i-000001"]}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"ids":["i-000003","i-000001"]}`, nil)
 
 		kept, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("under $20"))
 		if err != nil {
@@ -100,7 +101,7 @@ func TestIntegrationFilterReturnsASubset(t *testing.T) {
 	})
 
 	t.Run("unassigned_id_is_refused", func(t *testing.T) {
-		withScriptedProvider(t, `{"ids":["i-000009"]}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"ids":["i-000009"]}`, nil)
 
 		kept, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("under $20"))
 		if err == nil {
@@ -109,7 +110,7 @@ func TestIntegrationFilterReturnsASubset(t *testing.T) {
 	})
 
 	t.Run("domain_value_is_refused", func(t *testing.T) {
-		withScriptedProvider(t, `{"ids":["A-300"]}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"ids":["A-300"]}`, nil)
 
 		if _, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("cheap")); err == nil {
 			t.Fatal("a domain value standing in for an id must be refused")
@@ -117,7 +118,7 @@ func TestIntegrationFilterReturnsASubset(t *testing.T) {
 	})
 
 	t.Run("longer_than_input_is_refused", func(t *testing.T) {
-		withScriptedProvider(t, `{"ids":["i-000001","i-000002","i-000003","i-000001"]}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"ids":["i-000001","i-000002","i-000003","i-000001"]}`, nil)
 
 		if _, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("all")); err == nil {
 			t.Fatal("a subset larger than the set must be refused")
@@ -137,9 +138,8 @@ func Example_chooseRefusesAnAlteredRecord() {
 	}
 
 	// The model answers with an id it was never assigned.
-	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: `{"id":"i-000009"}`,
-	})
+	schemaflux.NewClient("example-key").WithProviderInstance(
+		testfixtures.NewScripted(`{"id":"i-000009"}`))
 
 	chosen, err := schemaflux.Choose(lines,
 		schemaflux.NewChooseOptions().WithSteering("the most expensive line"))
@@ -306,7 +306,7 @@ func TestIntegrationSortRefusesAResultThatIsNotAPermutation(t *testing.T) {
 			// The scoring fallback asks for {"rank_score": ...}; a body shaped
 			// like the sorted list answers neither, so both paths refuse and
 			// the operation reports rather than silently degrading.
-			withScriptedProvider(t, tc.body, nil)
+			testfixtures.WithScriptedProvider(t, tc.body, nil)
 
 			sorted, err := schemaflux.Sort(lines,
 				schemaflux.NewSortOptions().WithCriteria("most expensive first"))
@@ -321,7 +321,7 @@ func TestIntegrationSortRefusesAResultThatIsNotAPermutation(t *testing.T) {
 // own -- named by id, never reproduced by the model.
 func TestIntegrationSortAcceptsAPermutation(t *testing.T) {
 	lines := invoiceLines()
-	withScriptedProvider(t, `{"ids":["i-000002","i-000001","i-000003"]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"ids":["i-000002","i-000001","i-000003"]}`, nil)
 
 	sorted, err := schemaflux.Sort(lines, schemaflux.NewSortOptions().WithCriteria("most expensive first"))
 	if err != nil {
@@ -339,7 +339,7 @@ func TestIntegrationSortAcceptsAPermutation(t *testing.T) {
 // result to say so.
 func TestIntegrationSortResultReportsItsStrategy(t *testing.T) {
 	lines := invoiceLines()
-	withScriptedProvider(t, `{"ids":["i-000002","i-000001","i-000003"]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"ids":["i-000002","i-000001","i-000003"]}`, nil)
 
 	result, err := schemaflux.SortResult(lines, schemaflux.NewSortOptions().WithCriteria("most expensive first"))
 	if err != nil {
@@ -356,7 +356,7 @@ func TestIntegrationSortResultReportsItsStrategy(t *testing.T) {
 // A sort of a list too short to have an order does not call a provider at all,
 // and says so rather than reporting the strategy it would have used.
 func TestIntegrationSortResultReportsTheTrivialCase(t *testing.T) {
-	withScriptedProvider(t, `{"ids":["i-000001"]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"ids":["i-000001"]}`, nil)
 
 	result, err := schemaflux.SortResult([]lineItem{invoiceLines()[0]},
 		schemaflux.NewSortOptions().WithCriteria("most expensive first"))
@@ -399,7 +399,7 @@ func TestIntegrationClusterRequiresAPartition(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			withScriptedProvider(t, tc.body, nil)
+			testfixtures.WithScriptedProvider(t, tc.body, nil)
 
 			result, err := schemaflux.Cluster(lines, schemaflux.NewClusterOptions())
 			if err == nil {
@@ -413,7 +413,7 @@ func TestIntegrationClusterRequiresAPartition(t *testing.T) {
 // Items because it is derived from them.
 func TestIntegrationClusterAcceptsAPartitionAndSizeAgrees(t *testing.T) {
 	lines := invoiceLines()
-	withScriptedProvider(t,
+	testfixtures.WithScriptedProvider(t,
 		`{"clusters":[{"name":"cheap","indices":[0,2]}],"outlier_indices":[1],"quality":0.8}`, nil)
 
 	result, err := schemaflux.Cluster(lines, schemaflux.NewClusterOptions())
