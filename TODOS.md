@@ -790,7 +790,7 @@ tests.
   `Exclude` into the prompt as a hint. Closes the mechanism half of **D-08**.
   *Verify:* an SSN present in the input never appears in the output, including when the model
   is instructed to echo it into an unrelated field.
-- [ ] **OP-302** — Compute `Lost`, `Inferred`, and `Mappings` in Go by diffing the source
+- [x] **OP-302** — Compute `Lost`, `Inferred`, and `Mappings` in Go by diffing the source
   field set against the produced output, instead of accepting the model's self-report as an
   audit trail (`project.go:258-283`, and the same shape in `pivot.go`, `enrich.go`,
   `normalize.go`). Closes **D-09** behaviorally.
@@ -801,6 +801,25 @@ tests.
   claim and kept out of the verification section of the envelope (**A-006**).
   *Verify (added):* an operation that asks the model for something Go already knows fails
   review; the deterministic and model-claimed halves of a result are separately addressable.
+  **Done for `Project`, the operation the review named.** `Lost` and `Inferred` are a set
+  difference over the field names the source and the projection actually carry — an audit
+  trail written by the thing being audited is not an audit trail, and a model that drops a
+  field and does not mention it produced a projection claiming to have lost nothing, whose
+  only evidence of the problem was the missing field itself.
+  The model's account is kept beside it as `ModelClaimedLost` and `ModelClaimedInferred`,
+  because where the two disagree the disagreement is the interesting part: a field the model
+  says it inferred and the diff says came from the source is a different problem from the
+  reverse.
+  The diff reads what the value *contains* rather than what its type declares, since
+  `omitempty` means a declared field can be absent and the question is what the caller
+  received. `Mappings` stays the model's, because a mapping is a claim about intent that no
+  diff can recover.
+  *Verify:* `internal/ops/project_audit_test.go` — a model that silently drops two fields and
+  invents one; a faithful projection reporting nothing, so the check is not merely
+  pessimistic; and an `omitempty` field absent from the output not being reported as inferred.
+  **Still open for `pivot.go`, `enrich.go`, and `normalize.go`**, which have the same shape.
+  Filed as **OP-308** below rather than left inside a closed task.
+
 - [x] **OP-303** — `NormalizeInput`: prefer JSON marshalling over `fmt.Stringer`
   (`utils.go:99-113`). Any type with a `String()` method — including `time.Time` — is sent as
   prose while the generated schema simultaneously tells the model the format is RFC3339.
@@ -2097,6 +2116,14 @@ commit and the test that proves it.
 | **P-013** | `9474687` | Measured, not assumed. `.audit/live/bench.py` and `bench2.py`, four runs each: terra 959ms/2050ms, sol 1594ms/3925ms, luna 1680ms/2094ms — **all three 4/4 correct on both tasks**. That supports one assignment and one only: `Quick` takes terra, fastest at no cost in accuracy. Smart and Fast stay on luna because nothing separated luna from sol, and sol was slowest on the harder task without being more accurate. See **P-017**. |
 
 ### Added during the work
+
+- [ ] **OP-308** — Apply **OP-302**'s deterministic diff to `Pivot`, `Enrich`, and
+  `Normalize`, which report the same model-authored `Lost` / `Inferred` / `Changes` audit
+  trail that `Project` did. The helpers (`jsonFieldNamesOfValue`, `missingFrom`) already
+  exist; what each one needs is a decision about what its diff *means* — a normalization's
+  changed values are not a field-set difference, so it needs a value diff rather than a name
+  diff, and that is why this is a separate task rather than a repeat of the same edit.
+  *Verify:* per operation, a model that silently drops a field is contradicted by the result.
 
 - [x] **CF-010** — **`MapReduce` dispatched chunks in random order, so `Concurrency: 1` was
   serialized but not sequential — and cancelling on the first failure saved nothing.** Found

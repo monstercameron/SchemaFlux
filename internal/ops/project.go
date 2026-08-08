@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/config"
@@ -61,11 +62,23 @@ type ProjectResult[U any] struct {
 	// Mappings describes how each field was mapped
 	Mappings []FieldMapping `json:"mappings"`
 
-	// Lost lists source fields that couldn't be projected
+	// Lost names source fields that do not appear in the projection, computed
+	// by diffing the two field sets rather than taken from the model.
 	Lost []string `json:"lost,omitempty"`
 
-	// Inferred lists target fields that were inferred (not from source)
+	// Inferred names projected fields with no counterpart in the source,
+	// computed the same way.
 	Inferred []string `json:"inferred,omitempty"`
+
+	// ModelClaimedLost and ModelClaimedInferred are the model's own account of
+	// the same two things.
+	//
+	// They are kept because where the computed and claimed sets disagree, the
+	// disagreement is the interesting part: a field the model says it inferred
+	// and the diff says came from the source is a different problem from the
+	// reverse. They are claims, not measurements, and are named so.
+	ModelClaimedLost     []string `json:"model_claimed_lost,omitempty"`
+	ModelClaimedInferred []string `json:"model_claimed_inferred,omitempty"`
 
 	// ModelConfidence in the projection quality (0.0-1.0)
 	ModelConfidence float64 `json:"confidence"`
@@ -277,7 +290,9 @@ Rules:
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Project operation failed: parse error", "error", err, "response", response)
+		// The response is the caller's record projected; it does not belong in
+		// a log line (X-03).
+		log.Error("Project operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse projection result: %w", err)
 	}
 
@@ -300,8 +315,27 @@ Rules:
 	}
 
 	result.Mappings = parsed.Mappings
-	result.Lost = parsed.Lost
-	result.Inferred = parsed.Inferred
+
+	// Lost and Inferred are computed, not reported.
+	//
+	// They were whatever the model said they were -- an audit trail written by
+	// the thing being audited. A model that drops a field and does not mention
+	// it produces a projection that claims to have lost nothing, and the
+	// caller's only evidence that something is missing is the thing that is
+	// missing. Both are now a set difference over the actual field names, which
+	// Go can compute exactly.
+	//
+	// The model's own account is kept alongside as a claim, because where the
+	// two disagree the disagreement is the interesting part: a field the model
+	// says it inferred and Go says came from the source is a different problem
+	// from the reverse.
+	sourceFields := jsonFieldNamesOfValue(input)
+	producedFields := jsonFieldNamesOfValue(result.Projected)
+
+	result.Lost = missingFrom(sourceFields, producedFields)
+	result.Inferred = missingFrom(producedFields, sourceFields)
+	result.ModelClaimedLost = parsed.Lost
+	result.ModelClaimedInferred = parsed.Inferred
 	result.ModelConfidence = parsed.ModelConfidence
 
 	log.Debug("Project operation succeeded",
@@ -335,4 +369,46 @@ func mergeProjectOptions(defaults, user ProjectOptions) ProjectOptions {
 		defaults.Context = user.Context
 	}
 	return defaults
+}
+
+// jsonFieldNamesOfValue returns the JSON field names a value actually carries,
+// by marshalling it and reading the keys.
+//
+// Marshalling rather than reflecting on the type is deliberate: `omitempty`
+// means a field declared on the struct may not be present in the output, and
+// the question here is what the projection *contains*, not what its type could
+// contain.
+func jsonFieldNamesOfValue(value any) map[string]struct{} {
+	names := map[string]struct{}{}
+
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return names
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		// Not an object -- a slice, a scalar, a string. There are no field
+		// names to diff, and reporting every element as lost would be worse
+		// than reporting nothing.
+		return names
+	}
+
+	for key := range object {
+		names[strings.ToLower(key)] = struct{}{}
+	}
+	return names
+}
+
+// missingFrom returns the names in `from` that do not appear in `in`, sorted so
+// the result is stable across runs.
+func missingFrom(from, in map[string]struct{}) []string {
+	var missing []string
+	for name := range from {
+		if _, present := in[name]; !present {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
 }
