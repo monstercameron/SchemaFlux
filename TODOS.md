@@ -1512,14 +1512,42 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   payload it proves does *not* reach an error string.
 - [ ] **CI-007** — Public API surface test: snapshot the exported symbols so an unintended
   addition or removal fails review. Depends on **PS-003**.
-- [ ] **DOC-001** — Rewrite the README against what the code does. Today it advertises
+- [x] **DOC-001** — Rewrite the README against what the code does. Today it advertises
   timeout control through context (dropped by 31 operations), cost tracking (zero or wrong for
   six of eight providers), retries for transient failures (classified by substring), and
   privacy filtering (a prompt hint).
-- [ ] **DOC-002** — Migration guide for the breaking changes: `Run(ctx)`, the `Mode`/`Speed`
+  **Done — and three of the four complaints had already been fixed by the code rather than by
+  the prose.** Context reaches every operation (**A-002**), cost is honest about being unknown
+  (**PR-001**), retries branch on status rather than substrings (**P-007**, **CB-03**), and
+  `Exclude` strips fields deterministically (**OP-301**). What the README was missing was any
+  account of *this* session's work, which is where a reader's assumptions now go wrong.
+  Added: a **What the type contract covers** section — the requiredness tag, what each mode
+  means now that Creative does not invent, where confidence floors are enforced and where
+  they are only an instruction, and `Validate`'s local rule path with its no-provider-call
+  case. And an honest cost section: unpriced is not free, no model is priced at another
+  model's rates, the history is bounded, budgets are edge-triggered and optionally enforcing.
+  *Verify:* `readme_claims_test.go` — ten claims each tied to the test file that proves the
+  behaviour, so removing the behaviour fails the doc test; plus a list of the review's false
+  claims (`privacy filtering`, `automatically redacts`, `guaranteed valid`) that must not
+  come back.
+- [x] **DOC-002** — Migration guide for the breaking changes: `Run(ctx)`, the `Mode`/`Speed`
   renumbering, `Confidence` removal, per-operation result structs collapsing into
   `Result[T]`, `Decide`'s signature, `Redact`'s options, `Complete` losing its provider
   parameter, and the `SCHEMAFLOW_*` to `SCHEMAFLUX_*` environment rename already shipped.
+  **Done as a README section rather than a new file**, per the standing rule about
+  unrequested Markdown: a migration note nobody finds is not a migration guide, and the
+  README is where a caller looks when their build breaks.
+  Nine changes, each saying what broke and what to write instead: the `Mode`/`Speed`
+  renumbering (**A-005**), `Classify`'s `~string` constraint (**OP-204**), `Categories` and
+  enforced `MaxCategories` (**OP-203**), `Complete` losing its provider parameter
+  (**OP-404**), `Redact`'s typed options (**OP-504**), enforced confidence floors
+  (**OP-201**), `Summarize`'s length check (**OP-402**), `ResetCostTracking` no longer
+  clearing budgets (**PR-004**), the removed Jaeger exporter, `Init` reporting an
+  unresolvable model (**P-015**), and the bounded cost history (**PR-003**).
+  *Verify:* `TestREADMEDocumentsTheBreakingChanges` fails if a note goes missing.
+  **Still to add when they land:** `Run(ctx)` (**A-013**) and the per-operation result structs
+  collapsing into `Result[T]` (**OP-401**), both still open. The `SCHEMAFLOW_*` to
+  `SCHEMAFLUX_*` rename shipped before this session and is in the Environment section.
 - [ ] **DOC-003** — Update `docs/engineering/backlog/PRODUCTION_TODO.md` to point here, or
   fold it in and delete it.
   **Revised:** fold it in. It is dated 2026-03-06 and most of it is now false or already

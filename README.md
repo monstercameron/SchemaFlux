@@ -311,6 +311,66 @@ The cases worth testing are the ones that cost money to reproduce:
 package global, so two parallel tests with different providers would silently
 share one. Failing loudly beats a flake nobody can reproduce.
 
+## What the type contract covers
+
+`Extract[Person]` gives you a `Person`. What that guarantees depends on the mode
+and on what you have told the library about your type, and the distinctions are
+worth knowing because they are the ones people assume away.
+
+**Required fields.** Say so with a tag:
+
+```go
+type Applicant struct {
+    Email  string  `json:"email"  schemaflux:"required"`
+    Middle *string `json:"middle"`                       // pointers are optional
+    Notes  string  `json:"notes,omitempty"`              // legacy: omitempty still means optional
+}
+```
+
+Requiredness used to be inferred from `omitempty` alone, which is a
+*serialization* directive — it tells `encoding/json` to leave a zero value out
+of the output. Reading it as "optional" cut both ways: adding `omitempty` to
+keep your JSON tidy silently made a field optional to `Strict()`, and a field
+you meant to be optional was required unless you knew the convention. The tag
+is explicit; the type is the next signal, since a pointer can be nil; and
+`omitempty` remains the fallback so existing types behave as they did.
+
+The same answer drives all three descriptions of the contract: the schema in the
+prompt, the JSON Schema sent to a provider that enforces one, and the check
+applied to the answer.
+
+**Modes.** `Strict()` requires every required field and validates recursively.
+`Transform()` infers what it reasonably can. `Creative()` reads the source as
+generously as possible — and does **not** invent: it used to instruct the model
+to "generate plausible values for missing fields", on the one operation whose
+purpose is faithfulness to a source. It now says the opposite out loud.
+
+**Confidence floors are enforced where a confidence is reported.** `Classify`,
+`Verify`, and `Derive` refuse a result the model itself scored below the floor
+you set — the option used to reach the prompt and never be read back, on
+operations whose defaults are 0.5, 0.6, and 0.7. `Filter` has no per-item score
+in its response, so its `MinConfidence` is documented as an instruction rather
+than a threshold.
+
+**Validation decides locally what it can.** `Validate`'s field rules are checked
+in Go when they are the kind of thing Go can check exactly:
+
+```go
+result, err := schemaflux.Validate(applicant, schemaflux.NewValidateOptions().
+    WithFieldRules(map[string]string{
+        "email":   "email",
+        "country": "iso3166-alpha2",
+        "age":     "min:18",
+        "tier":    "should sound premium",   // natural language: goes to the model
+    }))
+```
+
+`email`, `url`, `uuid`, `iso3166-alpha2`, `nonempty`, `min`, `max`, `minlen`,
+`maxlen`, `oneof:a|b|c`, and `regex:...` are decided locally. Anything else is
+passed through. If every rule is decidable there is **no provider call at all**,
+and the local findings survive the model's answer — a model that says "valid"
+does not overrule `mail.ParseAddress`.
+
 ## Reliability
 
 SchemaFlux treats the shared LLM path as infrastructure.
@@ -421,6 +481,33 @@ SchemaFlux records:
 - prompt, completion, cached, reasoning, and total USD cost when available
 
 Per-request cost history is tracked separately from low-cardinality aggregate metrics.
+
+**Unpriced is not free.** A model with no entry in the pricing table reports
+`Priced: false` and a zero cost, and those two things together mean "unknown".
+They are not the same as a zero cost with `Priced: true`, which would mean free.
+Check the flag before you add the numbers up:
+
+```go
+if !record.Cost.Priced {
+    // This call's cost is unknown, not zero. RegisterPricingModel, or exclude it.
+}
+```
+
+No model is ever priced at another model's rates. That substitution is what
+made an Opus call report Haiku's price — roughly 60x under — while presenting
+it as a precise figure. A dated snapshot (`gpt-5-2026-01-15`) still prices from
+its base model; a version bump (`gpt-5.6-luna`) does not, because it is a
+different model.
+
+**The history is bounded** at ten thousand records, oldest evicted;
+`SetCostHistoryLimit` changes it. `GetRequestCost` is a lookup rather than a
+scan. Aggregates describe the records still retained.
+
+**Budgets alert on an edge, and can enforce.** `SetBudget` fires its callback
+once per threshold crossing per period rather than on every request past 80%.
+`SetBudgetEnforcement(true)` makes an exhausted budget refuse calls *before*
+they are made, returning `pricing.ErrBudgetExceeded`; it is off by default,
+because budgets have been advisory here since the library shipped.
 
 ```go
 import (
@@ -604,3 +691,64 @@ the file contains.
 ## Compatibility
 
 The older direct-call function API still exists for existing consumers, but it is compatibility-only. New code should use the fluent builders shown here.
+
+### Breaking changes, and what to do about them
+
+These are behaviour changes that a recompile will not always catch. Each says
+what broke and what to write instead.
+
+**`Mode` and `Speed` renumbered so zero means unset.** `Strict` was `Mode(0)`
+and `Smart` was `Speed(0)`, and every option merge tests `if user.Mode != 0` —
+so on about ten operations there was no value you could pass that meant Strict
+or Smart. `ModeUnset` and `TierUnset` occupy zero now.
+
+- If you compared a `Mode` or `Speed` to an untyped `0`, compare it to
+  `schemaflux.ModeUnset` or `schemaflux.TierUnset` instead.
+- If you relied on a zero-valued options struct meaning Strict and Smart, say so
+  explicitly. An unset field now takes the operation's own default.
+
+**`Classify`'s category type is constrained to `~string`.** The category came
+back as a string and was converted through a JSON round trip, so
+`Classify[Ticket, Priority]` with `type Priority int` compiled and failed at run
+time. It is a compile error now. Use a string-kinded type:
+
+```go
+type Priority string    // was: type Priority int
+```
+
+**`ClassifyResult` gained `Categories []C`.** Additive. `MultiLabel` and
+`MaxCategories` previously changed the prompt and had nowhere to put an answer;
+`MaxCategories` is now enforced, so a model returning more labels than you asked
+for is an error rather than a longer list.
+
+**`Complete` and `CompleteField` no longer take a provider.** They were the only
+operations that did. Drop the argument; the client's provider is used, as with
+every other operation.
+
+**`Redact` takes typed options.** `Redact[T](input, opts ...interface{})` became
+`...RedactOptions`. Passing the wrong struct used to substitute the defaults
+silently; it is a compile error now.
+
+**Confidence floors are enforced.** `Classify`, `Verify`, and `Derive` return an
+error when the model's own reported confidence is below `MinConfidence`, whose
+defaults are 0.5, 0.6, and 0.7. If you were relying on low-confidence results
+coming back, set `WithMinConfidence(0)`.
+
+**`Summarize` checks `TargetLength`.** A summary more than 20% over the target
+is an error rather than a longer summary.
+
+**`ResetCostTracking` no longer clears budget configuration.** It used to null
+the limits and the callback, so clearing history silently disabled spend
+alerting. Use `ResetBudget` for that.
+
+**`SCHEMAFLUX_JAEGER_ENDPOINT` is no longer supported.** OpenTelemetry dropped
+the Jaeger exporter in 2023 and Jaeger accepts OTLP natively. Point
+`SCHEMAFLUX_OTLP_ENDPOINT` at the collector's OTLP port. Setting the old
+variable logs an error rather than silently exporting nothing.
+
+**`Init` returns an error for a provider it cannot resolve a model for.** It
+always had the error return; it now uses it. `WithProvider("qwen")` without
+`SCHEMAFLUX_MODEL` reports at construction instead of failing on the first call.
+
+**Cost history is bounded.** Ten thousand records by default, oldest evicted;
+`SetCostHistoryLimit` changes it. Aggregates describe the retained history.
