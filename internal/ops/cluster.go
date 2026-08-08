@@ -349,6 +349,42 @@ Return a JSON object with:
 		return result, fmt.Errorf("clustering failed: %w", err)
 	}
 
+	// The size limits, checked against the answer rather than only asked for.
+	//
+	// MinClusterSize and MaxClusterSize appeared in the prompt and nowhere
+	// else: a model was told the bounds and free to ignore them, and a caller
+	// who set MaxClusterSize(2) could receive a single cluster of everything
+	// with a nil error. That is the same shape as Conform returning nothing and
+	// Interpolate changing a sequence's length -- an option the library states
+	// and never verifies.
+	//
+	// Outliers are deliberately exempt. They are the leftover group rather than
+	// a cluster the model chose to form, and a single outlier is the normal
+	// case; applying a minimum to them would reject correct answers.
+	//
+	// NumClusters is deliberately NOT enforced. Its own doc calls it a "Target
+	// number of clusters (0 for auto-detection)", and a target is a hint --
+	// refusing an answer that found four natural groups when three were
+	// suggested would be the library overriding the judgement it asked for.
+	// Recorded here so the next reader knows the omission was a decision.
+	for _, c := range parsed.Clusters {
+		size := len(c.Indices)
+		if opts.MinClusterSize > 0 && size < opts.MinClusterSize {
+			log.Error("Cluster operation failed: a cluster is below the minimum size",
+				"size", size, "minimum", opts.MinClusterSize)
+			return result, fmt.Errorf(
+				"clustering failed: a cluster holds %d item(s) and MinClusterSize is %d",
+				size, opts.MinClusterSize)
+		}
+		if opts.MaxClusterSize > 0 && size > opts.MaxClusterSize {
+			log.Error("Cluster operation failed: a cluster is above the maximum size",
+				"size", size, "maximum", opts.MaxClusterSize)
+			return result, fmt.Errorf(
+				"clustering failed: a cluster holds %d item(s) and MaxClusterSize is %d",
+				size, opts.MaxClusterSize)
+		}
+	}
+
 	// Build cluster result
 	for _, c := range parsed.Clusters {
 		cluster := ClusterInfo[T]{

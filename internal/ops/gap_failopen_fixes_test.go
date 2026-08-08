@@ -112,3 +112,84 @@ func TestInterpolateStillAcceptsAValidAnswerWhenGapsWereNotDeclared(t *testing.T
 		t.Errorf("result = %+v, want the gap at index 1 filled with 20", result.Complete)
 	}
 }
+
+// Cluster's size limits, checked against the answer rather than only asked for.
+//
+// MinClusterSize and MaxClusterSize appeared in the prompt and nowhere else, so
+// a caller who set MaxClusterSize(2) could receive one cluster holding
+// everything, with a nil error.
+func TestClusterEnforcesItsSizeLimitsAgainstTheAnswer(t *testing.T) {
+	items := []string{"a", "b", "c", "d"}
+
+	// One cluster holding all four indices.
+	const oneBigCluster = `{"clusters":[{"name":"all","indices":[0,1,2,3],"keywords":[]}],"outlier_indices":[],"quality":0.9}`
+
+	t.Run("above the maximum is refused", func(t *testing.T) {
+		withResponse(t, oneBigCluster)
+
+		_, err := Cluster(items, NewClusterOptions().WithMaxClusterSize(2))
+		if err == nil {
+			t.Fatal("a 4-item cluster was accepted with MaxClusterSize(2)")
+		}
+		if !strings.Contains(err.Error(), "MaxClusterSize") {
+			t.Errorf("the error does not name the violated limit: %v", err)
+		}
+	})
+
+	t.Run("below the minimum is refused", func(t *testing.T) {
+		// Four singleton clusters, against a minimum of 2.
+		withResponse(t, `{"clusters":[
+			{"name":"a","indices":[0],"keywords":[]},
+			{"name":"b","indices":[1],"keywords":[]},
+			{"name":"c","indices":[2],"keywords":[]},
+			{"name":"d","indices":[3],"keywords":[]}
+		],"outlier_indices":[],"quality":0.9}`)
+
+		_, err := Cluster(items, NewClusterOptions().WithMinClusterSize(2))
+		if err == nil {
+			t.Fatal("singleton clusters were accepted with MinClusterSize(2)")
+		}
+		if !strings.Contains(err.Error(), "MinClusterSize") {
+			t.Errorf("the error does not name the violated limit: %v", err)
+		}
+	})
+
+	t.Run("within the limits is accepted", func(t *testing.T) {
+		withResponse(t, `{"clusters":[
+			{"name":"first","indices":[0,1],"keywords":[]},
+			{"name":"second","indices":[2,3],"keywords":[]}
+		],"outlier_indices":[],"quality":0.9}`)
+
+		result, err := Cluster(items, NewClusterOptions().WithMinClusterSize(2).WithMaxClusterSize(2))
+		if err != nil {
+			t.Fatalf("a conforming answer was refused: %v", err)
+		}
+		if len(result.Clusters) != 2 {
+			t.Errorf("got %d clusters, want 2", len(result.Clusters))
+		}
+	})
+
+	// Outliers are the leftover group, not a cluster the model chose to form,
+	// and a single outlier is the normal case. Applying the minimum to them
+	// would reject correct answers.
+	t.Run("a lone outlier does not violate the minimum", func(t *testing.T) {
+		withResponse(t, `{"clusters":[
+			{"name":"most","indices":[0,1,2],"keywords":[]}
+		],"outlier_indices":[3],"quality":0.9}`)
+
+		if _, err := Cluster(items, NewClusterOptions().WithMinClusterSize(2)); err != nil {
+			t.Errorf("a single outlier was treated as an undersized cluster: %v", err)
+		}
+	})
+
+	// NumClusters is a target, not a requirement -- its own doc says so. An
+	// answer that found a different number of natural groups must still be
+	// accepted, or the library overrides the judgement it asked for.
+	t.Run("a different cluster count than requested is still accepted", func(t *testing.T) {
+		withResponse(t, oneBigCluster)
+
+		if _, err := Cluster(items, NewClusterOptions().WithNumClusters(3)); err != nil {
+			t.Errorf("NumClusters was enforced as a requirement; it is documented as a target: %v", err)
+		}
+	})
+}
