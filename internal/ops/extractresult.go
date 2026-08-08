@@ -25,11 +25,54 @@ func ExtractResult[T any](input any, opts ExtractOptions) (types.Result[T], erro
 	meta := envelopeFrom(records.collect(), "extract")
 	meta.RequestedContract = requestedContractFor(opts)
 	meta.DeliveredContract, meta.Checks = deliveredContractFor(opts, err)
+	meta.Provenance = extractProvenance(input, opts, meta)
 
 	if err != nil {
 		return types.Result[T]{Meta: meta}, err
 	}
 	return types.Result[T]{Value: value, Meta: meta}, nil
+}
+
+// extractProvenance builds TC-003's lineage for this path.
+//
+// It was missing, and the consequence reached further than an empty field.
+// Extract is the operation most callers start a pipeline with, and
+// Meta.Provenance.ResultID is what a NEXT stage puts in its ParentResultIDs --
+// so with no ID there was nothing downstream could reference, and lineage was
+// unreachable from the public API's main entrypoint. The mechanism worked
+// everywhere it was implemented (RunOpResult) and was absent where callers
+// actually are. Found by chaining two operations end to end, which nothing did
+// until now.
+//
+// This does not reuse buildProvenance because that takes an Op[In, Out] and
+// this path does not run through the kernel -- Extract has its own decode and
+// repair loop. What it can honestly report, it reports; what it cannot, it
+// leaves empty rather than guessing:
+//
+//   - NormalizersApplied is empty. This path applies no normalizer, so naming
+//     one would be a claim about work that did not happen.
+//   - ItemRecoveryPath is empty. Extract's repair loop is inside Extract and
+//     does not report its attempt count back here, so "first attempt" would be
+//     asserting something unobserved. Meta.Repairs (from the call records) is
+//     the honest signal for that today.
+func extractProvenance(input any, opts ExtractOptions, meta types.Meta) types.Provenance {
+	opt := opts.toOpOptions()
+
+	return types.Provenance{
+		ResultID: types.NewResultID(),
+		// Copied, not aliased: a Provenance sharing its backing array with an
+		// OpOptions the caller mutates afterwards would make Meta a moving
+		// target.
+		ParentResultIDs:  append([]string(nil), opt.ParentResultIDs...),
+		InputDigest:      types.DigestValue(input),
+		SchemaDigest:     opt.SchemaID,
+		OperationVersion: extractOpMeta.ID.String(),
+		PromptVersion:    extractOpMeta.ID.Version,
+		ResolvedModel:    meta.Model,
+		CacheUsed:        meta.CacheHitRatio > 0,
+		LibraryVersion:   types.Version,
+		AdapterVersion:   meta.Provider,
+	}
 }
 
 // requestedContractFor reports what the caller asked for.
