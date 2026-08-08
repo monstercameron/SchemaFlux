@@ -328,42 +328,88 @@ func TestCompress_RetainFieldsIsNotCheckedAgainstUnstructuredOutput(t *testing.T
 	}
 }
 
-// Arbitrate's RequireAllRules is stated in the prompt ("disqualify any
-// option that fails ANY rule") but the winner's own Evaluations entry is
-// never checked for Disqualified before it is returned as the winner.
-// arbitrate.go:235-238,313-329.
-func TestAudit_Arbitrate_DisqualifiedWinnerNeverChecked(t *testing.T) {
+// A winner the model itself disqualified is a self-contradictory answer, and it
+// was being returned as the decision. This holds under any options: the
+// disqualification is the model's own claim, and refusing to act on a claim it
+// just made is not second-guessing it.
+func TestArbitrate_RefusesAWinnerItDisqualified(t *testing.T) {
+	type candidate struct {
+		Name string `json:"name"`
+	}
 	withResponse(t, `{
 		"winner_index": 1,
-		"scores": {"0": 0.9, "1": 0.95},
+		"scores": {"0": 0.4, "1": 0.9},
 		"evaluations": [
-			{"index": 0, "total_score": 0.9, "disqualified": false},
-			{"index": 1, "total_score": 0.95, "disqualified": true, "disqualify_reason": "failed rule 1"}
+			{"index": 0, "total_score": 0.4, "disqualified": false},
+			{"index": 1, "total_score": 0.9, "disqualified": true, "disqualify_reason": "fails the income rule"}
 		],
-		"reasoning": "option 1 scored highest",
-		"confidence": 0.8
+		"reasoning": "picked the disqualified one anyway",
+		"confidence": 0.9
 	}`)
 
-	result, err := Arbitrate([]string{"option A", "option B"}, ArbitrateOptions{
-		Rules:           []string{"must satisfy rule 1"},
-		RequireAllRules: true,
-	})
+	_, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}}, ArbitrateOptions{Rules: []string{"some rule"}})
+	if err == nil {
+		t.Fatal("Arbitrate returned a winner it had marked disqualified")
+	}
+	if !strings.Contains(err.Error(), "disqualified") {
+		t.Fatalf("the error does not name the contradiction: %v", err)
+	}
+}
+
+// RequireAllRules is stated in the prompt as "disqualify any option that fails
+// ANY rule" and was checked nowhere, so the winner could be an option with a
+// failing rule result -- the single thing the flag exists to prevent.
+func TestArbitrate_RefusesAWinnerFailingARuleUnderRequireAllRules(t *testing.T) {
+	type candidate struct {
+		Name string `json:"name"`
+	}
+	withResponse(t, `{
+		"winner_index": 0,
+		"scores": {"0": 0.9},
+		"evaluations": [
+			{"index": 0, "total_score": 0.9, "disqualified": false,
+			 "rule_results": [{"rule": "some rule", "passed": false, "reasoning": "did not meet it"}]}
+		],
+		"reasoning": "best of a bad bunch",
+		"confidence": 0.9
+	}`)
+
+	_, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}},
+		ArbitrateOptions{Rules: []string{"some rule"}, RequireAllRules: true})
+	if err == nil {
+		t.Fatal("Arbitrate returned a winner with a failing rule under RequireAllRules")
+	}
+	if !strings.Contains(err.Error(), "RequireAllRules") {
+		t.Fatalf("the error does not name the flag it violated: %v", err)
+	}
+}
+
+// The companion case: the same failing rule, without the flag. RequireAllRules
+// is what turns a failed rule into a disqualification, so without it the
+// evaluation is reported and the winner stands.
+func TestArbitrate_AFailedRuleIsNotFatalWithoutRequireAllRules(t *testing.T) {
+	type candidate struct {
+		Name string `json:"name"`
+	}
+	withResponse(t, `{
+		"winner_index": 0,
+		"scores": {"0": 0.9},
+		"evaluations": [
+			{"index": 0, "total_score": 0.9, "disqualified": false,
+			 "rule_results": [{"rule": "some rule", "passed": false, "reasoning": "did not meet it"}]}
+		],
+		"reasoning": "best of a bad bunch",
+		"confidence": 0.9
+	}`)
+
+	result, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}},
+		ArbitrateOptions{Rules: []string{"some rule"}})
 	if err != nil {
-		t.Fatalf("Arbitrate returned an error for a response that named its own winner disqualified: %v", err)
+		t.Fatalf("Arbitrate refused a failed rule with RequireAllRules unset: %v", err)
 	}
-	if result.WinnerIndex != 1 {
-		t.Fatalf("test setup broken: expected winner index 1, got %d", result.WinnerIndex)
+	if result.Winner.Name != "a" {
+		t.Fatalf("Winner = %+v, want the option at index 0", result.Winner)
 	}
-	var winnerDisqualified bool
-	for _, e := range result.Evaluations {
-		if e.Index == result.WinnerIndex {
-			winnerDisqualified = e.Disqualified
-		}
-	}
-	if !winnerDisqualified {
-		t.Fatalf("test setup broken: expected the winner's own evaluation to report disqualified=true")
-	}
-	t.Logf("accepted option %d as the winner under RequireAllRules while its own evaluation reported disqualified=true, no error", result.WinnerIndex)
 }
 
 // Enrich's AddOnly value-mutation gap (a field the model overwrites was
@@ -457,56 +503,44 @@ func TestVerify_RefusesAClaimCitingASourceThatDoesNotExist(t *testing.T) {
 	}
 }
 
-// Decompose's MaxDepth is stated in the prompt as a hard ceiling ("Maximum
-// depth: %d", decompose.go:277,298) -- not phrased as a target the way
-// TargetParts is ("Target approximately %d parts.", decompose.go:246) -- but
-// the returned parts' Depth values are only used to compute
-// result.MaxDepth (the observed maximum), never compared against
-// opts.MaxDepth (decompose.go:370-377). A response nesting parts twice as
-// deep as requested is returned as success.
-func TestAudit_Decompose_MaxDepthNeverChecked(t *testing.T) {
-	type step struct {
-		Label string `json:"label"`
-	}
+// Decompose's MaxDepth is phrased as a ceiling in the prompt, unlike
+// TargetParts, which is explicitly a hint -- and it was compared against
+// nothing, so the depth Decompose measures for its own result could sail past
+// the caller's limit and be reported as the answer.
+func TestDecompose_RefusesADecompositionDeeperThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"parts": [
-			{"id": "a", "name": "root", "content": {"label": "root"}, "depth": 0, "order": 1},
-			{"id": "b", "name": "child", "content": {"label": "child"}, "parent_id": "a", "depth": 1, "order": 2},
-			{"id": "c", "name": "grandchild", "content": {"label": "grandchild"}, "parent_id": "b", "depth": 2, "order": 3},
-			{"id": "d", "name": "great-grandchild", "content": {"label": "gg"}, "parent_id": "c", "depth": 3, "order": 4}
+			{"id": "1", "name": "a", "depth": 1, "content": "part a"},
+			{"id": "2", "name": "b", "depth": 3, "content": "part b"}
 		],
-		"root_parts": ["a"]
+		"root_parts": ["1"]
 	}`)
 
-	result, err := Decompose(step{Label: "some complex task"}, NewDecomposeOptions().WithMaxDepth(1))
-	if err != nil {
-		t.Fatalf("Decompose returned an error for a response that merely exceeded MaxDepth: %v", err)
+	_, err := Decompose[string]("something to break down", NewDecomposeOptions().WithMaxDepth(1))
+	if err == nil {
+		t.Fatal("Decompose accepted a depth-3 part against a MaxDepth of 1")
 	}
-	if result.MaxDepth <= 1 {
-		t.Fatalf("test setup broken: expected an observed max depth greater than the MaxDepth cap of 1, got %d", result.MaxDepth)
+	if !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("the error does not name the depth it exceeded: %v", err)
 	}
-	t.Logf("accepted parts nested to depth %d against a MaxDepth of 1 with no error", result.MaxDepth)
 }
 
-// Suggest's TopN is stated in the prompt as a request ("Return top %d
-// suggestions", suggest.go:204), and unlike AtMost in invariants.go -- built
-// for exactly this -- an over-limit answer is truncated in place rather than
-// rejected (suggest.go:261-262,274-275,305-306). AGENTS.md's own AtMost
-// comment names this failure mode directly: silent truncation "turns a model
-// that ignored the instruction into a result that looks obedient," which
-// means a caller has no way to notice the model is routinely ignoring TopN
-// short of counting on every call themselves.
-func TestAudit_Suggest_OverLimitAnswerTruncatedNotRejected(t *testing.T) {
-	withResponse(t, `{"suggestions": ["a", "b", "c", "d", "e"]}`)
+func TestDecompose_AcceptsADecompositionInsideTheDepthLimit(t *testing.T) {
+	withResponse(t, `{
+		"parts": [
+			{"id": "1", "name": "a", "depth": 1, "content": "part a"},
+			{"id": "2", "name": "b", "depth": 2, "content": "part b"}
+		],
+		"root_parts": ["1"]
+	}`)
 
-	result, err := Suggest[string]("some input", NewSuggestOptions().WithTopN(2))
+	result, err := Decompose[string]("something to break down", NewDecomposeOptions().WithMaxDepth(2))
 	if err != nil {
-		t.Fatalf("Suggest returned an error for a response that merely exceeded TopN: %v", err)
+		t.Fatalf("Decompose refused a decomposition inside its depth limit: %v", err)
 	}
-	if len(result) != 2 {
-		t.Fatalf("test setup broken: expected the truncated result to have exactly TopN=2 entries, got %d: %v", len(result), result)
+	if result.MaxDepth != 2 {
+		t.Fatalf("MaxDepth = %d, want the measured depth of 2", result.MaxDepth)
 	}
-	t.Logf("the model returned 5 suggestions against a TopN of 2; Suggest silently truncated to %v with no error, so a model that routinely ignores TopN is indistinguishable from one that honors it", result)
 }
 
 // Score's ScaleMin/ScaleMax are stated in the prompt three times ("Score

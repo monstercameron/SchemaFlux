@@ -258,8 +258,15 @@ Rules:
 	var suggestions []T
 	if err := ParseJSONStrict(response, &suggestions); err == nil {
 		// Successfully parsed as array
-		if len(suggestions) > opts.TopN {
-			suggestions = suggestions[:opts.TopN]
+		// Silent truncation was the anti-pattern AtMost's own doc comment names:
+		// it "turns a model that ignored the instruction into a result that
+		// looks obedient". A caller asking for three and getting seven should
+		// find out, rather than receiving a plausible three with no sign that
+		// the ranking they are about to trust was cut down locally.
+		if err := AtMost(suggestions, opts.TopN); err != nil {
+			log.Error("Suggest returned more suggestions than requested",
+				"requestID", opts.CommonOptions.RequestID, "error", err)
+			return nil, fmt.Errorf("suggest: %w", err)
 		}
 		log.Debug("Suggest operation succeeded", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))
 		return suggestions, nil
@@ -271,8 +278,10 @@ Rules:
 	}
 	if err := ParseJSONStrict(response, &result); err == nil && len(result.Suggestions) > 0 {
 		suggestions = result.Suggestions
-		if len(suggestions) > opts.TopN {
-			suggestions = suggestions[:opts.TopN]
+		if err := AtMost(suggestions, opts.TopN); err != nil {
+			log.Error("Suggest returned more suggestions than requested",
+				"requestID", opts.CommonOptions.RequestID, "error", err)
+			return nil, fmt.Errorf("suggest: %w", err)
 		}
 		log.Debug("Suggest operation succeeded", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))
 		return suggestions, nil
@@ -302,8 +311,10 @@ Rules:
 			}
 		}
 		if len(extracted) > 0 {
-			if len(extracted) > opts.TopN {
-				extracted = extracted[:opts.TopN]
+			if err := AtMost(extracted, opts.TopN); err != nil {
+				log.Error("Suggest returned more suggestions than requested",
+					"requestID", opts.CommonOptions.RequestID, "error", err)
+				return nil, fmt.Errorf("suggest: %w", err)
 			}
 			log.Debug("Suggest operation succeeded (extracted)", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(extracted))
 			return extracted, nil

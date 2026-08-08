@@ -654,14 +654,27 @@ func TestSynthesizeSurfacesLLMFailure(t *testing.T) {
 // ===================== suggest.go =====================
 
 func TestSuggestParsesDirectArray(t *testing.T) {
-	installMiscResponse(t, `["do this", "then that", "finally this"]`)
+	installMiscResponse(t, `["do this", "then that"]`)
 
 	suggestions, err := Suggest[string]("some context", NewSuggestOptions().WithTopN(2))
 	if err != nil {
 		t.Fatalf("Suggest: %v", err)
 	}
 	if len(suggestions) != 2 {
-		t.Fatalf("suggestions = %v, want truncated to TopN=2", suggestions)
+		t.Fatalf("suggestions = %v, want both parsed out of the direct array", suggestions)
+	}
+}
+
+// Suggest used to truncate an over-limit answer to TopN and report success,
+// which is the anti-pattern AtMost's own doc comment names: it turns a model
+// that ignored the instruction into a result that looks obedient. A caller
+// asking for two and getting three should find out, rather than receiving a
+// plausible two with no sign that the ranking was cut down locally.
+func TestSuggestRefusesMoreSuggestionsThanRequested(t *testing.T) {
+	installMiscResponse(t, `["do this", "then that", "finally this"]`)
+
+	if _, err := Suggest[string]("some context", NewSuggestOptions().WithTopN(2)); err == nil {
+		t.Fatal("Suggest accepted three suggestions against a TopN of 2")
 	}
 }
 

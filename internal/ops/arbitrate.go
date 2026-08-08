@@ -334,6 +334,40 @@ Rules:
 		result.Scores[idx] = score
 	}
 
+	// A winner the model itself disqualified is a self-contradictory answer, and
+	// it was being returned as the decision. This holds under any options: the
+	// disqualification is the model's own claim, and refusing to act on a claim
+	// it just made is not second-guessing it.
+	for _, evaluation := range result.Evaluations {
+		if evaluation.Index == result.WinnerIndex && evaluation.Disqualified {
+			log.Error("Arbitrate selected an option it had disqualified", "winnerIndex", result.WinnerIndex)
+			return result, fmt.Errorf(
+				"arbitrate: option %d was selected as the winner and also marked disqualified", result.WinnerIndex)
+		}
+	}
+
+	// RequireAllRules is stated in the prompt as "disqualify any option that
+	// fails ANY rule" and was checked nowhere, so the winner could be an option
+	// with a failing rule result -- which is the single thing the flag exists to
+	// prevent. Only the winner is held to it: the other options' evaluations are
+	// reported for the caller to read, and an option that failed a rule is
+	// exactly what a disqualification looks like.
+	if opt.RequireAllRules {
+		for _, evaluation := range result.Evaluations {
+			if evaluation.Index != result.WinnerIndex {
+				continue
+			}
+			for _, rule := range evaluation.RuleResults {
+				if !rule.Passed {
+					log.Error("Arbitrate selected a winner that failed a rule under RequireAllRules",
+						"winnerIndex", result.WinnerIndex)
+					return result, fmt.Errorf(
+						"arbitrate: RequireAllRules is set and the winning option %d failed a rule", result.WinnerIndex)
+				}
+			}
+		}
+	}
+
 	log.Debug("Arbitrate operation succeeded",
 		"winnerIndex", result.WinnerIndex,
 		"confidence", result.ModelConfidence,

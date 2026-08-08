@@ -379,6 +379,19 @@ Return a JSON object with:
 		}
 	}
 
+	// MaxDepth is phrased as a ceiling in the prompt, unlike TargetParts, which
+	// is explicitly a hint -- and it was compared against nothing, so the
+	// measured depth two lines above could sail past the caller's limit and be
+	// reported as the answer. A caller who caps depth is usually sizing a
+	// recursive walk downstream.
+	if opts.MaxDepth > 0 && result.MaxDepth > opts.MaxDepth {
+		log.Error("Decompose produced parts deeper than the requested maximum",
+			"depth", result.MaxDepth, "maxDepth", opts.MaxDepth)
+		return result, fmt.Errorf(
+			"decompose: the decomposition reached depth %d, above the requested maximum of %d",
+			result.MaxDepth, opts.MaxDepth)
+	}
+
 	log.Debug("Decompose operation succeeded", "totalParts", result.TotalParts, "maxDepth", result.MaxDepth)
 	return result, nil
 }
