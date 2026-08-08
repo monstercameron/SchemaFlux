@@ -499,3 +499,12 @@ func balancedFrom(text string, start int, open, close byte) (string, bool) {
 	}
 	return "", false
 }
+
+// ShapedMockResponse exposes the shaping to schemafluxtest, whose Shaped mode
+// answers from the request's declared shape when a test has scripted nothing.
+//
+// It is exported from an internal package, so it reaches the test double inside
+// this module and no further.
+func ShapedMockResponse(req CompletionRequest) string {
+	return mockShapedResponse(req)
+}

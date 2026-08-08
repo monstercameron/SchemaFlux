@@ -38,6 +38,7 @@ import (
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/llm"
 )
 
 // Provider is a fake LLM provider. Its zero value is not usable; call New.
@@ -51,6 +52,10 @@ type Provider struct {
 	requests []schemaflux.CompletionRequest
 	usage    schemaflux.TokenUsage
 	name     string
+
+	// shaped answers from the request's own declared shape when nothing is
+	// scripted. See Shaped.
+	shaped bool
 }
 
 // New returns a provider that replies with an empty JSON object until told
@@ -60,6 +65,28 @@ func New() *Provider {
 		replies: []string{"{}"},
 		name:    "local",
 	}
+}
+
+// Shaped makes the provider answer with whatever shape the request declared --
+// its JSON Schema, or the JSON template in its system prompt -- instead of the
+// empty object it replies with by default.
+//
+// It is for tests that care about what was *sent*: golden prompts, request
+// shape, cost accounting. Without it, those tests have to script a body per
+// operation just to get past the parse, which is a lot of fixture for a
+// question that is not about the answer.
+//
+// A scripted reply always wins. This is a fallback, not a mode, and the values
+// it produces are obviously synthetic -- anything that needs a particular
+// answer should say so with Reply.
+func (p *Provider) Shaped() *Provider {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.shaped = true
+	// The constructor's default reply is what Shaped replaces; a caller who
+	// wants both scripts one with Reply after this.
+	p.replies = nil
+	return p
 }
 
 // Reply sets the bodies the provider returns, in order. The last one repeats
@@ -214,6 +241,16 @@ func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionReques
 	}
 
 	body := "{}"
+	if p.shaped && len(replies) == 0 {
+		// No scripted reply, and the caller asked for shape rather than
+		// silence: answer whatever the request declared. `{}` is a valid JSON
+		// object and an invalid answer to almost every operation, so a test
+		// that only cares about *what was sent* would otherwise have to script
+		// a body per operation to get past the parse.
+		if shaped := llm.ShapedMockResponse(req); shaped != "" {
+			body = shaped
+		}
+	}
 	if len(replies) > 0 {
 		replyIndex := position - len(errs)
 		if replyIndex < 0 {

@@ -383,10 +383,26 @@ to test code that uses this library without paying a provider.
   expected failure classification — otherwise a replay proves the parser works and nothing
   about whether the runtime classified the failure the same way. Replay drives the real
   adapter and the real executor path, not a shortcut through the parser.
-- [ ] **TI-004** — Golden-prompt tests: for each operation, snapshot the exact rendered system
+- [x] **TI-004** — Golden-prompt tests: for each operation, snapshot the exact rendered system
   and user prompt for a fixed input. Prompt changes then become reviewable diffs instead of
   silent behavior changes for every downstream user. Closes the testing half of **Gap-13**.
   *Verify:* editing any prompt literal fails a golden test until the snapshot is updated.
+  **Done** — `testdata/golden_prompts.txt`, 470 lines covering fourteen operations and
+  variants: `Extract` in each of the three modes and with steering, plus `Classify`,
+  `Summarize`, `Choose`, `Filter`, `Sort`, `Validate`, `Transform`, `Generate`, `Score`, and
+  `Compare`. Each records the response format, whether a JSON Schema went with it, and the
+  full system and user prompts for a fixed, deliberately boring input — a varying input would
+  make every diff unreadable.
+  The failure output shows the first differing line with context rather than the whole corpus,
+  and says why it matters: a prompt is behaviour, so this changes what every caller gets back
+  with no Go API change to show for it.
+  *Verify:* the snapshot passes, and editing one word of the extraction prompt was confirmed
+  to fail it with that line printed.
+  **Needed a new test-double capability**, which is useful on its own: `schemafluxtest`'s
+  provider gained `Shaped()`, answering from the request's own declared shape when nothing is
+  scripted. Without it a prompt test has to script a body per operation just to get past the
+  parse — a lot of fixture for a question that is not about the answer.
+  This is what **PS-007** versions: you cannot version an artifact you cannot see.
 - [x] **TI-005** — Determinism test: build the same prompt twice from identical options and
   assert byte equality. This currently **fails** — Go map iteration order randomizes prompt
   bytes (see **CA-001**). Write it now so the fix has a witness.

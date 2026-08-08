@@ -1,0 +1,470 @@
+=== Choose
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a selection expert. Choose the best option from the provided list.
+
+Rules:
+- Evaluate all options carefully against the criteria
+- Select the single most appropriate option that MATCHES ALL criteria
+- Return the COMPLETE selected option as a JSON object
+- Return ONLY the JSON object of your choice, nothing else
+- Do NOT wrap in markdown code blocks
+- Pay close attention to constraints like price limits and requirements
+
+Additional instructions:
+Provide reasoning for your choice. Use scoring strategy
+--- user
+Selection Requirements: Provide reasoning for your choice. Use scoring strategy
+
+Choose the best option from this list:
+[{"id":"T-1","subject":"charged twice","amount":42.5},{"id":"T-2","subject":"cannot log in","amount":0}]
+
+=== Classify
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a classification expert. Classify the input into the most appropriate category.
+
+Available Categories: ["billing","technical"]
+
+Rules:
+- Choose the most appropriate category based on semantic meaning
+- Provide a confidence score between 0.0 and 1.0
+- Include alternative classifications if relevant (sorted by confidence)
+- Provide brief reasoning for the classification
+
+Return a JSON object with these fields:
+- "category": the primary category (must be one of the available categories)
+- "confidence": number between 0 and 1
+- "alternatives": array of {category, confidence} for other relevant categories
+- "reasoning": brief explanation of the classification
+
+Additional instructions:
+Minimum confidence: 0.50
+--- user
+Classify this input:
+charged twice
+
+=== Compare
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a comparison expert. Analyze and compare two items, identifying similarities and differences.
+
+Comparison Aspects: null
+
+Rules:
+- Calculate an overall similarity score between 0.0 and 1.0
+- Identify specific similarities with descriptions
+- Identify specific differences with descriptions and severity (minor/moderate/major)
+- Provide a brief verdict summarizing the comparison
+- If aspects are specified, provide per-aspect similarity scores
+
+Return a JSON object with these fields:
+- "similarity_score": number between 0 and 1
+- "similarities": array of {aspect, description}
+- "differences": array of {aspect, description, severity}
+- "verdict": brief summary of the comparison
+- "aspect_scores": object with aspect names as keys and similarity scores as values
+
+Additional instructions:
+Focus on: both. Depth level: 5/10. Report a similarity score alongside the differences, not only what differs
+--- user
+Compare these two items:
+
+Item A:
+{"id":"T-1","subject":"charged twice","amount":42.5}
+
+Item B:
+{"id":"T-2","subject":"cannot log in","amount":0}
+
+=== Extract
+--- response format: json
+--- json schema: true
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data extraction expert. Extract structured data from the input and return it as JSON.
+Target schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Rules:
+- Extract all relevant information that maps to the schema
+- Return ONLY valid JSON, no explanations or markdown
+- Infer missing fields intelligently when possible
+- Use reasonable defaults for missing data
+- Be flexible with type conversions
+- Preserve as much information as possible
+--- user
+Extract structured data from this input:
+The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
+
+=== Extract_Creative
+--- response format: json
+--- json schema: true
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data extraction expert. Extract structured data from the input and return it as JSON.
+Target schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Rules:
+- Extract all relevant information that maps to the schema
+- Return ONLY valid JSON, no explanations or markdown
+- Interpret ambiguous or loosely-worded data generously
+- Use context elsewhere in the input to resolve what a field refers to
+- Accept values that are implied rather than stated, where the implication is clear
+- Leave a field null when the input does not support a value: do NOT invent one
+--- user
+Extract structured data from this input:
+The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
+
+=== Extract_Steered
+--- response format: json
+--- json schema: true
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data extraction expert. Extract structured data from the input and return it as JSON.
+Target schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Rules:
+- Extract all relevant information that maps to the schema
+- Return ONLY valid JSON, no explanations or markdown
+- Infer missing fields intelligently when possible
+- Use reasonable defaults for missing data
+- Be flexible with type conversions
+- Preserve as much information as possible
+
+Additional instructions:
+Use only facts explicitly present
+--- user
+Extract structured data from this input:
+The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
+
+=== Extract_Strict
+--- response format: json
+--- json schema: true
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data extraction expert. Extract structured data from the input and return it as JSON.
+Target schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Rules:
+- Extract all relevant information that maps to the schema
+- Return ONLY valid JSON, no explanations or markdown
+- All required fields MUST be present and valid
+- Fail if any required field cannot be extracted
+- Use null only for explicitly optional fields
+- Validate data types strictly
+--- user
+Extract structured data from this input:
+The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
+
+=== Filter
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a filtering expert. Filter items based on the specified criteria.
+
+Rules:
+- Evaluate each item against the criteria
+- Return the items that match the criteria and discard the rest
+- Return every kept item exactly as it was given, byte for byte; do not edit, reformat, or invent values
+- Return a JSON array containing the COMPLETE objects that should be kept
+- If the items are primitive values like strings, return a JSON array of those same primitive values
+- Never return an object wrapper such as {} or {"item": ...}
+- Return ONLY the JSON array of objects, nothing else
+- Do NOT wrap in markdown code blocks
+
+Examples:
+- Input ["a", "b"] -> Output ["a"]
+- Input [{"id":1},{"id":2}] -> Output [{"id":2}]
+
+Additional instructions:
+Filter criteria: billing problems. Keep items that match the criteria. Minimum confidence: 0.70
+--- user
+Filter these items:
+[{"id":"T-1","subject":"charged twice","amount":42.5},{"id":"T-2","subject":"cannot log in","amount":0}]
+
+=== Generate
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data generation expert. Generate structured data based on the prompt.
+
+Target schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Generation rules:
+- Generate realistic and coherent data
+- Follow the prompt requirements precisely
+- Ensure all required fields are populated with appropriate values
+- Use sensible defaults where not specified
+- Maintain internal consistency (e.g., related fields should make sense together)
+- Return ONLY valid JSON matching the schema, no explanations
+--- user
+a support ticket about a duplicate charge
+
+=== Score
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a scoring expert. Evaluate the input and provide a comprehensive assessment.
+
+Score Range: 0.0 to 10.0
+Criteria: null
+
+Rules:
+- Assign an overall score between 0.0 and 10.0
+- Provide a breakdown score for each criterion
+- Identify strengths and weaknesses
+- Explain your reasoning
+
+Return a JSON object with these fields:
+- "value": overall score (number between 0.0 and 10.0)
+- "breakdown": object with criterion names as keys and scores as values
+- "reasoning": explanation of the scoring
+- "strengths": array of identified strengths
+- "weaknesses": array of identified weaknesses
+
+Additional instructions:
+Score range: 0.0 to 10.0. Report a per-criterion breakdown alongside the overall score, so the number can be traced to its parts
+--- user
+Score this input:
+{"id":"T-1","subject":"charged twice","amount":42.5}
+
+=== Sort
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a sorting expert. Sort items based on the specified criteria.
+
+Rules:
+- Evaluate all items according to the sorting criteria
+- Arrange them in the proper order
+- Return a JSON array containing ALL the COMPLETE objects in sorted order
+- If the items are primitive values like strings, return a JSON array of those same primitive values in sorted order
+- Never return an object wrapper such as {"item": ...}
+- Return ONLY the JSON array of objects, nothing else
+- Do NOT wrap in markdown code blocks
+- Include every item exactly once in the sorted output
+- The output is invalid unless it contains exactly 2 items
+
+Examples:
+- Input ["low", "critical", "medium"] -> Output ["critical", "medium", "low"]
+- Input [{"id":1},{"id":2}] -> Output [{"id":2},{"id":1}]
+
+Additional instructions:
+Sort criteria: largest amount first. Direction: ascending. Maintain relative order of equal elements
+--- user
+Sort these items:
+[{"id":"T-1","subject":"charged twice","amount":42.5},{"id":"T-2","subject":"cannot log in","amount":0}]
+
+=== Summarize
+--- response format: text
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+You are a text summarization expert. Create concise summaries that preserve key information.
+
+Rules:
+- Maintain the most important points
+- Use clear, concise language
+- Preserve critical details and context
+- Keep the original tone when appropriate
+
+Additional instructions:
+Style: paragraph
+--- user
+Summarize this text:
+The invoice INV-4417 from Northwind Traders totals $1284.50 and is due on the 30th.
+
+=== Transform
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data transformation expert. Transform data from one type to another using semantic mapping.
+
+Source schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Target schema:
+{
+  id: string (required)
+  subject: string (required)
+  amount: number (required)
+}
+
+Transformation rules:
+- Map semantically related fields even if names differ
+- Infer and calculate derived fields when possible
+- Handle type conversions intelligently (e.g., string to number)
+- Combine or split fields as needed (e.g., fullName <-> firstName+lastName)
+- Use reasonable defaults for missing required fields
+- Preserve data integrity and meaning
+- Return ONLY valid JSON matching the target schema
+
+Additional instructions:
+Use replace merge strategy
+--- user
+Transform this data:
+{"id":"T-1","subject":"charged twice","amount":42.5}
+
+=== Validate
+--- response format: json
+--- json schema: false
+--- system
+Perform the semantic task faithfully using the provided input.
+Do not merely restate schemas, field names, or type descriptions.
+Infer, compare, rank, validate, transform, or summarize based on the actual content.
+
+After reasoning about the task, return only the final JSON answer.
+Do not include markdown fences, prose, placeholders, or schema descriptions.
+Every field must be populated with task-relevant values supported by the input or clearly inferred from it.
+
+You are a data validation expert. Validate the provided data against the given rules.
+If any issues are found and correction is possible, include a "corrected" field with the fixed version of the input data.
+Include explanations for each issue.
+
+Severity levels:
+- "error": Critical issues that must be fixed
+- "warning": Issues that should be addressed
+- "info": Minor suggestions for improvement
+
+Return a JSON object with:
+{
+  "valid": boolean (true if no errors),
+  "errors": [{"field": "fieldName", "severity": "error", "message": "Issue description", "suggestion": "How to fix", "explanation": "Why this is wrong"}],
+  "warnings": [{"field": "fieldName", "severity": "warning", "message": "Issue", "suggestion": "How to fix"}],
+  "info": [{"severity": "info", "message": "Suggestion"}],
+  "corrected": { corrected data if applicable },
+  "confidence": 0.0-1.0,
+  "summary": "Overall assessment"
+}
+--- user
+Validate this data:
+{"id":"T-1","subject":"charged twice","amount":42.5}
+
+Against these rules:
+the subject must describe a problem
