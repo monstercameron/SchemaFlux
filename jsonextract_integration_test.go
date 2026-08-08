@@ -74,3 +74,61 @@ func TestIntegrationTruncatedBodyIsAnError(t *testing.T) {
 		t.Error("Extract accepted a truncated body")
 	}
 }
+
+// S-008 at the public boundary. Strict mode's contract is exact: an
+// unrecognised property is the model producing a field nobody asked for, and
+// encoding/json's default is to say nothing about it.
+func TestIntegrationStrictModeRejectsOverproduction(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"a field nobody asked for", `{"number":"INV-4417","total":1284.5,"vendor":"Northwind","invented":"value"}`},
+		{"a repeated key", `{"number":"INV-4417","number":"INV-9999","total":1284.5,"vendor":"Northwind"}`},
+		{"a second answer", `{"number":"INV-4417","total":1284.5,"vendor":"Northwind"} {"number":"INV-9999","total":1,"vendor":"Other"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withScriptedProvider(t, tc.body, nil)
+
+			_, err := schemaflux.Extract[invoice]("Invoice INV-4417",
+				schemaflux.NewExtractOptions().WithMode(schemaflux.Strict))
+			if err == nil {
+				t.Fatal("Strict mode accepted it")
+			}
+		})
+	}
+}
+
+// Transform mode does not apply the exact contract, because rejecting an extra
+// field is exactly wrong for an operation whose contract permits one. The two
+// modes have to differ here or Strict means nothing.
+func TestIntegrationTransformModeToleratesAnExtraField(t *testing.T) {
+	withScriptedProvider(t,
+		`{"number":"INV-4417","total":1284.5,"vendor":"Northwind","note":"paid"}`, nil)
+
+	result, err := schemaflux.Extract[invoice]("Invoice INV-4417",
+		schemaflux.NewExtractOptions().WithMode(schemaflux.TransformMode))
+	if err != nil {
+		t.Fatalf("Transform mode refused an extra field: %v", err)
+	}
+	if result.Number != "INV-4417" {
+		t.Errorf("decoded %+v", result)
+	}
+}
+
+// And the faithful answer still works in Strict mode, so the contract is
+// exactness rather than pessimism.
+func TestIntegrationStrictModeAcceptsAFaithfulAnswer(t *testing.T) {
+	withScriptedProvider(t, invoiceJSON, nil)
+
+	result, err := schemaflux.Extract[invoice]("Invoice INV-4417",
+		schemaflux.NewExtractOptions().WithMode(schemaflux.Strict))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if result.Number != "INV-4417" || result.Total != 1284.5 {
+		t.Errorf("decoded %+v", result)
+	}
+}

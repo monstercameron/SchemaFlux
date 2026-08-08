@@ -182,13 +182,26 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	response, repair, err := withRepair(ctx, systemPrompt, userPrompt, opt, RepairPolicy{},
 		func(body string) error {
 			var attempt T
-			if parseErr := ParseJSONStrict(body, &attempt); parseErr != nil {
-				return parseErr
-			}
+
 			if opt.Mode == types.Strict {
+				// Strict decoding: an unrecognised property, a repeated key, a
+				// second value, or a body past the limits is a failure rather
+				// than something encoding/json quietly resolves. A field
+				// nobody asked for is the model producing one, which is the
+				// most interesting thing in the response and was previously
+				// invisible unless *no* expected field was present (F-035).
+				if decodeErr := DecodeExact(body, &attempt, DecodeLimits{}); decodeErr != nil {
+					return decodeErr
+				}
 				if validateErr := ValidateExtractedData(attempt); validateErr != nil {
 					return validateErr
 				}
+				candidate = attempt
+				return nil
+			}
+
+			if parseErr := ParseJSONStrict(body, &attempt); parseErr != nil {
+				return parseErr
 			}
 			candidate = attempt
 			return nil

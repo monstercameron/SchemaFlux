@@ -1167,7 +1167,7 @@ tests.
 
 ## Added from `to-production.md`
 
-- [ ] **S-008** — Exact decoding in strict mode: reject unknown properties, duplicate keys,
+- [x] **S-008** — Exact decoding in strict mode: reject unknown properties, duplicate keys,
   and trailing data after the top-level value; enforce maximum nesting depth, string size,
   array length, and total decoded bytes; report the smallest failing JSON pointer.
   `encoding/json` discards unknown fields, which is how a hallucinated field becomes
@@ -1176,6 +1176,30 @@ tests.
   **TRU-08**; completes what F-035 started.
   *Verify:* a response carrying one extra field fails in strict mode and names it; a
   deliberately deep or oversized body is refused before allocation.
+  **Done** — `internal/ops/strictdecode.go`, applied by `Strict()` and by nothing else.
+  Rejecting an extra field is exactly wrong for an operation whose contract permits one, so
+  `Transform` still tolerates it and a test asserts the two modes differ; otherwise `Strict`
+  means nothing.
+  Unknown properties, repeated keys, values of the wrong type, and bodies past the byte,
+  depth, array, and string limits are all failures. The limits exist because the response is
+  bytes from a remote service: a pathological one costs memory before turning out to be
+  useless.
+  **The trailing-value check is the one worth reading.** `{"a":1} {"a":2}` is a model that
+  answered twice, and taking the first silently is the same mistake as taking the last of a
+  duplicate key — but the *extractor* pulls out the first balanced value by design, which is
+  how it finds a payload amid prose, so by the time the decoder runs the second value is
+  already gone and `encoding/json`'s own trailing check has nothing to see. The check runs
+  against the original response instead, and ignores trailing prose and closing fences, which
+  are packaging.
+  Failures name a JSON pointer — `/items/0/price` — because "the response did not fit" is not
+  actionable. They name fields and never values (**X-03**), and they classify as
+  malformed-versus-schema-violation (**A-007**), which is the difference between repairing by
+  quoting the parse error and regenerating from source.
+  *Verify:* `internal/ops/strictdecode_test.go` — 4 rejection cases, the faithful answer, the
+  fenced answer, four limits, the pointer, the no-values rule, and the kind split.
+  Integration: `TestIntegrationStrictModeRejectsOverproduction` (3 bodies),
+  `TestIntegrationTransformModeToleratesAnExtraField`, and
+  `TestIntegrationStrictModeAcceptsAFaithfulAnswer`.
 - [ ] **S-009** — Exact numeric handling. `float64` is the wrong default for money,
   identifiers, and large integers: 16-digit account numbers lose precision, leading zeros
   vanish, and a postal code becomes a number. Support `json.Number` for deferred parsing,
