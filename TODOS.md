@@ -2526,6 +2526,32 @@ commit and the test that proves it.
 
 ### Added during the work
 
+Four of these — **CB-01** to **CB-04** — existed only as rows in the evidence table below,
+never as items. `.audit/traceability.py` reported them dangling on every run, which is a
+checker doing its job on a record that was incomplete: work was done, the evidence was
+written, and the box it belonged to was never drawn.
+
+- [x] **CB-01** — `OpenAICompatibleProvider.Complete` went through go-openai, whose
+  `ChatCompletionResponseFormat` carries a `Type` and nothing else, so a request arriving with
+  a strict JSON schema had the **schema dropped** and was sent as `{"type":"json_object"}`.
+  The same `Extract[T]` got constrained decoding on OpenAI and an unconstrained guess on
+  Cerebras, DeepSeek, Qwen, ZAI, and OpenRouter, with nothing at the call site to tell them
+  apart. Evidence: `f745d66`, verified live against `gemma-4-31b`.
+- [x] **CB-02** — Cerebras *rejects* `format`, `pattern`, `minItems`/`maxItems`,
+  `minLength`/`maxLength`, and `minimum`/`maximum` rather than ignoring them, so the first
+  extraction with a `time.Time` field would have failed the whole request with a 400 naming a
+  keyword the caller never wrote. The transport strips them into a copy — never in place,
+  since the caller's schema is reused across providers. Evidence: `f745d66`.
+- [x] **CB-03** — A 429's `Retry-After` was discarded, so the retry ladder fell back to a
+  backoff that doubles from 500ms and stops at five seconds. Against a provider that limits
+  *per minute*, every attempt landed inside the same closed window by construction. Also
+  exposed a latent bug: `isRetryableLLMError` matched the whole message including the
+  vendor's body, so a 429 whose body mentioned `invalid_request_error` was classified
+  permanent. Evidence: `f745d66`.
+- [x] **CB-04** — `providerModels["cerebras"]` mapped to `llama-3.3-70b`/`llama3.1-8b`,
+  written from a docs page and never called. Now `gemma-4-31b` at all three tiers, priced,
+  and the choice is stated rather than assumed. Evidence: `f745d66`.
+
 - [ ] **PS-010** — The repository hygiene files: `LICENSE`, `SECURITY.md` (threat model,
   supported versions, disclosure process — **SEC-001**), `CONTRIBUTING.md`, issue templates
   that ask for sanitized envelope metadata rather than raw payloads, and an ADR directory to
