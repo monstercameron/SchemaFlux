@@ -105,34 +105,7 @@ func Summarize(input string, opts SummarizeOptions) (string, error) {
 	}
 
 	// Build summarization instructions
-	var instructions []string
-
-	if opts.TargetLength > 0 {
-		instructions = append(instructions, fmt.Sprintf("Target length: %d %s", opts.TargetLength, opts.LengthUnit))
-	}
-
-	if opts.BulletPoints {
-		instructions = append(instructions, "Format as bullet points")
-	} else if opts.Style != "" {
-		instructions = append(instructions, fmt.Sprintf("Style: %s", opts.Style))
-	}
-
-	if len(opts.FocusAreas) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Focus on: %s", strings.Join(opts.FocusAreas, ", ")))
-	}
-
-	if len(opts.PreserveInfo) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Must preserve: %s", strings.Join(opts.PreserveInfo, ", ")))
-	}
-
-	opt := opts.toOpOptions()
-	if len(instructions) > 0 {
-		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
-		}
-		opt.Steering = steering
-	}
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -177,34 +150,7 @@ func SummarizeWithMetadata(input string, opts SummarizeOptions) (SummarizeResult
 	}
 
 	// Build summarization instructions
-	var instructions []string
-
-	if opts.TargetLength > 0 {
-		instructions = append(instructions, fmt.Sprintf("Target length: %d %s", opts.TargetLength, opts.LengthUnit))
-	}
-
-	if opts.BulletPoints {
-		instructions = append(instructions, "Format as bullet points")
-	} else if opts.Style != "" {
-		instructions = append(instructions, fmt.Sprintf("Style: %s", opts.Style))
-	}
-
-	if len(opts.FocusAreas) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Focus on: %s", strings.Join(opts.FocusAreas, ", ")))
-	}
-
-	if len(opts.PreserveInfo) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Must preserve: %s", strings.Join(opts.PreserveInfo, ", ")))
-	}
-
-	opt := opts.toOpOptions()
-	if len(instructions) > 0 {
-		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
-		}
-		opt.Steering = steering
-	}
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, summarizeInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -297,48 +243,7 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 	}
 
 	// Build rewrite instructions
-	var instructions []string
-
-	if opts.TargetTone != "" {
-		instructions = append(instructions, fmt.Sprintf("Target tone: %s", opts.TargetTone))
-	}
-
-	if opts.FormalityLevel != 5 {
-		instructions = append(instructions, fmt.Sprintf("Formality level: %d/10", opts.FormalityLevel))
-	}
-
-	if opts.Audience != "" {
-		instructions = append(instructions, fmt.Sprintf("Target audience: %s", opts.Audience))
-	}
-
-	if opts.StyleGuide != "" {
-		instructions = append(instructions, fmt.Sprintf("Follow style: %s", opts.StyleGuide))
-	}
-
-	if len(opts.Changes) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Make these changes: %s", strings.Join(opts.Changes, ", ")))
-	}
-
-	if len(opts.AvoidWords) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Avoid: %s", strings.Join(opts.AvoidWords, ", ")))
-	}
-
-	if len(opts.IncludeWords) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Include: %s", strings.Join(opts.IncludeWords, ", ")))
-	}
-
-	if opts.PreserveFacts {
-		instructions = append(instructions, "Preserve all factual information")
-	}
-
-	opt := opts.toOpOptions()
-	if len(instructions) > 0 {
-		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
-		}
-		opt.Steering = steering
-	}
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -382,48 +287,7 @@ func RewriteWithMetadata(input string, opts RewriteOptions) (RewriteResult, erro
 	}
 
 	// Build rewrite instructions
-	var instructions []string
-
-	if opts.TargetTone != "" {
-		instructions = append(instructions, fmt.Sprintf("Target tone: %s", opts.TargetTone))
-	}
-
-	if opts.FormalityLevel != 5 {
-		instructions = append(instructions, fmt.Sprintf("Formality level: %d/10", opts.FormalityLevel))
-	}
-
-	if opts.Audience != "" {
-		instructions = append(instructions, fmt.Sprintf("Target audience: %s", opts.Audience))
-	}
-
-	if opts.StyleGuide != "" {
-		instructions = append(instructions, fmt.Sprintf("Follow style: %s", opts.StyleGuide))
-	}
-
-	if len(opts.Changes) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Make these changes: %s", strings.Join(opts.Changes, ", ")))
-	}
-
-	if len(opts.AvoidWords) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Avoid: %s", strings.Join(opts.AvoidWords, ", ")))
-	}
-
-	if len(opts.IncludeWords) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Include: %s", strings.Join(opts.IncludeWords, ", ")))
-	}
-
-	if opts.PreserveFacts {
-		instructions = append(instructions, "Preserve all factual information")
-	}
-
-	opt := opts.toOpOptions()
-	if len(instructions) > 0 {
-		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
-		}
-		opt.Steering = steering
-	}
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, rewriteInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -493,44 +357,7 @@ func Translate(input string, opts TranslateOptions) (string, error) {
 	}
 
 	// Build translation instructions
-	var instructions []string
-
-	instructions = append(instructions, fmt.Sprintf("Translate to %s", opts.TargetLanguage))
-
-	if opts.SourceLanguage != "" {
-		instructions = append(instructions, fmt.Sprintf("From %s", opts.SourceLanguage))
-	}
-
-	if opts.Dialect != "" {
-		instructions = append(instructions, fmt.Sprintf("Use %s dialect", opts.Dialect))
-	}
-
-	if opts.Formality != "neutral" {
-		instructions = append(instructions, fmt.Sprintf("Formality: %s", opts.Formality))
-	}
-
-	if opts.CulturalAdaptation != 5 {
-		instructions = append(instructions, fmt.Sprintf("Cultural adaptation level: %d/10", opts.CulturalAdaptation))
-	}
-
-	if opts.PreserveFormatting {
-		instructions = append(instructions, "Preserve formatting")
-	}
-
-	if len(opts.Glossary) > 0 {
-		glossary := "Use glossary: "
-		for term, translation := range opts.Glossary {
-			glossary += fmt.Sprintf("%s=%s, ", term, translation)
-		}
-		instructions = append(instructions, strings.TrimSuffix(glossary, ", "))
-	}
-
-	opt := opts.toOpOptions()
-	steering := strings.Join(instructions, ". ")
-	if opts.OpOptions.Steering != "" {
-		steering = opts.OpOptions.Steering + ". " + steering
-	}
-	opt.Steering = steering
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -574,44 +401,7 @@ func TranslateWithMetadata(input string, opts TranslateOptions) (TranslateResult
 	}
 
 	// Build translation instructions
-	var instructions []string
-
-	instructions = append(instructions, fmt.Sprintf("Translate to %s", opts.TargetLanguage))
-
-	if opts.SourceLanguage != "" {
-		instructions = append(instructions, fmt.Sprintf("From %s", opts.SourceLanguage))
-	}
-
-	if opts.Dialect != "" {
-		instructions = append(instructions, fmt.Sprintf("Use %s dialect", opts.Dialect))
-	}
-
-	if opts.Formality != "neutral" {
-		instructions = append(instructions, fmt.Sprintf("Formality: %s", opts.Formality))
-	}
-
-	if opts.CulturalAdaptation != 5 {
-		instructions = append(instructions, fmt.Sprintf("Cultural adaptation level: %d/10", opts.CulturalAdaptation))
-	}
-
-	if opts.PreserveFormatting {
-		instructions = append(instructions, "Preserve formatting")
-	}
-
-	if len(opts.Glossary) > 0 {
-		glossary := "Use glossary: "
-		for term, translation := range opts.Glossary {
-			glossary += fmt.Sprintf("%s=%s, ", term, translation)
-		}
-		instructions = append(instructions, strings.TrimSuffix(glossary, ", "))
-	}
-
-	opt := opts.toOpOptions()
-	steering := strings.Join(instructions, ". ")
-	if opts.OpOptions.Steering != "" {
-		steering = opts.OpOptions.Steering + ". " + steering
-	}
-	opt.Steering = steering
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, translateInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -683,38 +473,7 @@ func Expand(input string, opts ExpandOptions) (string, error) {
 	}
 
 	// Build expansion instructions
-	var instructions []string
-
-	if opts.ExpansionFactor != 2.0 {
-		instructions = append(instructions, fmt.Sprintf("Expand by %.1fx", opts.ExpansionFactor))
-	}
-
-	instructions = append(instructions, fmt.Sprintf("Detail level: %d/10", opts.DetailLevel))
-
-	if opts.ExpansionStyle != "" {
-		instructions = append(instructions, fmt.Sprintf("Style: %s", opts.ExpansionStyle))
-	}
-
-	if opts.IncludeExamples {
-		instructions = append(instructions, "Include relevant examples")
-	}
-
-	if len(opts.ElaborateOn) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Elaborate on: %s", strings.Join(opts.ElaborateOn, ", ")))
-	}
-
-	if len(opts.AddContext) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Add context about: %s", strings.Join(opts.AddContext, ", ")))
-	}
-
-	opt := opts.toOpOptions()
-	if len(instructions) > 0 {
-		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
-		}
-		opt.Steering = steering
-	}
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -758,38 +517,7 @@ func ExpandWithMetadata(input string, opts ExpandOptions) (ExpandResult, error) 
 	}
 
 	// Build expansion instructions
-	var instructions []string
-
-	if opts.ExpansionFactor != 2.0 {
-		instructions = append(instructions, fmt.Sprintf("Expand by %.1fx", opts.ExpansionFactor))
-	}
-
-	instructions = append(instructions, fmt.Sprintf("Detail level: %d/10", opts.DetailLevel))
-
-	if opts.ExpansionStyle != "" {
-		instructions = append(instructions, fmt.Sprintf("Style: %s", opts.ExpansionStyle))
-	}
-
-	if opts.IncludeExamples {
-		instructions = append(instructions, "Include relevant examples")
-	}
-
-	if len(opts.ElaborateOn) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Elaborate on: %s", strings.Join(opts.ElaborateOn, ", ")))
-	}
-
-	if len(opts.AddContext) > 0 {
-		instructions = append(instructions, fmt.Sprintf("Add context about: %s", strings.Join(opts.AddContext, ", ")))
-	}
-
-	opt := opts.toOpOptions()
-	if len(instructions) > 0 {
-		steering := strings.Join(instructions, ". ")
-		if opts.OpOptions.Steering != "" {
-			steering = opts.OpOptions.Steering + ". " + steering
-		}
-		opt.Steering = steering
-	}
+	opt := textOperationOptions(opts.toOpOptions(), opts.OpOptions.Steering, expandInstructions(opts))
 
 	ctx, cancel := operationContext(opts.OpOptions.Context, config.GetTimeout())
 	defer cancel()
@@ -853,3 +581,171 @@ Rules:
 // ceiling wants MaxLength on a different operation, not a stricter reading of
 // this one.
 const summaryLengthTolerance = 0.2
+
+// textOperationOptions folds an operation's own instruction clauses into the
+// caller's steering.
+//
+// The caller's text comes first, because it is the more specific instruction and
+// the model reads in order.
+func textOperationOptions(opt types.OpOptions, callerSteering string, instructions []string) types.OpOptions {
+	if len(instructions) == 0 {
+		return opt
+	}
+
+	steering := strings.Join(instructions, ". ")
+	if callerSteering != "" {
+		steering = callerSteering + ". " + steering
+	}
+	opt.Steering = steering
+	return opt
+}
+
+// summarizeInstructions builds the steering clauses for a summarize request.
+//
+// It exists once rather than twice. The block was duplicated verbatim between
+// Summarize and SummarizeWithMetadata, so a rule added to one silently did not apply
+// to the other -- which is what T-01 describes, and the reason two functions
+// that differ only in their return type should not differ anywhere else.
+func summarizeInstructions(opts SummarizeOptions) []string {
+	var instructions []string
+
+	if opts.TargetLength > 0 {
+		instructions = append(instructions, fmt.Sprintf("Target length: %d %s", opts.TargetLength, opts.LengthUnit))
+	}
+
+	if opts.BulletPoints {
+		instructions = append(instructions, "Format as bullet points")
+	} else if opts.Style != "" {
+		instructions = append(instructions, fmt.Sprintf("Style: %s", opts.Style))
+	}
+
+	if len(opts.FocusAreas) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Focus on: %s", strings.Join(opts.FocusAreas, ", ")))
+	}
+
+	if len(opts.PreserveInfo) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Must preserve: %s", strings.Join(opts.PreserveInfo, ", ")))
+	}
+
+	return instructions
+}
+
+// rewriteInstructions builds the steering clauses for a rewrite request.
+//
+// It exists once rather than twice. The block was duplicated verbatim between
+// Rewrite and RewriteWithMetadata, so a rule added to one silently did not apply
+// to the other -- which is what T-01 describes, and the reason two functions
+// that differ only in their return type should not differ anywhere else.
+func rewriteInstructions(opts RewriteOptions) []string {
+	var instructions []string
+
+	if opts.TargetTone != "" {
+		instructions = append(instructions, fmt.Sprintf("Target tone: %s", opts.TargetTone))
+	}
+
+	if opts.FormalityLevel != 5 {
+		instructions = append(instructions, fmt.Sprintf("Formality level: %d/10", opts.FormalityLevel))
+	}
+
+	if opts.Audience != "" {
+		instructions = append(instructions, fmt.Sprintf("Target audience: %s", opts.Audience))
+	}
+
+	if opts.StyleGuide != "" {
+		instructions = append(instructions, fmt.Sprintf("Follow style: %s", opts.StyleGuide))
+	}
+
+	if len(opts.Changes) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Make these changes: %s", strings.Join(opts.Changes, ", ")))
+	}
+
+	if len(opts.AvoidWords) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Avoid: %s", strings.Join(opts.AvoidWords, ", ")))
+	}
+
+	if len(opts.IncludeWords) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Include: %s", strings.Join(opts.IncludeWords, ", ")))
+	}
+
+	if opts.PreserveFacts {
+		instructions = append(instructions, "Preserve all factual information")
+	}
+
+	return instructions
+}
+
+// translateInstructions builds the steering clauses for a translate request.
+//
+// It exists once rather than twice. The block was duplicated verbatim between
+// Translate and TranslateWithMetadata, so a rule added to one silently did not apply
+// to the other -- which is what T-01 describes, and the reason two functions
+// that differ only in their return type should not differ anywhere else.
+func translateInstructions(opts TranslateOptions) []string {
+	var instructions []string
+
+	instructions = append(instructions, fmt.Sprintf("Translate to %s", opts.TargetLanguage))
+
+	if opts.SourceLanguage != "" {
+		instructions = append(instructions, fmt.Sprintf("From %s", opts.SourceLanguage))
+	}
+
+	if opts.Dialect != "" {
+		instructions = append(instructions, fmt.Sprintf("Use %s dialect", opts.Dialect))
+	}
+
+	if opts.Formality != "neutral" {
+		instructions = append(instructions, fmt.Sprintf("Formality: %s", opts.Formality))
+	}
+
+	if opts.CulturalAdaptation != 5 {
+		instructions = append(instructions, fmt.Sprintf("Cultural adaptation level: %d/10", opts.CulturalAdaptation))
+	}
+
+	if opts.PreserveFormatting {
+		instructions = append(instructions, "Preserve formatting")
+	}
+
+	if len(opts.Glossary) > 0 {
+		glossary := "Use glossary: "
+		for term, translation := range opts.Glossary {
+			glossary += fmt.Sprintf("%s=%s, ", term, translation)
+		}
+		instructions = append(instructions, strings.TrimSuffix(glossary, ", "))
+	}
+
+	return instructions
+}
+
+// expandInstructions builds the steering clauses for a expand request.
+//
+// It exists once rather than twice. The block was duplicated verbatim between
+// Expand and ExpandWithMetadata, so a rule added to one silently did not apply
+// to the other -- which is what T-01 describes, and the reason two functions
+// that differ only in their return type should not differ anywhere else.
+func expandInstructions(opts ExpandOptions) []string {
+	var instructions []string
+
+	if opts.ExpansionFactor != 2.0 {
+		instructions = append(instructions, fmt.Sprintf("Expand by %.1fx", opts.ExpansionFactor))
+	}
+
+	instructions = append(instructions, fmt.Sprintf("Detail level: %d/10", opts.DetailLevel))
+
+	if opts.ExpansionStyle != "" {
+		instructions = append(instructions, fmt.Sprintf("Style: %s", opts.ExpansionStyle))
+	}
+
+	if opts.IncludeExamples {
+		instructions = append(instructions, "Include relevant examples")
+	}
+
+	if len(opts.ElaborateOn) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Elaborate on: %s", strings.Join(opts.ElaborateOn, ", ")))
+	}
+
+	if len(opts.AddContext) > 0 {
+		instructions = append(instructions, fmt.Sprintf("Add context about: %s", strings.Join(opts.AddContext, ", ")))
+	}
+
+	return instructions
+}

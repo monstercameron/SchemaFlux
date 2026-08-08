@@ -969,6 +969,19 @@ tests.
 - [ ] **OP-401** — Collapse the `X` / `XWithMetadata` twins into one operation returning
   `Result[T]` (`text.go:95/166`, `269/353`, `467/547`, `659/733`), each pair duplicating ~40
   identical lines. Closes **T-01**.
+  **Partial — the duplication is gone; the API collapse waits on A-006.**
+  The duplicated block was the option-to-steering handling, and it was **104 net lines**
+  across the four pairs rather than the ~40 the review counted. Each is now one
+  `<op>Instructions` function plus one shared `textOperationOptions`, so a rule added to a
+  rewrite applies to `RewriteWithMetadata` too — which is the defect T-01 names.
+  **The golden prompts did not move**, which is the proof it is behaviour-preserving: the
+  bytes each operation sends are byte-identical before and after.
+  `TestTextTwinsSendTheSameOptions` compares the steering the twins *actually send* rather
+  than their source, because looking alike is not the property that matters.
+  What remains is the API collapse — one operation returning `Result[T]` instead of two
+  differing only in return type. That needs **A-006**'s `Result[T]`, which does not exist
+  yet, and inventing a fifth result shape in the meantime would be the opposite of the
+  point.
 - [x] **OP-402** — Attach `WithinLength` so `MaxLength` and `TargetLength` are checked rather
   than requested, and compute `CompressionRatio` on runes rather than bytes. Closes **T-03**.
   **Done** — `WithinLength` and `MeasureLength` join the invariant library, with an explicit
