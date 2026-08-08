@@ -40,7 +40,7 @@ jobs:
         # directive, which is a compatibility decision, not a CI one.
         go: [stable]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
@@ -81,7 +81,7 @@ jobs:
     name: scripts/check.sh
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -92,7 +92,7 @@ jobs:
     name: quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -153,7 +153,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scanner self-test
         run: python3 scripts/secret_scan.py --self-test
       - name: Scan for credentials
@@ -167,7 +167,7 @@ jobs:
     name: deprecation policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Checker self-test
         run: python3 scripts/deprecation_policy.py --self-test
       - name: Deprecated catalog entries carry a source marker
@@ -188,7 +188,7 @@ jobs:
     name: acceptance checklist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Checker self-test
         run: python3 scripts/acceptance_checklist.py --self-test
       - name: Ledger matches the specification
@@ -200,7 +200,7 @@ jobs:
     name: traceability
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Every finding traces to a task
         run: python3 .audit/traceability.py
 
@@ -215,7 +215,7 @@ jobs:
     name: release ladder
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -237,7 +237,7 @@ jobs:
     name: smarttodo module
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: stable
