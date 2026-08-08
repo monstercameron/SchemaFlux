@@ -1,4 +1,4 @@
 # Statement coverage floor for the library packages, ratcheted from
 # what was measured. See scripts/coverage_floor.py and TODOS.md CI-005.
 # Raise it with: python scripts/coverage_floor.py --update
-61.4
+62.2
