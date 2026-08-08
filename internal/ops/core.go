@@ -102,12 +102,26 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		opt.Steering = strings.Join(steeringParts, ". ")
 	}
 
-	// Start operation timing
+	// reflect.TypeFor[T](), not reflect.TypeOf(result).
+	//
+	// `result` is T's ZERO VALUE, and for an interface type parameter that is a
+	// nil interface: reflect.TypeOf(nil) returns a nil reflect.Type, and
+	// .String() on it panics. So Extract[any](...) crashed the calling
+	// goroutine with a nil-pointer dereference instead of returning the
+	// KindConfiguration error PreflightType exists to produce -- and it crashed
+	// here, in the timing defer, before the nil-input check and long before
+	// PreflightType ever ran.
+	//
+	// TypeFor reports the STATIC type, which is what these log lines, metric
+	// labels, and error fields actually mean: the target the caller asked for,
+	// not the dynamic type of a zero value. It is never nil, so the panic is
+	// gone for every interface target rather than special-cased for `any`.
+	// Eight sites across Extract, Transform, and Generate had the same hazard.
 	startTime := time.Now()
 	defer func() {
 		if config.IsMetricsEnabled() {
 			telemetry.RecordMetric("extract_duration", time.Since(startTime).Milliseconds(), map[string]string{
-				"type": reflect.TypeOf(result).String(),
+				"type": reflect.TypeFor[T]().String(),
 				"mode": opt.Mode.String(),
 			})
 		}
@@ -116,7 +130,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Log operation start
 	log.Info("Extract operation started",
 		"requestID", opt.RequestID,
-		"targetType", reflect.TypeOf(result).String(),
+		"targetType", reflect.TypeFor[T]().String(),
 		"mode", opt.Mode.String(),
 		"intelligence", opt.Intelligence.String(),
 	)
@@ -125,7 +139,7 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	if input == nil {
 		err := types.ExtractError{
 			InputShape: types.DescribeValue(input),
-			TargetType: reflect.TypeOf(result).String(),
+			TargetType: reflect.TypeFor[T]().String(),
 			Reason:     "input cannot be nil",
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
@@ -324,7 +338,7 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 		if config.IsMetricsEnabled() {
 			telemetry.RecordMetric("transform_duration", time.Since(startTime).Milliseconds(), map[string]string{
 				"from_type": reflect.TypeOf(input).String(),
-				"to_type":   reflect.TypeOf(result).String(),
+				"to_type":   reflect.TypeFor[U]().String(),
 				"mode":      opt.Mode.String(),
 			})
 		}
@@ -333,7 +347,7 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 	log.Info("Transform operation started",
 		"requestID", opt.RequestID,
 		"fromType", reflect.TypeOf(input).String(),
-		"toType", reflect.TypeOf(result).String(),
+		"toType", reflect.TypeFor[U]().String(),
 	)
 
 	// Validate input
@@ -551,7 +565,7 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 	defer func() {
 		if config.IsMetricsEnabled() {
 			telemetry.RecordMetric("generate_duration", time.Since(startTime).Milliseconds(), map[string]string{
-				"type": reflect.TypeOf(result).String(),
+				"type": reflect.TypeFor[T]().String(),
 				"mode": opt.Mode.String(),
 			})
 		}
@@ -559,7 +573,7 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 
 	log.Info("Generate operation started",
 		"requestID", opt.RequestID,
-		"targetType", reflect.TypeOf(result).String(),
+		"targetType", reflect.TypeFor[T]().String(),
 		"promptLength", len(prompt),
 	)
 
@@ -568,7 +582,7 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 	if prompt == "" {
 		err := types.GenerateError{
 			PromptShape: types.DescribeValue(prompt),
-			TargetType:  reflect.TypeOf(result).String(),
+			TargetType:  reflect.TypeFor[T]().String(),
 			Reason:      "prompt cannot be empty",
 			RequestID:   opt.RequestID,
 			Timestamp:   time.Now(),
