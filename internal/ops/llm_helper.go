@@ -235,6 +235,10 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		CostInfo:      cost,
 		Custom: map[string]any{
 			"response_format": responseFormat,
+			// Which contract produced this answer. A stored result that cannot
+			// say is a result nobody can reproduce, compare, or trust a year
+			// later. S-002.
+			"schema_id": opts.SchemaID,
 		},
 	}
 

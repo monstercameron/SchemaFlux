@@ -158,6 +158,12 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		opt.SchemaName = schemaNameFor(targetType)
 	}
 
+	// The schema's identity, so a cache key, a replay fixture, and a stored
+	// result can all say which contract produced an answer. The Go type's name
+	// is not that: it changes when a field is renamed and does not change when
+	// a field's type changes. S-002.
+	opt.SchemaID = DescribeSchema(targetType).String()
+
 	// Convert input to string format for LLM processing
 	inputStr, err := NormalizeInput(input)
 	if err != nil {

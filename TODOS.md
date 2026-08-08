@@ -1094,7 +1094,7 @@ tests.
   nested payloads extraction is used on. `Project`, `Pivot`, `Enrich`, and `Derive` inherit
   this. Closes **D-01**.
   *Verify:* golden schema test on a three-level nested struct with a slice of structs.
-- [ ] **S-002** — Emit real JSON Schema from the same reflection pass, and keep a compact
+- [x] **S-002** — Emit real JSON Schema from the same reflection pass, and keep a compact
   rendering for the prompt path (full JSON Schema is token-expensive).
   *Verify:* the emitted schema validates against a JSON Schema meta-schema.
   **Revised (TRU-05):** the schema needs an identity, not just a body:
@@ -1103,6 +1103,28 @@ tests.
   a schema that changes without changing its hash silently invalidates all four. An
   anonymous type gets a deterministic content-derived name and a warning that persisting
   results against one is a bad idea.
+  **Done.** The emission half shipped with **P-005** — `GenerateJSONSchema` produces
+  strict-mode JSON Schema and `GenerateTypeSchema` keeps the compact prose rendering for the
+  prompt, from the same reflection pass. What the Revised note added, and what was actually
+  missing, is *identity*.
+  `SchemaDescriptor{Name, Version, Hash, Dialect}`, built by `DescribeSchema`. **The hash is
+  over the emitted schema, not over the Go type**, because the schema is what was sent:
+  renaming a Go field without touching its json tag changes the type and not the contract,
+  and the hash follows the contract. Changing a tag or a field's type does change it.
+  A type strict mode cannot express still gets an identity, hashed from the prose schema and
+  marked `dialect: prose` — collapsing every such type onto one hash would make the key
+  useless for exactly the types that need it.
+  `SchemaCacheKey` carries the operation and its version alongside, because a cache keyed on
+  the schema alone serves an answer produced by a different question. **P-009** and
+  **MW-004** both need this and neither should invent its own.
+  The identity reaches the request as `OpOptions.SchemaID` and the result as
+  `Custom["schema_id"]`: a stored result that cannot say which contract produced it is one
+  nobody can reproduce or compare a year later.
+  *Verify:* `internal/ops/schemaid_test.go` — stability across 20 runs, the hash following the
+  contract rather than the Go type (four cases), an added field changing it, unexpressible
+  types keeping distinct identities, the cache key separating operations and versions, and
+  the identity the operation actually sends matching what the descriptor says, so the two
+  cannot drift.
 - [x] **S-003** — Express requiredness explicitly rather than inferring it from the absence of
   `omitempty` (`utils.go:42-47`), which is a serialization directive, not a validation one.
   Closes **D-03**.

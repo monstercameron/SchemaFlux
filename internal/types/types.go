@@ -121,6 +121,15 @@ type OpOptions struct {
 	// SchemaName names the schema in the provider request.
 	SchemaName string
 
+	// SchemaID is the schema's full identity -- name, version, hash, dialect --
+	// rendered for a log line, a cache key, or a stored result's provenance.
+	//
+	// It is separate from SchemaName because the provider wants a short label
+	// and the caller wants to know which contract produced an answer. The Go
+	// type's name answers neither: it changes when a field is renamed and does
+	// not change when a field's type changes. S-002.
+	SchemaID string
+
 	// ResponseFormat declares whether the operation needs structured output:
 	// "json", "text", or "" to infer it.
 	//
