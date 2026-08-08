@@ -160,9 +160,14 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	var (
 		resp llm.CompletionResponse
 		err  error
+		// providerCalls counts what was actually sent, which is what the
+		// envelope reports and what the bill reflects. Without it a request
+		// that succeeded on its third try reported one attempt.
+		providerCalls int
 	)
 
 	for attempt := 1; attempt <= attempts; attempt++ {
+		providerCalls++
 		resp, err = provider.Complete(ctx, req)
 		if err == nil {
 			if validationErr := validateLLMCompletion(resp); validationErr != nil {
@@ -222,17 +227,21 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	metadata := &types.ResultMetadata{
 		RequestID:     requestID,
 		CorrelationID: correlationID,
-		TraceID:       telemetry.GetTraceID(ctx),
-		SpanID:        telemetry.GetSpanID(ctx),
-		StartTime:     start,
-		EndTime:       time.Now(),
-		Duration:      time.Since(start),
-		Model:         actualModel,
-		Provider:      actualProvider,
-		Mode:          opts.Mode,
-		Intelligence:  opts.Intelligence,
-		TokenUsage:    &usage,
-		CostInfo:      cost,
+		// Retries, not attempts: RetryCount is the count beyond the first, and
+		// the envelope adds the one back. A request that succeeded on its third
+		// try used to report a single attempt, because nothing wrote this down.
+		RetryCount:   providerCalls - 1,
+		TraceID:      telemetry.GetTraceID(ctx),
+		SpanID:       telemetry.GetSpanID(ctx),
+		StartTime:    start,
+		EndTime:      time.Now(),
+		Duration:     time.Since(start),
+		Model:        actualModel,
+		Provider:     actualProvider,
+		Mode:         opts.Mode,
+		Intelligence: opts.Intelligence,
+		TokenUsage:   &usage,
+		CostInfo:     cost,
 		Custom: map[string]any{
 			"response_format": responseFormat,
 			// Which contract produced this answer. A stored result that cannot
@@ -241,6 +250,14 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			"schema_id": opts.SchemaID,
 		},
 	}
+
+	// Publish the record for whoever wants an envelope. The alternative was to
+	// change the return type of every operation at once; this lets Result[T]
+	// arrive operation by operation without a flag day, and the plain and
+	// detailed forms still execute the identical path -- which is the property
+	// that matters, because two return types that execute differently is how
+	// the two drift.
+	publishCallRecord(ctx, metadata)
 
 	pricing.TrackCost(cost, metadata)
 	telemetry.RecordLLMMetrics(metadata)

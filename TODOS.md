@@ -575,7 +575,7 @@ port nothing yet except one operation as the proof.
   **Breaking change**, for **DOC-002**: any caller comparing a `Mode` or `Speed` to an
   untyped `0`, or relying on `types.OpOptions{}` meaning Strict/Smart, changes behaviour. The
   new behaviour is the documented one: an unset field takes the operation's default.
-- [ ] **A-006** — `Result[T]` + `Meta`: request and correlation IDs, provider, model, usage,
+- [x] **A-006** — `Result[T]` + `Meta`: request and correlation IDs, provider, model, usage,
   cost with `Estimated` and `PricingSource`, attempts, repairs, strategy, elapsed. No
   `Confidence` field. Closes **D-09** structurally and makes **I-02** expressible.
   **Revised (ARC-13, ARC-24, API-11, TRU-22):** `Meta` is the first slice of the execution
@@ -587,6 +587,32 @@ port nothing yet except one operation as the proof.
   that cannot attribute spend to a repair or an escalation cannot explain a bill (TRU-22).
   The envelope is constructed for every logical request including failures; `Run` may drop
   it, but must not skip building it, or the two return paths diverge.
+  **Done** — `internal/types/result.go` and `ExtractResult` as the proof, exported at the
+  root. The old root `Result[T]` — value, model confidence, error, and a map called
+  "metadata" — is replaced: an error *inside* a result gives every caller two places to
+  check, and a bag called metadata is where a model's claim and a measured token count end up
+  indistinguishable, which is **D-09**.
+  **Four compartments, kept apart:** runtime facts, contract (requested versus delivered),
+  deterministic checks, and model claims. `ModelConfidence` sits in the last one so that
+  reading it as a measurement takes deliberate effort.
+  **The two forms are one execution.** `ExtractResult` records the calls and `Extract` drops
+  the envelope; a test asserts both send byte-identical prompts. Two return types that
+  execute differently is how the pairs in **T-01** drifted, and building a second path here
+  would have repeated it.
+  Usage and cost **sum across attempts**, because a caller asking what an answer cost means
+  the answer, not the last try at it. One unpriced attempt makes the sum unpriced — the
+  **PR-001** rule one level up.
+  Two defects found by writing the tests, both mine and both real:
+  **`CallLLM` never recorded its own retries**, so a request that succeeded on its third try
+  reported one attempt — the envelope under-counted exactly when it mattered. And my first
+  `envelopeFrom` had a `break` meant to stop cost accumulation that also stopped counting
+  attempts, so an unpriced retry vanished from the count.
+  *Verify:* `result_envelope_test.go` — the record's contents against what the provider
+  actually saw, both forms sending the same request, requested-versus-delivered with
+  `Degraded()`, a failure still carrying a record, and usage summing across a retry.
+  **Carried on the context, deliberately.** Getting the record out otherwise meant changing
+  the return type of every operation at once; `callrecord.go` says why, and says it is a
+  bridge to **A-001**'s descriptor rather than a destination.
 - [x] **A-007** — Error taxonomy: `ErrNoProvider`, `ErrAuth`, `ErrRateLimited`,
   `ErrTruncated`, `ErrDecode`, `ErrInvariant`, `ErrBudgetExceeded`, plus `APIError` and
   `InvariantError`. Closes **Gap-12**.

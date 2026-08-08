@@ -1,3 +1,9 @@
+const ContractEvidenceChecked
+const ContractFullyGoverned
+const ContractJSONWellFormed
+const ContractPromptOnly
+const ContractSchemaAndInvariantChecked
+const ContractSchemaConstrained
 const CorrelationGenerate
 const CorrelationInherit
 const CorrelationNone
@@ -86,6 +92,7 @@ func Explain
 func Explaining
 func Extract
 func ExtractRequestTracking
+func ExtractResult
 func Extracting
 func Filter
 func FilterBy
@@ -217,6 +224,7 @@ type AuditRequest
 type AuditResult
 type AuditSummary
 type Case
+type Check
 type ChooseOptions
 type ChooseRequest
 type ChunkError
@@ -255,6 +263,7 @@ type ConformOptions
 type ConformRequest
 type ConformResult
 type ConsistencyIssue
+type ContractLevel
 type CorrelationStrategy
 type CostInfo
 type CritiqueIssue
@@ -316,6 +325,7 @@ type MatchPair
 type MatchResult
 type MergeConflict
 type MergeResult
+type Meta
 type Mode
 type NegotiateOptions
 type NegotiateRequest

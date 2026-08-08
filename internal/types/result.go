@@ -1,0 +1,220 @@
+package types
+
+import (
+	"fmt"
+	"time"
+)
+
+// The execution envelope.
+//
+// `(T, error)` is the right return for most calls and the wrong one for any
+// call somebody has to explain later: it cannot say what the answer cost, how
+// many attempts it took, which contract was actually delivered, or which of the
+// things in it the model asserted rather than the library verified.
+//
+// Result[T] is the same execution with that record attached. Both forms run the
+// identical path -- the envelope is built either way, and the plain form drops
+// it -- because two return types that execute differently is how the two drift.
+//
+// The compartments are the point. A model's confidence is a claim; a membership
+// check is a verified fact; a token count is a runtime observation. Mixing them
+// into one bag of "metadata" is what let a model's self-reported score be read
+// as a measurement, which is D-09 and half the review.
+
+// ContractLevel is how strong a guarantee an answer carries.
+//
+// A caller reads DeliveredContract, not RequestedContract: asking for evidence
+// and receiving structure is exactly the case worth noticing, and a library
+// that only reports the request cannot tell you it happened.
+type ContractLevel uint8
+
+const (
+	// ContractPromptOnly: the model was asked nicely. Nothing was enforced.
+	ContractPromptOnly ContractLevel = iota
+
+	// ContractJSONWellFormed: the answer parsed.
+	ContractJSONWellFormed
+
+	// ContractSchemaConstrained: the answer fits the declared type.
+	ContractSchemaConstrained
+
+	// ContractSchemaAndInvariantChecked: it fits, and the operation's own
+	// deterministic rules hold -- a subset really is a subset.
+	ContractSchemaAndInvariantChecked
+
+	// ContractEvidenceChecked: material claims carry a reference into the
+	// source, and the reference was validated.
+	ContractEvidenceChecked
+
+	// ContractFullyGoverned: evidence, provenance, capability, and data policy.
+	ContractFullyGoverned
+)
+
+func (c ContractLevel) String() string {
+	switch c {
+	case ContractPromptOnly:
+		return "prompt only"
+	case ContractJSONWellFormed:
+		return "json well-formed"
+	case ContractSchemaConstrained:
+		return "schema constrained"
+	case ContractSchemaAndInvariantChecked:
+		return "schema and invariants checked"
+	case ContractEvidenceChecked:
+		return "evidence checked"
+	case ContractFullyGoverned:
+		return "fully governed"
+	default:
+		return "unknown"
+	}
+}
+
+// Check is one deterministic verification the runtime performed.
+//
+// These are facts, not opinions: the library ran the check and this is what
+// happened. They live apart from anything the model said about its own work.
+type Check struct {
+	// Name identifies the check: "schema", "subset", "permutation",
+	// "confidence floor", "numeric fidelity".
+	Name string
+
+	// Passed is the outcome.
+	Passed bool
+
+	// Detail explains a failure, with no payload in it.
+	Detail string
+}
+
+// Meta is the record of how an answer was produced.
+//
+// Four compartments, kept apart on purpose:
+//
+//   - runtime facts: what the library and the provider observed
+//   - contract: what was asked for and what was delivered
+//   - checks: what the library verified deterministically
+//   - model claims: what the model said about its own answer
+type Meta struct {
+	// --- Runtime facts.
+
+	RequestID     string
+	CorrelationID string
+	Operation     string
+	Provider      string
+	Model         string
+
+	// SchemaID is the contract identity: name, version, hash, dialect. A stored
+	// result that cannot say which schema produced it cannot be reproduced.
+	SchemaID string
+
+	Usage TokenUsage
+	Cost  CostInfo
+
+	// Attempts is every provider call this answer took, including retries and
+	// repairs. Repairs counts the subset that were repairs -- a distinction
+	// that matters because they are different failures with different fixes.
+	Attempts int
+	Repairs  int
+
+	// Strategy names the path taken when an operation has more than one, such
+	// as a Sort that fell back to per-item scoring.
+	Strategy string
+
+	Elapsed time.Duration
+
+	// --- Contract.
+
+	RequestedContract ContractLevel
+	DeliveredContract ContractLevel
+
+	// --- Checks.
+
+	Checks []Check
+
+	// --- Model claims.
+
+	// ModelConfidence is the model's own score for its own answer, produced by
+	// the same process that produced the answer being scored. It is not
+	// calibrated, not comparable across models or prompts, and not a
+	// measurement. It lives here rather than beside the checks so that reading
+	// it as one takes deliberate effort.
+	ModelConfidence float64
+
+	// ModelClaims holds anything else the model asserted about its work --
+	// which fields it inferred, what it says it left out.
+	ModelClaims map[string]any
+}
+
+// Degraded reports whether the answer carries a weaker guarantee than was
+// asked for. A caller who checks nothing else should check this.
+func (m Meta) Degraded() bool {
+	return m.DeliveredContract < m.RequestedContract
+}
+
+// Failed returns the checks that did not pass.
+func (m Meta) Failed() []Check {
+	var failed []Check
+	for _, check := range m.Checks {
+		if !check.Passed {
+			failed = append(failed, check)
+		}
+	}
+	return failed
+}
+
+// String is a one-line summary for a log.
+func (m Meta) String() string {
+	summary := fmt.Sprintf("%s via %s/%s: %d attempt(s)", m.Operation, m.Provider, m.Model, m.Attempts)
+	if m.Repairs > 0 {
+		summary += fmt.Sprintf(" (%d repair(s))", m.Repairs)
+	}
+	summary += fmt.Sprintf(", %s, %d tokens", m.Elapsed.Round(time.Millisecond), m.Usage.TotalTokens)
+	if m.Cost.Priced {
+		summary += fmt.Sprintf(", %s %.6f", m.Cost.Currency, m.Cost.TotalCost)
+	} else {
+		summary += ", cost unknown"
+	}
+	summary += ", delivered " + m.DeliveredContract.String()
+	if m.Degraded() {
+		summary += " (asked for " + m.RequestedContract.String() + ")"
+	}
+	return summary
+}
+
+// Result pairs a value with the record of how it was produced.
+type Result[T any] struct {
+	Value T
+	Meta  Meta
+}
+
+// MetaFrom builds the runtime-facts half of an envelope from the metadata the
+// call path already collects.
+//
+// It exists so the envelope is assembled in one place: an operation that builds
+// its own is an operation that will report a different thing from every other.
+func MetaFrom(metadata *ResultMetadata) Meta {
+	if metadata == nil {
+		return Meta{}
+	}
+
+	meta := Meta{
+		RequestID:     metadata.RequestID,
+		CorrelationID: metadata.CorrelationID,
+		Operation:     metadata.Operation,
+		Provider:      metadata.Provider,
+		Model:         metadata.Model,
+		Attempts:      metadata.RetryCount + 1,
+		Elapsed:       metadata.Duration,
+	}
+
+	if metadata.TokenUsage != nil {
+		meta.Usage = *metadata.TokenUsage
+	}
+	if metadata.CostInfo != nil {
+		meta.Cost = *metadata.CostInfo
+	}
+	if schemaID, ok := metadata.Custom["schema_id"].(string); ok {
+		meta.SchemaID = schemaID
+	}
+
+	return meta
+}

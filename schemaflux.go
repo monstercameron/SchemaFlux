@@ -95,15 +95,12 @@ type (
 	CorrelationStrategy = requesttracking.CorrelationStrategy
 )
 
-// Result wraps an operation result with metadata.
-type Result[T any] struct {
-	Value T // The actual result value
-	// ModelConfidence is the model's own claim about this result, not a measurement.
-	// It is not calibrated and is not comparable across models or prompts.
-	ModelConfidence float64        // ModelConfidence score (0.0-1.0)
-	Error           error          // Any error that occurred
-	Metadata        map[string]any // Additional metadata
-}
+// The old Result[T] lived here: a struct holding a value, a model-reported
+// confidence, an error, and a map of "additional metadata". It had no users in
+// this module, and it is the shape the envelope replaces -- an error inside a
+// result means every caller has two places to check, and a bag called metadata
+// is where a model's claim and a measured token count end up indistinguishable.
+// See the Result alias below.
 
 // Re-export operation-specific options types
 type (
@@ -262,6 +259,39 @@ type (
 	MergeResult[T any] = ops.MergeResult[T]
 	MergeConflict      = ops.MergeConflict
 )
+
+// Result pairs a value with the record of how it was produced: what it cost,
+// how many attempts it took, which contract was delivered, and which checks the
+// library ran.
+//
+// The plain form and the detailed form are the same execution -- the envelope
+// is built either way and `Extract` drops it -- because two return types that
+// execute differently is how the two drift.
+//
+//	result, err := schemaflux.ExtractResult[Invoice](text, schemaflux.NewExtractOptions())
+//	if result.Meta.Degraded() {
+//	    // asked for more than was delivered; result.Meta.Checks says what ran
+//	}
+type (
+	Result[T any] = types.Result[T]
+	Meta          = types.Meta
+	Check         = types.Check
+	ContractLevel = types.ContractLevel
+)
+
+const (
+	ContractPromptOnly                = types.ContractPromptOnly
+	ContractJSONWellFormed            = types.ContractJSONWellFormed
+	ContractSchemaConstrained         = types.ContractSchemaConstrained
+	ContractSchemaAndInvariantChecked = types.ContractSchemaAndInvariantChecked
+	ContractEvidenceChecked           = types.ContractEvidenceChecked
+	ContractFullyGoverned             = types.ContractFullyGoverned
+)
+
+// ExtractResult runs Extract and returns the envelope alongside the value.
+func ExtractResult[T any](input any, opts ExtractOptions) (Result[T], error) {
+	return ops.ExtractResult[T](input, opts)
+}
 
 // The failure taxonomy.
 //

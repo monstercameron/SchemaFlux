@@ -17,6 +17,10 @@ type scriptedProvider struct {
 	body string
 	err  error
 
+	// bodies answers with a different body per call, for tests that need the
+	// repair loop to see a second answer.
+	bodies []string
+
 	// requests records what the stack actually sent.
 	requests []schemaflux.CompletionRequest
 }
@@ -26,8 +30,17 @@ func (p *scriptedProvider) Complete(_ context.Context, req schemaflux.Completion
 	if p.err != nil {
 		return schemaflux.CompletionResponse{}, p.err
 	}
+	body := p.body
+	if len(p.bodies) > 0 {
+		index := len(p.requests) - 1
+		if index >= len(p.bodies) {
+			index = len(p.bodies) - 1
+		}
+		body = p.bodies[index]
+	}
+
 	return schemaflux.CompletionResponse{
-		Content:      p.body,
+		Content:      body,
 		Provider:     p.Name(),
 		Model:        req.Model,
 		FinishReason: "stop",
@@ -42,6 +55,16 @@ func (p *scriptedProvider) Complete(_ context.Context, req schemaflux.Completion
 func (p *scriptedProvider) Name() string                                      { return "local" }
 func (p *scriptedProvider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
 func (p *scriptedProvider) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
+
+// withScriptedProviderReplies installs a provider that answers with a different
+// body per call, so a test can exercise the repair loop -- one unusable answer,
+// then a good one.
+func withScriptedProviderReplies(t *testing.T, bodies ...string) *scriptedProvider {
+	t.Helper()
+	provider := &scriptedProvider{bodies: bodies}
+	schemaflux.NewClient("test-key").WithProviderInstance(provider)
+	return provider
+}
 
 func withScriptedProvider(t *testing.T, body string, err error) *scriptedProvider {
 	t.Helper()
