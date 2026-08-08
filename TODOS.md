@@ -397,10 +397,20 @@ to test code that uses this library without paying a provider.
   subtest was verified to FAIL against the unsorted code before the sort landed.
   `TestIntegrationRepeatedCallsSendIdenticalBytes` checks the same at the provider boundary.
   The box was left open.
-- [ ] **TI-006** — Fault-injection harness backing **F-028**: provider error, malformed body,
+- [x] **TI-006** — Fault-injection harness backing **F-028**: provider error, malformed body,
   schema-violating body, truncated body, empty body — parameterized across every exported
   operation.
-- [ ] **TI-007** — Property tests for the collection invariants: for random inputs,
+  **Done** — **F-028** built the harness across 57 exported operations with three faults;
+  this adds the two it was missing. A **truncated body** is a distinct failure from prose:
+  the JSON that arrived is correct right up to where it stops, so an extractor that returned
+  "the part it could parse" would decode half an answer and report success. Both the bare and
+  the fenced-and-unterminated forms are covered, because that is how a model's answer is
+  packaged when the output budget runs out mid-sentence.
+  The empty-body case was already there.
+  *Verify:* `TestFaultInjectionTruncatedBody` — two bodies across every operation in the
+  table, with the text-passthrough operations skipped for the stated reason that a truncated
+  string is a short answer rather than a broken one.
+- [x] **TI-007** — Property tests for the collection invariants: for random inputs,
   `Filter` output is a subset of input, `Sort` output is a permutation of input, `Choose`
   output is a member of input, `Cluster` output partitions input exactly once.
   *Verify:* each property fails against today's implementation and passes after **OP-101**–
@@ -410,6 +420,19 @@ to test code that uses this library without paying a provider.
   independent, subset, permutation, partition, graph, hierarchical, sequential — and the
   property test is generated from the declaration, so an operation cannot acquire a
   batchability class without acquiring its check. Depends on **PL-006**.
+  **Done** — `collection_properties_test.go`, sixty rounds per operation against a fixed
+  seed, because a property test that cannot be re-run on the input that broke it is a flake
+  generator. The model's *answer* is what varies: a subset with an occasional invented item,
+  duplicate, or edited copy; a shuffle with an occasional length-preserving corruption; a
+  choice that is sometimes an echo with a changed field; index groups that occasionally
+  overlap, drop an item, or run past the end.
+  **The guard against a vacuous test is the part worth keeping.** Every round may legitimately
+  end in an error — refusing a bad answer is the point — but a test whose rounds *all* error
+  asserts nothing about what comes back when one succeeds, and would keep passing with the
+  property deleted. `requireRoundsAsserted` fails below five accepted rounds, and it fired on
+  the first run: the Filter generator corrupted almost every answer and only 2 of 60 rounds
+  reached an assertion. Corruption is applied to at most one item per round now, and the
+  counts are 18, 35, 42, and 17.
 - [ ] **TI-008** — Concurrency tests under `-race` for the package globals: `defaultClient`
   (`client.go:192-236`), `ops.defaultProvider`, `ops.customLLMCaller`, and `pricing`'s
   package state. Closes **I-14**.

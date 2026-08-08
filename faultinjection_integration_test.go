@@ -46,6 +46,17 @@ type faultCase struct {
 const (
 	malformedBody       = "I'm sorry, I can't help with that."
 	schemaViolatingBody = `{"unrelated": [1, 2, 3], "shape": "wrong"}`
+
+	// A body cut off mid-value. This is what a provider actually returns when
+	// the output budget runs out, and it is a different failure from prose: the
+	// JSON that arrived is right up to the point where it stops, so an
+	// extractor that returns "the part it liked" would produce a decode of half
+	// an answer rather than an error. TI-006.
+	truncatedBody = `{"name": "Ada", "items": [{"id": 1}, {"id":`
+
+	// A fenced block that never closes, which is the same failure wearing the
+	// packaging models put around their answers.
+	truncatedFencedBody = "```json\n{\"name\": \"Ada\", \"total\":"
 )
 
 // survivesSchemaViolation names operations for which a well-formed JSON body of
@@ -364,6 +375,27 @@ func TestFaultInjectionEmptyBody(t *testing.T) {
 }
 
 // isTextPassthrough reports whether an exemption is the text-passthrough one.
+// A truncated body is a distinct fault: valid JSON up to the cut, which is what
+// a provider returns when the output budget runs out. The failure to avoid is an
+// extractor that returns the part it could parse, so the operation decodes half
+// an answer and reports success.
+func TestFaultInjectionTruncatedBody(t *testing.T) {
+	for _, body := range []string{truncatedBody, truncatedFencedBody} {
+		for _, tc := range faultCases() {
+			t.Run(tc.name, func(t *testing.T) {
+				if reason, exempt := survivesSchemaViolation[tc.name]; exempt && isTextPassthrough(reason) {
+					t.Skipf("%s returns the model's text verbatim, so a truncated string is a short answer", tc.name)
+				}
+				withScriptedProvider(t, body, nil)
+
+				if err := tc.run(); err == nil {
+					t.Fatal("a truncated body must produce an error, not a decode of what arrived")
+				}
+			})
+		}
+	}
+}
+
 // Every entry in the list is, today; the helper keeps the malformed-body test
 // honest if a different kind of exemption is ever added.
 func isTextPassthrough(reason string) bool {
