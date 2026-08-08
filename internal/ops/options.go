@@ -325,6 +325,13 @@ func (e ExtractOptions) WithSteering(steering string) ExtractOptions {
 	return e
 }
 
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (e ExtractOptions) WithModel(model string) ExtractOptions {
+	e.CommonOptions = e.CommonOptions.WithModel(model)
+	return e
+}
+
 func (e ExtractOptions) WithThreshold(threshold float64) ExtractOptions {
 	e.CommonOptions = e.CommonOptions.WithThreshold(threshold)
 	return e
@@ -412,6 +419,24 @@ func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) type
 	merged.Intelligence = common.Intelligence
 	if common.Intelligence == types.TierUnset {
 		merged.Intelligence = embedded.Intelligence
+	}
+	// Model falls back the same way, and did not before DX-001.
+	//
+	// TC-005 added the pin to both CommonOptions and types.OpOptions but not to
+	// this merge, so for every options type that embeds both -- Extract,
+	// Generate, Transform, Choose, Filter, Sort and the rest -- a pin written to
+	// the CommonOptions side was copied over by `merged := embedded` and lost.
+	// Nothing failed: the call went out on whatever the tier resolved to, which
+	// is a plausible model, so the only symptom was a reproduction that would
+	// not reproduce and a bill against a model nobody selected.
+	//
+	// That is ST-010's shape exactly, in a different field: two homes for one
+	// setting, and a merge that knows about only one of them. It stayed
+	// invisible because nothing could set the CommonOptions side -- the fluent
+	// builders had no Model method until DX-001, so the bug had no reachable
+	// call site until the moment it was given one.
+	if common.Model != "" {
+		merged.Model = common.Model
 	}
 
 	requestID := common.RequestID
@@ -687,6 +712,13 @@ func (t TransformOptions) WithSteering(steering string) TransformOptions {
 	return t
 }
 
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (t TransformOptions) WithModel(model string) TransformOptions {
+	t.CommonOptions = t.CommonOptions.WithModel(model)
+	return t
+}
+
 // WithMode sets the mode
 func (t TransformOptions) WithMode(mode types.Mode) TransformOptions {
 	t.CommonOptions = t.CommonOptions.WithMode(mode)
@@ -823,6 +855,13 @@ func (g GenerateOptions) WithSteering(steering string) GenerateOptions {
 	return g
 }
 
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (g GenerateOptions) WithModel(model string) GenerateOptions {
+	g.CommonOptions = g.CommonOptions.WithModel(model)
+	return g
+}
+
 // WithMode sets the mode
 func (g GenerateOptions) WithMode(mode types.Mode) GenerateOptions {
 	g.CommonOptions = g.CommonOptions.WithMode(mode)
@@ -901,6 +940,13 @@ func (s SummarizeOptions) Validate() error {
 // WithSteering sets the steering prompt
 func (s SummarizeOptions) WithSteering(steering string) SummarizeOptions {
 	s.CommonOptions = s.CommonOptions.WithSteering(steering)
+	return s
+}
+
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (s SummarizeOptions) WithModel(model string) SummarizeOptions {
+	s.CommonOptions = s.CommonOptions.WithModel(model)
 	return s
 }
 
@@ -1200,6 +1246,13 @@ func (c ClassifyOptions) WithSteering(steering string) ClassifyOptions {
 	return c
 }
 
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (c ClassifyOptions) WithModel(model string) ClassifyOptions {
+	c.CommonOptions = c.CommonOptions.WithModel(model)
+	return c
+}
+
 // WithMode sets the mode
 func (c ClassifyOptions) WithMode(mode types.Mode) ClassifyOptions {
 	c.CommonOptions = c.CommonOptions.WithMode(mode)
@@ -1287,6 +1340,13 @@ func (s ScoreOptions) WithRubric(rubric map[string]string) ScoreOptions {
 // WithSteering sets the steering prompt
 func (s ScoreOptions) WithSteering(steering string) ScoreOptions {
 	s.CommonOptions = s.CommonOptions.WithSteering(steering)
+	return s
+}
+
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (s ScoreOptions) WithModel(model string) ScoreOptions {
+	s.CommonOptions = s.CommonOptions.WithModel(model)
 	return s
 }
 
@@ -1462,6 +1522,13 @@ func (c ChooseOptions) WithSteering(steering string) ChooseOptions {
 	return c
 }
 
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (c ChooseOptions) WithModel(model string) ChooseOptions {
+	c.CommonOptions = c.CommonOptions.WithModel(model)
+	return c
+}
+
 // WithThreshold sets the confidence threshold.
 func (c ChooseOptions) WithThreshold(threshold float64) ChooseOptions {
 	c.CommonOptions = c.CommonOptions.WithThreshold(threshold)
@@ -1583,6 +1650,13 @@ func (f FilterOptions) WithSteering(steering string) FilterOptions {
 	return f
 }
 
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (f FilterOptions) WithModel(model string) FilterOptions {
+	f.CommonOptions = f.CommonOptions.WithModel(model)
+	return f
+}
+
 // WithThreshold sets the confidence threshold.
 func (f FilterOptions) WithThreshold(threshold float64) FilterOptions {
 	f.CommonOptions = f.CommonOptions.WithThreshold(threshold)
@@ -1689,6 +1763,13 @@ func (s SortOptions) WithSecondaryCriteria(criteria []string) SortOptions {
 // WithSteering sets the steering prompt.
 func (s SortOptions) WithSteering(steering string) SortOptions {
 	s.CommonOptions = s.CommonOptions.WithSteering(steering)
+	return s
+}
+
+// WithModel pins the exact model for this call, bypassing the Intelligence
+// tier's mapping. An empty string clears the pin.
+func (s SortOptions) WithModel(model string) SortOptions {
+	s.CommonOptions = s.CommonOptions.WithModel(model)
 	return s
 }
 

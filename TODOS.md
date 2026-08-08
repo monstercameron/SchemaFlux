@@ -212,6 +212,116 @@ regardless of what happens to the rest of the plan.
   built with `.Steer("the most urgent")` whose prompt did not contain it. Regenerated; the
   diff is that phrase appearing, and nothing else.
 
+## Developer experience
+
+Five papercuts reported from integrating this library into ArticleFlux, a multi-tenant reader
+that runs ten Smart+ features through it. None of them is a wrong answer, which is why none was
+found by reading the code: each is the library making a caller work out something it already
+knew. They are recorded together because they share a cause — every one is invisible from
+inside, where the mechanism is already understood.
+
+- [x] **DX-001** — The fluent API could not pin a model. `CommonOptions.Model`, `WithModel` and
+  the resolution in `CallLLM` all landed with **TC-005**, and nothing exposed them: no builder
+  had a `Model` method, so the only route was building an options struct by hand and passing it
+  to `WithOptions` — the escape hatch, not the interface.
+  The workaround it pushes a caller into is worse than the gap. ArticleFlux is multi-tenant and
+  each instance chooses its own model, so it named its provider `"openai"` to make the tier
+  mapping resolve to *something*, then overwrote the model inside its own provider on the way
+  past. Two lies at once — about which provider is configured and about where the model is
+  decided — and both invisible in the envelope, which went on reporting the provider that was
+  named.
+  **Fixed** with `Model(string)` on `requestBase` (one method for the 49 builders that embed it,
+  plus a `setModel` closure at each construction site) and on the six hand-written builders in
+  `entrypoints.go`. `WithModel` added to the nine options types that already had a type-specific
+  `WithSteering`, mirroring it exactly. Eleven options types that spell their common fields out
+  flat rather than embedding `CommonOptions` — Negotiate, Adversarial, Resolve, Derive, Conform,
+  Interpolate, Arbitrate, Project, Audit, Compose, Pivot — gained a `Model` field, without which
+  the setter would have been an option that changes nothing, which `dead_options_test.go` fails
+  the build over.
+  **A live bug in TC-005 fell out of this.** `mergeEmbeddedOpOptions` did not carry `Model`: it
+  starts from the embedded `types.OpOptions` and overrides Steering, Threshold, Mode,
+  Intelligence and the IDs from `CommonOptions`, so a pin written to the CommonOptions side was
+  copied over and lost for every options type that embeds both — Extract, Generate, Transform,
+  Choose, Filter, Sort and the rest. Nothing failed: the call went out on whatever the tier
+  resolved to, which is a plausible model, so the only symptoms were a reproduction that would
+  not reproduce and a bill against a model nobody selected. **This is ST-010's shape in a
+  different field** — two homes for one setting and a merge that knows about one of them — and it
+  stayed invisible only because nothing could set the CommonOptions side until this task added
+  the method that does.
+  *Verify:* `devx_test.go` — 12 builders covering all three options shapes, each asserting the
+  pin on `LastRequest().Model`; 4 cases for pin-beats-tier in both orders and across all three
+  tiers; last-pin-wins and empty-clears-the-pin. Watched the merge cases fail first: before the
+  `mergeEmbeddedOpOptions` fix, every double-embedding builder returned the tier's model.
+
+- [x] **DX-002** — `Run` took a context on six builders and nothing at all on forty-nine. A
+  caller who learned `Extracting[T](x).Run(ctx)` and then reached for `Summarizing(x).Run(ctx)`
+  got a compile error and had to discover `.Context(ctx).Run()`. Two spellings of one idea in one
+  package, with nothing to indicate which applied where.
+  **Fixed** by making all 49 variadic — `Run(ctx ...context.Context)` — through
+  `requestBase.optsWithRunContext`, which routes through the builder's own `setContext` closure
+  because that is the one thing that already knows which of the three options shapes it is
+  holding. `RunResult` and `RunDetailed` already take a required context and are left alone.
+  **What this breaks, stated plainly:** a variadic `Run` no longer satisfies `func() (T, error)`,
+  so a caller passing `req.Run` as a method value — to `AsStep`, or to anything else taking a
+  thunk — must wrap it: `func() (T, error) { return req.Run() }`. One site in this repository
+  needed it (`fl007_compose_test.go`). `Run()` with no argument still compiles everywhere, so
+  nothing else changes.
+  *Verify:* `devx_test.go` — 10 builders that took no context, each asserting a cancelled context
+  reaches the provider as `context.Canceled`; `Run()` with no argument still works; and
+  `Run(ctx)` produces the same deadline as `.Context(ctx).Run()`, so the fix removed a spelling
+  rather than adding a second way to be wrong.
+
+- [x] **DX-003** — `required field X is empty` did not say what to do about it. The mechanism to
+  fix it has existed since `requiredness.go` — a `schemaflux:"optional"` tag, a pointer, or
+  `omitempty` — and the error named none of them, so a caller who did not already know it existed
+  had nothing to search for. Every plausible reading is wrong: that the model misbehaved, that
+  the prompt needs work, or that the operation is the wrong one.
+  It cost ArticleFlux four separate debugging rounds before the pattern was recognised as one
+  thing: a re-rank's optional reason, an entity's optional label, a translation that could not be
+  produced, and a boolean whose `false` is meaningful. The batched case is the expensive one —
+  one untranslatable string in a batch of sixty failed all sixty.
+  **Fixed** with `optionalFieldRemedy`, appended to the error. It names all three spellings in
+  the order `FieldRequiredness` resolves them, and it names `Strict()` — because the check runs
+  only in Strict mode, which **also** rejects unknown fields. Two rules under one word: a caller
+  who reached for Strict wanting exact decoding got mandatory non-empty fields as an unannounced
+  second effect, and needs to know both levers exist before choosing between them.
+  The wording is conditional — "if an empty value is a valid answer here" — rather than a
+  recommendation. Often it is not one: a required field arriving empty is exactly the failure
+  this library refuses to pass off as success, and the fix is then a better prompt rather than a
+  weaker type.
+  *Verify:* `devx_test.go` — the error names the field, all three remedies and `Strict()`, and
+  states the remedy conditionally; plus one case per remedy proving each actually makes the empty
+  value acceptable, so the message is not merely advice.
+
+- [x] **DX-004** — `the response carried unknown field X` did not say that `Strict()` was what
+  rejected it. Rejecting an unrecognised property is opt-in and nothing else in the library does
+  it, but the message reads as a decoding fact rather than as a consequence of a mode the caller
+  chose — and `Strict` reads as "be careful" rather than as "reject anything I did not name".
+  `strictdecode.go`'s own comment already says rejecting an extra field is "exactly wrong for an
+  operation whose contract permits one"; the error is where a caller finds that out.
+  ArticleFlux had Strict on four operations whose contracts tolerate an extra field. A model that
+  answered the question *and* volunteered a confidence score failed the whole call; on the
+  batched ones that discarded sixty good answers over one key nobody would have read.
+  **Fixed:** the message now names Strict and says to drop it if the contract permits a field it
+  did not ask for.
+  *Verify:* `devx_test.go` — the error names the field and `Strict()`, and the counterpart case
+  proves the same answer is accepted without Strict, so the advice is actionable.
+
+- [x] **DX-005** — `schemafluxtest.Provider` recorded requests but not contexts, and `Reply`
+  scripted a fixed list with no way to answer from the request. Both gaps forced ArticleFlux to
+  hand-roll wrappers around this provider: one to observe the per-feature timeouts it puts on
+  every call, and one for translation batching, where the reply has to name the keys *that batch*
+  asked about and a fixed list cannot know which those are without the fixture reimplementing the
+  batching it is meant to be testing.
+  **Fixed** with `Contexts()`, `ContextN(n)` and `ReplyFunc(fn)`. `ContextN` returns a background
+  context out of range rather than nil, so an assertion on a call that never happened reports the
+  missing deadline it was looking for instead of panicking somewhere unrelated. `ReplyFunc` takes
+  precedence over `Reply` and `Shaped`, and scripted errors from `Fail`/`FailThen` still apply
+  first, so "fail twice, then answer from the request" stays expressible.
+  *Verify:* `devx_test.go` — contexts recorded per call and in order; out-of-range is background;
+  ReplyFunc answers from the request, sees the call index, fails the call on error, wins over
+  Reply, and composes with FailThen; Reset clears contexts.
+
 ## Dead options
 
 - [x] **F-023** — Implement or delete the dead options. Each has a fluent setter, so the call
@@ -3052,13 +3162,34 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   **Not done:** no model escalation before the atomic fallback (needs **CP-001**'s negotiation
   seam), no review packet at exhaustion, and aggregate-shaped operations like Sort and Cluster
   are out of scope — this cascade handles item-wise batches only.
-- [ ] **PL-010** — SDMP staged plans over one datum, with reuse. Pass structured
+- [x] **PL-010** — SDMP staged plans over one datum, with reuse. Pass structured
   intermediates instead of resending the source, reuse deterministic preprocessing and
   schema artifacts, run independent checks concurrently under one budget, and **skip the
   model stage entirely when deterministic checks already establish the required contract**.
   Each stage carries its own operation ID and parent lineage. Closes **EXE-10**, **EXE-11**.
   *Verify:* a two-stage extract-then-verify plan sends the source once; a case where the
   deterministic check suffices makes one provider call, not two.
+  **Done as the internal primitive.** `Stage[T]`, `PlanStep[T]`, `StagedPlan[T]`, and
+  `RunStagedPlan` in `internal/ops/stagedplan.go`.
+  The clause worth the task is the skip, and it is proven by **call count** rather than by
+  inspecting a value: an extract-then-verify plan makes exactly **one** provider call when the
+  deterministic check attests the required contract level, and exactly **two** when it does
+  not, cannot, or attests a level below what the stage requires. A test that only checked the
+  returned value could not tell "skipped the stage" from "ran it and liked the answer", which
+  is the whole distinction.
+  Reuse is structural rather than an optimisation pass: the **same** `OpOptions` — SchemaID,
+  CacheIdentity, JSONSchema, Model — is threaded to every stage unchanged except
+  `ParentResultIDs`, so the schema and cache artifacts are the ones already built rather than
+  rebuilt per stage. Lineage chains stage to stage through the same `ParentResultIDs` TC-003
+  established, so a staged plan produces a resolvable chain without a second mechanism.
+  One budget means one `*Scheduler` shared across the **whole plan**, not per group, so
+  independent checks running concurrently are still bounded by a single admission budget —
+  per-group budgets would make "one budget" true only within a stage.
+  **Not done:** a multi-stage group validates a datum, it does not produce a new one. There is
+  no generic merge rule for arbitrary `T`, and inventing one would be a library-level guess
+  about the caller's semantics — so the limitation is documented rather than papered over.
+  A failed stage ends the plan; there is no partial staged-plan result. And `RunStagedPlan` is
+  reachable only from within `internal/ops` — there is no exported wrapper yet.
 - [x] **PL-011** — Global and hierarchical operation algebras, written per operation because
   no generic chunker can derive them: ranking (score within chunks, keep a candidate
   frontier, rerank globally, validate IDs and pairwise constraints), clustering (features →
@@ -3086,13 +3217,40 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   **Not done:** cross-chunk merges for ranking, clustering, dedup, and synthesis, which the
   task itself says cannot be generic. No `Sort` or `Cluster` `Op` descriptor exists yet to
   design one against, and the existing chunk-local global path is untouched.
-- [ ] **PL-012** — Optional batch group for loop fusion: a caller keeps a natural Go loop,
+- [x] **PL-012** — Optional batch group for loop fusion: a caller keeps a natural Go loop,
   builders defer, and compatible work fuses into MDSP plans. Fusion is legal only when
   operation ID and version, schema hash, route policy, steering, contract level, data policy,
   and budget settings all match; otherwise the group partitions. Fusion is an optimization
   and must not change results relative to running each builder alone. Closes **EXE-16**.
   *Verify:* fused and unfused runs of the same fifty builders produce identical values;
   builders differing only in steering land in separate partitions.
+  **Done as the internal primitive.** `FusionKey` carries the seven axes, and equality is
+  `reflect.DeepEqual` over the whole struct rather than a field list — an eighth axis added
+  later is included in the comparison with no second edit. That is A-014's lesson applied
+  before the bug rather than after it, and
+  `TestFusionKeyEqualityIsReflectionDrivenPerField` walks the struct and asserts each field
+  independently flips equality, failing loudly on a field kind it cannot yet mutate rather
+  than skipping it.
+  **An eighth gate that the task's seven axes do not name, and that fusion is unsafe without:**
+  `RunOpManyPartial` takes one `OpOptions` for a whole partition, so `Mode`, `Threshold`, and
+  `MaxOutputTokens` must match too — otherwise fusion silently applies one builder's settings
+  to another builder's call, which is precisely the "must not change results" clause. Context,
+  RequestID, and CorrelationID are excluded, because those are tracing rather than policy, and
+  partitioning on them would defeat fusion entirely for no safety gain. Both directions are
+  tested.
+  Handles resolve through a **pointer to their own entry**, never a slice index. Mapping
+  answers back by position across a partition boundary is exactly the defect the id protocol
+  (OP-101/PL-003) exists to prevent, and a fused group is where it would reappear.
+  Fused and unfused runs of fifty builders produce identical values, under a provider whose
+  answers do not depend on call order — which is what makes the comparison meaningful.
+  **Not done:** this is the internal primitive, not the public `NewBatchGroup`/`Add` surface
+  §9.8 sketches; that lives in the root package. `RoutePolicy` and `BudgetSettings` are
+  fusion's own minimal stand-ins, because no formal types exist yet. Budgets must match
+  **exactly** rather than merely being "compatible" as the prose says — combining two ceilings
+  safely needs combined-spend tracking that does not exist, and the conservative rule
+  over-partitions instead of guessing. A group also trusts that two builders reporting the
+  same `OperationID` share the same `Op`; Go func values are not comparable, so nothing short
+  of running both prompts could verify it.
 - [x] **PL-013** — Per-item metrics. HTTP 200 hides omissions and invalid output, so measure
   valid-item ratio, omissions, repairs, atomic fallbacks, and **cost per accepted item** —
   the number that actually says whether a batch strategy is working. Closes **EXE-19**.
@@ -3849,7 +4007,7 @@ others, with nothing at the call site to tell them apart.
   go1.26.4/go1.26.5. This is a **toolchain upgrade**, not a code change, and it is not
   something this repository can do to itself; it is recorded here rather than left to be
   discovered at release time.
-- [ ] **RC-002** — Semantic regression suite for release candidates, on pinned operation
+- [x] **RC-002** — Semantic regression suite for release candidates, on pinned operation
   versions and as-pinned-as-available models: extraction accuracy and hallucination,
   missing-field and evidence-reference validity, classification accuracy and abstention,
   choose/filter precision and recall, ranking agreement and ID coverage, repair success and
@@ -3858,6 +4016,42 @@ others, with nothing at the call site to tell them apart.
   intervals — a single exact-output assertion is not a stable live test. Closes **PRD-15**,
   **TRU-21**. This suite spends money: it runs only on a protected release-candidate
   workflow with an explicit spend ceiling, never on `go test ./...` (**B-04**).
+  **Done.** `internal/semantic`: nine dimensions, each written as a **property** of an answer
+  rather than an expected answer. That is the whole design — "the invoice number is INV-4417"
+  survives two correct-but-different answers; "the summary equals this paragraph" does not, and
+  a suite built on the second kind fails for reasons unrelated to quality.
+  **Every number is a rate with a Wilson interval, and thresholds are compared against the
+  interval, never the point estimate.** 8/10 and 800/1000 are the same estimate and not
+  remotely the same evidence; `TestTheSameRateWithMoreEvidenceIsWhatClearsAThreshold` is that
+  distinction as a test. Wilson rather than the textbook normal approximation for a concrete
+  reason: the normal interval for 10-out-of-10 is `[1.0, 1.0]`, claiming certainty from ten
+  trials, and a passing quality suite lives exactly in that region.
+  **The harness is calibrated against a planted failure rate**, which is the answer to "who
+  checks the checker": a fake that fails every 4th trial must be measured at exactly 75%, and
+  if it is not, the suite is wrong. That is a statement a test can make about a scorer whose
+  output otherwise nothing can contradict. Those calibration tests run on every `go test ./...`
+  and touch no provider — the machinery that will later spend money is proven for free.
+  **A failed call is not a wrong answer.** Errored trials leave the quality denominator
+  entirely, so an outage lowers *confidence* in a rate rather than lowering the rate. Folding
+  the two together makes an incident look like a quality regression and costs somebody a day.
+  **Spend**: two independent switches, neither defaulting to spend — `SCHEMAFLUX_LIVE_TESTS=1`
+  and an explicit `SCHEMAFLUX_SEMANTIC_BUDGET_USD` ceiling with no default. The ceiling is
+  checked *before* each trial, and exhausting it stops the run while keeping the evidence
+  already paid for. An unpriced model reports a cost of zero, so cost is tracked by pricing
+  *quality*: one unpriced trial makes the total a **floor**, not a total. Treating that zero as
+  free would have silently disabled the ceiling — the single most expensive bug this package
+  could have contained.
+  A single-trial case is refused before it runs, because one sample reports 0% or 100%
+  regardless of the model.
+  **A gap this surfaced:** only `ExtractResult` and `SortResult` return an execution envelope.
+  `Choose`, `Filter`, and `Classify` return a bare value, so a caller cannot learn what those
+  calls cost, how many tokens they used, or which model answered. Those cases contribute to the
+  quality rates and contribute nothing to cost or latency, and the report says which totals are
+  therefore incomplete rather than quietly under-reporting.
+  **Not done:** the suite reports and does not gate. Thresholds are a product decision, and one
+  hard-coded here would be tuned until it passed. It has also **never been run against a live
+  model** — that needs a funded credential (§19.5.2), so there is no baseline yet and
+  `Proportion.Regressed` has nothing to compare against.
 - [x] **RC-003** — Track §19's acceptance criteria as a checklist in this file, and require
   every unchecked box at v1.0.0 to carry an ADR saying why it ships unmet. Twenty-nine boxes
   across core architecture, correctness and trust, execution and resilience, security and
@@ -3934,10 +4128,36 @@ others, with nothing at the call site to tell them apart.
   and `ValidateLegacy`'s marker pointed at `Validate` — which is **itself deprecated**, so it
   sent a caller on two migrations instead of one. All four are fixed, and the gate is what
   keeps the catalogue and the code from disagreeing again.
-- [ ] **RC-005** — Load and chaos suites: large item streams, provider slowdown and 429
+- [x] **RC-005** — Load and chaos suites: large item streams, provider slowdown and 429
   bursts, mixed tenants and priorities, cancellation storms, large schemas and near-limit
   chunks, partial MDSP failures forcing atomic fallback, and failing telemetry and stores.
   The outcome metrics are cost and latency per valid item, not calls per second.
+  **Done.** Nineteen tests across six files, and they run in the **ordinary suite** — under two
+  seconds combined, no build tag, no env gate. A chaos suite nobody runs is a chaos suite that
+  passes.
+  Every fan-out test is wrapped in a deadline helper, because this repository's fan-out bug
+  **hung** rather than failed: a backstop that released the gate after `wg.Wait()`, which waits
+  on followers blocked on that release. A regression of it has to fail a test, not stall CI
+  forever, and that is a property of the harness rather than of the assertions.
+  The scheduler's head-of-line defect is reproduced as a randomized, scaled-up case rather
+  than the single hand-built one that originally caught it — the deterministic version proves
+  the fix, the randomized version is what would catch the next variant.
+  Concurrency bounds are checked by **peak tracking**, not by belief: `HalfOpenMaxCalls` is
+  asserted against the highest concurrency actually observed under contention, which is the
+  only way that limit can be shown to hold rather than merely be configured.
+  Coverage corruption is injected deliberately — omissions, duplicates, invented ids — to force
+  the isolate passes and the atomic fallback that only run when MDSP coverage fails, so the
+  recovery path is exercised rather than assumed reachable.
+  **A real flake found and fixed in the suite itself:** a cancellation test raced a 2–5ms
+  deadline against 3ms of work, so on a fast machine the work occasionally won. Widened and
+  re-run 60 times shuffled. A chaos suite that is itself flaky trains people to re-run rather
+  than to read.
+  **Not done:** no new `schemafluxtest` chaos package. `schemafluxtest.Provider` implements the
+  top-level interface while every operation in `internal/ops` takes `internal/llm.Provider`, so
+  a new package would have been a second fake for a different seam; extending the existing
+  in-package fake with latency and rate-limit knobs was the smaller true answer.
+  **No production defect found** in the scheduler, fan-out gate, partial runner, recovery
+  cascade, map-reduce, circuit breaker, or bulkhead under this load.
 - [x] **TR-002** — Extend `.audit/traceability.py` to `to-production.md`'s gap register the
   way **TR-001** covers the review: parse `ARC`, `PRD`, `API`, `EXE`, and `TRU` rows, map
   each to the tasks citing it, and fail on an untraced gap or a dangling citation. The

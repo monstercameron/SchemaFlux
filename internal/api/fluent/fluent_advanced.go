@@ -27,6 +27,10 @@ func newNegotiateRequest[T any](constraints any, opts NegotiateOptions) Negotiat
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current NegotiateOptions, model string) NegotiateOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current NegotiateOptions, ctx context.Context) NegotiateOptions {
 				current.Context = ctx
 				return current
@@ -65,7 +69,8 @@ func (r NegotiateRequest[T]) MinimumSatisfaction(minimum float64) NegotiateReque
 	return r.WithOptions(opts)
 }
 
-func (r NegotiateRequest[T]) Run() (NegotiateResult[T], error) {
+func (r NegotiateRequest[T]) Run(ctx ...context.Context) (NegotiateResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero NegotiateResult[T]
 		return zero, err
@@ -96,6 +101,10 @@ func newAdversarialNegotiationRequest[T any](ctx AdversarialContext[T], opts Adv
 			},
 			setIntelligence: func(current AdversarialOptions, level Speed) AdversarialOptions {
 				current.Intelligence = level
+				return current
+			},
+			setModel: func(current AdversarialOptions, model string) AdversarialOptions {
+				current.Model = model
 				return current
 			},
 			setContext: func(current AdversarialOptions, context context.Context) AdversarialOptions {
@@ -131,7 +140,8 @@ func (r AdversarialNegotiationRequest[T]) Strategy(strategy string) AdversarialN
 	return r.WithOptions(opts)
 }
 
-func (r AdversarialNegotiationRequest[T]) Run() (AdversarialResult[T], error) {
+func (r AdversarialNegotiationRequest[T]) Run(ctx ...context.Context) (AdversarialResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero AdversarialResult[T]
 		return zero, err
@@ -164,6 +174,10 @@ func newResolveRequest[T any](sources []T, opts ResolveOptions) ResolveRequest[T
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current ResolveOptions, model string) ResolveOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current ResolveOptions, ctx context.Context) ResolveOptions {
 				current.Context = ctx
 				return current
@@ -192,7 +206,8 @@ func (r ResolveRequest[T]) Strategy(strategy string) ResolveRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r ResolveRequest[T]) Run() (ResolveResult[T], error) {
+func (r ResolveRequest[T]) Run(ctx ...context.Context) (ResolveResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ResolveResult[T]
 		return zero, err
@@ -225,6 +240,10 @@ func newDeriveRequest[T any, U any](input T, opts DeriveOptions) DeriveRequest[T
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current DeriveOptions, model string) DeriveOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current DeriveOptions, ctx context.Context) DeriveOptions {
 				current.Context = ctx
 				return current
@@ -253,7 +272,8 @@ func (r DeriveRequest[T, U]) Fields(fields ...string) DeriveRequest[T, U] {
 	return r.WithOptions(opts)
 }
 
-func (r DeriveRequest[T, U]) Run() (DeriveResult[U], error) {
+func (r DeriveRequest[T, U]) Run(ctx ...context.Context) (DeriveResult[U], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero DeriveResult[U]
 		return zero, err
@@ -287,6 +307,10 @@ func newConformRequest[T any](input T, standard string, opts ConformOptions) Con
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current ConformOptions, model string) ConformOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current ConformOptions, ctx context.Context) ConformOptions {
 				current.Context = ctx
 				return current
@@ -316,7 +340,8 @@ func (r ConformRequest[T]) Strictly(strict bool) ConformRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r ConformRequest[T]) Run() (ConformResult[T], error) {
+func (r ConformRequest[T]) Run(ctx ...context.Context) (ConformResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ConformResult[T]
 		return zero, err
@@ -349,6 +374,10 @@ func newInterpolateRequest[T any](items []T, opts InterpolateOptions) Interpolat
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current InterpolateOptions, model string) InterpolateOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current InterpolateOptions, ctx context.Context) InterpolateOptions {
 				current.Context = ctx
 				return current
@@ -371,7 +400,8 @@ func Interpolating[T any](items []T) InterpolateRequest[T] {
 	return newInterpolateRequest(items, NewInterpolateOptions())
 }
 
-func (r InterpolateRequest[T]) Run() (InterpolateResult[T], error) {
+func (r InterpolateRequest[T]) Run(ctx ...context.Context) (InterpolateResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero InterpolateResult[T]
 		return zero, err
@@ -404,6 +434,10 @@ func newArbitrateRequest[T any](options []T, opts ArbitrateOptions) ArbitrateReq
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current ArbitrateOptions, model string) ArbitrateOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current ArbitrateOptions, ctx context.Context) ArbitrateOptions {
 				current.Context = ctx
 				return current
@@ -432,7 +466,8 @@ func (r ArbitrateRequest[T]) Rules(rules ...string) ArbitrateRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r ArbitrateRequest[T]) Run() (ArbitrateResult[T], error) {
+func (r ArbitrateRequest[T]) Run(ctx ...context.Context) (ArbitrateResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ArbitrateResult[T]
 		return zero, err
@@ -465,6 +500,10 @@ func newProjectRequest[T any, U any](input T, opts ProjectOptions) ProjectReques
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current ProjectOptions, model string) ProjectOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current ProjectOptions, ctx context.Context) ProjectOptions {
 				current.Context = ctx
 				return current
@@ -493,7 +532,8 @@ func (r ProjectRequest[T, U]) Exclude(fields ...string) ProjectRequest[T, U] {
 	return r.WithOptions(opts)
 }
 
-func (r ProjectRequest[T, U]) Run() (ProjectResult[U], error) {
+func (r ProjectRequest[T, U]) Run(ctx ...context.Context) (ProjectResult[U], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ProjectResult[U]
 		return zero, err
@@ -537,6 +577,10 @@ func newAuditRequest[T any](input T, opts AuditOptions) AuditRequest[T] {
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current AuditOptions, model string) AuditOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current AuditOptions, ctx context.Context) AuditOptions {
 				current.Context = ctx
 				return current
@@ -571,7 +615,8 @@ func (r AuditRequest[T]) Categories(categories ...string) AuditRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r AuditRequest[T]) Run() (AuditResult[T], error) {
+func (r AuditRequest[T]) Run(ctx ...context.Context) (AuditResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero AuditResult[T]
 		return zero, err
@@ -604,6 +649,10 @@ func newAssembleRequest[T any](parts []any, opts ComposeOptions) AssembleRequest
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current ComposeOptions, model string) ComposeOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current ComposeOptions, ctx context.Context) ComposeOptions {
 				current.Context = ctx
 				return current
@@ -626,7 +675,8 @@ func Assembling[T any](parts []any) AssembleRequest[T] {
 	return newAssembleRequest[T](parts, NewComposeOptions())
 }
 
-func (r AssembleRequest[T]) Run() (ComposeResult[T], error) {
+func (r AssembleRequest[T]) Run(ctx ...context.Context) (ComposeResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ComposeResult[T]
 		return zero, err
@@ -659,6 +709,10 @@ func newPivotRequest[T any, U any](input T, opts PivotOptions) PivotRequest[T, U
 				current.Intelligence = level
 				return current
 			},
+			setModel: func(current PivotOptions, model string) PivotOptions {
+				current.Model = model
+				return current
+			},
 			setContext: func(current PivotOptions, ctx context.Context) PivotOptions {
 				current.Context = ctx
 				return current
@@ -681,7 +735,8 @@ func Pivoting[T any, U any](input T) PivotRequest[T, U] {
 	return newPivotRequest[T, U](input, NewPivotOptions())
 }
 
-func (r PivotRequest[T, U]) Run() (PivotResult[U], error) {
+func (r PivotRequest[T, U]) Run(ctx ...context.Context) (PivotResult[U], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero PivotResult[U]
 		return zero, err

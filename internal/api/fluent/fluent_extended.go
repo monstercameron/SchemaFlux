@@ -31,6 +31,10 @@ func newAnnotateRequest[T any](input T, opts AnnotateOptions) AnnotateRequest[T]
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o AnnotateOptions, model string) AnnotateOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o AnnotateOptions, ctx context.Context) AnnotateOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -59,7 +63,8 @@ func (r AnnotateRequest[T]) Types(annotationTypes ...string) AnnotateRequest[T] 
 	return r.WithOptions(opts)
 }
 
-func (r AnnotateRequest[T]) Run() (AnnotateResult, error) {
+func (r AnnotateRequest[T]) Run(ctx ...context.Context) (AnnotateResult, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero AnnotateResult
 		return zero, err
@@ -96,6 +101,10 @@ func newClusterRequest[T any](items []T, opts ClusterOptions) ClusterRequest[T] 
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o ClusterOptions, model string) ClusterOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o ClusterOptions, ctx context.Context) ClusterOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -130,7 +139,8 @@ func (r ClusterRequest[T]) Clusters(n int) ClusterRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r ClusterRequest[T]) Run() (ClusterResult[T], error) {
+func (r ClusterRequest[T]) Run(ctx ...context.Context) (ClusterResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ClusterResult[T]
 		return zero, err
@@ -165,6 +175,10 @@ func newRankRequest[T any](items []T, opts RankOptions) RankRequest[T] {
 			},
 			setIntelligence: func(o RankOptions, s Speed) RankOptions {
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
+				return o
+			},
+			setModel: func(o RankOptions, model string) RankOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
 				return o
 			},
 			setContext: func(o RankOptions, ctx context.Context) RankOptions {
@@ -207,7 +221,8 @@ func (r RankRequest[T]) MinScore(score float64) RankRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r RankRequest[T]) Run() (RankResult[T], error) {
+func (r RankRequest[T]) Run(ctx ...context.Context) (RankResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero RankResult[T]
 		return zero, err
@@ -244,6 +259,10 @@ func newCompressRequest[T any](input T, opts CompressOptions) CompressRequest[T]
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o CompressOptions, model string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o CompressOptions, ctx context.Context) CompressOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -266,7 +285,8 @@ func Compressing[T any](input T) CompressRequest[T] {
 	return newCompressRequest(input, NewCompressOptions())
 }
 
-func (r CompressRequest[T]) Run() (CompressResult[T], error) {
+func (r CompressRequest[T]) Run(ctx ...context.Context) (CompressResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero CompressResult[T]
 		return zero, err
@@ -303,6 +323,10 @@ func newCompressTextRequest(input string, opts CompressOptions) CompressTextRequ
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o CompressOptions, model string) CompressOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o CompressOptions, ctx context.Context) CompressOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -325,7 +349,8 @@ func CompressingText(input string) CompressTextRequest {
 	return newCompressTextRequest(input, NewCompressOptions())
 }
 
-func (r CompressTextRequest) Run() (string, error) {
+func (r CompressTextRequest) Run(ctx ...context.Context) (string, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero string
 		return zero, err
@@ -362,6 +387,10 @@ func newDecomposeRequest[T any](input T, opts DecomposeOptions) DecomposeRequest
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o DecomposeOptions, model string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o DecomposeOptions, ctx context.Context) DecomposeOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -384,7 +413,8 @@ func Decomposing[T any](input T) DecomposeRequest[T] {
 	return newDecomposeRequest(input, NewDecomposeOptions())
 }
 
-func (r DecomposeRequest[T]) Run() (DecomposeResult[T], error) {
+func (r DecomposeRequest[T]) Run(ctx ...context.Context) (DecomposeResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero DecomposeResult[T]
 		return zero, err
@@ -421,6 +451,10 @@ func newDecomposeSliceRequest[T any, U any](input T, opts DecomposeOptions) Deco
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o DecomposeOptions, model string) DecomposeOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o DecomposeOptions, ctx context.Context) DecomposeOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -443,7 +477,8 @@ func DecomposingInto[T any, U any](input T) DecomposeSliceRequest[T, U] {
 	return newDecomposeSliceRequest[T, U](input, NewDecomposeOptions())
 }
 
-func (r DecomposeSliceRequest[T, U]) Run() ([]U, error) {
+func (r DecomposeSliceRequest[T, U]) Run(ctx ...context.Context) ([]U, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero []U
 		return zero, err
@@ -480,6 +515,10 @@ func newEnrichRequest[T any, U any](input T, opts EnrichOptions) EnrichRequest[T
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o EnrichOptions, model string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o EnrichOptions, ctx context.Context) EnrichOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -502,7 +541,8 @@ func Enriching[T any, U any](input T) EnrichRequest[T, U] {
 	return newEnrichRequest[T, U](input, NewEnrichOptions())
 }
 
-func (r EnrichRequest[T, U]) Run() (EnrichResult[U], error) {
+func (r EnrichRequest[T, U]) Run(ctx ...context.Context) (EnrichResult[U], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero EnrichResult[U]
 		return zero, err
@@ -539,6 +579,10 @@ func newEnrichInPlaceRequest[T any](input T, opts EnrichOptions) EnrichInPlaceRe
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o EnrichOptions, model string) EnrichOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o EnrichOptions, ctx context.Context) EnrichOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -561,7 +605,8 @@ func EnrichingInPlace[T any](input T) EnrichInPlaceRequest[T] {
 	return newEnrichInPlaceRequest(input, NewEnrichOptions())
 }
 
-func (r EnrichInPlaceRequest[T]) Run() (T, error) {
+func (r EnrichInPlaceRequest[T]) Run(ctx ...context.Context) (T, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero T
 		return zero, err
@@ -598,6 +643,10 @@ func newNormalizeRequest[T any](input T, opts NormalizeOptions) NormalizeRequest
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o NormalizeOptions, model string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o NormalizeOptions, ctx context.Context) NormalizeOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -620,7 +669,8 @@ func Normalizing[T any](input T) NormalizeRequest[T] {
 	return newNormalizeRequest(input, NewNormalizeOptions())
 }
 
-func (r NormalizeRequest[T]) Run() (NormalizeResult[T], error) {
+func (r NormalizeRequest[T]) Run(ctx ...context.Context) (NormalizeResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero NormalizeResult[T]
 		return zero, err
@@ -657,6 +707,10 @@ func newNormalizeTextRequest(input string, opts NormalizeOptions) NormalizeTextR
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o NormalizeOptions, model string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o NormalizeOptions, ctx context.Context) NormalizeOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -679,7 +733,8 @@ func NormalizingText(input string) NormalizeTextRequest {
 	return newNormalizeTextRequest(input, NewNormalizeOptions())
 }
 
-func (r NormalizeTextRequest) Run() (string, error) {
+func (r NormalizeTextRequest) Run(ctx ...context.Context) (string, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero string
 		return zero, err
@@ -716,6 +771,10 @@ func newNormalizeBatchRequest[T any](items []T, opts NormalizeOptions) Normalize
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o NormalizeOptions, model string) NormalizeOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o NormalizeOptions, ctx context.Context) NormalizeOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -738,7 +797,8 @@ func NormalizingBatch[T any](items []T) NormalizeBatchRequest[T] {
 	return newNormalizeBatchRequest(items, NewNormalizeOptions())
 }
 
-func (r NormalizeBatchRequest[T]) Run() ([]NormalizeResult[T], error) {
+func (r NormalizeBatchRequest[T]) Run(ctx ...context.Context) ([]NormalizeResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero []NormalizeResult[T]
 		return zero, err
@@ -776,6 +836,10 @@ func newSemanticMatchRequest[S any, T any](sources []S, targets []T, opts MatchO
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o MatchOptions, model string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o MatchOptions, ctx context.Context) MatchOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -811,7 +875,8 @@ func (r SemanticMatchRequest[S, T]) Strategy(strategy string) SemanticMatchReque
 	return r.WithOptions(opts)
 }
 
-func (r SemanticMatchRequest[S, T]) Run() (MatchResult[S, T], error) {
+func (r SemanticMatchRequest[S, T]) Run(ctx ...context.Context) (MatchResult[S, T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero MatchResult[S, T]
 		return zero, err
@@ -849,6 +914,10 @@ func newMatchOneRequest[S any, T any](source S, targets []T, opts MatchOptions) 
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o MatchOptions, model string) MatchOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o MatchOptions, ctx context.Context) MatchOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -884,7 +953,8 @@ func (r MatchOneRequest[S, T]) Strategy(strategy string) MatchOneRequest[S, T] {
 	return r.WithOptions(opts)
 }
 
-func (r MatchOneRequest[S, T]) Run() ([]MatchPair[S, T], error) {
+func (r MatchOneRequest[S, T]) Run(ctx ...context.Context) ([]MatchPair[S, T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero []MatchPair[S, T]
 		return zero, err
@@ -921,6 +991,10 @@ func newCritiqueRequest[T any](input T, opts CritiqueOptions) CritiqueRequest[T]
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o CritiqueOptions, model string) CritiqueOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o CritiqueOptions, ctx context.Context) CritiqueOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -943,7 +1017,8 @@ func Critiquing[T any](input T) CritiqueRequest[T] {
 	return newCritiqueRequest(input, NewCritiqueOptions())
 }
 
-func (r CritiqueRequest[T]) Run() (CritiqueResult, error) {
+func (r CritiqueRequest[T]) Run(ctx ...context.Context) (CritiqueResult, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero CritiqueResult
 		return zero, err
@@ -980,6 +1055,10 @@ func newSynthesizeRequest[T any](sources []any, opts SynthesizeOptions) Synthesi
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o SynthesizeOptions, model string) SynthesizeOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o SynthesizeOptions, ctx context.Context) SynthesizeOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -1008,7 +1087,8 @@ func (r SynthesizeRequest[T]) Strategy(strategy string) SynthesizeRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r SynthesizeRequest[T]) Run() (SynthesizeResult[T], error) {
+func (r SynthesizeRequest[T]) Run(ctx ...context.Context) (SynthesizeResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero SynthesizeResult[T]
 		return zero, err
@@ -1045,6 +1125,10 @@ func newPredictRequest[T any](input any, opts PredictOptions) PredictRequest[T] 
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o PredictOptions, model string) PredictOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o PredictOptions, ctx context.Context) PredictOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -1073,7 +1157,8 @@ func (r PredictRequest[T]) Horizon(horizon string) PredictRequest[T] {
 	return r.WithOptions(opts)
 }
 
-func (r PredictRequest[T]) Run() (PredictResult[T], error) {
+func (r PredictRequest[T]) Run(ctx ...context.Context) (PredictResult[T], error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero PredictResult[T]
 		return zero, err
@@ -1110,6 +1195,10 @@ func newVerifyRequest(input string, opts VerifyOptions) VerifyRequest {
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o VerifyOptions, model string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o VerifyOptions, ctx context.Context) VerifyOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -1132,7 +1221,8 @@ func Verifying(input string) VerifyRequest {
 	return newVerifyRequest(input, NewVerifyOptions())
 }
 
-func (r VerifyRequest) Run() (VerifyResult, error) {
+func (r VerifyRequest) Run(ctx ...context.Context) (VerifyResult, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero VerifyResult
 		return zero, err
@@ -1169,6 +1259,10 @@ func newVerifyClaimRequest(claim string, opts VerifyOptions) VerifyClaimRequest 
 				o.CommonOptions = o.CommonOptions.WithIntelligence(s)
 				return o
 			},
+			setModel: func(o VerifyOptions, model string) VerifyOptions {
+				o.CommonOptions = o.CommonOptions.WithModel(model)
+				return o
+			},
 			setContext: func(o VerifyOptions, ctx context.Context) VerifyOptions {
 				o.CommonOptions = o.CommonOptions.WithContext(ctx)
 				return o
@@ -1191,7 +1285,8 @@ func VerifyingClaim(claim string) VerifyClaimRequest {
 	return newVerifyClaimRequest(claim, NewVerifyOptions())
 }
 
-func (r VerifyClaimRequest) Run() (ClaimVerification, error) {
+func (r VerifyClaimRequest) Run(ctx ...context.Context) (ClaimVerification, error) {
+	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
 		var zero ClaimVerification
 		return zero, err

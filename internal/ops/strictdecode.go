@@ -269,7 +269,18 @@ func describeDecodeFailure(err error) string {
 	case strings.Contains(err.Error(), "unknown field"):
 		// The decoder names the field and nothing else, so this is safe to
 		// pass through: it is a key, not a value.
-		return "the response carried " + strings.TrimPrefix(err.Error(), "json: ")
+		//
+		// Naming Strict() is the point of the second clause. Rejecting an
+		// unrecognised property is opt-in -- nothing else in this library does
+		// it -- but the error arrives looking like a decoding fact rather than
+		// a consequence of a mode the caller chose, and `Strict` reads as "be
+		// careful" rather than as "reject anything I did not name".
+		//
+		// The expensive version is a batch: a model that answers the question
+		// AND volunteers an extra key fails the whole call, so one unrequested
+		// field discards every good answer beside it.
+		return "the response carried " + strings.TrimPrefix(err.Error(), "json: ") +
+			"; Strict() is what rejects it, so drop Strict if this operation's contract permits a field it did not ask for"
 	default:
 		return "the response does not fit the target type"
 	}

@@ -28,9 +28,16 @@ type ResolveOptions struct {
 	ConflictThreshold float64
 
 	// Common options
-	Steering      string
-	Mode          types.Mode
-	Intelligence  types.Speed
+	Steering     string
+	Mode         types.Mode
+	Intelligence types.Speed
+
+	// Model pins the exact model for this call, bypassing the Intelligence
+	// tier's mapping (TC-005). These option types spell their common fields
+	// out rather than embedding CommonOptions, so the pin has to be declared
+	// here too -- otherwise `.Model(...)` on the builder would be a setter
+	// that changes nothing, which this repository fails the build over.
+	Model         string
 	Context       context.Context
 	RequestID     string
 	CorrelationID string
@@ -228,6 +235,7 @@ Strategy explanations:
 	opOpts := types.OpOptions{
 		Mode:          opt.Mode,
 		Intelligence:  opt.Intelligence,
+		Model:         opt.Model,
 		Context:       ctx,
 		RequestID:     opt.RequestID,
 		CorrelationID: opt.CorrelationID,
@@ -299,6 +307,9 @@ func mergeResolveOptions(defaults, user ResolveOptions) ResolveOptions {
 	}
 	if user.Intelligence != 0 {
 		defaults.Intelligence = user.Intelligence
+	}
+	if user.Model != "" {
+		defaults.Model = user.Model
 	}
 	if user.Context != nil {
 		defaults.Context = user.Context

@@ -370,7 +370,7 @@ func validateRequiredFields(value reflect.Value, path string, depth int) error {
 			required := IsRequired(field)
 
 			if required && fieldValue.IsZero() {
-				return fmt.Errorf("required field %s is empty", fieldPath)
+				return fmt.Errorf("required field %s is empty; %s", fieldPath, optionalFieldRemedy)
 			}
 
 			// Recurse into what was populated. An optional field that is

@@ -90,6 +90,21 @@ func (r ExtractRequest[T]) Quick() ExtractRequest[T] {
 	return r
 }
 
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping (TC-005). An empty string clears the pin and restores the tier.
+//
+// DX-001. The pin has worked since TC-005; there was no way to ask for it from
+// the fluent API, which is the entry point every example uses. A caller could
+// reach it only by building an options struct by hand and passing it to
+// WithOptions -- the escape hatch, not the interface. The workaround that
+// invites is worse than the gap: name a provider whose tier mapping resolves to
+// something, then substitute the real model further down, which is two lies at
+// once and both invisible in the envelope.
+func (r ExtractRequest[T]) Model(model string) ExtractRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
+	return r
+}
+
 func (r ExtractRequest[T]) Context(ctx context.Context) ExtractRequest[T] {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
 	return r
@@ -191,6 +206,21 @@ func (r TransformRequest[T, U]) Quick() TransformRequest[T, U] {
 	return r
 }
 
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping (TC-005). An empty string clears the pin and restores the tier.
+//
+// DX-001. The pin has worked since TC-005; there was no way to ask for it from
+// the fluent API, which is the entry point every example uses. A caller could
+// reach it only by building an options struct by hand and passing it to
+// WithOptions -- the escape hatch, not the interface. The workaround that
+// invites is worse than the gap: name a provider whose tier mapping resolves to
+// something, then substitute the real model further down, which is two lies at
+// once and both invisible in the envelope.
+func (r TransformRequest[T, U]) Model(model string) TransformRequest[T, U] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
+	return r
+}
+
 func (r TransformRequest[T, U]) Merge(strategy string) TransformRequest[T, U] {
 	r.opts = r.opts.WithMergeStrategy(strategy)
 	return r
@@ -287,6 +317,21 @@ func (r GenerateRequest[T]) Quick() GenerateRequest[T] {
 	return r
 }
 
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping (TC-005). An empty string clears the pin and restores the tier.
+//
+// DX-001. The pin has worked since TC-005; there was no way to ask for it from
+// the fluent API, which is the entry point every example uses. A caller could
+// reach it only by building an options struct by hand and passing it to
+// WithOptions -- the escape hatch, not the interface. The workaround that
+// invites is worse than the gap: name a provider whose tier mapping resolves to
+// something, then substitute the real model further down, which is two lies at
+// once and both invisible in the envelope.
+func (r GenerateRequest[T]) Model(model string) GenerateRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
+	return r
+}
+
 func (r GenerateRequest[T]) Count(count int) GenerateRequest[T] {
 	r.opts.Count = count
 	return r
@@ -378,6 +423,21 @@ func (r ChooseRequest[T]) Fast() ChooseRequest[T] {
 
 func (r ChooseRequest[T]) Quick() ChooseRequest[T] {
 	r.opts = r.opts.WithIntelligence(Quick)
+	return r
+}
+
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping (TC-005). An empty string clears the pin and restores the tier.
+//
+// DX-001. The pin has worked since TC-005; there was no way to ask for it from
+// the fluent API, which is the entry point every example uses. A caller could
+// reach it only by building an options struct by hand and passing it to
+// WithOptions -- the escape hatch, not the interface. The workaround that
+// invites is worse than the gap: name a provider whose tier mapping resolves to
+// something, then substitute the real model further down, which is two lies at
+// once and both invisible in the envelope.
+func (r ChooseRequest[T]) Model(model string) ChooseRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
 	return r
 }
 
@@ -476,6 +536,21 @@ func (r FilterRequest[T]) Quick() FilterRequest[T] {
 	return r
 }
 
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping (TC-005). An empty string clears the pin and restores the tier.
+//
+// DX-001. The pin has worked since TC-005; there was no way to ask for it from
+// the fluent API, which is the entry point every example uses. A caller could
+// reach it only by building an options struct by hand and passing it to
+// WithOptions -- the escape hatch, not the interface. The workaround that
+// invites is worse than the gap: name a provider whose tier mapping resolves to
+// something, then substitute the real model further down, which is two lies at
+// once and both invisible in the envelope.
+func (r FilterRequest[T]) Model(model string) FilterRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
+	return r
+}
+
 func (r FilterRequest[T]) Context(ctx context.Context) FilterRequest[T] {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
 	return r
@@ -568,6 +643,21 @@ func (r SortRequest[T]) Fast() SortRequest[T] {
 
 func (r SortRequest[T]) Quick() SortRequest[T] {
 	r.opts = r.opts.WithIntelligence(Quick)
+	return r
+}
+
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping (TC-005). An empty string clears the pin and restores the tier.
+//
+// DX-001. The pin has worked since TC-005; there was no way to ask for it from
+// the fluent API, which is the entry point every example uses. A caller could
+// reach it only by building an options struct by hand and passing it to
+// WithOptions -- the escape hatch, not the interface. The workaround that
+// invites is worse than the gap: name a provider whose tier mapping resolves to
+// something, then substitute the real model further down, which is two lies at
+// once and both invisible in the envelope.
+func (r SortRequest[T]) Model(model string) SortRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
 	return r
 }
 

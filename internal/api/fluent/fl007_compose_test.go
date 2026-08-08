@@ -232,7 +232,12 @@ func TestFL007_AsStep_DoesNotThreadCombinatorCtx(t *testing.T) {
 	// property under test.
 	req := Classifying[stubExtractTarget, string](stubExtractTarget{Name: "x"}).Categories("a", "b")
 	start := time.Now()
-	_, _ = AsStep(req.Run)(ctx)
+	// Wrapped rather than passed as a method value: Run is variadic now
+	// (DX-002), and a `func(...context.Context) (T, error)` does not satisfy
+	// AsStep's `func() (T, error)`. This is the one source break that change
+	// caused in this repository, and the wrapper is the fix a caller outside it
+	// would make too.
+	_, _ = AsStep(func() (ClassifyResult[string], error) { return req.Run() })(ctx)
 	elapsed := time.Since(start)
 
 	if elapsed < 150*time.Millisecond {

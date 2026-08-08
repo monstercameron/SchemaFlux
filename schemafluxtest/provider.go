@@ -50,8 +50,13 @@ type Provider struct {
 	index    int
 	delay    time.Duration
 	requests []schemaflux.CompletionRequest
+	contexts []context.Context
 	usage    schemaflux.TokenUsage
 	name     string
+
+	// replyFunc answers from the request itself when set, taking precedence
+	// over the scripted list. See ReplyFunc.
+	replyFunc func(call int, req schemaflux.CompletionRequest) (string, error)
 
 	// shaped answers from the request's own declared shape when nothing is
 	// scripted. See Shaped.
@@ -195,10 +200,62 @@ func (p *Provider) CallCount() int {
 }
 
 // Reset clears the recorded requests and rewinds the reply sequence.
+// ReplyFunc answers each call from the request it was sent, rather than from a
+// fixed list.
+//
+// Reply covers the common case, where the answer does not depend on the
+// question. It cannot cover the case where it does: a caller that batches work
+// -- splitting a catalogue into chunks and asking about each -- has to answer
+// with the keys THAT chunk asked about, and a fixed list cannot know which
+// those are without the fixture reimplementing the batching it is supposed to
+// be testing -- at which point the fixture shares the bug it was meant to
+// catch.
+//
+// The function receives the zero-based call index and the request. Returning an
+// error fails that call. It takes precedence over Reply and over Shaped;
+// scripted errors from Fail and FailThen are still applied first, so a test can
+// combine "fail twice, then answer from the request".
+func (p *Provider) ReplyFunc(fn func(call int, req schemaflux.CompletionRequest) (string, error)) *Provider {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.replyFunc = fn
+	return p
+}
+
+// Contexts returns the context each call arrived on, in call order.
+//
+// A context is not part of a prompt, so recording requests but not contexts is
+// a defensible default -- until a caller puts a per-operation deadline on its
+// calls, at which point the context handed to the provider is the only place
+// that deadline is observable. Asserting on the caller's own context proves
+// only that the caller built what it built; whether it reached the provider is
+// a different question, and the answer is here.
+func (p *Provider) Contexts() []context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]context.Context(nil), p.contexts...)
+}
+
+// ContextN returns the context of call n, or a background context when that
+// call never happened.
+//
+// Background rather than nil, so an assertion on a call that did not occur
+// reads a missing deadline and reports the real failure, instead of panicking
+// somewhere unrelated.
+func (p *Provider) ContextN(n int) context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if n < 0 || n >= len(p.contexts) {
+		return context.Background()
+	}
+	return p.contexts[n]
+}
+
 func (p *Provider) Reset() *Provider {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.requests = nil
+	p.contexts = nil
 	p.index = 0
 	return p
 }
@@ -207,8 +264,10 @@ func (p *Provider) Reset() *Provider {
 func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
 	p.mu.Lock()
 	p.requests = append(p.requests, req)
+	p.contexts = append(p.contexts, ctx)
 	position := p.index
 	p.index++
+	replyFunc := p.replyFunc
 
 	delay := p.delay
 	errs := p.errs
@@ -238,6 +297,20 @@ func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionReques
 	}
 	if len(errs) > 0 && len(replies) == 0 {
 		return schemaflux.CompletionResponse{}, errs[len(errs)-1]
+	}
+
+	if replyFunc != nil {
+		body, err := replyFunc(position, req)
+		if err != nil {
+			return schemaflux.CompletionResponse{}, err
+		}
+		return schemaflux.CompletionResponse{
+			Content:      body,
+			Model:        req.Model,
+			Provider:     name,
+			FinishReason: "stop",
+			Usage:        usage,
+		}, nil
 	}
 
 	body := "{}"

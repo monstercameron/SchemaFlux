@@ -62,3 +62,32 @@ func FieldRequiredness(field reflect.StructField) Requiredness {
 func IsRequired(field reflect.StructField) bool {
 	return FieldRequiredness(field) == FieldRequired
 }
+
+// optionalFieldRemedy is appended to the error a required-but-empty field
+// produces, and it names the three ways out in the order FieldRequiredness
+// resolves them.
+//
+// It exists because the failure and its fix are in different places. The error
+// arrives at a call site, having travelled through a repair loop; the fix is a
+// struct tag on a type declared somewhere else entirely. A caller who does not
+// already know this mechanism exists has nothing in the message to search for,
+// and the plausible readings are all wrong: that the model misbehaved, that the
+// prompt needs work, or that the operation is the wrong one.
+//
+// The boolean case is the one that stings: a `false` that is a real answer is
+// indistinguishable from an unset field by reflect.IsZero, so a correctly
+// answered boolean fails a requiredness check that was never meant to apply to
+// it. The remedy line is what points at the tag instead of at the model.
+//
+// The wording says "if an empty value is a valid answer" rather than
+// recommending the change, because often it is not one: a required field
+// arriving empty is exactly the failure this library refuses to pass off as
+// success, and the right fix is then a better prompt.
+// Naming Strict matters as much as naming the tag. The check runs only in
+// Strict mode, which also rejects unknown fields -- two rules under one word --
+// so a caller who reached for Strict wanting exact decoding got mandatory
+// non-empty fields as an unannounced second effect, and has two levers to
+// choose between once they know that.
+const optionalFieldRemedy = `Strict() is what requires it. If an empty value is a valid answer here, ` +
+	`mark the field optional with a ` + "`schemaflux:\"optional\"`" + ` tag, a pointer type, ` +
+	`or ` + "`json:\",omitempty\"`"

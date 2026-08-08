@@ -92,6 +92,7 @@ type requestBase[Self any, Opt any] struct {
 	setThreshold     func(Opt, float64) Opt
 	setMode          func(Opt, Mode) Opt
 	setIntelligence  func(Opt, Speed) Opt
+	setModel         func(Opt, string) Opt
 	setContext       func(Opt, context.Context) Opt
 	setRequestID     func(Opt, string) Opt
 	setCorrelationID func(Opt, string) Opt
@@ -162,6 +163,47 @@ func (r requestBase[Self, Opt]) Fast() Self {
 
 func (r requestBase[Self, Opt]) Quick() Self {
 	return r.Intelligence(Quick)
+}
+
+// Model pins the exact model for this call, bypassing the Intelligence tier's
+// mapping. An empty string clears the pin and restores the tier.
+//
+// The pin itself is TC-005 and has worked since; what was missing was any way
+// to ask for it from the fluent API, which is the entry point every example and
+// every README line uses. A caller could reach it only by building an options
+// struct by hand and passing it to WithOptions, which is the escape hatch, not
+// the interface.
+//
+// The workaround a caller is pushed into without this is worse than the gap:
+// name a provider whose tier mapping resolves to *something*, then substitute
+// the real model further down. That is two lies at once -- about which provider
+// is configured, and about where the model is decided -- and both are invisible
+// in the envelope, which would go on reporting the provider that was named.
+func (r requestBase[Self, Opt]) Model(model string) Self {
+	if r.setModel == nil {
+		return r.lift(r.opts)
+	}
+	return r.lift(r.setModel(r.opts, model))
+}
+
+// optsWithRunContext applies a trailing Run(ctx) argument, returning the
+// options unchanged when the caller passed none.
+//
+// It routes through the builder's own setContext closure rather than reaching
+// for a field, because the option types in this package come in three shapes --
+// embedding CommonOptions, embedding types.OpOptions, or spelling the common
+// fields out flat -- and the closure is the one thing that already knows which.
+//
+// Why this exists: `Run` took a context on six builders and nothing at all on
+// forty-nine, so a caller who learned `Extracting[T](x).Run(ctx)` and then
+// reached for `Summarizing(x).Run(ctx)` got a compile error and had to discover
+// `.Context(ctx).Run()`. Two spellings of the same idea in one package, with
+// nothing to indicate which applies where.
+func (r requestBase[Self, Opt]) optsWithRunContext(ctx []context.Context) Opt {
+	if len(ctx) == 0 || r.setContext == nil {
+		return r.opts
+	}
+	return r.setContext(r.opts, ctx[0])
 }
 
 func (r requestBase[Self, Opt]) Context(ctx context.Context) Self {
