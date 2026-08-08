@@ -105,15 +105,22 @@ with an invented confidence.
 
 Recorded here rather than left to be discovered, and tracked in `TODOS.md`:
 
-- `types.EndpointPolicy` exists and **is not yet wired** into the providers, so
-  a custom base URL is not currently checked (SEC-004).
-- `DeleteTenantData` exists as a contract with **no store implementing it**, so
-  tenant deletion does not yet remove cached or captured data (SEC-005).
+- Endpoint policy is **opt-in and off by default** (SEC-004). A base URL is
+  checked only when a caller supplies an `EndpointPolicy`; without one, a
+  custom endpoint is accepted as given. The check itself runs before any HTTP
+  client is built, in every provider constructor that takes a base URL.
+- Tenant deletion reaches the stores this library owns — its result cache and
+  its diagnostic sink — but **not** the pricing/usage store or replay cassettes,
+  and **not** `mw.Cache`, whose key derivation is irreversible by construction.
+  Deletion against that one returns an explicit unsupported error rather than a
+  false success (SEC-005).
 - Client isolation is partial: a per-call provider seam exists, but budgets and
   other execution state remain process-wide (IN-004).
 - The fluent shorthand helpers — `ChooseBy`, `FilterBy`, `SortBy` — take no
   `context.Context`, so `Client.Context(ctx)` cannot reach them and they always
   resolve the process-wide provider. An application running two clients gets
   whichever provider was installed last for any call through those three
-  spellings. Recorded by `internal/api/fluent/reach_test.go`, which can only
-  drive them through the package global.
+  spellings. `ChooseByContext`/`FilterByContext`/`SortByContext` do carry a
+  context and are isolated; the three original spellings are kept unchanged
+  because they are part of the published surface. They are not yet re-exported
+  from the root package (IN-004).

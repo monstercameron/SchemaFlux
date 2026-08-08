@@ -513,6 +513,25 @@ func (client *Client) providerConfig(providerName string, override llm.ProviderC
 	if override.Store {
 		cfg.Store = true
 	}
+	// SEC-004 and SC-007 were dropped here. Both are opt-in fields a caller sets
+	// on the public ProviderConfig (schemaflux.go aliases the type), and neither
+	// was copied -- so `WithProviderConfig("openai", ProviderConfig{EndpointPolicy: p})`
+	// reached llm.CreateProvider with a nil policy and the endpoint check, which
+	// exists and works one layer down, simply never ran. A security control that
+	// silently does nothing through the most visible way of switching it on is
+	// worse than one that is absent, because the caller believes it is enforced.
+	//
+	// The general defect is the copy list itself: thirteen named fields, which
+	// cannot fail when somebody adds a fourteenth. That is A-014's bug exactly
+	// (applyDefaults, internal/ops), and it is guarded the same way --
+	// TestProviderConfigOverrideCarriesEveryField walks the struct by reflection,
+	// so the next field added here fails a test instead of being silently lost.
+	if override.EndpointPolicy != nil {
+		cfg.EndpointPolicy = override.EndpointPolicy
+	}
+	if override.HTTPClient != nil {
+		cfg.HTTPClient = override.HTTPClient
+	}
 
 	return cfg
 }

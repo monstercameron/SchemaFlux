@@ -1,5 +1,5 @@
 # Numbered examples under SCHEMAFLUX_PROVIDER=local.
-# 40 of 45 pass. See scripts/examples_gate.py and TODOS.md CI-004.
+# 45 of 45 pass. See scripts/examples_gate.py and TODOS.md CI-004.
 # Update with: python scripts/examples_gate.py --update
 #
 # A FAIL line is a known gap, not permission to add another.
@@ -27,23 +27,18 @@ PASS 20-complete
 PASS 21-redact
 PASS 22-suggest
 PASS 23-annotate
-FAIL 24-cluster
-#   time=2026-08-08T03:29:32.415-04:00 level=ERROR msg="Cluster operation failed: the clusters do not partition the input" error="the groups do not partition the input: 9 items in no group ([1 2 3 4 5 6 7 8 9])"
+PASS 24-cluster
 PASS 25-rank
-FAIL 26-compress
-#   time=2026-08-08T03:29:33.189-04:00 level=ERROR msg="Compress operation failed: compressed payload parse error" error="json: cannot unmarshal object into Go value of type string"
-FAIL 27-decompose
-#   time=2026-08-08T03:29:33.517-04:00 level=ERROR msg="Decompose operation failed: parse error" error="malformed output: the response could not be parsed as JSON (239 bytes, shape: json object)"
+PASS 26-compress
+PASS 27-decompose
 PASS 28-enrich
 PASS 29-normalize
 PASS 30-match
 PASS 31-critique
 PASS 32-synthesize
-FAIL 33-predict
-#   time=2026-08-08T03:29:35.652-04:00 level=ERROR msg="Predict operation failed: parse error" error="malformed output: the response could not be parsed as JSON (479 bytes, shape: json object)"
+PASS 33-predict
 PASS 34-verify
-FAIL 35-question
-#   time=2026-08-08T03:29:36.628-04:00 level=ERROR msg="Question operation failed: parse error" error="schema violation: the response carried none of the expected fields; it has [result success], wanted one of [answer confidence evidence reasoning]"
+PASS 35-question
 PASS 36-negotiate
 PASS 37-resolve
 PASS 38-derive

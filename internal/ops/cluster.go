@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/config"
 	"github.com/monstercameron/schemaflux/internal/logger"
@@ -228,15 +227,32 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 	ctx, cancel = context.WithTimeout(ctx, config.GetTimeout())
 	defer cancel()
 
-	// Convert items to JSON
-	itemsJSON := make([]string, len(items))
+	// CI-008. The items used to be sent as `[0] {...}` lines joined by
+	// newlines, which is prose: the indices the answer has to refer to were
+	// readable only by a reader willing to parse a bracket prefix out of free
+	// text. Everything downstream -- CoversExactlyOnce, the outlier accounting,
+	// the whole partition contract -- is stated in those indices, so the one
+	// thing the prompt most needed to be unambiguous about was the one thing it
+	// left to inference.
+	//
+	// They go as a JSON array of {index, item} instead, which says the same
+	// thing in a form that parses. This is not only about the local double: a
+	// numbering a provider has to recover from formatting is a numbering that
+	// can be recovered wrongly, and a wrong index here does not fail loudly --
+	// it silently clusters the wrong item.
+	indexedItems := make([]map[string]any, len(items))
 	for i, item := range items {
-		itemJSON, err := json.Marshal(item)
-		if err != nil {
+		if _, err := json.Marshal(item); err != nil {
 			log.Error("Cluster operation failed: marshal error", "itemIndex", i, "error", err)
 			return result, fmt.Errorf("failed to marshal item %d: %w", i, err)
 		}
-		itemsJSON[i] = fmt.Sprintf("[%d] %s", i, string(itemJSON))
+		indexedItems[i] = map[string]any{"index": i, "item": item}
+	}
+
+	itemsJSON, err := json.Marshal(indexedItems)
+	if err != nil {
+		log.Error("Cluster operation failed: marshal error", "error", err)
+		return result, fmt.Errorf("failed to marshal items: %w", err)
 	}
 
 	clusterConstraint := ""
@@ -291,7 +307,7 @@ Return a JSON object with:
   "quality": 0.85
 }`, clusterCriteria, sizeLimit, descriptionNote, clusterConstraint, outlierHandling, opts.NamingStrategy, opts.SimilarityThreshold)
 
-	userPrompt := fmt.Sprintf("Cluster these items:\n\n%s", strings.Join(itemsJSON, "\n"))
+	userPrompt := fmt.Sprintf("Cluster these items. Each entry carries the index the answer must refer to:\n\n%s", string(itemsJSON))
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {

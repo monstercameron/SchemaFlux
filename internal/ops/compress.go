@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/config"
@@ -282,6 +283,26 @@ Return a JSON object with:
 }`, targetSize, opts.CompressionRatio*100, strategyDesc, priorityDesc, outputDesc, fieldInstructions)
 
 	userPrompt := fmt.Sprintf("Compress this:\n\n%s", inputStr)
+
+	// CI-008, the third instance of one defect: the prose template hard-codes
+	// `"compressed": {}` while that field's type is the caller's T, so
+	// `Compress[string]` is shown an object where only a string will parse.
+	// Predict and Decompose had the same line in a different envelope. Declaring
+	// the shape from T is what the prose cannot do, because the prose is one
+	// fixed string and T varies per call.
+	var compressedZero T
+	if compressedSchema := GenerateJSONSchema(reflect.TypeOf(compressedZero)); compressedSchema != nil {
+		opt.JSONSchema = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"compressed":     compressedSchema,
+				"preserved_info": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"removed_info":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required": []string{"compressed"},
+		}
+		opt.SchemaName = "compression"
+	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {

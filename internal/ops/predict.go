@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/config"
@@ -339,6 +340,31 @@ Return a JSON object with:
 }`, opts.Horizon, methodDesc, factorsDesc, assumptionsDesc, intervalNote, scenariosNote, reasoningNote, historyNote)
 
 	userPrompt := fmt.Sprintf("Based on this historical data, predict %s:\n\n%s", opts.Horizon, string(dataJSON))
+
+	// CI-008. The prose template above hard-codes `"prediction": {}`, but that
+	// field's type is the caller's T -- `Predict[float64]` asks for a number and
+	// is shown an object. Anything that takes the template at its word produces
+	// an answer this operation then rejects as malformed, which is what the
+	// example was failing on. The prose cannot be fixed in place, because it is
+	// one fixed string and T varies per call; the shape has to be declared from
+	// T instead.
+	//
+	// Only the two fields whose shape actually depends on T are declared, and
+	// additionalProperties is left open, so the envelope's optional parts
+	// (interval, scenarios, factors) stay optional rather than becoming required
+	// by a schema this function would then have to keep in sync with the struct.
+	var predictionZero T
+	if predictionSchema := GenerateJSONSchema(reflect.TypeOf(predictionZero)); predictionSchema != nil {
+		opt.JSONSchema = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"prediction": predictionSchema,
+				"confidence": map[string]any{"type": "number"},
+			},
+			"required": []string{"prediction"},
+		}
+		opt.SchemaName = "prediction"
+	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {

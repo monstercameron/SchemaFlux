@@ -300,6 +300,44 @@ Return a JSON object with:
 
 	userPrompt := fmt.Sprintf("Decompose this into parts:\n\n%s", string(inputJSON))
 
+	// CI-008, the same defect Predict had: the prose template hard-codes
+	// `"content": {}` while that field's type is the caller's T, so
+	// `Decompose[string]` is shown an object where it will only accept a
+	// string. It is invisible for a struct T -- the first half of the
+	// 27-decompose example passes -- and fails for every scalar one, which is
+	// why it survived: the template is right for the case somebody tried.
+	//
+	// The prose stays (it carries the naming and ordering conventions a schema
+	// cannot), and the shape that actually depends on T is declared from T.
+	var contentZero T
+	if contentSchema := GenerateJSONSchema(reflect.TypeOf(contentZero)); contentSchema != nil {
+		opt.JSONSchema = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"parts": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":           map[string]any{"type": "string"},
+							"name":         map[string]any{"type": "string"},
+							"description":  map[string]any{"type": "string"},
+							"content":      contentSchema,
+							"parent_id":    map[string]any{"type": "string"},
+							"dependencies": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							"depth":        map[string]any{"type": "integer"},
+							"order":        map[string]any{"type": "integer"},
+						},
+						"required": []string{"id", "name", "content"},
+					},
+				},
+				"root_parts": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required": []string{"parts"},
+		}
+		opt.SchemaName = "decomposition"
+	}
+
 	var parsed struct {
 		Parts     []DecomposedPart[T] `json:"parts"`
 		RootParts []string            `json:"root_parts"`

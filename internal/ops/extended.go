@@ -1167,6 +1167,38 @@ Return a JSON object with:
 
 Question: %s`, string(dataJSON), opts.Question)
 
+	// CI-008. Question describes its envelope in prose only -- the template
+	// above contains `(your answer matching this schema: ...)` and `0.0-1.0`,
+	// neither of which is a JSON value -- so nothing downstream could ever
+	// derive the answer's shape from it. That is not only a mock problem: a
+	// provider with native structured output was given no schema to enforce
+	// either, so Question ran at ContractPromptOnly while every operation
+	// around it ran schema-constrained.
+	//
+	// The envelope is built here rather than in the prompt because only this
+	// code knows A: `answer` carries A's own schema, and the optional fields
+	// appear only when the caller asked for them, so the declared shape and the
+	// prose stay the same shape rather than drifting apart.
+	if answerJSONSchema := GenerateJSONSchema(reflect.TypeOf(answerZero)); answerJSONSchema != nil {
+		properties := map[string]any{"answer": answerJSONSchema}
+		required := []string{"answer"}
+		if opts.IncludeConfidence {
+			properties["confidence"] = map[string]any{"type": "number"}
+		}
+		if opts.IncludeReasoning {
+			properties["reasoning"] = map[string]any{"type": "string"}
+		}
+		if opts.IncludeEvidence {
+			properties["evidence"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+		}
+		opt.JSONSchema = map[string]any{
+			"type":       "object",
+			"properties": properties,
+			"required":   required,
+		}
+		opt.SchemaName = "question_answer"
+	}
+
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("Question operation LLM call failed", "error", err)

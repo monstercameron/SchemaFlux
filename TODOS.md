@@ -3571,7 +3571,7 @@ others, with nothing at the call site to tell them apart.
   for crashes passes happily while the function returns the secret unchanged.
   Each was run under `-fuzztime=20s` to confirm it actually executes rather than merely
   compiling.
-- [ ] **SEC-004** — Custom endpoint policy: scheme and host allowlists and a private-address
+- [x] **SEC-004** — Custom endpoint policy: scheme and host allowlists and a private-address
   rule, so a caller-supplied or configuration-supplied base URL cannot be pointed at internal
   infrastructure. The library already accepts custom endpoints for OpenAI-compatible
   providers and validates nothing about them.
@@ -3583,10 +3583,28 @@ others, with nothing at the call site to tell them apart.
   everything rather than permitting it. No DNS resolution, so the check stays offline.
   A real bug was found and fixed while testing it: the host-not-allowed and private-address
   error paths echoed the raw hostname unbounded into the error string.
-  **Not wired.** `internal/llm`'s providers and `client.go` do not consult it, so a custom
-  endpoint is still unchecked in practice. The contract exists; the enforcement point does
-  not.
-- [ ] **SEC-005** — Retention and deletion for every store the library owns — result caches,
+  **Now wired, and the wiring exposed a worse bug than the one this task started with.**
+  `ProviderConfig.EndpointPolicy` is consulted by `validateConfiguredEndpoint` before any HTTP
+  client is built, from every constructor that takes a `BaseURL` — `NewOpenAIProvider`,
+  `NewAnthropicProvider`, and `newOpenAICompatibleProvider`, which backs OpenRouter, Cerebras,
+  DeepSeek, Qwen, and Z.ai. It is opt-in: nil enforces nothing, so existing callers are
+  unaffected. Watched refusing in `sc007_httpclient_test.go`, which asserts both the typed
+  error and that the mock server was **never contacted** — the refusal happens before anything
+  reaches the network, which is the only version of this check worth having.
+  **The bug:** `Client.providerConfig` (client.go) copies a caller's `ProviderConfig` field by
+  field, and its list was missing `EndpointPolicy` and `HTTPClient`. So
+  `WithProviderConfig("openai", ProviderConfig{EndpointPolicy: p})` — the public, documented
+  way to switch this control on — reached `llm.CreateProvider` with a **nil policy**, and the
+  check that exists and is tested one layer down simply never ran. A security control that
+  silently does nothing through its most visible entry point is worse than an absent one,
+  because the caller believes it is enforced. SC-007's caller-owned `HTTPClient` was being
+  dropped the same way.
+  The general defect is the copy list: thirteen named fields cannot fail when somebody adds a
+  fourteenth. That is **A-014** exactly (`applyDefaults`, `internal/ops`), so it gets A-014's
+  guard — `TestProviderConfigOverrideCarriesEveryField` walks the struct by reflection, and a
+  companion test fails if the fixture stops populating every field. Both were watched failing
+  against the unfixed code before the fix went in.
+- [x] **SEC-005** — Retention and deletion for every store the library owns — result caches,
   diagnostic captures, pricing and usage records, replay fixtures. User content is never
   retained merely because cost accounting is on: cost records keep token counts, model IDs,
   request IDs, and money. Tenant-scoped deletion hooks where the adapter supports them.
@@ -3601,10 +3619,26 @@ others, with nothing at the call site to tell them apart.
   continues past a failing store rather than aborting on the first, and joins every failure so
   a partial deletion reports *which* stores did not comply rather than just that something
   went wrong.
-  **Not wired to any real store.** The cache, the pricing store, and the diagnostic sink do
-  not implement it, so "a tenant deletion removes its data" is not true yet — only the hook
-  contract exists. A deletion API that appears to work and deletes nothing is worse than none,
-  so this stays open.
+  **Now wired to real stores.** `tenantStore[V]` partitions by tenant at the **top level**
+  rather than folding the tenant into a hashed key, which is what makes `deleteTenant` exact
+  instead of best-effort — a key you cannot invert is a tenant you cannot delete.
+  Two stores implement it: `TenantCacheStore` (a tenant-partitioned result cache with TTLs)
+  and `TenantDiagnosticStore` (a `types.DiagnosticSink`; the library shipped none before). A
+  capture arriving with no tenant or no record ID is **discarded** rather than filed somewhere
+  no deletion can reach.
+  The honest case: `mw.Cache` folds the tenant into an irreversible SHA-256 key and its
+  `CacheStore` interface never passes a tenant into `Get`/`Set` at all, so deletion there is
+  not merely unimplemented — it is impossible without changing that interface.
+  `WrapExternalCacheStore` therefore returns an explicit `ErrCacheStoreNotTenantScoped` from
+  `DeleteTenant` **always**, and the fan-out test covers the mixed case: the store that can
+  delete does, and the wrapper still reports failure. That is the whole point of the contract
+  joining errors rather than aborting on the first — a partial deletion has to say which
+  stores did not comply.
+  **Not done, and deliberately not faked:** the pricing/usage store (`pricing/*`) and replay
+  cassettes (`schemafluxtest/*`) are still not tenant-deletable. No store of that shape exists
+  under `internal/ops` to wire deletion into, and building one that nothing writes to would
+  reproduce exactly the failure this task was closing — a hook that appears to work with
+  nothing behind it.
 - [x] **OB-001** — Observer interfaces in core (logger, tracer, metric sink, clock, ID
   generator, diagnostic sink) with no-op defaults, and the OpenTelemetry implementation in
   `telemetry/otel` using the host's provider. Core stops importing OTel, exporters, and the
@@ -4132,7 +4166,7 @@ written, and the box it belonged to was never drawn.
   temperature is flagged too, which is stated rather than treated as a false positive.
   12 cases, including that a worse finding elsewhere in the struct still wins the comparison
   so a float32 cannot mask a channel.
-- [ ] **CI-008** — Close the twelve numbered examples still failing under the local provider,
+- [x] **CI-008** — Close the twelve numbered examples still failing under the local provider,
   listed with their errors in `.audit/examples_expected.txt`. Two groups, and they want
   different fixes: `Transform`, `Generate`, `Compress`, `Decompose`, `Enrich`, `Normalize`,
   `Synthesize`, `Predict`, `Verify`, and `Question` declare their response shape in prose the
@@ -4172,6 +4206,35 @@ written, and the box it belonged to was never drawn.
   can only give by understanding the operation — a partition — which argues for that example
   using `schemafluxtest`. The other four have templates whose shape the mock fills correctly
   but whose *content* the operation then rejects.
+
+  **Done: 45 of 45.** `.audit/examples_expected.txt` records it.
+  Four of the last five were **one defect in four places**, and it was not a mock problem.
+  `Question`, `Predict`, `Decompose`, and `Compress` each state their envelope in a fixed
+  prose template that hard-codes the shape of a field whose type is the caller's `T`:
+  `"prediction": {}`, `"content": {}`, `"compressed": {}`. `Predict[float64]` was being shown
+  an object where only a number will parse. The template is one string and `T` varies per
+  call, so the prose **cannot** be right for every caller — no wording fixes this.
+  It survived because it is invisible for a struct `T`. The first half of `27-decompose`
+  (`Decompose[Epic]`) passed; the second half (`Decompose[string]`) failed. Somebody tried the
+  case the template happened to fit.
+  The fix is the one this task named for the other operations: **declare the shape from `T`**,
+  built by reflection at the call site where `T` is known, so it cannot drift from what the
+  operation will accept. That also closes a quieter gap — these four sent **no schema at all**,
+  so a provider with native structured output had nothing to enforce and they ran at
+  `ContractPromptOnly` while the operations around them ran schema-constrained.
+  `24-cluster` was the one the task predicted would need `schemafluxtest`. It did not. Cluster
+  sent its items as `[0] {...}` lines joined by newlines — the indices that the entire
+  partition contract is stated in (`CoversExactlyOnce`, the outlier accounting) were readable
+  only by parsing a bracket prefix out of free text. Nothing could recover them reliably, so
+  the local provider saw one item where there were ten. They go as a JSON array of
+  `{index, item}` now. This is worth more than the example: an index a provider has to recover
+  from formatting can be recovered **wrongly**, and a wrong index here does not fail loudly —
+  it silently clusters the wrong item.
+  **Not done:** the schemas declared here describe only the fields whose shape depends on `T`,
+  and leave the optional envelope parts (interval, scenarios, factors, dependencies) undeclared
+  rather than duplicating the result structs. That is deliberate — a hand-written schema beside
+  a decode target is two descriptions of one thing — but it does mean a provider enforcing
+  these schemas constrains less than the full result type.
   **Superseded diagnosis, left visible on purpose:**  **Still failing (9), and the reason is not what it first looked like.** `Decompose` and
   `Enrich` *were* given the same treatment and still fail. I first recorded that as a second
   call path the fix had missed; that was wrong, and the real cause is worth more than the fix:

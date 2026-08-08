@@ -621,16 +621,54 @@ func (r SortRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
 }
 
 // ChooseBy is a compact entrypoint for selection-style tasks.
+//
+// It takes no context and so can only resolve the process-wide default
+// provider (ops.SetDefaultProvider) -- see reach_test.go's
+// TestTheShorthandHelpersReachTheProvider and TODOS.md IN-004. Two clients in
+// one process configured with different providers get whichever one was
+// installed last for every ChooseBy call, because there is nowhere on this
+// signature for a per-call provider to travel. Adding a context parameter
+// here would be a breaking signature change reaching call sites outside this
+// package (see withRunContext's comment above for the same constraint on
+// Run); ChooseByContext below is the same operation with the seam, added
+// rather than substituted so this spelling keeps working.
 func ChooseBy[T any](options []T, criteria ...string) (T, error) {
 	return Choosing(options).By(criteria...).Run()
 }
 
-// FilterBy is a compact entrypoint for natural-language filtering.
+// ChooseByContext is ChooseBy with an explicit context, so a provider
+// installed with ops.WithProvider(ctx, p) -- or, once the root package wires
+// it, a *Client's own Context(ctx) -- reaches this call instead of the
+// process-wide default. It calls .Context(ctx).Run(ctx), not just
+// .Context(ctx): Choose/Filter/Sort's op functions in internal/ops read
+// opts.OpOptions.Context directly rather than the CommonOptions value
+// .Context alone sets (see withCollectionRunContext above), so passing ctx
+// only through .Context would build correctly and still silently fall
+// through to the default provider.
+func ChooseByContext[T any](ctx context.Context, options []T, criteria ...string) (T, error) {
+	return Choosing(options).By(criteria...).Context(ctx).Run(ctx)
+}
+
+// FilterBy is a compact entrypoint for natural-language filtering. See
+// ChooseBy's comment: it takes no context and can only reach the
+// process-wide default provider. FilterByContext is the isolated version.
 func FilterBy[T any](items []T, criteria string) ([]T, error) {
 	return Filtering(items).By(criteria).Run()
 }
 
-// SortBy is a compact entrypoint for natural-language sorting.
+// FilterByContext is FilterBy with an explicit context; see ChooseByContext.
+func FilterByContext[T any](ctx context.Context, items []T, criteria string) ([]T, error) {
+	return Filtering(items).By(criteria).Context(ctx).Run(ctx)
+}
+
+// SortBy is a compact entrypoint for natural-language sorting. See ChooseBy's
+// comment: it takes no context and can only reach the process-wide default
+// provider. SortByContext is the isolated version.
 func SortBy[T any](items []T, criteria string) ([]T, error) {
 	return Sorting(items).By(criteria).Run()
+}
+
+// SortByContext is SortBy with an explicit context; see ChooseByContext.
+func SortByContext[T any](ctx context.Context, items []T, criteria string) ([]T, error) {
+	return Sorting(items).By(criteria).Context(ctx).Run(ctx)
 }
