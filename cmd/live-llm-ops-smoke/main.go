@@ -388,6 +388,11 @@ func testValidate() error {
 	return req(!out.Valid, "validate should flag invalid data")
 }
 func testValidateLegacy() error {
+	// This function exists to smoke-test the deprecated path against a live
+	// provider, so calling the deprecated function is the point. Silencing it
+	// here rather than repository-wide keeps the warning working everywhere a
+	// deprecated call would be a mistake.
+	//lint:ignore SA1019 deliberately exercising the deprecated path this test covers
 	out, err := schemaflux.ValidateLegacy(map[string]any{"email": "no-at-symbol", "age": 12}, "email must be valid and age must be at least 18", schemaflux.OpOptions{Mode: schemaflux.Strict, Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err
@@ -402,6 +407,7 @@ func testQuestion() error {
 	return req(out.ModelConfidence > 0, "question confidence missing")
 }
 func testQuestionLegacy() error {
+	//lint:ignore SA1019 deliberately exercising the deprecated path this test covers
 	out, err := schemaflux.QuestionLegacy(map[string]any{"email": "vip@example.com", "age": 30}, "What email is on the record?", schemaflux.OpOptions{Intelligence: schemaflux.Fast})
 	if err != nil {
 		return err

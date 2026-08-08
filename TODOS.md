@@ -411,6 +411,26 @@ to test code that uses this library without paying a provider.
   expected failure classification — otherwise a replay proves the parser works and nothing
   about whether the runtime classified the failure the same way. Replay drives the real
   adapter and the real executor path, not a shortcut through the parser.
+  **Done.** `schemafluxtest/cassette.go`. `Record(inner, dir)` wraps any provider and captures
+  provider, model, request, response, usage, and — for a failure — the kind `llm.Classify`
+  assigned at record time, stored by name so inserting a constant in the middle of the
+  taxonomy does not re-point every committed cassette. `Replay(dir)` and `ReplayFrom` return a
+  provider that needs no network and no credential, matches the request by default, and
+  replays a recorded failure as an `*types.OperationError` of the recorded kind — which is the
+  PRD-13 point, since a replay that only feeds the response back proves the parser works and
+  nothing about classification. Redaction runs before the write, not after the read, and
+  `Save` refuses to write a cassette that still matches a credential pattern.
+  Evidence: `schemafluxtest/cassette_test.go`, 30 cases — record-then-replay round trip, a
+  changed user prompt and a changed system prompt both refused, `Lenient` as the escape hatch,
+  a failure replaying with its kind and its retryable disposition intact, the classification
+  stored by name, every credential shape in `scripts/secret_scan.py` redacted before the file
+  exists while an invoice number and prose about keys survive untouched, a disk round trip
+  preserving call order, running out of cassettes erroring rather than returning an empty
+  response, and an empty or missing directory refused at load.
+  **Not done:** response headers are not captured, so a cassette cannot yet replay a
+  `Retry-After` or a request ID — the Revised line asks for them and the provider interface
+  does not currently surface them. Recording the live bodies from P-012/P-013 into committed
+  cassettes is **P-014** and still open; this is the machinery, not the fixtures.
 - [x] **TI-004** — Golden-prompt tests: for each operation, snapshot the exact rendered system
   and user prompt for a fixed input. Prompt changes then become reviewable diffs instead of
   silent behavior changes for every downstream user. Closes the testing half of **Gap-13**.
@@ -755,7 +775,7 @@ tests.
 
 ## Collections — the highest-value family
 
-- [ ] **OP-101** — Switch `Choose`, `Filter`, and `Sort` to index-based responses. The
+- [x] **OP-101** — Switch `Choose`, `Filter`, and `Sort` to index-based responses. The
   codebase already does this in `Match`, `Arbitrate`, `Cluster`, `Interpolate`, `Compose`,
   and `Batch`; `collection.go` documents the switch away from it as deliberate (lines 77, 196,
   318). Reverting fixes identity **and** removes most of the size ceiling, because output
@@ -767,6 +787,35 @@ tests.
   matching cannot resolve it. Assign `i-000001`-style IDs at encode time, validate exact
   coverage on return, and reconstruct the caller's order in Go. This is the same protocol
   **PL-003** defines for batching, so define it once here and reuse it.
+  **Done, with stable ids rather than indices** as the Revised line requires. Items are tagged
+  at encode time as `{"id":"i-000001","item":…}` (`tagItems`), the model answers with ids only
+  — `{"id":…}` for `Choose`, `{"ids":[…]}` for `Filter` and `Sort` — and coverage is checked in
+  Go by `resolveSubsetByIDs`/`resolvePermutationByIDs`, which reuse `MemberOf`, `SubsetOf`,
+  and `SameMultiset` unchanged rather than adding a fourth membership test. The identity-echo
+  failure this closes is now structurally impossible: there is no item field left for a model
+  to alter. Duplicate input values reconcile correctly because an id is unique per position
+  regardless of content equality, which is the case value matching could not resolve.
+  Output size now scales with item *count* rather than item *content*, so `filterChunkSize`
+  budgets on the id array: chunking triggers around 1500 items at Quick tier where it used to
+  trigger around 200.
+  Evidence: `internal/ops/collection_ids_test.go` (9 functions, 32 cases — id formatting and
+  round trip, both resolvers directly, threshold routing); the updated
+  `collection_identity_test.go`, `size_guard_test.go`, `collection_integration_test.go`, and
+  `collection_properties_test.go`; and regenerated `testdata/golden_prompts.txt`, whose diff is
+  exactly the protocol change with the non-collection prompts untouched.
+  **Found while verifying:** the shape-answering local provider
+  (`internal/llm/mockshape.go`) still spoke the value protocol, so `05-filter` and `06-sort`
+  failed for every consumer running an example without a credential — while `go test ./...`
+  stayed green, because the examples run under `scripts/examples_gate.py` rather than under
+  `go test`. Fixed by an id branch in `mockCollectionResponse`, pinned by
+  `internal/llm/mockshape_ids_test.go` (7 functions: filter answers every id, sort answers a
+  permutation, choose answers one id, untagged input is left to the value protocol, and
+  malformed or partial tagging is refused). This is the second time a gate outside `go test`
+  caught something the suite could not.
+  **Not done:** `resolveSelection`/`resolveSubset` in `collection_identity.go` are no longer
+  reached by `Choose` or `Filter`. They are still exercised directly by their own tests, so
+  neither Go nor staticcheck calls them dead; deciding whether they survive as a public
+  fallback or get deleted is left open rather than settled quietly.
 - [x] **OP-102** — `Choose`: attach `MemberOf`. Today the returned object is whatever the
   model emitted, never compared to the input list (`collection.go:112-131`). Closes **C-01**.
 - [x] **OP-103** — `Filter`: attach `SubsetOf`, and fix the contradiction where the system
@@ -793,13 +842,30 @@ tests.
   that a count misses, plus a no-payload assertion. Integration:
   `TestIntegrationSortRefusesAResultThatIsNotAPermutation` (4 bodies at the public API) and
   `TestIntegrationSortAcceptsAPermutation`.
-- [ ] **OP-106** — Promote `sortByScoringFallback` (`collection.go:385-453`) from fallback to
+- [x] **OP-106** — Promote `sortByScoringFallback` (`collection.go:385-453`) from fallback to
   the primary strategy above a size threshold: it scores items independently, keeps the
   caller's own objects, and sorts in Go, so items cannot be lost, duplicated, or edited — and
   `Stable` actually works. Run it with bounded concurrency and report `Meta.Strategy`.
   Closes **C-05**.
   *Verify:* a 200-item sort makes bounded concurrent calls, returns a permutation, and reports
   its strategy.
+  **Done.** Scoring is the primary strategy above `sortScoringThreshold` (50 items), run
+  through `MapReduce` with `ChunkSize: 1` and `DefaultConcurrency` — reusing the existing
+  bounded worker pool rather than starting a second one, per **CF-009**. `SortResult` reports
+  `Meta.Strategy` as `trivial`, `whole-list`, `scoring`, or `scoring-fallback`; `Sort` keeps
+  its signature and discards the strategy.
+  Evidence: `internal/ops/collection_ids_test.go` verifies bounded concurrency by tracking
+  peak in-flight calls under a mutex and asserting `1 < peak <= DefaultConcurrency` — a test
+  that would pass against a serial implementation is not evidence of concurrency — plus
+  threshold routing and all four strategy values. `SortResult` is now exported from
+  `schemaflux.go` with `TestIntegrationSortResultReportsItsStrategy` and
+  `TestIntegrationSortResultReportsTheTrivialCase` driving it through the public API; without
+  that export the strategy this task exists to report was unreachable by any caller, which
+  would have closed the task on something nobody could observe. `testdata/api_surface.txt`
+  gains exactly one line.
+  **Not done:** the concurrency assertion is a peak-count observation, not a `-race` run;
+  `-race` is unavailable on this machine (**TI-008**), so the test was run repeatedly
+  uncached instead and CI covers the race detector on the other platforms.
 - [x] **OP-107** — `Cluster`: attach `CoversExactlyOnce`; fix `Size` being computed from raw
   indices including out-of-range ones while `Items` holds only valid ones (`cluster.go:310-327`),
   so the two disagree exactly when the model misbehaved. Closes **C-07**.

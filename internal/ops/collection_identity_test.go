@@ -29,22 +29,20 @@ func mustJSON(t *testing.T, value any) string {
 	return string(raw)
 }
 
-// Choose returned whatever the model emitted. A model that echoes an option
-// with a subtly altered price produces a result that looks authoritative and
-// does not exist in the caller's data — which is far likelier than an invented
-// product, and much harder to notice.
+// Choose used to return whatever the model emitted, matched back to the
+// input by value. Now the model answers with an id, not a copy of the
+// option, so there is no field to alter: what these cases exercise is that
+// an id naming something that was never assigned -- including a plausible
+// mistake like the option's own domain id -- is refused.
 func TestChooseRejectsAnItemThatWasNotOffered(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
 	}{
-		{"altered_price", `{"id":"p2","name":"Pro","price":39.99}`},
-		{"altered_id", `{"id":"p9","name":"Pro","price":49.99}`},
-		{"altered_name", `{"id":"p2","name":"Professional","price":49.99}`},
-		{"invented_product", `{"id":"p4","name":"Ultimate","price":999.00}`},
-		{"empty_object", `{"id":"","name":"","price":0}`},
-		{"rounded_price", `{"id":"p1","name":"Standard","price":20.00}`},
-		{"price_as_integer", `{"id":"p3","name":"Enterprise","price":199.01}`},
+		{"domain_id_not_a_protocol_id", `{"id":"p2"}`},
+		{"unassigned_protocol_id", `{"id":"i-000009"}`},
+		{"empty_id", `{"id":""}`},
+		{"zero_based_off_by_one", `{"id":"i-000000"}`},
 	}
 
 	for _, tc := range cases {
@@ -67,14 +65,15 @@ func TestChooseRejectsAnItemThatWasNotOffered(t *testing.T) {
 	}
 }
 
-// A genuine selection is returned — and it is the caller's own value, not the
-// model's copy of it.
+// A genuine selection is returned — and it is the caller's own value, named
+// by the id assigned at encode time, not anything the model had to
+// reproduce.
 func TestChooseReturnsTheCallersOwnItem(t *testing.T) {
 	items := catalogue()
 
-	for index, want := range items {
-		t.Run(want.ID, func(t *testing.T) {
-			restore := stubLLM(mustJSON(t, want))
+	for index := range items {
+		t.Run(items[index].ID, func(t *testing.T) {
+			restore := stubLLM(mustJSON(t, idResponse{ID: itemID(index)}))
 			defer restore()
 
 			chosen, err := Choose(items, NewChooseOptions().WithSteering("pick one"))
@@ -88,13 +87,12 @@ func TestChooseReturnsTheCallersOwnItem(t *testing.T) {
 	}
 }
 
-// Whitespace and key order in the model's reply must not change the outcome:
-// both sides go through T before they are compared.
+// Whitespace and key order in the model's reply must not change the outcome.
 func TestChooseToleratesFormattingDifferences(t *testing.T) {
 	for _, body := range []string{
-		`{"price":49.99,"name":"Pro","id":"p2"}`,
-		"{\n  \"id\": \"p2\",\n  \"name\": \"Pro\",\n  \"price\": 49.99\n}",
-		"```json\n{\"id\":\"p2\",\"name\":\"Pro\",\"price\":49.99}\n```",
+		`{"id":"i-000002"}`,
+		"{\n  \"id\": \"i-000002\"\n}",
+		"```json\n{\"id\":\"i-000002\"}\n```",
 	} {
 		t.Run(body[:12], func(t *testing.T) {
 			restore := stubLLM(body)
@@ -111,8 +109,10 @@ func TestChooseToleratesFormattingDifferences(t *testing.T) {
 	}
 }
 
-// Filter has the same identity problem, multiplied: items can be edited,
-// dropped, duplicated, or invented, and the count can exceed the input.
+// Filter used to have the same identity problem, multiplied: items could be
+// edited, dropped, duplicated, or invented, and the count could exceed the
+// input. With an id-only answer, what is left to reject is an id that was
+// never assigned, or one repeated.
 func TestFilterRejectsAnythingItWasNotGiven(t *testing.T) {
 	items := catalogue()
 
@@ -120,11 +120,11 @@ func TestFilterRejectsAnythingItWasNotGiven(t *testing.T) {
 		name string
 		body string
 	}{
-		{"edited_item", `[{"id":"p1","name":"Standard","price":9.99}]`},
-		{"invented_item", `[{"id":"p4","name":"Ghost","price":1.00}]`},
-		{"duplicated_item", `[{"id":"p1","name":"Standard","price":19.99},{"id":"p1","name":"Standard","price":19.99}]`},
-		{"longer_than_input", `[{"id":"p1","name":"Standard","price":19.99},{"id":"p2","name":"Pro","price":49.99},{"id":"p3","name":"Enterprise","price":199},{"id":"p1","name":"Standard","price":19.99}]`},
-		{"one_real_one_invented", `[{"id":"p1","name":"Standard","price":19.99},{"id":"p9","name":"Nope","price":5}]`},
+		{"unassigned_id", `{"ids":["i-000009"]}`},
+		{"domain_id_not_a_protocol_id", `{"ids":["p1"]}`},
+		{"duplicated_id", `{"ids":["i-000001","i-000001"]}`},
+		{"longer_than_input", `{"ids":["i-000001","i-000002","i-000003","i-000001"]}`},
+		{"one_real_one_unassigned", `{"ids":["i-000001","i-000009"]}`},
 	}
 
 	for _, tc := range cases {
@@ -134,7 +134,7 @@ func TestFilterRejectsAnythingItWasNotGiven(t *testing.T) {
 
 			kept, err := Filter(items, NewFilterOptions().WithCriteria("cheap"))
 			if err == nil {
-				t.Fatalf("a filter that authored items must be an error; got %+v", kept)
+				t.Fatalf("a filter that named an id it was not given must be an error; got %+v", kept)
 			}
 			if kept != nil {
 				t.Errorf("a rejected filter must return nothing, got %+v", kept)
@@ -143,12 +143,13 @@ func TestFilterRejectsAnythingItWasNotGiven(t *testing.T) {
 	}
 }
 
-// A genuine subset is returned, in the input's order, with the caller's values.
+// A genuine subset is returned, in the input's order, with the caller's
+// values -- regardless of the order the ids were answered in.
 func TestFilterReturnsTheCallersOwnItemsInInputOrder(t *testing.T) {
 	items := catalogue()
 
 	// The model answers out of order; the result must not be.
-	restore := stubLLM(`[{"id":"p3","name":"Enterprise","price":199},{"id":"p1","name":"Standard","price":19.99}]`)
+	restore := stubLLM(mustJSON(t, idListResponse{IDs: []string{itemID(2), itemID(0)}}))
 	defer restore()
 
 	kept, err := Filter(items, NewFilterOptions().WithCriteria("any"))
@@ -168,7 +169,7 @@ func TestFilterAcceptsEmptyAndFullSubsets(t *testing.T) {
 	items := catalogue()
 
 	t.Run("empty", func(t *testing.T) {
-		restore := stubLLM(`[]`)
+		restore := stubLLM(`{"ids":[]}`)
 		defer restore()
 
 		kept, err := Filter(items, NewFilterOptions().WithCriteria("impossible"))
@@ -181,7 +182,7 @@ func TestFilterAcceptsEmptyAndFullSubsets(t *testing.T) {
 	})
 
 	t.Run("everything", func(t *testing.T) {
-		restore := stubLLM(mustJSON(t, items))
+		restore := stubLLM(mustJSON(t, idListResponse{IDs: itemIDs(len(items))}))
 		defer restore()
 
 		kept, err := Filter(items, NewFilterOptions().WithCriteria("anything"))
@@ -194,24 +195,25 @@ func TestFilterAcceptsEmptyAndFullSubsets(t *testing.T) {
 	})
 }
 
-// A malformed array used to fall back to parsing the body as a single item and
+// A malformed body used to fall back to parsing it as a single item and
 // returning a one-element slice, so a broken response silently collapsed a
-// filter to one result.
+// filter to one result. An id-only answer has no equivalent single-value
+// shape to fall back into.
 func TestFilterDoesNotCollapseToOneItem(t *testing.T) {
 	items := catalogue()
 
 	for _, body := range []string{
-		`{"id":"p1","name":"Standard","price":19.99}`,
-		`{"id":"p1","name":"Standard","price":19.99},{"id":"p2"}`,
+		`{"id":"p1"}`,
+		`{"ids":"i-000001"}`,
 		`[{"id":"p1","name":"Standard","price":19.99}`,
 	} {
-		t.Run(body[:14], func(t *testing.T) {
+		t.Run(body[:9], func(t *testing.T) {
 			restore := stubLLM(body)
 			defer restore()
 
 			kept, err := Filter(items, NewFilterOptions().WithCriteria("any"))
 			if err == nil {
-				t.Fatalf("a malformed array must be an error, not a one-item filter; got %+v", kept)
+				t.Fatalf("a malformed answer must be an error, not a one-item filter; got %+v", kept)
 			}
 		})
 	}
@@ -229,8 +231,8 @@ func TestFilterInstructionsAgreeWithKeepMatching(t *testing.T) {
 		mustSay      string
 		mustNotSay   string
 	}{
-		{"keep", true, "Return the items that match", "Discard the items that match"},
-		{"remove", false, "Discard the items that match", "Return the items that match"},
+		{"keep", true, "Return the ids of the items that match", "Discard the ids of the items that match"},
+		{"remove", false, "Discard the ids of the items that match", "Return the ids of the items that match"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := NewFilterOptions().WithCriteria("cheap")

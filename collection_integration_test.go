@@ -34,19 +34,20 @@ func encode(t *testing.T, value any) string {
 	return string(raw)
 }
 
-// The failure this guards against is not an invented record — it is an echoed
-// one with a changed number. At the public API a caller has no way to notice.
+// OP-101: Choose no longer asks the model to echo the option back, so there
+// is no field for it to alter. The model answers with an id assigned at
+// encode time, and what these cases exercise is that an id naming something
+// that was never assigned -- including a line's own SKU, a plausible mistake
+// for a model that forgets the protocol -- is refused.
 func TestIntegrationChooseRefusesAnAlteredEcho(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
 	}{
-		{"cost_changed", `{"sku":"A-200","name":"Gadget","unit_cost":78.00}`},
-		{"sku_changed", `{"sku":"A-999","name":"Gadget","unit_cost":87.00}`},
-		{"name_changed", `{"sku":"A-200","name":"Gadget Pro","unit_cost":87.00}`},
-		{"cost_rounded", `{"sku":"A-100","name":"Widget","unit_cost":12.00}`},
-		{"invented", `{"sku":"B-100","name":"Nothing","unit_cost":0.01}`},
-		{"empty", `{"sku":"","name":"","unit_cost":0}`},
+		{"domain_value_not_a_protocol_id", `{"id":"A-200"}`},
+		{"unassigned_protocol_id", `{"id":"i-000009"}`},
+		{"zero_based_off_by_one", `{"id":"i-000000"}`},
+		{"empty", `{"id":""}`},
 	}
 
 	for _, tc := range cases {
@@ -56,7 +57,7 @@ func TestIntegrationChooseRefusesAnAlteredEcho(t *testing.T) {
 			chosen, err := schemaflux.Choose(invoiceLines(),
 				schemaflux.NewChooseOptions().WithSteering("the most expensive line"))
 			if err == nil {
-				t.Fatalf("an altered echo must be refused; got %+v", chosen)
+				t.Fatalf("an id that was not offered must be refused; got %+v", chosen)
 			}
 			if chosen.SKU != "" {
 				t.Errorf("a refused choice must return nothing, got %+v", chosen)
@@ -65,10 +66,11 @@ func TestIntegrationChooseRefusesAnAlteredEcho(t *testing.T) {
 	}
 }
 
-// A faithful echo is accepted, and the value returned is the caller's own.
+// A faithful answer is accepted, and the value returned is the caller's own
+// -- named by id, never reproduced by the model.
 func TestIntegrationChooseReturnsTheCallersRecord(t *testing.T) {
 	lines := invoiceLines()
-	withScriptedProvider(t, encode(t, lines[1]), nil)
+	withScriptedProvider(t, `{"id":"i-000002"}`, nil)
 
 	chosen, err := schemaflux.Choose(lines, schemaflux.NewChooseOptions().WithSteering("most expensive"))
 	if err != nil {
@@ -80,11 +82,13 @@ func TestIntegrationChooseReturnsTheCallersRecord(t *testing.T) {
 }
 
 // Filter must return a subset of what it was given, never an authored list.
+// OP-101: the model answers with the ids to keep, so what is left to test is
+// that an id that was never assigned, or one repeated, is refused.
 func TestIntegrationFilterReturnsASubset(t *testing.T) {
 	lines := invoiceLines()
 
 	t.Run("faithful_subset", func(t *testing.T) {
-		withScriptedProvider(t, encode(t, []lineItem{lines[2], lines[0]}), nil)
+		withScriptedProvider(t, `{"ids":["i-000003","i-000001"]}`, nil)
 
 		kept, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("under $20"))
 		if err != nil {
@@ -95,26 +99,25 @@ func TestIntegrationFilterReturnsASubset(t *testing.T) {
 		}
 	})
 
-	t.Run("edited_item_is_refused", func(t *testing.T) {
-		withScriptedProvider(t, `[{"sku":"A-300","name":"Doohickey","unit_cost":3.25}]`, nil)
+	t.Run("unassigned_id_is_refused", func(t *testing.T) {
+		withScriptedProvider(t, `{"ids":["i-000009"]}`, nil)
 
 		kept, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("under $20"))
 		if err == nil {
-			t.Fatalf("an edited item must be refused; got %+v", kept)
+			t.Fatalf("an unassigned id must be refused; got %+v", kept)
 		}
 	})
 
-	t.Run("invented_item_is_refused", func(t *testing.T) {
-		withScriptedProvider(t, `[{"sku":"Z-000","name":"Phantom","unit_cost":1.00}]`, nil)
+	t.Run("domain_value_is_refused", func(t *testing.T) {
+		withScriptedProvider(t, `{"ids":["A-300"]}`, nil)
 
 		if _, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("cheap")); err == nil {
-			t.Fatal("an invented item must be refused")
+			t.Fatal("a domain value standing in for an id must be refused")
 		}
 	})
 
 	t.Run("longer_than_input_is_refused", func(t *testing.T) {
-		tooMany := append(append([]lineItem{}, lines...), lines[0])
-		withScriptedProvider(t, encode(t, tooMany), nil)
+		withScriptedProvider(t, `{"ids":["i-000001","i-000002","i-000003","i-000001"]}`, nil)
 
 		if _, err := schemaflux.Filter(lines, schemaflux.NewFilterOptions().WithCriteria("all")); err == nil {
 			t.Fatal("a subset larger than the set must be refused")
@@ -123,18 +126,19 @@ func TestIntegrationFilterReturnsASubset(t *testing.T) {
 }
 
 // Example_chooseRefusesAnAlteredRecord shows the guarantee that matters: what
-// comes back is the record you supplied, or an error. A model that echoes an
-// option with a changed price does not get to pass it off as your data. It runs
-// under go test with a scripted provider: no credential, no spend.
+// comes back is the record you supplied, or an error. The model answers with
+// an id, and an id naming something that was never offered does not get to
+// pass as your data. It runs under go test with a scripted provider: no
+// credential, no spend.
 func Example_chooseRefusesAnAlteredRecord() {
 	lines := []lineItem{
 		{SKU: "A-100", Name: "Widget", UnitCost: 12.50},
 		{SKU: "A-200", Name: "Gadget", UnitCost: 87.00},
 	}
 
-	// The model returns the right product at the wrong price.
+	// The model answers with an id it was never assigned.
 	schemaflux.NewClient("example-key").WithProviderInstance(&scriptedProvider{
-		body: `{"sku":"A-200","name":"Gadget","unit_cost":78.00}`,
+		body: `{"id":"i-000009"}`,
 	})
 
 	chosen, err := schemaflux.Choose(lines,
@@ -151,12 +155,18 @@ func Example_chooseRefusesAnAlteredRecord() {
 // CF-04 / OP-109: a collection too large to echo back within the output budget
 // used to be refused. Filter splits it instead, because the merge for a filter
 // is a concatenation — each item's fate depends only on the criteria.
+//
+// OP-101 changed what "too large" means: the answer is now a list of ids, one
+// per item, and an id costs the same handful of bytes regardless of item
+// content -- so the boundary is item *count* against a fixed per-id cost, not
+// item size. 200 items with long names used to be enough to force chunking
+// under the old echo protocol; 1500 items, of any size, is what it takes now.
 func TestIntegrationFilterChunksLargeCollections(t *testing.T) {
-	lines := make([]lineItem, 200)
+	lines := make([]lineItem, 1500)
 	for i := range lines {
 		lines[i] = lineItem{
 			SKU:      fmt.Sprintf("A-%04d", i),
-			Name:     fmt.Sprintf("Item %d with a name long enough to be realistic", i),
+			Name:     fmt.Sprintf("Item %d", i),
 			UnitCost: float64(i) + 0.5,
 		}
 	}
@@ -222,7 +232,10 @@ func Example_mapReduce() {
 	// results from chunk one: 1
 }
 
-// chunkEchoProvider returns the first item of whatever chunk it is given.
+// chunkEchoProvider keeps the id of the first item of whatever chunk it is
+// given. OP-101 changed what a chunk's request and answer look like: the
+// request tags each item with an id ({"id": "...", "item": ...}), and the
+// answer names ids ({"ids": [...]}) rather than echoing items.
 type chunkEchoProvider struct {
 	calls int
 }
@@ -232,17 +245,22 @@ func (p *chunkEchoProvider) Complete(_ context.Context, req schemaflux.Completio
 
 	start := strings.Index(req.UserPrompt, "[")
 	if start < 0 {
-		return schemaflux.CompletionResponse{Content: "[]", FinishReason: "stop"}, nil
+		return schemaflux.CompletionResponse{Content: `{"ids":[]}`, FinishReason: "stop"}, nil
 	}
 
-	var chunk []lineItem
+	var chunk []struct {
+		ID   string   `json:"id"`
+		Item lineItem `json:"item"`
+	}
 	if err := json.Unmarshal([]byte(req.UserPrompt[start:]), &chunk); err != nil || len(chunk) == 0 {
-		return schemaflux.CompletionResponse{Content: "[]", FinishReason: "stop"}, nil
+		return schemaflux.CompletionResponse{Content: `{"ids":[]}`, FinishReason: "stop"}, nil
 	}
 
-	kept, err := json.Marshal(chunk[:1])
+	kept, err := json.Marshal(struct {
+		IDs []string `json:"ids"`
+	}{IDs: []string{chunk[0].ID}})
 	if err != nil {
-		return schemaflux.CompletionResponse{Content: "[]", FinishReason: "stop"}, nil
+		return schemaflux.CompletionResponse{Content: `{"ids":[]}`, FinishReason: "stop"}, nil
 	}
 	return schemaflux.CompletionResponse{Content: string(kept), FinishReason: "stop"}, nil
 }
@@ -299,10 +317,11 @@ func TestIntegrationSortRefusesAResultThatIsNotAPermutation(t *testing.T) {
 	}
 }
 
-// The faithful case still works, and the values come back as the caller's own.
+// The faithful case still works, and the values come back as the caller's
+// own -- named by id, never reproduced by the model.
 func TestIntegrationSortAcceptsAPermutation(t *testing.T) {
 	lines := invoiceLines()
-	withScriptedProvider(t, encode(t, []lineItem{lines[1], lines[0], lines[2]}), nil)
+	withScriptedProvider(t, `{"ids":["i-000002","i-000001","i-000003"]}`, nil)
 
 	sorted, err := schemaflux.Sort(lines, schemaflux.NewSortOptions().WithCriteria("most expensive first"))
 	if err != nil {
@@ -310,6 +329,42 @@ func TestIntegrationSortAcceptsAPermutation(t *testing.T) {
 	}
 	if len(sorted) != 3 || sorted[0] != lines[1] || sorted[1] != lines[0] || sorted[2] != lines[2] {
 		t.Errorf("sorted = %+v", sorted)
+	}
+}
+
+// Sort picks between ordering the whole list in one call and scoring items in
+// parallel, and which one ran changes what the answer means. Before SortResult
+// was exported that choice was invisible to a caller: two runs of the same
+// input could come back ordered by different mechanisms with nothing in the
+// result to say so.
+func TestIntegrationSortResultReportsItsStrategy(t *testing.T) {
+	lines := invoiceLines()
+	withScriptedProvider(t, `{"ids":["i-000002","i-000001","i-000003"]}`, nil)
+
+	result, err := schemaflux.SortResult(lines, schemaflux.NewSortOptions().WithCriteria("most expensive first"))
+	if err != nil {
+		t.Fatalf("SortResult: %v", err)
+	}
+	if len(result.Value) != 3 || result.Value[0] != lines[1] {
+		t.Errorf("value = %+v", result.Value)
+	}
+	if result.Meta.Strategy != "whole-list" {
+		t.Errorf("Meta.Strategy = %q, want %q for a three-item sort", result.Meta.Strategy, "whole-list")
+	}
+}
+
+// A sort of a list too short to have an order does not call a provider at all,
+// and says so rather than reporting the strategy it would have used.
+func TestIntegrationSortResultReportsTheTrivialCase(t *testing.T) {
+	withScriptedProvider(t, `{"ids":["i-000001"]}`, nil)
+
+	result, err := schemaflux.SortResult([]lineItem{invoiceLines()[0]},
+		schemaflux.NewSortOptions().WithCriteria("most expensive first"))
+	if err != nil {
+		t.Fatalf("SortResult: %v", err)
+	}
+	if result.Meta.Strategy != "trivial" {
+		t.Errorf("Meta.Strategy = %q, want %q for a one-item sort", result.Meta.Strategy, "trivial")
 	}
 }
 

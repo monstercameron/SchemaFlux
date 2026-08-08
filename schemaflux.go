@@ -293,6 +293,16 @@ func ExtractResult[T any](input any, opts ExtractOptions) (Result[T], error) {
 	return ops.ExtractResult[T](input, opts)
 }
 
+// SortResult runs Sort and returns the envelope alongside the ordering, which
+// is the only way to see which strategy ran: above the scoring threshold Sort
+// scores items in parallel rather than ordering the whole list in one call,
+// and a caller comparing two runs needs to know which of those produced the
+// answer. Meta.Strategy is "trivial", "whole-list", "scoring", or
+// "scoring-fallback".
+func SortResult[T any](items []T, opts SortOptions) (Result[[]T], error) {
+	return ops.SortResult(items, opts)
+}
+
 // The failure taxonomy.
 //
 // Branch on these instead of matching substrings against an error message: the

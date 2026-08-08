@@ -168,6 +168,7 @@ func SetLogLevel
 func Similar
 func Sort
 func SortBy
+func SortResult
 func Sorting
 func StatusCodeFrom
 func Suggest

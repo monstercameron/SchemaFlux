@@ -35,31 +35,46 @@ func guardItems(n int) []guardItem {
 	return items
 }
 
-// A batch that cannot be returned is refused, with an error that says why.
-func TestSortRefusesABatchItCannotReturn(t *testing.T) {
-	restore := stubLLM(`[]`)
-	defer restore()
+// OP-101/OP-106: this used to be a test that Sort refused a batch too large
+// to echo back, because the answer had to reproduce every item and the
+// output budget could not hold five hundred of them. The answer is now a
+// handful of ids, and above sortScoringThreshold the item count routes
+// straight to independent per-item scoring (OP-106) instead of the
+// whole-list path at all, so a batch this size is no longer refused for size
+// -- it is scored, one small call per item, and sorted in Go. That is the
+// ceiling OP-101 describes removing, made concrete: the same 500-item sort at
+// the smallest tier that used to fail now succeeds.
+func TestSortNoLongerRefusesALargeBatchForSize(t *testing.T) {
+	items := guardItems(500)
+
+	previous := customLLMCaller
+	setLLMCaller(func(_ context.Context, system, _ string, _ types.OpOptions) (string, error) {
+		// The scoring fallback's system prompt asks for a rank_score; every
+		// item gets the same one, so what is being asserted is that the sort
+		// completes and returns every item, not a particular order.
+		if strings.Contains(system, "rank_score") {
+			return `{"rank_score": 0.5}`, nil
+		}
+		return `{"ids": []}`, nil
+	})
+	defer func() { customLLMCaller = previous }()
 
 	opts := NewSortOptions().WithCriteria("by name")
 	// SortOptions embeds both CommonOptions and types.OpOptions, and
 	// mergeEmbeddedOpOptions takes Mode and Intelligence from CommonOptions
 	// unconditionally -- so writing to the other one is silently ignored. See
 	// X-07.
-	opts.CommonOptions.Intelligence = types.Quick // the 1000-token tier
+	opts.CommonOptions.Intelligence = types.Quick // the 1000-token tier: the old ceiling
 
-	_, err := Sort(guardItems(500), opts)
-	if err == nil {
-		t.Fatal("a batch that cannot fit the output budget must be refused")
+	sorted, err := Sort(items, opts)
+	if err != nil {
+		t.Fatalf("a 500-item sort must use scoring rather than being refused for size: %v", err)
 	}
-
-	for _, phrase := range []string{"Sort", "500", "token", "quick"} {
-		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(phrase)) {
-			t.Errorf("the error does not mention %q: %v", phrase, err)
-		}
+	if len(sorted) != len(items) {
+		t.Fatalf("sorted %d items, want %d", len(sorted), len(items))
 	}
-	// It has to say what would work, not only that this does not.
-	if !strings.Contains(err.Error(), "would fit") {
-		t.Errorf("the error does not say how many items would fit: %v", err)
+	if err := SameMultiset(items, sorted); err != nil {
+		t.Errorf("scoring must still return every item exactly once: %v", err)
 	}
 }
 
@@ -68,25 +83,30 @@ func TestSortRefusesABatchItCannotReturn(t *testing.T) {
 // splitting is safe. Sort is not split, because interleaving two sorted runs
 // needs knowledge the library does not have.
 func TestFilterChunksRatherThanRefusing(t *testing.T) {
-	items := guardItems(120)
+	// An id-only answer no longer scales with item content, so it takes many
+	// more items than the old echo protocol did to exceed the output budget --
+	// see filterChunkSize's comment. 600 items comfortably forces more than
+	// one chunk at the quick tier; 120 no longer does.
+	items := guardItems(600)
 
-	// Every chunk keeps its first item, whatever the chunk boundaries are.
+	// Every chunk keeps the id of its first item, whatever the chunk
+	// boundaries are.
 	previous := customLLMCaller
 	setLLMCaller(func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
-		var chunk []guardItem
+		var chunk []taggedItem[guardItem]
 		start := strings.Index(user, "[")
 		if start < 0 {
-			return "[]", nil
+			return `{"ids":[]}`, nil
 		}
 		if err := json.Unmarshal([]byte(user[start:]), &chunk); err != nil {
-			return "[]", nil
+			return `{"ids":[]}`, nil
 		}
 		if len(chunk) == 0 {
-			return "[]", nil
+			return `{"ids":[]}`, nil
 		}
-		kept, err := json.Marshal(chunk[:1])
+		kept, err := json.Marshal(idListResponse{IDs: []string{chunk[0].ID}})
 		if err != nil {
-			return "[]", nil
+			return `{"ids":[]}`, nil
 		}
 		return string(kept), nil
 	})
@@ -148,7 +168,9 @@ func TestCollectionsAcceptBatchesThatFit(t *testing.T) {
 		{"smart", types.Smart},
 	} {
 		t.Run(tier.name, func(t *testing.T) {
-			restore := stubLLM(mustEncode(t, items))
+			// The answer is the assigned ids, in any order -- identity order
+			// here, since the test is about the size guard, not the sort.
+			restore := stubLLM(mustEncode(t, idListResponse{IDs: itemIDs(len(items))}))
 			defer restore()
 
 			opts := NewSortOptions().WithCriteria("by name")

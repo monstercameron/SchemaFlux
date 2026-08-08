@@ -282,6 +282,17 @@ func mockCollectionResponse(req CompletionRequest) (string, bool) {
 		return "", false
 	}
 
+	// Id-based contracts first, because they are the most specific thing this
+	// function can recognise: OP-101 moved Choose, Filter, and Sort onto
+	// invocation-local ids, so the items arrive tagged and the answer names ids
+	// instead of echoing items back. This layer answered the old value-based
+	// protocol and kept passing its own tests while every example that runs
+	// without a credential failed, which is why the examples gate is separate
+	// from `go test`.
+	if answer, ok := idAnswer(req, items); ok {
+		return answer, true
+	}
+
 	// Index-based contracts: the prompt's template names an indices field, and
 	// one group holding every index is a valid partition and a valid selection.
 	if template, ok := firstJSONObject(req.SystemPrompt); ok {
@@ -323,6 +334,55 @@ func mockCollectionResponse(req CompletionRequest) (string, bool) {
 	}
 
 	return "", false
+}
+
+// idAnswer answers the id-based collection contract. Every id is a valid
+// answer for Filter (a subset may be the whole set) and for Sort (every id
+// exactly once is a permutation); the first id is a valid answer for Choose.
+// The point is a shaped answer that satisfies the Go-side invariant, not a
+// good one -- a mock that produced a semantically clever answer would hide
+// the invariant checks these operations exist to run.
+func idAnswer(req CompletionRequest, items []any) (string, bool) {
+	ids, ok := taggedIDs(items)
+	if !ok {
+		return "", false
+	}
+
+	// Which field is asked for is read off the prompt rather than a template,
+	// because the first JSON object in these prompts is a worked example, not
+	// the response shape.
+	switch {
+	case strings.Contains(req.SystemPrompt, `"ids"`):
+		encoded, err := json.Marshal(map[string]any{"ids": ids})
+		return string(encoded), err == nil
+	case strings.Contains(req.SystemPrompt, `"id"`):
+		encoded, err := json.Marshal(map[string]any{"id": ids[0]})
+		return string(encoded), err == nil
+	}
+	return "", false
+}
+
+// taggedIDs reports the ids of a tagged item list, and false for anything that
+// is not one. Every element has to be tagged: a partially tagged array is not
+// this protocol, and guessing at it would answer with ids that do not cover
+// the input.
+func taggedIDs(items []any) ([]string, bool) {
+	ids := make([]string, 0, len(items))
+	for _, raw := range items {
+		object, isObject := raw.(map[string]any)
+		if !isObject {
+			return nil, false
+		}
+		id, isString := object["id"].(string)
+		if !isString || id == "" {
+			return nil, false
+		}
+		if _, hasItem := object["item"]; !hasItem {
+			return nil, false
+		}
+		ids = append(ids, id)
+	}
+	return ids, len(ids) > 0
 }
 
 // indexAnswer fills a template whose fields are index lists, putting every

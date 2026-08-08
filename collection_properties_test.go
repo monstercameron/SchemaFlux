@@ -49,7 +49,32 @@ func encodeJSON(t *testing.T, value any) string {
 	return string(raw)
 }
 
+// idFor mirrors the invocation-local id Choose, Filter, and Sort assign to
+// the item at position (OP-101): "i-000001" for position 0, and so on. The
+// tests build scripted answers against this format because it is the wire
+// protocol these operations run, not an implementation detail — an operation
+// that changes it is expected to fail TestGoldenPrompts too.
+func idFor(position int) string {
+	return fmt.Sprintf("i-%06d", position+1)
+}
+
+// idListBody is the shape Filter and Sort answer with: the ids of the
+// relevant items.
+type idListBody struct {
+	IDs []string `json:"ids"`
+}
+
+// idBody is the shape Choose answers with: the id of the chosen option.
+type idBody struct {
+	ID string `json:"id"`
+}
+
 // Filter's output is a subset of its input, whatever the model returns.
+//
+// OP-101 changed what there is to corrupt: the model answers with ids, not
+// items, so there is no field left to edit — "an offered item, edited" from
+// the old echo protocol has no equivalent here. What is left is an id that
+// was never assigned, or one repeated.
 func TestPropertyFilterReturnsASubset(t *testing.T) {
 	source := rand.New(rand.NewSource(propertySeed))
 	accepted := 0
@@ -57,30 +82,28 @@ func TestPropertyFilterReturnsASubset(t *testing.T) {
 	for round := 0; round < 60; round++ {
 		items := widgets(3+source.Intn(6), source)
 
-		// A plausible subset, kept item by item. Corruption is applied after
-		// and to at most one item: corrupting every item means every round is
+		// A plausible subset, kept id by id. Corruption is applied after and
+		// to at most one id: corrupting every id means every round is
 		// refused, and a property test whose rounds all error asserts nothing
 		// about what comes back when one succeeds.
-		var answer []widget
-		for _, item := range items {
+		var answer []string
+		for i := range items {
 			if source.Intn(3) != 0 {
-				answer = append(answer, item)
+				answer = append(answer, idFor(i))
 			}
 		}
 		if len(answer) == 0 {
-			answer = append(answer, items[0])
+			answer = append(answer, idFor(0))
 		}
 
-		switch source.Intn(4) {
-		case 0: // an item that was never offered
-			answer = append(answer, widget{SKU: "X-999", Name: "invented", Price: 1})
-		case 1: // the same item twice
+		switch source.Intn(3) {
+		case 0: // an id that was never assigned
+			answer = append(answer, idFor(len(items)+3))
+		case 1: // the same id twice
 			answer = append(answer, answer[0])
-		case 2: // an offered item, edited
-			answer[0].Price += 1
 		}
 
-		withScriptedProvider(t, encodeJSON(t, answer), nil)
+		withScriptedProvider(t, encodeJSON(t, idListBody{IDs: answer}), nil)
 
 		kept, err := schemaflux.Filter(items, schemaflux.NewFilterOptions().WithCriteria("cheap"))
 		if err != nil {
@@ -114,19 +137,22 @@ func TestPropertySortReturnsAPermutation(t *testing.T) {
 	for round := 0; round < 60; round++ {
 		items := widgets(3+source.Intn(5), source)
 
-		answer := append([]widget{}, items...)
+		answer := make([]string, len(items))
+		for i := range answer {
+			answer[i] = idFor(i)
+		}
 		source.Shuffle(len(answer), func(i, j int) { answer[i], answer[j] = answer[j], answer[i] })
 
 		// Sometimes corrupt it in a way that keeps the length, which is what a
 		// count check cannot see.
-		switch source.Intn(4) {
-		case 0:
+		switch source.Intn(3) {
+		case 0: // a duplicated id, dropping one that was offered
 			answer[0] = answer[len(answer)-1]
-		case 1:
-			answer[0].Price += 0.01
+		case 1: // an id that was never assigned
+			answer[0] = idFor(len(items) + 3)
 		}
 
-		withScriptedProvider(t, encodeJSON(t, answer), nil)
+		withScriptedProvider(t, encodeJSON(t, idListBody{IDs: answer}), nil)
 
 		sorted, err := schemaflux.Sort(items, schemaflux.NewSortOptions().WithCriteria("cheapest first"))
 		if err != nil {
@@ -146,6 +172,11 @@ func TestPropertySortReturnsAPermutation(t *testing.T) {
 }
 
 // Choose's output is one of the items it was offered.
+//
+// OP-101 changed what there is to corrupt: the model answers with an id, not
+// a copy of the item, so "an echoed item with one field changed" has no
+// equivalent — there is no field in the answer channel to change. What
+// remains is an id that was never assigned.
 func TestPropertyChooseReturnsAMember(t *testing.T) {
 	source := rand.New(rand.NewSource(propertySeed))
 	accepted := 0
@@ -153,14 +184,12 @@ func TestPropertyChooseReturnsAMember(t *testing.T) {
 	for round := 0; round < 60; round++ {
 		items := widgets(2+source.Intn(6), source)
 
-		answer := items[source.Intn(len(items))]
+		id := idFor(source.Intn(len(items)))
 		if source.Intn(3) == 0 {
-			// An echoed item with one field changed, which is the failure that
-			// actually happens.
-			answer.Price += 0.5
+			id = idFor(len(items) + 3)
 		}
 
-		withScriptedProvider(t, encodeJSON(t, answer), nil)
+		withScriptedProvider(t, encodeJSON(t, idBody{ID: id}), nil)
 
 		chosen, err := schemaflux.Choose(items, schemaflux.NewChooseOptions().WithSteering("the best one"))
 		if err != nil {
