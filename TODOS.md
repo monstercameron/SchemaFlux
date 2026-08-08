@@ -2564,7 +2564,7 @@ commit and the test that proves it.
   understanding the operation, which argues for the examples using `schemafluxtest` instead.
   *Verify:* `python scripts/examples_gate.py --update` records 45 of 45.
 
-- [ ] **OP-308** — Apply **OP-302**'s deterministic diff to `Pivot`, `Enrich`, and
+- [x] **OP-308** — Apply **OP-302**'s deterministic diff to `Pivot`, `Enrich`, and
   `Normalize`, which report the same model-authored `Lost` / `Inferred` / `Changes` audit
   trail that `Project` did. The helpers (`jsonFieldNamesOfValue`, `missingFrom`) already
   exist; what each one needs is a decision about what its diff *means* — a normalization's
@@ -2572,6 +2572,25 @@ commit and the test that proves it.
   diff, and that is why this is a separate task rather than a repeat of the same edit.
   *Verify:* per operation, a model that silently drops a field is contradicted by the result.
 
+  **Done, and the task's own warning was right: the three wanted different diffs.**
+  `Pivot.DataLoss` and `Enrich.AddedFields` are field-set differences, exactly like
+  **OP-302**'s, and both keep the model's account beside them as `ModelClaimed*` — a field
+  the model says it dropped and the diff says survived is a different problem from the
+  reverse.
+  `Normalize` could not be a field-set diff, which is why it was filed separately. Its changes
+  are *value* differences, and no diff can recover the **reason** for one — so the model's
+  `Changes` stays a claim, and what Go establishes is `ChangedFields` (which fields actually
+  moved) and **`Unreported`**: the changed fields the model's account does not mention. A
+  non-empty `Unreported` means the audit trail is incomplete, which is precisely what a
+  caller reading one needs to know. `TotalChanges` follows the diff rather than the narrative,
+  because a caller checking it is asking what happened to their data.
+  Values compare as canonical JSON, so `1284.50` and `1284.5` are not a change.
+  Found while here: `Pivot` still logged the whole response on a parse failure — **X-03** in
+  a fourth place.
+  *Verify:* `internal/ops/audit_diff_test.go` — a pivot dropping three fields and claiming
+  none, a faithful pivot reporting none, an enrichment adding two and admitting one, a
+  normalization changing two and mentioning one (with `Unreported` naming the difference), a
+  normalization that changed nothing, and a formatting difference not counting.
 - [x] **CF-010** — **`MapReduce` dispatched chunks in random order, so `Concurrency: 1` was
   serialized but not sequential — and cancelling on the first failure saved nothing.** Found
   by a flaky test: `TestMapReduceStopsOnTheFirstFailure` failed roughly one run in ten, and

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -181,11 +182,31 @@ type NormalizeChange struct {
 
 // NormalizeResult contains the results of normalization
 type NormalizeResult[T any] struct {
-	Normalized   T                 `json:"normalized"`
-	Changes      []NormalizeChange `json:"changes"`
-	TotalChanges int               `json:"total_changes"`
-	Warnings     []string          `json:"warnings,omitempty"`
-	Metadata     map[string]any    `json:"metadata,omitempty"`
+	Normalized T `json:"normalized"`
+
+	// Changes is the model's account of what it altered, and it is the model's
+	// account: a normalization's changes are *value* differences, and there is
+	// no way to recover the reason for one by diffing. OP-308 kept this as a
+	// claim for that reason -- unlike Project's Lost and Inferred, which are a
+	// field-set difference Go can compute exactly (OP-302).
+	//
+	// What is verified is the count and the coverage: ChangedFields below is
+	// computed, so a model that alters a field and does not mention it no
+	// longer produces a normalization claiming to have changed nothing.
+	Changes []NormalizeChange `json:"changes"`
+
+	// ChangedFields names the fields whose values actually differ between the
+	// input and the result, computed rather than reported.
+	ChangedFields []string `json:"changed_fields,omitempty"`
+
+	// Unreported names the fields that changed and that Changes does not
+	// mention. A non-empty list means the model's account is incomplete, which
+	// is exactly the thing a caller reading an audit trail needs to know.
+	Unreported []string `json:"unreported,omitempty"`
+
+	TotalChanges int            `json:"total_changes"`
+	Warnings     []string       `json:"warnings,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 // Normalize standardizes data format and terminology to a canonical form.
@@ -342,7 +363,16 @@ Return a JSON object with:
 
 	result.Normalized = parsed.Normalized
 	result.Changes = parsed.Changes
-	result.TotalChanges = len(parsed.Changes)
+
+	// The verified half. A value diff cannot say *why* something changed, so
+	// the model's reasons stay its own; what Go can establish is which fields
+	// moved, and whether the account covers them.
+	result.ChangedFields = changedFieldsBetween(input, result.Normalized)
+	result.Unreported = fieldsNotMentioned(result.ChangedFields, parsed.Changes)
+
+	// The count follows the diff rather than the narrative, because a caller
+	// checking TotalChanges is asking what happened to their data.
+	result.TotalChanges = len(result.ChangedFields)
 	result.Warnings = parsed.Warnings
 
 	log.Debug("Normalize operation succeeded", "totalChanges", result.TotalChanges)
@@ -426,4 +456,70 @@ func NormalizeBatch[T any](items []T, opts NormalizeOptions) ([]NormalizeResult[
 
 	log.Debug("NormalizeBatch succeeded", "itemCount", len(items))
 	return results, nil
+}
+
+// changedFieldsBetween names the top-level fields whose values differ.
+//
+// Values are compared as canonical JSON, so 1284.50 and 1284.5 are the same
+// value and a reordered map is not a change.
+func changedFieldsBetween(before, after any) []string {
+	source := jsonValuesOf(before)
+	result := jsonValuesOf(after)
+
+	var changed []string
+	for _, name := range sortedKeys(source) {
+		next, present := result[name]
+		if !present {
+			changed = append(changed, name)
+			continue
+		}
+		if canonicalKey(source[name]) != canonicalKey(next) {
+			changed = append(changed, name)
+		}
+	}
+	for _, name := range sortedKeys(result) {
+		if _, present := source[name]; !present {
+			changed = append(changed, name)
+		}
+	}
+
+	sort.Strings(changed)
+	return changed
+}
+
+// fieldsNotMentioned returns the changed fields the model's account leaves out.
+func fieldsNotMentioned(changed []string, reported []NormalizeChange) []string {
+	mentioned := make(map[string]bool, len(reported))
+	for _, change := range reported {
+		mentioned[strings.ToLower(strings.TrimSpace(change.Field))] = true
+	}
+
+	var missing []string
+	for _, field := range changed {
+		if !mentioned[strings.ToLower(field)] {
+			missing = append(missing, field)
+		}
+	}
+	return missing
+}
+
+// jsonValuesOf decodes a value into its top-level fields, keyed by lower-case
+// name so the two sides of a diff line up whatever case the tags use.
+func jsonValuesOf(value any) map[string]any {
+	values := map[string]any{}
+
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return values
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return values
+	}
+
+	for key, entry := range object {
+		values[strings.ToLower(key)] = entry
+	}
+	return values
 }

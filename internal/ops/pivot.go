@@ -80,8 +80,19 @@ type PivotResult[U any] struct {
 	// Stats provides transformation statistics
 	Stats PivotStats `json:"stats"`
 
-	// DataLoss lists any fields/values that couldn't be preserved
+	// DataLoss names source fields that do not appear in the pivoted result,
+	// computed by diffing the two field sets rather than taken from the model.
+	//
+	// It was the model's own account: an audit trail written by the thing being
+	// audited, so a pivot that dropped a field and did not mention it reported
+	// no loss at all. OP-308, following OP-302.
 	DataLoss []string `json:"data_loss,omitempty"`
+
+	// ModelClaimedDataLoss is what the model said it lost. Kept because a
+	// disagreement between the two is worth seeing: a field the model says it
+	// dropped and the diff says survived is a different problem from the
+	// reverse.
+	ModelClaimedDataLoss []string `json:"model_claimed_data_loss,omitempty"`
 
 	// Metadata contains additional operation information
 	Metadata map[string]any `json:"metadata,omitempty"`
@@ -284,7 +295,9 @@ Preserve data semantics. Document any data loss.`,
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Pivot operation failed: parse error", "error", err, "response", response)
+		// The response is the caller's data pivoted; it does not belong in a
+		// log line (X-03).
+		log.Error("Pivot operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse pivot result: %w", err)
 	}
 
@@ -298,7 +311,10 @@ Preserve data semantics. Document any data loss.`,
 
 	result.Mappings = parsed.Mappings
 	result.Stats = parsed.Stats
-	result.DataLoss = parsed.DataLoss
+
+	// Computed, not reported. See the field's own comment.
+	result.DataLoss = missingFrom(jsonFieldNamesOfValue(input), jsonFieldNamesOfValue(result.Pivoted))
+	result.ModelClaimedDataLoss = parsed.DataLoss
 
 	log.Debug("Pivot operation succeeded",
 		"mappings", len(result.Mappings),

@@ -140,8 +140,22 @@ func (e EnrichOptions) toOpOptions() types.OpOptions {
 
 // EnrichResult contains the enriched data and metadata
 type EnrichResult[T any] struct {
-	Enriched        T                  `json:"enriched"`
-	AddedFields     []string           `json:"added_fields"`
+	Enriched T `json:"enriched"`
+
+	// AddedFields names the fields the enrichment produced that the source did
+	// not have, computed by diffing the two field sets rather than taken from
+	// the model.
+	//
+	// It was whatever the model said it was: an audit trail written by the
+	// thing being audited. A model that adds a field and does not mention it
+	// produced an enrichment claiming to have added nothing, and the caller's
+	// only evidence was the field itself. OP-308, following OP-302.
+	AddedFields []string `json:"added_fields"`
+
+	// ModelClaimedAddedFields is the model's own account of the same thing,
+	// kept because a disagreement between the two is the interesting part.
+	ModelClaimedAddedFields []string `json:"model_claimed_added_fields,omitempty"`
+
 	ModelConfidence map[string]float64 `json:"confidence,omitempty"`
 	Derivations     map[string]string  `json:"derivations,omitempty"`
 	Metadata        map[string]any     `json:"metadata,omitempty"`
@@ -289,7 +303,12 @@ Return a JSON object with:
 	}
 
 	result.Enriched = parsed.Enriched
-	result.AddedFields = parsed.AddedFields
+
+	// Computed, not reported. See the field's own comment.
+	sourceFields := jsonFieldNamesOfValue(input)
+	producedFields := jsonFieldNamesOfValue(parsed.Enriched)
+	result.AddedFields = missingFrom(producedFields, sourceFields)
+	result.ModelClaimedAddedFields = parsed.AddedFields
 	result.ModelConfidence = parsed.ModelConfidence
 	result.Derivations = parsed.Derivations
 
