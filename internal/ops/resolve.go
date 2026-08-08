@@ -270,6 +270,41 @@ Strategy explanations:
 	result.Conflicts = parsed.Conflicts
 	result.ModelConfidence = parsed.ModelConfidence
 
+	// The "authoritative" strategy documents exactly one thing -- prefer the
+	// source at AuthoritativeSource -- and each conflict reports the index it
+	// actually chose. That is two integers, comparable in Go, with no model
+	// claim in between; nothing was comparing them, so the strategy was prose
+	// in a prompt and nothing else.
+	//
+	// The other strategies are deliberately not checked here. "newest" and
+	// "most-complete" are judgements about the source data that only the model
+	// made, and re-deriving them in Go would be inventing a second answer to
+	// compare against the first.
+	if opt.Strategy == "authoritative" {
+		for i, conflict := range result.Conflicts {
+			if conflict.ChosenSource != opt.AuthoritativeSource {
+				log.Error("A conflict was resolved against the authoritative source",
+					"conflictIndex", i, "field", conflict.Field,
+					"chosenSource", conflict.ChosenSource, "authoritativeSource", opt.AuthoritativeSource)
+				return result, fmt.Errorf(
+					"resolve: strategy is \"authoritative\" on source %d, but conflict %d (%s) was resolved from source %d",
+					opt.AuthoritativeSource, i, conflict.Field, conflict.ChosenSource)
+			}
+		}
+	}
+
+	// A conflict citing source 4 out of a three-source list resolved from
+	// nothing. The index is the model's; the bound is the caller's.
+	for i, conflict := range result.Conflicts {
+		if conflict.ChosenSource < 0 || conflict.ChosenSource >= len(sources) {
+			log.Error("A conflict cited a source index outside the supplied list",
+				"conflictIndex", i, "chosenSource", conflict.ChosenSource, "sourceCount", len(sources))
+			return result, fmt.Errorf(
+				"resolve: conflict %d was resolved from source %d, but %d source(s) were supplied",
+				i, conflict.ChosenSource, len(sources))
+		}
+	}
+
 	// Convert source contributions from string keys to int keys
 	for key, fields := range parsed.SourceContributions {
 		var idx int

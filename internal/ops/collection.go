@@ -203,10 +203,6 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 		instructions = append(instructions, "Provide reasoning for your choice")
 	}
 
-	if opts.TopN > 1 {
-		instructions = append(instructions, fmt.Sprintf("Return top %d options", opts.TopN))
-	}
-
 	if opts.Strategy != "" {
 		instructions = append(instructions, fmt.Sprintf("Use %s strategy", opts.Strategy))
 	}

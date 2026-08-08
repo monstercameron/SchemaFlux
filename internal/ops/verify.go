@@ -503,6 +503,42 @@ Return a JSON object with:
 		return result, fmt.Errorf("verification rejected: %w", err)
 	}
 
+	// The floor is per claim, which is how the prompt states it: "Minimum
+	// confidence for \"verified\" verdict". Checking only the aggregate let a
+	// claim be marked verified at 0.1 as long as the summary number cleared the
+	// floor -- and the summary number is a separate model claim, so the two do
+	// not constrain each other at all. Derive had to grow exactly this second
+	// check for the same reason.
+	//
+	// Only the "verified" verdict is gated. A claim the model reports as false
+	// or unverifiable is not asserting anything the floor protects, and holding
+	// those to it would refuse the very answers a caller runs Verify to get.
+	for i, claim := range result.Claims {
+		if claim.Verdict != "verified" {
+			continue
+		}
+		if err := AtLeastConfidence(claim.ModelConfidence, opts.MinConfidence); err != nil {
+			log.Error("A claim was marked verified below the configured confidence floor",
+				"claimIndex", i, "confidence", claim.ModelConfidence, "minConfidence", opts.MinConfidence)
+			return result, fmt.Errorf("verification rejected: claim %d was marked verified: %w", i, err)
+		}
+	}
+
+	// A claim citing source 7 out of a three-source list is citing nothing. The
+	// indices are the model's, but the bound is the caller's, so this compares a
+	// claim against a fact rather than against another claim.
+	for i, claim := range result.Claims {
+		for _, source := range claim.Sources {
+			if source < 0 || source >= len(opts.Sources) {
+				log.Error("A claim cited a source index outside the supplied list",
+					"claimIndex", i, "source", source, "sourceCount", len(opts.Sources))
+				return result, fmt.Errorf(
+					"verification rejected: claim %d cites source %d, but %d source(s) were supplied",
+					i, source, len(opts.Sources))
+			}
+		}
+	}
+
 	log.Debug("Verify operation succeeded",
 		"overallVerdict", result.OverallVerdict,
 		"claimCount", len(result.Claims),

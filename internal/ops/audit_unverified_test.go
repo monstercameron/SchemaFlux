@@ -294,36 +294,26 @@ func TestAudit_RedactLLM_CategoriesNotEnforced(t *testing.T) {
 	t.Logf("Categories was set to [\"email\"] only, and the answer still redacted a \"name\" span (text now %q) with a nil error", result.Text)
 }
 
-// VerifyOptions.Sources is numbered into the prompt as "[Source 0]", "[Source
-// 1]", ... (verify.go:379-387), and the response schema documents a claim's
-// "sources" field as the indices into that list the verdict rests on
-// (verify.go:458). verifyCore never checks a returned claim.Sources index
-// against len(opts.Sources) (verify.go:490-504) before returning success, so
-// a model can cite a source that was never given.
-func TestAudit_Verify_SourceIndexNotValidated(t *testing.T) {
+// A claim citing source 7 out of a three-source list is citing nothing. The
+// indices are the model's, but the bound is the caller's, so this compares a
+// claim against a fact rather than against another claim -- and it was not
+// being compared at all.
+func TestVerify_RefusesAClaimCitingASourceThatDoesNotExist(t *testing.T) {
 	withResponse(t, `{
+		"claims": [{"claim": "the sky is blue", "verdict": "verified", "confidence": 0.95, "sources": [7]}],
 		"overall_verdict": "verified",
-		"overall_confidence": 0.95,
-		"claims": [
-			{"claim": "the sky is blue", "verdict": "verified", "confidence": 0.95, "sources": [7]}
-		],
-		"summary": "checked",
-		"trust_score": 0.9
+		"overall_confidence": 0.95
 	}`)
 
-	opts := NewVerifyOptions().WithSources([]any{"only one source"})
-	result, err := Verify("the sky is blue", opts)
-	if err != nil {
-		t.Fatalf("Verify returned an error for a response that merely cited an out-of-range source index: %v", err)
+	opts := NewVerifyOptions()
+	opts.Sources = []any{"one source"}
+	_, err := Verify("the sky is blue", opts)
+	if err == nil {
+		t.Fatal("Verify accepted a claim citing source 7 out of a one-source list")
 	}
-	if len(result.Claims) != 1 {
-		t.Fatalf("test setup broken: expected one claim, got %d", len(result.Claims))
+	if !strings.Contains(err.Error(), "source 7") {
+		t.Fatalf("the error does not name the bad index: %v", err)
 	}
-	got := result.Claims[0].Sources
-	if len(got) != 1 || got[0] < len(opts.Sources) {
-		t.Fatalf("test setup broken: expected an out-of-range source index (only %d source(s) given), got %v", len(opts.Sources), got)
-	}
-	t.Logf("claim cites source index %d, but only %d source(s) were provided; Verify accepted it with a nil error", got[0], len(opts.Sources))
 }
 
 // Decompose's MaxDepth is stated in the prompt as a hard ceiling ("Maximum
@@ -469,28 +459,24 @@ func TestScore_RefusesAWeightForAnUnscoredCriterion(t *testing.T) {
 	}
 }
 
-// ChooseOptions.TopN is validated as >= 1 and, when > 1, is turned into a
-// prompt instruction ("Return top %d options", collection.go:206-208). But
-// Choose's return type is a single T (collection.go:174), and the system
-// prompt Choose actually sends hard-codes a single-answer format regardless
-// of TopN: `Return ONLY a JSON object {"id": "..."}` (collection.go:241),
-// "Select the single most appropriate option" (collection.go:239). TopN=3
-// produces an internally contradictory prompt, and whatever the model
-// returns, Choose reads exactly one id and has nowhere to put the other two
-// even if the model tried to supply them. This is not an unchecked
-// constraint so much as one the return type makes impossible to honor.
-func TestAudit_Choose_TopNGreaterThanOneCannotBeHonoredByReturnType(t *testing.T) {
-	withResponse(t, `{"id":"i-000002"}`)
+// ChooseOptions.TopN used to be validated as >= 1 and, when > 1, turned into
+// a prompt instruction ("Return top %d options"). But Choose returns a single
+// T, and the system prompt it actually sends hard-codes a single-answer format
+// regardless: "Select the single most appropriate option", `Return ONLY a JSON
+// object {"id": "..."}`. TopN=3 produced an internally contradictory prompt,
+// and whatever the model returned, Choose read exactly one id and had nowhere
+// to put the other two. It is now refused at validation, with a pointer at the
+// operation that does return an ordered list.
+func TestChoose_RefusesATopNItCannotReturn(t *testing.T) {
+	withResponse(t, `{"id": "b"}`)
 
-	opts := NewChooseOptions().WithTopN(3)
-	result, err := Choose([]string{"apple", "banana", "cherry"}, opts)
-	if err != nil {
-		t.Fatalf("Choose returned an error for TopN=3: %v", err)
+	_, err := Choose([]string{"a", "b", "c"}, NewChooseOptions().WithTopN(3))
+	if err == nil {
+		t.Fatal("Choose accepted TopN=3 despite returning a single value")
 	}
-	if result != "banana" {
-		t.Fatalf("test setup broken: expected the single id-selected item, got %q", result)
+	if !strings.Contains(err.Error(), "Rank") {
+		t.Fatalf("the error does not point at the operation that can honor it: %v", err)
 	}
-	t.Logf("WithTopN(3) was requested; Choose's system prompt still asked for and accepted exactly one id, returning a single %q with no error and no indication three were requested", result)
 }
 
 // TransformOptions.PreserveFields is stated in the prompt as an instruction
@@ -541,15 +527,12 @@ func TestAudit_Rewrite_AvoidWordsNeverChecked(t *testing.T) {
 	t.Logf("AvoidWords named %q; Rewrite returned %q containing it, with no error", opts.AvoidWords, result)
 }
 
-// ResolveOptions.Strategy "authoritative" is documented as "Prefer source at
-// index %d" (resolve.go:220-222, interpolating AuthoritativeSource), and
-// each Conflict reports its own ChosenSource (resolve.go:56-57) -- a value
-// Go can compare against opt.AuthoritativeSource without any model claim
-// involved, the same shape Choose's MemberOf check runs over ids. Nothing
-// does: parsed.Conflicts is copied straight into the result (resolve.go:270)
-// with no check that "authoritative" actually chose the authoritative
-// source.
-func TestAudit_Resolve_AuthoritativeStrategyChosenSourceNeverChecked(t *testing.T) {
+// The "authoritative" strategy documents exactly one thing -- prefer the source
+// at AuthoritativeSource -- and each Conflict reports the index it actually
+// chose. That is two integers, comparable in Go with no model claim in between,
+// the same shape as Choose's MemberOf check over ids. Nothing was comparing
+// them, so the strategy was prose in a prompt and nothing else.
+func TestResolve_RefusesAConflictResolvedAgainstTheAuthoritativeSource(t *testing.T) {
 	withResponse(t, `{
 		"resolved": {"name": "from source 1"},
 		"conflicts": [
@@ -563,43 +546,100 @@ func TestAudit_Resolve_AuthoritativeStrategyChosenSourceNeverChecked(t *testing.
 		Name string `json:"name"`
 	}
 	opts := ResolveOptions{Strategy: "authoritative", AuthoritativeSource: 0}
-	result, err := Resolve([]record{{Name: "from source 0"}, {Name: "from source 1"}}, opts)
-	if err != nil {
-		t.Fatalf("Resolve returned an error for a response that merely chose the non-authoritative source: %v", err)
+	_, err := Resolve([]record{{Name: "from source 0"}, {Name: "from source 1"}}, opts)
+	if err == nil {
+		t.Fatal("Resolve accepted a conflict resolved from source 1 under an authoritative strategy naming source 0")
 	}
-	if len(result.Conflicts) != 1 || result.Conflicts[0].ChosenSource == opts.AuthoritativeSource {
-		t.Fatalf("test setup broken: expected the resolved conflict to have chosen a source other than the authoritative one (%d), got %+v", opts.AuthoritativeSource, result.Conflicts)
+	if !strings.Contains(err.Error(), "authoritative") {
+		t.Fatalf("the error does not name the violated strategy: %v", err)
 	}
-	t.Logf("Strategy was \"authoritative\" with AuthoritativeSource=%d, and the response chose source %d instead; Resolve accepted it with no error", opts.AuthoritativeSource, result.Conflicts[0].ChosenSource)
 }
 
-// VerifyOptions.MinConfidence's prompt is explicit that the floor gates the
-// per-claim "verified" verdict, not just the summary number: "Minimum
-// confidence for \"verified\" verdict: %.0f%%" (verify.go:438). verifyCore
-// does check AtLeastConfidence, but only against
-// result.ModelOverallConfidence (verify.go:501) -- the same shape Derive
-// had to fix by checking both per-field and overall (derive.go:259-272).
-// Verify checks only the aggregate, so a claim can be marked "verified" with
-// its own confidence far below the floor as long as the summary number
-// clears it.
-func TestAudit_Verify_PerClaimConfidenceNeverChecked(t *testing.T) {
+// The companion case: the same strategy, honored. Without this the check above
+// is indistinguishable from refusing every authoritative resolution.
+func TestResolve_AcceptsAConflictResolvedFromTheAuthoritativeSource(t *testing.T) {
 	withResponse(t, `{
-		"overall_verdict": "verified",
-		"overall_confidence": 0.95,
-		"claims": [
-			{"claim": "the sky is blue", "verdict": "verified", "confidence": 0.1}
+		"resolved": {"name": "from source 0"},
+		"conflicts": [
+			{"field": "name", "values": {"0": "from source 0", "1": "from source 1"}, "resolution": "picked", "chosen_source": 0, "chosen_value": "from source 0"}
 		],
-		"summary": "checked"
+		"source_contributions": {"0": ["name"]},
+		"confidence": 0.9
 	}`)
 
-	opts := NewVerifyOptions()
-	opts.MinConfidence = 0.7
-	result, err := Verify("the sky is blue", opts)
+	type record struct {
+		Name string `json:"name"`
+	}
+	opts := ResolveOptions{Strategy: "authoritative", AuthoritativeSource: 0}
+	result, err := Resolve([]record{{Name: "from source 0"}, {Name: "from source 1"}}, opts)
 	if err != nil {
-		t.Fatalf("Verify returned an error for a response whose only weak confidence was on an individual claim: %v", err)
+		t.Fatalf("Resolve refused a conflict resolved from the authoritative source: %v", err)
 	}
-	if len(result.Claims) != 1 || result.Claims[0].Verdict != "verified" || result.Claims[0].ModelConfidence >= opts.MinConfidence {
-		t.Fatalf("test setup broken: expected a claim marked verified with confidence below the %.2f floor, got %+v", opts.MinConfidence, result.Claims)
+	if result.Resolved.Name != "from source 0" {
+		t.Fatalf("Resolved = %+v, want source 0's value", result.Resolved)
 	}
-	t.Logf("a claim was marked %q at confidence %.2f against a MinConfidence floor of %.2f (only the overall_confidence of 0.95 cleared it); Verify accepted the call with no error", result.Claims[0].Verdict, result.Claims[0].ModelConfidence, opts.MinConfidence)
+}
+
+// A conflict citing a source index outside the supplied list resolved from
+// nothing, under any strategy. The index is the model's; the bound is the
+// caller's.
+func TestResolve_RefusesAConflictCitingASourceThatDoesNotExist(t *testing.T) {
+	withResponse(t, `{
+		"resolved": {"name": "from nowhere"},
+		"conflicts": [
+			{"field": "name", "values": {"0": "a"}, "resolution": "picked", "chosen_source": 4, "chosen_value": "from nowhere"}
+		],
+		"source_contributions": {},
+		"confidence": 0.9
+	}`)
+
+	type record struct {
+		Name string `json:"name"`
+	}
+	_, err := Resolve([]record{{Name: "a"}, {Name: "b"}}, ResolveOptions{Strategy: "merge"})
+	if err == nil {
+		t.Fatal("Resolve accepted a conflict resolved from source 4 out of a two-source list")
+	}
+	if !strings.Contains(err.Error(), "source 4") {
+		t.Fatalf("the error does not name the bad index: %v", err)
+	}
+}
+
+// The confidence floor is per claim, which is how the prompt states it. Only
+// the aggregate was checked, so a claim could be marked verified at 0.1 as long
+// as the summary number cleared the floor -- and the summary number is a
+// separate model claim, so the two do not constrain each other at all.
+func TestVerify_RefusesAClaimVerifiedBelowTheFloor(t *testing.T) {
+	withResponse(t, `{
+		"claims": [{"claim": "a shaky one", "verdict": "verified", "confidence": 0.1}],
+		"overall_verdict": "verified",
+		"overall_confidence": 0.95
+	}`)
+
+	_, err := Verify("a shaky one", NewVerifyOptions().WithMinConfidence(0.7))
+	if err == nil {
+		t.Fatal("Verify accepted a claim marked verified at confidence 0.1 against a 0.7 floor")
+	}
+	if !strings.Contains(err.Error(), "claim 0") {
+		t.Fatalf("the error does not name the offending claim: %v", err)
+	}
+}
+
+// The companion case that makes the check above a real gate rather than a
+// blanket rejection: a claim the model reports as unverifiable is not asserting
+// anything the floor protects, so a low confidence on it is not a violation.
+func TestVerify_DoesNotHoldANonVerifiedClaimToTheFloor(t *testing.T) {
+	withResponse(t, `{
+		"claims": [{"claim": "unknowable", "verdict": "unverifiable", "confidence": 0.1}],
+		"overall_verdict": "unverifiable",
+		"overall_confidence": 0.95
+	}`)
+
+	result, err := Verify("unknowable", NewVerifyOptions().WithMinConfidence(0.7))
+	if err != nil {
+		t.Fatalf("Verify refused a low-confidence unverifiable claim: %v", err)
+	}
+	if len(result.Claims) != 1 {
+		t.Fatalf("Claims = %+v, want the one claim surfaced", result.Claims)
+	}
 }

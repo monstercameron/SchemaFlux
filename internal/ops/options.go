@@ -1609,6 +1609,16 @@ func (c ChooseOptions) Validate() error {
 	if c.TopN < 1 {
 		return fmt.Errorf("topN must be at least 1, got %d", c.TopN)
 	}
+	// Choose returns a single T. TopN > 1 used to be accepted, rendered into
+	// the prompt as "Return top N options", and then contradicted by Choose's
+	// own system prompt ("Select the single most appropriate option", "Return
+	// ONLY a JSON object {\"id\": \"...\"}") -- and whatever came back, Choose
+	// read one id and discarded the rest. There is no return value for them to
+	// go in. An option that cannot be honored by the function's own signature
+	// is refused rather than half-obeyed; Rank's TopK returns an ordered list.
+	if c.TopN > 1 {
+		return fmt.Errorf("topN=%d: Choose returns a single result; use Rank with WithTopK(%d) for an ordered list", c.TopN, c.TopN)
+	}
 	validStrategies := map[string]bool{"sequential": true, "tournament": true, "scoring": true}
 	if c.Strategy != "" && !validStrategies[c.Strategy] {
 		return fmt.Errorf("invalid strategy: %s", c.Strategy)
