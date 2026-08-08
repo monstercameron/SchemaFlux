@@ -31,6 +31,7 @@ PACKAGES = [
     "./pricing/...",
     "./telemetry/...",
     "./schemafluxtest/...",
+    "./mw/...",
     "./core/...",
     "./debug/...",
 ]

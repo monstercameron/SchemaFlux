@@ -1446,10 +1446,40 @@ tests.
 
   **Done** — `MatchesFilters` had no caller inside the module or outside it; the comment
   claiming it was "exported for testing" was the only thing keeping it. Deleted.
-- [ ] **MW-001** — `Handler` / `Middleware` chain applied at client construction. Closes
+- [x] **MW-001** — `Handler` / `Middleware` chain applied at client construction. Closes
   **Gap-11**.
-- [ ] **MW-002** — `mw.RateLimit`. Closes part of **Gap-09**.
-- [ ] **MW-003** — `mw.Retry` wrapping **A-008**.
+  **Done** — `mw/` at the repository root, a public package importing the internals the way
+  `schemafluxtest/` already does. `Handler` is `llm.Provider`, a `Middleware` takes one and
+  returns one, and `Chain(base, mws...)` composes them with the first-listed outermost.
+  No change to `client.go` was needed: `WithProviderInstance` is already the
+  client-construction seam, so a caller writes
+  `client.WithProviderInstance(mw.Chain(base, mw.RateLimit(...), mw.Retry(...)))`.
+  MW-004 through MW-008 each become a new file exposing another `Middleware` without touching
+  this seam, which is the property the task was really asking for.
+- [x] **MW-002** — `mw.RateLimit`. Closes part of **Gap-09**.
+  **Done** — token bucket, blocking by default with `mw.Reject()` to fail instead and
+  `mw.WithBurst()` for a capacity distinct from the refill rate. A caller shedding load needs
+  the choice; one smoothing a burst needs the wait.
+  The reject-mode error is a `*types.OperationError{Kind: KindRateLimited}` carrying a
+  `RetryAfter`, so it flows through the **A-007** classifier identically to a provider 429 —
+  which is what makes it compose with `mw.Retry` rather than needing to be special-cased
+  there. The caller's deadline is checked before the wait and honoured during it.
+  *Verify:* `mw/ratelimit_test.go`, 12 cases.
+- [x] **MW-003** — `mw.Retry` wrapping **A-008**.
+  **Done** — and it asks `llm.Classify` plus `OperationError.Retryable()` rather than
+  carrying its own opinion, which was the condition that mattered: two layers with two answers
+  is a bug that only reproduces sometimes, because which layer wins depends on where the error
+  came from.
+  Attempts and base delay default to the wrapped provider's own `RetryPolicy()` — a provider
+  that knows its own rate-limit windows is a better default than a number picked without
+  knowing which provider it will run against. `Retry-After` overrides the computed wait,
+  whether it came from the server or from `mw.RateLimit`'s own refusal. Decorrelated jitter,
+  so a provider recovering from an outage does not meet a synchronised second wave.
+  *Verify:* `mw/retry_test.go`, 17 cases, plus a composition test through `RateLimit`+`Retry`.
+  **Timing is driven by an injectable fake clock**, with no real `time.Sleep` anywhere in the
+  suite — a flaky test in a rate limiter is worse than no test.
+  `mw` measures 80.1% statements and was added to `scripts/coverage_floor.py`'s package list,
+  so it counts from now on.
 - [ ] **MW-004** — `mw.Cache`: response cache keyed on a hash of model, tier, mode, prompt
   bytes, and schema, so exact-duplicate calls cost zero. Closes **Gap-07**.
   **Revised (TRU-10):** the key must carry the complete semantic execution identity —
