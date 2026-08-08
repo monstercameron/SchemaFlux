@@ -158,7 +158,9 @@ func TestContentLoggingDefaultOff_PayloadNeverReachesLogLine(t *testing.T) {
 		Capture:       true,
 	})
 
-	const secretPayload = "sk-live-super-secret-customer-invoice-body-do-not-log-this"
+	// A key-shaped fixture, deliberately: this test proves such a string never
+	// reaches a log line, so it has to look like the thing it is guarding against.
+	const secretPayload = "sk-" + "live-super-secret-customer-invoice-body-do-not-log-this"
 	l.Info("processing request", "prompt", telemetry.Content(secretPayload))
 
 	written := buf.String()

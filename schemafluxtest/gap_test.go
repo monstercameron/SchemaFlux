@@ -22,6 +22,11 @@ import (
 
 // A provider name the library does not know resolves to no model at all, and
 // every call errors -- this is FL-001, and As is how a test opts into it.
+// Assembled, not written out: see the note on fakeKey in
+// internal/types/diagnostics_test.go. A literal here trips this repo's secret
+// scan and GitHub's push protection alike.
+var fakeProjKey = "sk-" + "proj-" + "FAILUREPATHLEAK"
+
 func TestAsWithAnUnknownNameResolvesToNoModel(t *testing.T) {
 	provider := schemafluxtest.New().As("a-provider-that-does-not-exist").
 		Reply(`{"queue":"billing","priority":"low"}`)
@@ -372,7 +377,7 @@ func TestSaveRedactsARecordedFailuresMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the written cassette: %v", err)
 	}
-	if strings.Contains(string(raw), "sk-proj-FAILUREPATHLEAK") {
+	if strings.Contains(string(raw), fakeProjKey) {
 		t.Error("a credential in a failure message reached disk")
 	}
 	if !strings.Contains(string(raw), "[redacted by schemafluxtest]") {
