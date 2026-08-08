@@ -265,6 +265,25 @@ type BatchMetrics struct {
 	// is false.
 	CostPerAcceptedItem float64
 
+	// CostQuality says what CostPerAcceptedItem is worth, reusing
+	// types.PricingQuality (OB-003) rather than the plain CostPriced bool
+	// alone. A bool can only say known/unknown; it cannot say that a known
+	// figure was assembled from a projection rather than the provider's own
+	// reported usage. PricingUnknown whenever CostPerAcceptedItem itself is
+	// meaningless -- CostPriced is false, or every priced item in the batch
+	// failed, leaving nothing priced to divide into AcceptedCost. Otherwise
+	// the weakest quality among the succeeded, priced items that make up
+	// AcceptedCost: PricingEstimated if any of them is an estimate (a plan
+	// made before the call, or a provider that answered with no usage --
+	// EstimateCost's own marking, pricing/pricing.go), else the quality
+	// those items share (PricingExact or PricingFree; in practice uniform
+	// within one batch, since every item runs the same op against the same
+	// model's rate card). A caller reading CostPerAcceptedItem alongside
+	// CostQuality can tell a number backed entirely by reported usage from
+	// one where at least one accepted item's spend is a guess, instead of a
+	// single average that would look identical either way.
+	CostQuality PricingQuality
+
 	// Omissions counts items that were not resolved by the very first MDSP
 	// pass that asked about them: an item whose final Mode is "mdsp" but
 	// whose Attempts is greater than one (it took an isolate pass to
@@ -286,10 +305,11 @@ type BatchMetrics struct {
 // Metrics computes PL-013's per-item measurement from r's own ItemResults.
 func (r BatchResult[Out]) Metrics() BatchMetrics {
 	m := BatchMetrics{
-		Total:     r.Summary.Total,
-		Succeeded: r.Summary.Succeeded,
-		Failed:    r.Summary.Failed,
-		Cancelled: r.Summary.Cancelled,
+		Total:       r.Summary.Total,
+		Succeeded:   r.Summary.Succeeded,
+		Failed:      r.Summary.Failed,
+		Cancelled:   r.Summary.Cancelled,
+		CostQuality: PricingUnknown,
 	}
 	if m.Total > 0 {
 		m.ValidItemRatio = float64(m.Succeeded) / float64(m.Total)
@@ -312,10 +332,21 @@ func (r BatchResult[Out]) Metrics() BatchMetrics {
 		}
 		m.CostPriced = true
 		m.Currency = item.Cost.Currency
-		if item.Status == ItemSucceeded {
-			m.AcceptedCost += item.Cost.TotalCost
-		} else {
+		if item.Status != ItemSucceeded {
 			m.FailedCost += item.Cost.TotalCost
+			continue
+		}
+		m.AcceptedCost += item.Cost.TotalCost
+		switch {
+		case m.CostQuality == PricingUnknown:
+			// First succeeded, priced item seen: adopt its quality outright.
+			m.CostQuality = item.Cost.Quality
+		case item.Cost.Quality == PricingEstimated:
+			// PricingEstimated is the weakest quality a priced figure can
+			// carry (see CostQuality's own doc comment) -- once any accepted
+			// item's cost is a projection, the whole per-item average is,
+			// and a later Exact/Free item cannot undo that.
+			m.CostQuality = PricingEstimated
 		}
 	}
 

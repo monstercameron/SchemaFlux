@@ -317,10 +317,20 @@ func runRetryPass[In, Out any](ctx context.Context, op Op[In, Out], items []In, 
 	}
 }
 
-// addCost sums two CostInfo values' spend, carrying Priced/Currency from
-// whichever side reports pricing -- so a retry pass's cost accounting never
-// silently drops the first attempt's spend, which is money that was really
-// paid even though that attempt did not produce a usable answer.
+// addCost sums two CostInfo values' spend, carrying Priced/Currency/Quality/
+// PricingSource from whichever side reports pricing -- so a retry pass's cost
+// accounting never silently drops the first attempt's spend, which is money
+// that was really paid even though that attempt did not produce a usable
+// answer.
+//
+// Quality and PricingSource matter here for the same reason PL-013's own
+// warning about types.PricingQuality does: before this carried them forward,
+// a retried item's summed CostInfo kept Priced == true (correct) but reset
+// Quality to its zero value, which is not PricingUnknown, PricingExact,
+// PricingEstimated, or PricingFree -- an invalid quality on a record a
+// caller's Cost.Quality.Known() check would otherwise trust. A record that
+// says "priced" while carrying a quality nothing recognizes is exactly the
+// kind of number this library is not supposed to invent.
 func addCost(a, b types.CostInfo) types.CostInfo {
 	if !a.Priced && !b.Priced {
 		return types.CostInfo{}
@@ -336,6 +346,18 @@ func addCost(a, b types.CostInfo) types.CostInfo {
 	sum.Currency = a.Currency
 	if sum.Currency == "" {
 		sum.Currency = b.Currency
+	}
+	// Prefer the priced side's Quality/PricingSource; when both sides are
+	// priced (a retry that also had a priced prior attempt) they came from
+	// the same op and model, so they already agree -- a favors the earlier
+	// attempt only because there is no third value to prefer between equals.
+	switch {
+	case a.Priced:
+		sum.Quality = a.Quality
+		sum.PricingSource = a.PricingSource
+	case b.Priced:
+		sum.Quality = b.Quality
+		sum.PricingSource = b.PricingSource
 	}
 	return sum
 }

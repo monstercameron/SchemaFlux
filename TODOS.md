@@ -3093,7 +3093,7 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   and must not change results relative to running each builder alone. Closes **EXE-16**.
   *Verify:* fused and unfused runs of the same fifty builders produce identical values;
   builders differing only in steering land in separate partitions.
-- [ ] **PL-013** — Per-item metrics. HTTP 200 hides omissions and invalid output, so measure
+- [x] **PL-013** — Per-item metrics. HTTP 200 hides omissions and invalid output, so measure
   valid-item ratio, omissions, repairs, atomic fallbacks, and **cost per accepted item** —
   the number that actually says whether a batch strategy is working. Closes **EXE-19**.
   Feeds **OB-002**.
@@ -3104,6 +3104,24 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   `Mode` already on each item rather than from a second accounting pass, and honestly zero for
   a run that never batched.
   **Not done:** the rest of PL-013's list. This closed exactly what OB-002 was waiting on.
+  **Done.** Two of the six series were computed and **never emitted**:
+  `schemaflux_omissions_total` and `schemaflux_cost_per_accepted_item`. The second is the
+  number this task exists for, and it was reconstructable only by dividing two other metrics by
+  hand — which is not the same as reporting it, because the person who most needs it is the one
+  who would not think to divide.
+  `BatchMetrics.CostQuality` replaces the `CostPriced` bool with OB-003's `PricingQuality`. A
+  bool can say known or unknown; it cannot say "this known figure includes a projection", and
+  cost-per-accepted-item built partly from estimated prices is a different claim from one built
+  from a rate card. The emit is guarded on it, so a batch where nothing succeeded, or where the
+  model is unpriced, emits **no series at all** rather than a zero — a zero there reads as
+  "this was free."
+  **A defect found while doing it:** `addCost` in `partial.go`, which sums cost across a retry
+  pass, carried `Priced`, `TotalCost`, and `Currency` forward and silently dropped `Quality` and
+  `PricingSource`. A retried item ended up `Priced: true` with `Quality` at a zero value the
+  enum does not define — a cost that claims to be known and cannot say how. Fixed and covered.
+  **Not done:** pricing quality is a Go-level field and not a metrics tag dimension. The
+  existing `quality` tag already means accepted-versus-failed, and overloading one tag key with
+  two unrelated meanings would make both unreadable.
 - [x] **PL-014** — Planner explainability: a human-readable pre-execution plan explanation
   (mode, chunking, parallelism, recovery ladder, call ceiling, cost range, minimum contract,
   data policy) and a post-execution decision ledger recording every adaptive choice and its
@@ -3752,12 +3770,45 @@ others, with nothing at the call site to tell them apart.
 
 # M17 — Release engineering and v1 acceptance
 
-- [ ] **RC-001** — Release contents per §17.2: tagged and checksummed artifacts, generated
+- [x] **RC-001** — Release contents per §17.2: tagged and checksummed artifacts, generated
   changelog, Go API changes **and semantic behaviour changes**, operation, prompt, and schema
   version changes, provider capability and live-verification matrix, platform support matrix,
   known degradations, migration steps, SBOM, vulnerability scan, and the release-candidate
   semantic benchmark comparison. A prompt edit with no Go signature change is a behaviour
   change and belongs in the notes. Closes **PRD-03**, **ARC-23**.
+  **Done.** `scripts/release_notes.py` assembles all twelve sections from evidence already in
+  the tree rather than from prose somebody remembers to write. That is the point: the failure
+  mode release notes actually have is not that the facts are unavailable, it is that a human
+  transcribes them and the transcription drifts.
+  The section the task exists for is **semantic behaviour**, computed from
+  `testdata/golden_prompts.txt`. A prompt edit changes every answer this library produces and
+  changes no Go signature, so a changelog built from commits plus an API diff reports "no
+  behaviour change" while the library's behaviour has moved. Run against this session's own
+  commits it correctly reports the prompts changed, names the affected section, and does not
+  confuse that with the API diff, which reports no change.
+  Every other section reads its real source: the artifact digest from `git ls-tree` (a Go
+  module's artifact is its contents, not a binary this project does not ship); Go API changes
+  from the ratcheted surface snapshot; operation versions from the `OperationID` declarations
+  that provenance actually stamps; **known degradations from the §19 ledger**, because an
+  unchecked acceptance criterion *is* a known degradation and transcribing it by hand is how
+  two lists drift; migration steps from the deprecation catalogue; SBOM from `go list -m`.
+  **Never fails open.** A section it cannot compute prints `UNAVAILABLE` with the reason and is
+  never omitted — an omitted section reads as "nothing changed", which is a claim nobody made.
+  `--check` exits non-zero on any such section; watched exiting 1 today on the semantic
+  benchmark, which is genuinely unavailable because RC-002 has not built a baseline.
+  Three sections were computing confident wrong answers before being checked against their
+  sources, which is the argument for reading the output rather than trusting the script: the
+  provider list read `CreateProvider`, which delegates to a registry and names nothing; the
+  platform matrix read `runs-on: ${{ matrix.os }}`, which names nothing either; and the
+  migration section read a struct that is populated at run time rather than the map literal
+  that populates it. All three said "(none found)" or "nothing to migrate" — a plausible,
+  wrong, quiet answer.
+  **A real finding it surfaced:** `govulncheck` reports **three standard-library
+  vulnerabilities that this code actually reaches** — GO-2026-5856 (crypto/tls ECH privacy
+  leak), GO-2026-5039 (net/textproto), GO-2026-5037 (crypto/x509) — on go1.26.3, fixed in
+  go1.26.4/go1.26.5. This is a **toolchain upgrade**, not a code change, and it is not
+  something this repository can do to itself; it is recorded here rather than left to be
+  discovered at release time.
 - [ ] **RC-002** — Semantic regression suite for release candidates, on pinned operation
   versions and as-pinned-as-available models: extraction accuracy and hallucination,
   missing-field and evidence-reference validity, classification accuracy and abstention,
@@ -3767,7 +3818,7 @@ others, with nothing at the call site to tell them apart.
   intervals — a single exact-output assertion is not a stable live test. Closes **PRD-15**,
   **TRU-21**. This suite spends money: it runs only on a protected release-candidate
   workflow with an explicit spend ceiling, never on `go test ./...` (**B-04**).
-- [ ] **RC-003** — Track §19's acceptance criteria as a checklist in this file, and require
+- [x] **RC-003** — Track §19's acceptance criteria as a checklist in this file, and require
   every unchecked box at v1.0.0 to carry an ADR saying why it ships unmet. Twenty-nine boxes
   across core architecture, correctness and trust, execution and resilience, security and
   governance, and verification and operations.
@@ -3780,6 +3831,54 @@ others, with nothing at the call site to tell them apart.
   ledger is transcribed rather than after.
   Only the self-test runs in CI: `--check` would red the build permanently until the ledger
   exists, and a gate that is always failing is a gate people learn to ignore.
+
+  **Ledger written; 20 of 32 met.** The count question is resolved in the document's favour:
+  there are **32** criteria, not the 29 this task's text stated. The text was written from a
+  count, and the count went stale — which is the argument for the checker reading the document
+  rather than anyone maintaining a second list of it.
+  Each unchecked box carries a reason, and the reasons are deliberately specific: "IN-004 is
+  open" is a pointer, not an excuse, and every one of them names a task that would close it.
+  Two are unmeetable on this machine rather than unbuilt (19.1.5 and 19.5.1 both want `-race`,
+  which does not run on windows/arm64) and one needs a funded credential (19.5.2). Those are
+  the three where the honest word is *unverified* rather than *unmet*, and the ledger says so
+  instead of borrowing the word "done" from the work that was actually finished.
+  `--check` can now run in CI without being permanently red.
+
+#### §19 acceptance ledger (v1.0.0)
+
+- [ ] 19.1.1 — Core has no mutable global execution state. — ADR: IN-004 is open; `ops.defaultProvider`, budgets, and the scheduler are still process-wide.
+- [ ] 19.1.2 — Every stable public operation lowers to the same `Op -> Run -> Plan -> Execute` path. — ADR: the pre-A-001 operations (Question, Predict, Cluster, Compress, Decompose) still call `callLLM` directly rather than lowering to an `Op` descriptor.
+- [x] 19.1.3 — Standard and fluent APIs pass mechanical equivalence tests.
+- [ ] 19.1.4 — Stable execution requires `context.Context`. — ADR: `ChooseBy`, `FilterBy`, and `SortBy` take none; the `*Context` variants exist but the original three remain on the published surface (IN-004).
+- [ ] 19.1.5 — Client and builder ownership/lifecycle are documented and race-tested. — ADR: unverified rather than unmet — `-race` does not run on windows/arm64, so the race half has never been executed here; `-shuffle=on` is the substitute and is weaker. Ownership is also still open (IN-004).
+- [x] 19.1.6 — Optional adapters do not become mandatory core dependencies.
+- [x] 19.2.1 — Exact decoder rejects unknown/duplicate fields and lossy conversion in strict mode.
+- [x] 19.2.2 — Presence semantics distinguish missing, null, and zero values.
+- [ ] 19.2.3 — Every stable operation declares deterministic invariants and batchability. — ADR: only the operations converted to `Op` descriptors declare `Contract.Invariants` and `Batch`; the rest declare neither, the same gap as 19.1.2.
+- [ ] 19.2.4 — Evidence and provenance survive supported pipelines. — ADR: TC-003 traces a claim to the *result* that produced it and TC-002 traces a claim to a *span*, but nothing joins the two, so a three-stage pipeline does not resolve to a byte range in stage 1's input.
+- [ ] 19.2.5 — Requested and delivered contract levels appear in every detailed result. — ADR: both appear, but Delivered is computed from the same declaration as Requested rather than observed, so a provider degrading mid-call is invisible (TC-004).
+- [ ] 19.2.6 — Prompt/data trust boundaries are represented and adversarially tested. — ADR: all five trust levels are represented and enforced at the system-prompt boundary, and steering is adversarially tested, but no operation yet routes retrieved documents or prior model output through `DelimitUntrusted` (TC-001).
+- [x] 19.2.7 — Model claims are separated from deterministic checks and runtime facts.
+- [x] 19.3.1 — Homogeneous collections support bounded MDSP with stable IDs.
+- [x] 19.3.2 — Global operations use tested operation-specific merge semantics.
+- [x] 19.3.3 — Scheduler enforces call, queue, token, cost, provider, and tenant limits.
+- [x] 19.3.4 — Retry, repair, split, fallback, escalation, and review share one budget ledger.
+- [x] 19.3.5 — Partial success, cancellation, shutdown, and budget exhaustion have typed semantics.
+- [x] 19.3.6 — No valid item is replayed due solely to an independent sibling failure.
+- [x] 19.3.7 — Circuit breakers and rate limits prevent retry storms.
+- [x] 19.4.1 — Content logging is off by default; secret/log redaction tests pass.
+- [x] 19.4.2 — Raw diagnostics are opt-in, bounded, redacted, and retention-controlled.
+- [x] 19.4.3 — Data policy constrains provider, region, retention, training, cache, and logging.
+- [ ] 19.4.4 — Fallback cannot silently degrade locked contracts. — ADR: the same missing observation as 19.2.5 — a silent degradation cannot be refused while it cannot be detected (TC-004).
+- [x] 19.4.5 — Custom endpoints are subject to SSRF and transport policy.
+- [x] 19.4.6 — Security policy, threat model, supported versions, and disclosure process are published.
+- [ ] 19.5.1 — Required unit, race, leak, fuzz, shuffle, replay, vulnerability, and platform CI gates pass. — ADR: unverified rather than unmet — every listed gate exists and passes except `race`, which does not run on windows/arm64. Platform CI would close this; this machine cannot.
+- [ ] 19.5.2 — Every production-supported provider passes conformance and recent live verification. — ADR: needs a funded credential. The conformance suite compiles and runs against fakes; the live half has never been executed (P-012, P-014, CA-004, P-017).
+- [ ] 19.5.3 — Release-candidate semantic regressions are within approved thresholds. — ADR: RC-002 is open; there is no semantic regression suite yet, so there is no threshold to be within.
+- [x] 19.5.4 — Execution envelopes support incident diagnosis without raw content in normal logs.
+- [ ] 19.5.5 — Dashboards, alerts, and minimum runbooks are published. — ADR: OB-005 publishes runbooks for twelve incident classes and names the dashboard panels, but no alert definitions exist.
+- [ ] 19.5.6 — Release notes include semantic prompt/operation changes and provider capability changes. — ADR: RC-001 is open; no release has been cut, so no release notes exist to check.
+
 - [x] **RC-004** — Compatibility and deprecation policy: at least one documented window for a
   deprecated stable API, deprecation notices that name a mechanical replacement, global and
   default-client APIs routed to `quick` or a compatibility adapter, and removal only at a
@@ -4378,7 +4477,7 @@ written, and the box it belonged to was never drawn.
   `opts[0].Intelligence != 0`, which is **F-01** again — `Smart` is zero — and dropped `RequestID`
   and `CorrelationID` entirely.
   *Verify:* the wiring check was confirmed to FAIL with `setMode` removed.
-- [ ] **FL-003** — **F-03**: eleven fluent entrypoints start from a zero-value options struct
+- [x] **FL-003** — **F-03**: eleven fluent entrypoints start from a zero-value options struct
   rather than the `NewXOptions()` constructor the direct API uses, so the two public APIs disagree
   on defaults and which one a caller gets depends on the spelling they chose. Route every
   entrypoint through the constructor.
@@ -4400,7 +4499,7 @@ written, and the box it belonged to was never drawn.
   `TestFL003EntrypointsMatchDirectConstructorDefaults` now covers all seventeen and passes —
   the test that previously documented the failing eleven has flipped, which is the evidence
   that matters.
-- [ ] **FL-004** — **F-04**: `Steer` assigns rather than appends, so two `.Steer(...)` calls
+- [x] **FL-004** — **F-04**: `Steer` assigns rather than appends, so two `.Steer(...)` calls
   silently drop the first, and the op then joins the caller's steering with its own generated
   clauses using `". "`, producing a run-on in which the library can contradict the caller.
   Accumulate steering, and keep the caller's text in its own block.

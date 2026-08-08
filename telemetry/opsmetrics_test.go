@@ -130,6 +130,86 @@ func TestRecordBatchMetricsComplianceRatioMatchesInput(t *testing.T) {
 	}
 }
 
+func TestRecordBatchMetricsOmissionsTotalMatchesInput(t *testing.T) {
+	enableMetrics(t)
+
+	m := types.BatchMetrics{Total: 5, Succeeded: 4, Failed: 1, Omissions: 2, AtomicFallbacks: 1}
+	RecordBatchMetrics("extract/v1", "mdsp_recover", m)
+
+	snap, ok := GetMetricSnapshot("schemaflux_omissions_total", map[string]string{
+		"operation": "extract/v1", "shape": "mdsp_recover",
+	})
+	if !ok {
+		t.Fatal("no schemaflux_omissions_total snapshot recorded")
+	}
+	if snap.LastValue != 2 {
+		t.Errorf("LastValue = %v, want 2", snap.LastValue)
+	}
+}
+
+func TestRecordBatchMetricsOmissionsTotalEmitsZeroForARunThatNeverBatched(t *testing.T) {
+	// RunOpManyPartial's own runs report Omissions == 0 honestly (see
+	// types.BatchResult.Metrics' doc comment) -- this must still emit a
+	// zero-valued series, not skip it, so a caller graphing omissions over
+	// time sees an unbroken line rather than a gap that looks like missing
+	// data.
+	enableMetrics(t)
+
+	RecordBatchMetrics("classify/v2", "atomic_partial", types.BatchMetrics{Total: 3, Succeeded: 3})
+
+	snap, ok := GetMetricSnapshot("schemaflux_omissions_total", map[string]string{
+		"operation": "classify/v2", "shape": "atomic_partial",
+	})
+	if !ok {
+		t.Fatal("no schemaflux_omissions_total snapshot recorded for a zero-omission run")
+	}
+	if snap.LastValue != 0 {
+		t.Errorf("LastValue = %v, want 0", snap.LastValue)
+	}
+}
+
+func TestRecordBatchMetricsCostPerAcceptedItemEmitsTheGuardedNumber(t *testing.T) {
+	enableMetrics(t)
+
+	m := types.BatchMetrics{
+		Total: 4, Succeeded: 2, Failed: 2,
+		CostPriced: true, Currency: "USD", CostQuality: types.PricingExact,
+		AcceptedCost: 2.0, FailedCost: 2.0, CostPerAcceptedItem: 1.0,
+	}
+	RecordBatchMetrics("summarize/v1", "mdsp_recover", m)
+
+	snap, ok := GetMetricSnapshot("schemaflux_cost_per_accepted_item", map[string]string{
+		"operation": "summarize/v1", "shape": "mdsp_recover", "currency": "USD",
+	})
+	if !ok {
+		t.Fatal("no schemaflux_cost_per_accepted_item snapshot recorded")
+	}
+	if snap.LastValue != 1.0 {
+		t.Errorf("LastValue = %v, want 1.0 -- cost per ACCEPTED item, not per item sent", snap.LastValue)
+	}
+}
+
+func TestRecordBatchMetricsCostPerAcceptedItemUnknownEmitsNothing(t *testing.T) {
+	// PL-013's own trap: a batch can be priced overall (CostPriced true, a
+	// failed item's call was still billed) while CostQuality stays
+	// PricingUnknown because nothing succeeded to price per-item. That must
+	// not produce a confident 0.0 series.
+	enableMetrics(t)
+
+	m := types.BatchMetrics{
+		Total: 2, Failed: 2,
+		CostPriced: true, Currency: "USD", CostQuality: types.PricingUnknown,
+		FailedCost: 1.0,
+	}
+	RecordBatchMetrics("extract/v1", "atomic_partial", m)
+
+	for _, s := range SnapshotMetrics() {
+		if s.Name == "schemaflux_cost_per_accepted_item" {
+			t.Errorf("a batch with zero priced accepted items must not emit schemaflux_cost_per_accepted_item, got snapshot %+v", s)
+		}
+	}
+}
+
 func TestRecordBatchMetricsDisabledWhenMetricsAreOff(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)

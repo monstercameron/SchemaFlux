@@ -145,18 +145,25 @@ jobs:
         run: python3 scripts/deprecation_policy.py --check
 
   # RC-003. §19 of to-production.md is the v1.0.0 acceptance checklist; this
-  # is the parser and drift check for the ledger TODOS.md is meant to carry
-  # (see `python3 scripts/acceptance_checklist.py --explain`). It is not
-  # required yet -- the ledger does not exist -- so this job runs the
-  # self-test only, which is the part proven to work regardless of whether
-  # the ledger has been added.
+  # is the parser and drift check for the ledger TODOS.md now carries. The
+  # ledger exists, so --check is a real gate rather than a job that would be
+  # permanently red -- which is why it was self-test-only until now: a gate
+  # that always fails is a gate people learn to scroll past.
+  #
+  # What it catches is drift in both directions: a criterion added to §19 with
+  # no ledger line, a ledger line whose wording has gone stale against the
+  # specification, an unchecked box with no stated reason, and an ID that no
+  # longer exists. It does NOT check whether a ticked box is *true* -- nothing
+  # can -- so ticking one remains a claim somebody has to stand behind.
   acceptance-checklist:
-    name: acceptance checklist (self-test only, no ledger yet)
+    name: acceptance checklist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Checker self-test
         run: python3 scripts/acceptance_checklist.py --self-test
+      - name: Ledger matches the specification
+        run: python3 scripts/acceptance_checklist.py --check
 
   # The review is the input to TODOS.md, and that relationship is only worth
   # anything if it is checkable. TR-001.
@@ -185,6 +192,17 @@ jobs:
           fetch-tags: true
       - name: No tag ahead of the work it claims
         run: python3 scripts/release_gate.py --check
+
+      # RC-001. Generated, not transcribed: the sections come from the API
+      # surface snapshot, the golden prompts, the deprecation catalogue, and
+      # the section 19 ledger, so they cannot drift from the facts they
+      # describe. Run without --check here because no tag exists yet and the
+      # semantic benchmark section is legitimately unavailable until RC-002
+      # lands. At release time it is `--check`, which refuses to emit notes
+      # with a section it could not compute.
+      - name: Release notes assemble from evidence
+        run: |
+          python3 scripts/release_notes.py --since "$(git rev-list --max-parents=0 HEAD | tail -1)"
 
   smarttodo:
     name: smarttodo module

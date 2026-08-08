@@ -481,6 +481,68 @@ func TestDefaultPolicyForThreshold(t *testing.T) {
 	}
 }
 
+// --- PL-013: addCost carries Quality/PricingSource forward, not just
+// Priced/TotalCost, so a retried item's summed CostInfo never ends up
+// Priced == true with an unrecognized zero-value Quality -- a state a
+// caller's Cost.Quality.Known() check would misread.
+
+func TestAddCostCarriesQualityAndPricingSourceFromThePricedSide(t *testing.T) {
+	prior := types.CostInfo{Priced: true, Currency: "USD", TotalCost: 0.25, Quality: types.PricingExact, PricingSource: "gpt-4"}
+	retry := types.CostInfo{Priced: true, Currency: "USD", TotalCost: 0.25, Quality: types.PricingExact, PricingSource: "gpt-4"}
+
+	sum := addCost(prior, retry)
+
+	if sum.TotalCost != 0.5 {
+		t.Fatalf("TotalCost = %v, want 0.5", sum.TotalCost)
+	}
+	if !sum.Priced {
+		t.Fatal("Priced = false summing two priced CostInfo values")
+	}
+	if sum.Quality != types.PricingExact {
+		t.Fatalf("Quality = %q, want PricingExact -- summing two priced attempts must not reset it to the zero value", sum.Quality)
+	}
+	if sum.PricingSource != "gpt-4" {
+		t.Fatalf("PricingSource = %q, want %q", sum.PricingSource, "gpt-4")
+	}
+}
+
+func TestAddCostOnePricedSideCarriesThatSidesQualityForward(t *testing.T) {
+	// The shape a retry pass actually produces: a first attempt that never
+	// returned a priced usage record (a call that errored before any body
+	// came back -- outcomeFrom's own doc comment) summed with a recovering
+	// attempt that did.
+	unpriced := types.CostInfo{}
+	priced := types.CostInfo{Priced: true, Currency: "USD", TotalCost: 0.20, Quality: types.PricingEstimated, PricingSource: "fake-model"}
+
+	sum := addCost(unpriced, priced)
+	if !sum.Priced || sum.TotalCost != 0.20 {
+		t.Fatalf("sum = %+v, want Priced true and TotalCost 0.20", sum)
+	}
+	if sum.Quality != types.PricingEstimated {
+		t.Fatalf("Quality = %q, want PricingEstimated, carried from the priced side", sum.Quality)
+	}
+	if sum.PricingSource != "fake-model" {
+		t.Fatalf("PricingSource = %q, want %q", sum.PricingSource, "fake-model")
+	}
+
+	// Order must not matter: the priced side's Quality wins whichever
+	// argument position it is in.
+	sum2 := addCost(priced, unpriced)
+	if sum2.Quality != types.PricingEstimated || sum2.PricingSource != "fake-model" {
+		t.Fatalf("addCost(priced, unpriced) = %+v, want the same priced-side Quality/PricingSource regardless of argument order", sum2)
+	}
+}
+
+func TestAddCostBothUnpricedReturnsZeroValueNotAFabricatedPricedResult(t *testing.T) {
+	sum := addCost(types.CostInfo{}, types.CostInfo{})
+	if sum.Priced {
+		t.Fatal("Priced = true summing two unpriced CostInfo values")
+	}
+	if sum.Quality != "" {
+		t.Fatalf("Quality = %q, want the zero value for a wholly unpriced sum", sum.Quality)
+	}
+}
+
 func TestBatchPolicyStringNamesEveryPolicy(t *testing.T) {
 	cases := map[types.BatchPolicy]string{
 		types.PolicyUnspecified:      "unspecified",

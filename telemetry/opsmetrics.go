@@ -4,10 +4,10 @@ import "github.com/monstercameron/schemaflux/internal/types"
 
 // OB-002: the metrics catalog per docs/engineering/plans/to-production.md
 // §15.2, for the slice PL-013 unblocked -- item outcomes, batch size, batch
-// compliance ratio, repairs, atomic fallbacks, and cost -- all read from
-// types.BatchMetrics (internal/types/batchresult.go), the same per-item
-// accounting PL-008/PL-009 already keep, rather than a second accounting
-// pass computed here.
+// compliance ratio, repairs, atomic fallbacks, omissions, and cost (including
+// cost per accepted item) -- all read from types.BatchMetrics
+// (internal/types/batchresult.go), the same per-item accounting PL-008/
+// PL-009 already keep, rather than a second accounting pass computed here.
 //
 // §15.1's rule is the one this file exists to honor: "Item IDs and request
 // IDs may be attributes only when cardinality and privacy policies permit.
@@ -22,9 +22,21 @@ import "github.com/monstercameron/schemaflux/internal/types"
 //
 // What this delivers, against §15.2's table: schemaflux_items_total,
 // schemaflux_batch_size, schemaflux_batch_compliance_ratio,
-// schemaflux_repairs_total, schemaflux_atomic_fallback_total, and
-// schemaflux_cost_total, plus schemaflux_plan_nodes from a Preflight plan
-// before any call is made.
+// schemaflux_repairs_total, schemaflux_atomic_fallback_total,
+// schemaflux_omissions_total, schemaflux_cost_total, and
+// schemaflux_cost_per_accepted_item, plus schemaflux_plan_nodes from a
+// Preflight plan before any call is made.
+//
+// schemaflux_omissions_total and schemaflux_cost_per_accepted_item are
+// PL-013's own two named numbers that were missing from this file even after
+// the rest of the catalog above shipped: omissions is right there on
+// types.BatchMetrics (an item no first MDSP pass resolved) and was simply
+// never wired to a series, and cost-per-accepted-item -- PL-013's "the number
+// that actually says whether a batch was worth running" -- was only ever
+// reconstructable by a caller dividing two other series by hand. Both follow
+// the same unpriced rule as schemaflux_cost_total below: an unpriced or
+// all-failed run emits no schemaflux_cost_per_accepted_item series, never a
+// confident zero.
 //
 // What this does not: schemaflux_requests_total/_duration_seconds (a
 // logical-request-level counter/histogram this package cannot emit from
@@ -62,6 +74,7 @@ func RecordBatchMetrics(operation, shape string, m types.BatchMetrics) {
 	RecordMetricValue("schemaflux_batch_compliance_ratio", m.ValidItemRatio, base)
 	RecordMetric("schemaflux_repairs_total", int64(m.TotalRepairs), base)
 	RecordMetric("schemaflux_atomic_fallback_total", int64(m.AtomicFallbacks), base)
+	RecordMetric("schemaflux_omissions_total", int64(m.Omissions), base)
 
 	if !m.CostPriced {
 		// PR-002's rule, carried into metrics: an unpriced run emits nothing
@@ -75,6 +88,18 @@ func RecordBatchMetrics(operation, shape string, m types.BatchMetrics) {
 	}
 	if m.FailedCost != 0 || m.Failed > 0 {
 		RecordMetricValue("schemaflux_cost_total", m.FailedCost, withTag(costTags, "quality", "failed"))
+	}
+
+	// schemaflux_cost_per_accepted_item is guarded a second time, past
+	// m.CostPriced: a batch can be priced overall (a failed item's call was
+	// still billed) while having zero succeeded, priced items to divide into
+	// AcceptedCost. Metrics() leaves CostQuality at PricingUnknown for
+	// exactly that case (batchresult.go) as well as the fully-unpriced one,
+	// so checking it here is the one condition that covers both -- and that
+	// zero must not become a series either way; it is unset, not a batch
+	// that cost nothing per item.
+	if m.CostQuality != types.PricingUnknown {
+		RecordMetricValue("schemaflux_cost_per_accepted_item", m.CostPerAcceptedItem, costTags)
 	}
 }
 
