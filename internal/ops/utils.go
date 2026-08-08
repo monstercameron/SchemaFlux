@@ -117,8 +117,12 @@ func describeType(targetType reflect.Type, seen map[reflect.Type]bool, depth int
 				}
 			}
 
+			// One resolution for both the schema the model sees and the
+			// validation Strict applies. They read the same function, so they
+			// cannot disagree about which fields are required -- which they
+			// would have, the moment one of them learned about the tag first.
 			requiredStr := ""
-			if !hasJSONOption(tag, "omitempty") {
+			if IsRequired(field) {
 				requiredStr = " (required)"
 			}
 
@@ -289,8 +293,12 @@ func BuildGenerateStringPrompt(mode types.Mode) string {
 
 // ValidateExtractedData validates extracted data meets requirements
 // ValidateExtractedData is what Strict mode enforces. It checks that every
-// required field — every exported field without `omitempty` — was actually
-// populated, at every level of the structure.
+// required field was actually populated, at every level of the structure.
+//
+// Which fields those are is FieldRequiredness's answer: an explicit
+// `schemaflux:"required"` or `schemaflux:"optional"` tag, then the field's type
+// (a pointer can be nil, which is how Go spells "may be absent"), then
+// `omitempty` as the legacy inference.
 //
 // It used to take a threshold it never read and check only the top level, so
 // Strict() on a struct with a nested address whose every field came back empty
@@ -300,7 +308,7 @@ func BuildGenerateStringPrompt(mode types.Mode) string {
 // A field is "populated" if it is not the zero value of its type. That is a
 // blunt rule and it is the honest one available: a model that returns 0 for an
 // int it could not determine is indistinguishable from one that determined 0.
-// Mark such fields `omitempty` to say they are optional.
+// Mark such fields `schemaflux:"optional"` to say so, or make them pointers.
 func ValidateExtractedData(data any) error {
 	if data == nil {
 		return fmt.Errorf("data cannot be nil")
@@ -359,7 +367,7 @@ func validateRequiredFields(value reflect.Value, path string, depth int) error {
 			}
 
 			fieldValue := value.Field(i)
-			required := !hasJSONOption(tag, "omitempty")
+			required := IsRequired(field)
 
 			if required && fieldValue.IsZero() {
 				return fmt.Errorf("required field %s is empty", fieldPath)

@@ -155,7 +155,13 @@ func collectStructProperties(structType reflect.Type, seen map[reflect.Type]bool
 
 		// Strict mode requires every property to appear in "required", so an
 		// optional field is expressed as a union with null instead.
-		if hasJSONOption(tag, "omitempty") {
+		//
+		// Optionality comes from the same resolver the prompt schema and the
+		// validator use, so the JSON Schema sent to the provider says the same
+		// thing as the prose schema in the prompt and the check applied to the
+		// answer. Three descriptions of one contract that could disagree is
+		// three chances to disagree.
+		if !IsRequired(field) {
 			fieldSchema = nullable(fieldSchema)
 		}
 

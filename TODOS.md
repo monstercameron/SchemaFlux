@@ -1015,7 +1015,7 @@ tests.
   a schema that changes without changing its hash silently invalidates all four. An
   anonymous type gets a deterministic content-derived name and a warning that persisting
   results against one is a bad idea.
-- [ ] **S-003** — Express requiredness explicitly rather than inferring it from the absence of
+- [x] **S-003** — Express requiredness explicitly rather than inferring it from the absence of
   `omitempty` (`utils.go:42-47`), which is a serialization directive, not a validation one.
   Closes **D-03**.
   **Revised (TRU-06):** requiredness is only half of it — Go's zero value cannot say whether
@@ -1025,6 +1025,26 @@ tests.
   `FieldPresence` map keyed by JSON pointer) and documenting the others.
   *Verify (added):* an explicit `0`, `false`, or `""` satisfies a required field; an absent
   one does not; the two are distinguishable in the result.
+  **Done for the requiredness half; the presence half stays open.**
+  `FieldRequiredness` resolves in three steps: an explicit `schemaflux:"required"` or
+  `schemaflux:"optional"` tag; then the type, because a pointer can be nil and that is how Go
+  spells "may be absent"; then `omitempty`, kept as the legacy inference so no existing type
+  changes behaviour.
+  The conflation it removes cut both ways: a caller who wrote `json:"middle_name,omitempty"`
+  to keep their JSON tidy had silently made the field optional to `Strict`, and a caller who
+  wanted an optional field and did not know the convention got a required one.
+  **All three descriptions of the contract read the same resolver** — the prose schema in the
+  prompt, the JSON Schema sent to the provider, and the validation applied to the answer.
+  Three descriptions that can disagree is three chances to.
+  *Verify:* `internal/ops/requiredness_test.go` — 9 resolution cases including tag-beats-
+  omitempty and tag-beats-pointer; `TestTheSchemaAndTheValidatorAgree`, which checks the
+  prompt schema and the validator field for field; and `TestTheJSONSchemaAgreesAboutOptionality`.
+  **Not closed by this:** distinguishing *missing* from *explicitly null* from *zero*. The
+  validator still reads "populated" as "not the zero value", which cannot tell a model that
+  returned 0 because it could not determine a value from one that determined 0. That is the
+  Revised note's `Optional[T]` work — the type exists (**A-005**) and threading it through
+  the decoder is where it lands.
+
 - [x] **S-004** — Make `Strict()` mean something: with strict schema enforcement plus declared
   requiredness, replace `ValidateExtractedData` — which takes a `threshold` and never reads
   it, checking only non-nil (`utils.go:180-198`). Closes **D-05**.
