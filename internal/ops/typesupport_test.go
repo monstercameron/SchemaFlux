@@ -1,5 +1,10 @@
 package ops
 
+// The unexported fields here are the subject: a struct with none of them
+// exported is opaque to the schema, and a struct with some is not. They exist
+// to be unused.
+//lint:file-ignore U1000 unexported fields are the case under test
+
 import (
 	"encoding/json"
 	"reflect"
