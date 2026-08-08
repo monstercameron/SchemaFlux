@@ -139,10 +139,21 @@ func TestIntegrationUsageAndCostReachTheCostRecord(t *testing.T) {
 	if record.TokenUsage.ReasoningTokens != 12 {
 		t.Errorf("ReasoningTokens = %d, want 12", record.TokenUsage.ReasoningTokens)
 	}
-	// gpt-5.6-luna has no published rates yet, so the record must say so
-	// rather than reporting a confident $0.00.
-	if record.Cost.Priced {
-		t.Error("gpt-5.6-luna has no rates; the record must report Priced=false")
+	// The record has to tell the truth about whether it could price the call.
+	//
+	// This asserted Priced=false, which was correct while gpt-5.6-luna had no
+	// published rates: reporting a confident $0.00 for an unpriced model is a
+	// different claim from "unknown", and a false one. Luna has real rates now
+	// ($0.20/$1.20 per 1M), so the honest answer inverted and this asserts the
+	// same property from the other side -- a priced model must produce a
+	// positive figure rather than a silent zero, because a spend ceiling adds
+	// these up and a zero bounds nothing.
+	if !record.Cost.Priced {
+		t.Error("gpt-5.6-luna has published rates; the record must report Priced=true")
+	}
+	if record.Cost.TotalCost <= 0 {
+		t.Errorf("TotalCost = %v for a priced call; a ceiling summing these would never trip",
+			record.Cost.TotalCost)
 	}
 }
 

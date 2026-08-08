@@ -173,8 +173,21 @@ func TestSnapshotsPriceFromTheBaseAndVersionBumpsDoNot(t *testing.T) {
 			snapshot.PricePerPromptToken, base.PricePerPromptToken)
 	}
 
-	if _, ok := lookupPricingModel("gpt-5.6-luna"); ok {
-		t.Error("gpt-5.6-luna resolved to gpt-5's rates; a version bump is a different model")
+	// gpt-5.6-luna begins with "gpt-5" and is a different model. This used to
+	// be proven by its absence from the table, which stopped proving anything
+	// the moment it acquired real published rates -- absence and correctness
+	// had been the same observation, and only one of them was the point.
+	//
+	// Asserted directly now: it resolves, and to its OWN rates rather than the
+	// base model's. A prefix ladder that walked "gpt-5.6-luna" back to "gpt-5"
+	// would price it at six times its input rate and ten times its output, and
+	// that is the failure this case exists for.
+	luna, ok := lookupPricingModel("gpt-5.6-luna")
+	if !ok {
+		t.Error("gpt-5.6-luna did not resolve at all; it has its own entry")
+	} else if luna.PricePerPromptToken == base.PricePerPromptToken {
+		t.Errorf("gpt-5.6-luna priced at gpt-5's rate (%v); a version bump is a different model",
+			luna.PricePerPromptToken)
 	}
 }
 

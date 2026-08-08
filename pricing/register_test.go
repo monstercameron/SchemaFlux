@@ -266,13 +266,18 @@ func TestRegistrationIsSafeBesideConcurrentPricing(t *testing.T) {
 	}
 }
 
-// The 5.6 family is the library's own default, and it is deliberately absent
-// from the built-in table: nobody has published its rates here, and inventing
-// them would report a confident figure that is wrong. Unpriced is the honest
-// answer, and this pins that it stays honest rather than quietly acquiring a
-// guess.
+// A model with no published rates reports Unpriced rather than a guess.
+//
+// This covered the whole 5.6 family while none of it was priced. Luna has real
+// published rates now ($0.20/$1.20 per 1M after the July 2026 cut) and is
+// asserted as priced below; Sol and Terra stay here because the figures found
+// for them were input prices with no matching output price, and half a price is
+// not a price.
+//
+// Updated deliberately rather than deleted, which is what the previous version
+// of this comment asked whoever added real rates to do.
 func TestTheDefaultModelsReportUnpricedRatherThanGuessed(t *testing.T) {
-	for _, model := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra"} {
 		t.Run(model, func(t *testing.T) {
 			cost := CalculateCost(&types.TokenUsage{PromptTokens: 1000, TotalTokens: 1000}, model, "openai")
 			if cost != nil && cost.Priced {
@@ -280,5 +285,22 @@ func TestTheDefaultModelsReportUnpricedRatherThanGuessed(t *testing.T) {
 					model, cost.TotalCost)
 			}
 		})
+	}
+}
+
+// Luna is priced, and priced as itself.
+//
+// It is ArticleFlux's default model, and a default with no rates is worse than
+// an unusual one: a spend ceiling trips on accumulated cost, so an unpriced
+// default makes the cap bound nothing at all while still appearing to be set.
+// That is the failure this pins.
+func TestLunaIsPricedAsItself(t *testing.T) {
+	cost := CalculateCost(&types.TokenUsage{PromptTokens: 1_000_000, TotalTokens: 1_000_000}, "gpt-5.6-luna", "openai")
+	if cost == nil || !cost.Priced {
+		t.Fatal("gpt-5.6-luna is unpriced; a spend ceiling over it bounds nothing")
+	}
+	// A million prompt tokens at $0.20 per million.
+	if got := cost.TotalCost; got < 0.19 || got > 0.21 {
+		t.Errorf("a million prompt tokens cost %v, want about $0.20", got)
 	}
 }

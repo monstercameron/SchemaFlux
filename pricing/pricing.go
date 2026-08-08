@@ -29,6 +29,30 @@ type PricingModel struct {
 var (
 	// Pricing data for different models (prices per 1K tokens in USD)
 	pricingModels = map[string]PricingModel{
+		// OpenAI GPT-5.6 models
+		//
+		// Luna only. Sol and Terra are real models on the same account and are
+		// deliberately absent: the published figures found for them were input
+		// prices without a matching output price, and half a price is not a
+		// price. They stay unpriced until both numbers are known, which reports
+		// them as Unpriced rather than valuing them wrongly.
+		"gpt-5.6-luna": {
+			Provider:                "openai",
+			Model:                   "gpt-5.6-luna",
+			PricePerPromptToken:     0.0002, // $0.20 per 1M tokens
+			PricePerCompletionToken: 0.0012, // $1.20 per 1M tokens
+			// Ten percent of the prompt price, which is the ratio every other
+			// OpenAI entry in this table uses and is NOT a published figure for
+			// this model -- no cached rate was listed anywhere it was checked.
+			// Stated as an inference rather than left at zero, because zero
+			// would price a cached token as free and quietly understate a bill.
+			PriceCachedToken: 0.00002,
+			Currency:         "USD",
+			// The 80% cut that took input from $1.00 to $0.20 and output from
+			// $6.00 to $1.20.
+			EffectiveDate: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+		},
+
 		// OpenAI GPT-5.4 models
 		"gpt-5.4": {
 			Provider:                "openai",
