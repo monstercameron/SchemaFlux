@@ -83,11 +83,31 @@ type OutputContract[Out any] struct {
 type BatchAlgebra[In, Out any] struct {
 	Class types.BatchClass
 
-	// Encode packs many inputs into one request body. Absent for BatchNone.
-	Encode func(items []In) (string, error)
+	// Kind is PL-006's finer taxonomy over Class: independent, subset,
+	// permutation, partition, graph, hierarchical, or sequential. Class says
+	// how much validation a batch carries; Kind says what shape that
+	// validation takes, which is what NewIDBatchAlgebra (batchprotocol.go)
+	// reads to know whether a batch's id coverage must be exact
+	// (Kind.RequiresExactCoverage) before any operation-specific check runs.
+	Kind types.AlgebraKind
 
-	// Merge unpacks one response body into as many outputs as items,
-	// preserving position so index i of the result answers item i of items.
+	// Encode renders the batch request's system and user prompt for many
+	// inputs at once. Absent for BatchNone.
+	//
+	// Revised from a single-string return: nothing called this field before
+	// PL-003 filled it in, so there was no caller to keep compatible, and a
+	// batch call needs both halves of the prompt the same way BuildPrompt
+	// does for a single item -- a batch-specific system prompt (the id
+	// protocol's rules) is not the per-item BuildPrompt's system prompt with
+	// items concatenated into the user half.
+	Encode func(items []In, opt types.OpOptions) (system, user string, err error)
+
+	// Merge decodes one response body into as many outputs as items,
+	// resolved by the invocation-local id each item was tagged with (PL-003)
+	// -- never by the response's position, which is exactly the trust an
+	// omitted, duplicated, or reordered item would break. Absent for
+	// BatchNone. NewIDBatchAlgebra builds a Merge that follows OP-101's id
+	// protocol so an operation does not hand-roll a second one.
 	Merge func(body string, items []In) ([]Out, error)
 
 	// GlobalValidate checks the batch as a whole, for BatchAggregate
@@ -142,6 +162,23 @@ func NewOp[In, Out any](op Op[In, Out]) (Op[In, Out], error) {
 		return Op[In, Out]{}, fmt.Errorf(
 			"op %s is declared stable but has no batch class; a stable operation must say how it composes across a batch (types.BatchNone if it has none)",
 			op.ID)
+	}
+
+	// PL-006: a stable operation whose batch form actually composes many
+	// inputs (Itemwise or Aggregate) must also say what shape that
+	// composition takes -- Kind -- because a generic batch runner
+	// (batchprotocol.go's NewIDBatchAlgebra, RunOpBatch) decides how to
+	// validate a response by reading Kind, and BatchNone/BatchUnspecified are
+	// the only classes with nothing to validate. This is the other half of
+	// the Revised line's build-time check: "a stable operation with no
+	// declared batch class fails a build-time check" widened to the finer
+	// taxonomy PL-006 adds on top of Class.
+	if op.Semantics.Stability == types.StabilityStable &&
+		(op.Batch.Class == types.BatchItemwise || op.Batch.Class == types.BatchAggregate) &&
+		op.Batch.Kind == types.AlgebraUnspecified {
+		return Op[In, Out]{}, fmt.Errorf(
+			"op %s is declared stable with batch class %s but no algebra kind; a stable batched operation must say how it composes (independent, subset, permutation, partition, graph, hierarchical, or sequential)",
+			op.ID, op.Batch.Class)
 	}
 	return op, nil
 }

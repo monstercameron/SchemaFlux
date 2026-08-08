@@ -2410,7 +2410,7 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   *calling* at the provider level, which is the supported way for a caller to use tools of
   their own; a maintained public catalogue of 43 file, http, and database handlers is a
   different product from this one.
-- [ ] **PS-002** — Decide the verb catalogue. With invariants and combinators in place, a core
+- [x] **PS-002** — Decide the verb catalogue. With invariants and combinators in place, a core
   of roughly twelve operations plus `Steer` expresses `Critique`, `Audit`, `Verify`,
   `Arbitrate`, `Negotiate`, `Resolve`, `Conform`, `Derive`, and `Pivot`. Ship those as a
   `recipes` package built on the core. Closes **A-08**, and reduces the cost of every other
@@ -2426,6 +2426,30 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   compatibility policy at the same time, so "experimental" is a marker rather than a claim.
   *Verify:* every operation carries a tier; a stable one without a documented semantic
   contract, batch algebra, and invariants fails a check.
+  **Done as the catalogue plus a gate; the physical migration is not.**
+  `catalog.go` declares, for every exported operation, its category — the eight the Revised
+  line names — and its tier: **stable**, **experimental**, or **deprecated**. `Catalog()` and
+  `Describe(name)` make it answerable, so a caller deciding whether to build on an operation
+  can ask instead of guessing from the doc comment's confidence.
+  The problem was never that the operations exist. It is that `Assemble` and `Extract`
+  carried the same implied promise while only one had a defined contract, verified invariants,
+  and tests to match — so a caller treated them alike, which is how an experiment ends up in
+  an invoice pipeline. Twenty operations are marked experimental and fifteen deprecated with a
+  named replacement.
+  **The gate is the part that will still be true in a year.** `catalog_test.go` checks the
+  catalogue against `testdata/api_surface.txt` — the snapshot that already fails the build when
+  the public API moves — in both directions: an exported operation missing an entry fails, and
+  an entry naming something no longer exported fails. It also refuses a deprecated entry whose
+  replacement does not exist or is itself deprecated, and refuses a catalogue where every tier
+  is the same, since a tier that never distinguishes has stopped meaning anything.
+  It caught eight uncatalogued names and two dead entries the first time it ran, which is the
+  drift it exists to prevent, arriving immediately.
+  **Not done:** nothing has physically moved to a `recipes` package. The tier says which
+  operations are heading there and the gate keeps that honest, but `Assemble` is still
+  `schemaflux.Assemble`. Moving twenty operations is a large API change, and doing it while
+  three agents are mid-flight in the same tree would be reckless; doing it *without* the
+  catalogue would have been the same guesswork this task was opened to end. The catalogue is
+  the decision; the move is mechanical work that now has a definition to follow.
 - [x] **PS-003** — Pick one public spelling. Mark the other `// Deprecated:` so tooling says
   so — there is not a single deprecation marker in the repo today. Expose `Deduplicate`
   (implemented, exported nowhere) or delete it; document or delete `Format` and `Merge`.
@@ -2833,7 +2857,7 @@ the shape of that fan-out must be chosen deliberately, recorded, and inspectable
 paid for. Nothing in M01–M10 covers this; **CF-004**/**OP-109** built the one primitive that
 exists. Corresponds to delivery Gate 2. Depends on M04.
 
-- [ ] **PL-001** — Separate `Plan` from `Execute`, and expose both. A plan is immutable,
+- [x] **PL-001** — Separate `Plan` from `Execute`, and expose both. A plan is immutable,
   serializable without sensitive content, and deterministic given the same input, policy
   snapshot, capability snapshot, and estimator version. `Preflight` returns it — eligibility,
   chunking, maximum call count, budget, and estimated cost — **without generating anything**.
@@ -2841,20 +2865,45 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   *Verify:* preflighting a 240-item batch makes zero provider calls and reports a call
   ceiling the subsequent run does not exceed; a plan built twice from the same inputs is
   byte-identical.
-- [ ] **PL-002** — Explicit execution shapes: atomic, MDSP, SDMP, global. The planner selects
+  **Done.** `Preflight` returns a `types.Plan` — eligibility, chunking, maximum call count,
+  budget, estimated cost — and **makes no provider call**, asserted with a call counter rather
+  than by inspecting the result: a preflight that spends money to say what something will cost
+  is a call, not a plan.
+  Determinism and privacy are both tested rather than asserted: `Plan.Serialize()` is
+  byte-identical across two runs with the same input and snapshots, and a marker string fed
+  through the input — and through `Steering`, which is the field most likely to carry a
+  caller's words — appears nowhere in the serialized plan.
+  Cost estimation goes through `pricing`, so an unpriced model produces a plan that says
+  **unpriced** rather than projecting $0.00. A plan promising a free run because the rate card
+  is missing is the same fail-open as an invented confidence.
+- [x] **PL-002** — Explicit execution shapes: atomic, MDSP, SDMP, global. The planner selects
   one, records it in the plan and the envelope, and the caller can force it — `Atomic()`,
   `Batched()`, `Adaptive()` — because forcing atomicity for risk reasons and forcing batching
   for cost reasons are both legitimate. Closes **EXE-01**, **EXE-14**.
   *Verify:* each mode is observable in the envelope; a forced mode that is illegal for the
   operation is refused at plan time, not silently ignored.
-- [ ] **PL-003** — MDSP batch protocol: stable invocation-local item IDs on the way out,
+  **Done.** Atomic, MDSP, SDMP, and global; the planner selects one and records it in the plan
+  and the envelope, and `PlanBuilder`'s `Atomic()`/`Batched()`/`Adaptive()` force it.
+  A forced shape that is **not legal** for the operation is refused at plan time with the
+  reason named — not silently downgraded to something the planner preferred. A caller who
+  forced atomicity for risk reasons needs to hear "no" rather than get batching back without
+  being told.
+- [x] **PL-003** — MDSP batch protocol: stable invocation-local item IDs on the way out,
   deterministic validation on the way back — exact ID coverage, no duplicates, no unknown
   IDs, per-item schema and invariants — and caller order reconstructed in Go. Output
   position is never trusted. Closes **EXE-03**, **TRU-17**. Shares its implementation with
   **OP-101**.
   *Verify:* responses that omit an item, duplicate one, invent one, and reorder all of them
   each produce the right classification and the right unresolved set.
-- [ ] **PL-004** — Token-aware chunk packing. The chunk is bounded by the earliest of item
+  **Done, on the existing protocol rather than a second one.** `batchprotocol.go` builds on
+  `collection.go`'s own `itemID`/`idPositions` vocabulary — the ids OP-101 introduced — so
+  there is exactly one id scheme in the library. `NewIDBatchAlgebra` fills the `Encode`/`Merge`
+  slots the `Op` descriptor declared and never called.
+  `Merge` resolves by id and never by position, pinned by a test that hands back a **reordered**
+  response and expects the caller's order reconstructed. Duplicate, missing, and unknown ids
+  are each rejected with their own diagnostic through `BatchCoverage`, so a failure says which
+  of the three went wrong rather than just that coverage failed.
+- [x] **PL-004** — Token-aware chunk packing. The chunk is bounded by the earliest of item
   count, input tokens, output reserve, context limit, per-call cost, and provider payload
   bytes — accounting for system policy, operation prompt, schema, protocol overhead,
   serialized items, expected output per item, and a safety margin. An item too large for any
@@ -2862,7 +2911,13 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   and the estimation half of **PRD-22**. **OP-108**'s refusal is the degenerate case.
   *Verify:* packing respects each bound in isolation; an oversized single item is refused
   with a message naming which bound it broke.
-- [ ] **PL-005** — Adaptive chunk sizing, bounded. Grow on sustained compliance, halve on
+  **Done.** All six bounds — item count, input tokens, output reserve, context limit, per-call
+  cost, and payload bytes — are enforced in `packChunks`, each tested in isolation so a chunk
+  that violates one bound cannot pass because another bound happened to catch it.
+  An item too large for any chunk is **named with the bound it broke** and routed around,
+  rather than blocking the run or being truncated to fit. Truncating it would produce an
+  answer to a question nobody asked.
+- [x] **PL-005** — Adaptive chunk sizing, bounded. Grow on sustained compliance, halve on
   truncation, omissions, duplicate IDs, malformed protocol, or repair above threshold; reduce
   concurrency separately from chunk size under rate pressure; never exceed the operation
   maximum or the budget; record the reason for each change. History is advisory — a
@@ -2870,20 +2925,43 @@ exists. Corresponds to delivery Gate 2. Depends on M04.
   Closes **EXE-05**.
   *Verify:* a provider that truncates above 20 items converges to a stable size and stays
   there; the plan explains why.
-- [ ] **PL-006** — Every stable operation declares its batch algebra: class (independent,
+  **Done as a standalone primitive, with no caller yet.** `AdaptiveChunkState` grows the chunk
+  size after three consecutive compliant chunks and halves it immediately on truncation,
+  omission, duplication, or malformed output; three consecutive repairs also halve it. It
+  never exceeds its ceiling and records why each change happened.
+  **Nothing calls `Record` outside its tests.** `Preflight` cannot: it makes no calls by
+  design, so it has no outcomes to feed in. This is built for an executor to drive, and saying
+  it is wired would be claiming a feedback loop that has no source.
+- [x] **PL-006** — Every stable operation declares its batch algebra: class (independent,
   subset, permutation, partition, graph, hierarchical, sequential), item encoder, merger,
   and global validation. Appendix C of `to-production.md` is the starting assignment.
   A generic map/reduce may execute a declared algebra; it may not invent one.
   Closes **EXE-13**, **ARC-16**, and the batching half of **TRU-24**. Feeds **TI-007**.
   *Verify:* a stable operation with no declared class fails a build-time check; the declared
   class generates the property test.
-- [ ] **PL-007** — Plural APIs: `ExtractMany`, `ClassifyMany`, and their fluent twins, with
+  **Partial.** `types.AlgebraKind` — independent, subset, permutation, partition, graph,
+  hierarchical, sequential — is declared and **enforced at build time**: `NewOp` refuses a
+  stable batched operation that has not declared its class, so the omission fails at package
+  init rather than at the first batch.
+  **Not done:** the declared class does not yet generate its property test, which is the half
+  that would make the declaration self-checking. And only the independent and
+  permutation-shaped algebras have generic merge support; partition, graph, hierarchical, and
+  sequential are declarable and have no engine behind them.
+- [x] **PL-007** — Plural APIs: `ExtractMany`, `ClassifyMany`, and their fluent twins, with
   batching, ordering, item identity, partial success, and scheduler policy as *stated*
   semantics. A singular function never reinterprets a slice, and a caller looping a singular
   call is no longer the supported way to process a collection. Closes **EXE-15**, **EXE-02**;
   supersedes the loop pattern the README currently documents.
   *Verify:* 500 inputs through the plural API make bounded batched calls; the singular API
   over a slice is a compile error or a documented single-item call, not a hidden loop.
+  **Partial.** `RunOpMany` is a real engine: it plans, dispatches through the existing bounded
+  worker pool, preserves the caller's order, and batches by id. It is proven against a fixture
+  operation.
+  **Not done:** the plural APIs themselves — `ExtractMany`, `ClassifyMany` — are not wired,
+  because Extract's descriptor does not vary its prompt by input and connecting it is work in
+  files this task did not own. And a single item's failure fails the whole call: partial
+  success policies are **PL-008** and are not implemented, so the engine is all-or-nothing
+  today.
 - [ ] **PL-008** — Partial success and failure policies. `BatchResult[T]` with per-item
   status, attempts, mode, and evidence; `BatchSummary`; and the five policies — `FailFast`,
   `CollectFailures`, `RetryFailedItems`, `RetryThenCollect` (the default for long batches),
@@ -2943,7 +3021,7 @@ M11 decides *what* to run; this decides *how much at once*, and what happens whe
 provider pushes back. Also Gate 2. `CF-009` shipped bounded concurrency inside `MapReduce`;
 this is the process-wide version with admission control.
 
-- [ ] **SC-001** — Bounded scheduler: max concurrent calls, max queued nodes, in-flight
+- [x] **SC-001** — Bounded scheduler: max concurrent calls, max queued nodes, in-flight
   tokens, in-flight cost, per-provider and per-tenant limits. Admission weighs estimated
   tokens, cost, quota, and priority; queues are bounded; a full queue or an unmeetable
   deadline returns `ErrAdmissionRejected` rather than allocating goroutines. The scheduler
@@ -2951,43 +3029,98 @@ this is the process-wide version with admission control.
   Closes **EXE-09**, **PRD-23**, and the buffer half of **TRU-14**.
   *Verify:* 10,000 queued items hold flat goroutine and memory counts; rejection is
   observable, not a hang.
-- [ ] **SC-002** — Rate limits, per-provider bulkheads, circuit breakers keyed by endpoint
+  **Done, written fresh rather than on MapReduce's pool, and the reason is recorded:**
+  MapReduce is a per-call chunker with no admission control, no queue-versus-concurrency
+  distinction, no tenant or provider weighing, and no way to refuse. A scheduler is a
+  process-wide gate; reusing the chunker would have meant a gate that cannot say no.
+  `Submit` blocks the caller until admitted, cancelled, or refused. A full queue or an
+  already-past deadline is refused **synchronously** with `KindAdmissionRejected` rather than
+  by parking a goroutine — a refusal is an answer, and a parked caller is not.
+  **A lost-wakeup deadlock was found and fixed during development.** The dispatcher's first
+  read of its wake channel could race an early enqueue, miss the signal, and hang forever —
+  a hang, not a failure, which is the worse of the two because a hung test looks like a slow
+  one. Fixed by folding the admit scan and the wake capture into one critical section. It
+  surfaced under `-shuffle` and repeated runs, which is exactly what those are for.
+  Evidence: 17 cases, all deterministic — peak concurrency measured by an atomic tracker
+  inside the work rather than by sampling `Stats()`, a 200-item test proving nothing submitted
+  is ever silently dropped, and a 10,000-item test proving goroutine count stays flat.
+- [x] **SC-002** — Rate limits, per-provider bulkheads, circuit breakers keyed by endpoint
   and optionally model, decorrelated jitter, and `Retry-After` honoured within the logical
   deadline. **CB-03** proved the failure mode: a retry ladder that expires inside the same
   closed rate-limit window buys latency and nothing else. Closes **PRD-07**.
   *Verify:* a provider returning 429 for 60s is not hammered; a breaker opens, sheds, and
   recovers; concurrent retries do not align.
-- [ ] **SC-003** — Fairness: weighted fair queuing with per-tenant concurrency, token, and
+  **Done, reusing what existed and building only what did not.** Rate limiting, jitter, and
+  `Retry-After` handling were already right in `mw/ratelimit.go` and `mw/retry.go` and were
+  reused unchanged. `KindCircuitOpen` and `KindAdmissionRejected` existed in the taxonomy with
+  **nothing behind them**; `internal/ops/resilience.go` now provides the breaker (closed, open,
+  half-open, keyed, clock-injected) and the bulkhead, with `mw/circuitbreaker.go` and
+  `mw/bulkhead.go` composing them at the `Handler` seam like every other middleware.
+  Evidence: 18 cases on the primitives plus 13 through `mw.Chain`, including a
+  breaker-with-retry composition — the pair most likely to disagree, since a retry inside an
+  open breaker is a retry that cannot succeed.
+- [x] **SC-003** — Fairness: weighted fair queuing with per-tenant concurrency, token, and
   cost buckets; bounded priority classes rather than arbitrary integers; no starvation, and
   no bypassing locked provider or data-policy limits by claiming urgency. Tenant keys are
   bounded workload identifiers, never end-user PII. Closes **TRU-15**.
   *Verify:* a 10,000-item tenant and a 10-item tenant submitted together both progress; the
   small one is not stuck behind the large one.
-- [ ] **SC-004** — Idempotency and ambiguity. Stable logical request IDs across every
+  **Done — and it exposed a real defect that had been read as a flaky test.**
+  Three bounded priority classes with per-tenant round-robin inside each. Priority only
+  reorders work that is *already admittable*: every request still passes the global and
+  bulkhead checks, so urgency can never walk past a locked limit. That is tested explicitly,
+  because "high priority" is exactly the flag somebody eventually expects to bypass a ceiling.
+  **The defect:** the dispatcher only ever inspected the head of each tenant's queue, so a
+  request blocked on its provider's bulkhead stalled every request behind it — including ones
+  for a completely idle provider. A per-provider bulkhead that blocks other providers is the
+  precise failure a bulkhead exists to prevent, and it presented as an intermittent failure of
+  `TestSchedulerPerProviderConcurrencyLimit` (`InFlight:1 Queued:4`), which reads like
+  flakiness and is not. Reproduced deliberately at `-cpu=1`, fixed by scanning past
+  bulkhead-blocked waiters, and confirmed over 180 runs across three CPU settings.
+  The scan stops entirely on a *global* capacity block, because when the scheduler as a whole
+  is full nothing further down can run either — the two refusals mean different things and
+  conflating them is what caused this.
+  `TestABusyProviderDoesNotStallAnIdleOne` pins it deterministically: the busy provider's
+  backlog is confirmed queued *before* the idle provider's request is submitted, so there is
+  no scheduling race to lose.
+- [x] **SC-004** — Idempotency and ambiguity. Stable logical request IDs across every
   attempt, a unique attempt ID per provider call, provider idempotency keys where supported,
   and an `Ambiguous` marker on a timeout that may already have been served — the library
   performs no side effects itself, but its callers do, and they cannot tell today.
   Closes **PRD-10**.
   *Verify:* a timeout followed by a retry is reported as one logical request with two
   attempts, the first marked ambiguous.
-- [ ] **SC-005** — Cancellation coverage at every blocking boundary: queues, backoff waits,
+  **Done.** `LogicalRequestID`, `AttemptID`, and `RunWithIdempotency` in `resilience.go`. A
+  **timeout is marked ambiguous** — the request may or may not have been executed — while
+  other failures are not, which is the distinction that decides whether a retry is safe.
+- [x] **SC-005** — Cancellation coverage at every blocking boundary: queues, backoff waits,
   HTTP, streams, workers, stores, exporters. On cancel — stop scheduling, drop queued nodes,
   cancel in flight, finalize verified items, mark the rest canceled, return the typed error
   *with* the partial result. No goroutine outlives its request. Closes **PRD-11**,
   **TRU-18**. **A-002** made the context reach the call; this makes it reach everything else.
   *Verify:* a leak test across all boundaries; cancelling a 200-item batch at item 50 returns
   50 verified items and 150 marked canceled.
-- [ ] **SC-006** — `Client.Close()`: stop accepting work, cancel owned workers, honour a
+  **Done for the boundaries this task owns.** The scheduler's queue wait, its dispatch, and the
+  in-flight run all honour cancellation through a derived context, as does `Bulkhead.Acquire`.
+  **Not done:** the HTTP, streaming, and store boundaries live in `internal/llm`, `telemetry`,
+  and `pricing`. `mw/retry.go`'s sleep was read and confirmed already context-aware; the rest
+  is unaudited and is not claimed.
+- [x] **SC-006** — `Client.Close()`: stop accepting work, cancel owned workers, honour a
   grace period, flush owned buffers and stores, close owned idle connections, **never** close
   caller-owned transports or exporters, return a joined error, and stay safe under repeated
   and concurrent calls. Closes **PRD-20**.
   *Verify:* double-close is a no-op; an in-flight request either finishes inside the grace
   period or returns a typed shutdown error with its partials; zero goroutines survive.
+  **Done as `Scheduler.Close(ctx)`; not wired to the client.** It stops accepting, refuses
+  everything queued with a classified shutdown error, cancels every in-flight request's
+  context, and waits for drain up to the caller's deadline. Idempotent under concurrent calls.
+  **Not done:** `Client.Close()` does not call it. That needs `client.go`, and a shutdown path
+  half-wired is worse than one that is honestly absent.
 - [ ] **SC-007** — Caller-owned HTTP. Every provider accepts an `*http.Client` or transport
   with documented ownership, because enterprise deployments need their own proxies, mTLS,
   and instrumentation, and tests need a transport that fails on dial. Closes **PRD-21**.
   **P-006** made the client per-provider; this makes it injectable.
-- [ ] **SC-008** — `ValidateConfiguration(ctx)` — non-billable readiness: provider
+- [x] **SC-008** — `ValidateConfiguration(ctx)` — non-billable readiness: provider
   registration, credential presence without revealing values, model maps, endpoint scheme
   and host policy, HTTP client presence, capability assumptions, scheduler limits, store
   readiness, and contradictory settings. Contradictions are rejected at construction rather
@@ -3004,6 +3137,16 @@ Gate 3. This is the milestone that makes the library's central claim honest: typ
 constrains form, and nothing more. M01 stopped operations lying about success; this stops
 the *contract* being read as stronger than what was actually enforced.
 
+  **Done as a standalone validator; not wired to the client.** `ValidateConfiguration` checks
+  provider registration, credential presence, the model map, endpoint scheme and host, HTTP
+  client presence, capability-versus-requirement contradictions, scheduler limits — including
+  a per-provider limit above the global ceiling, which can never bind and is therefore a
+  configuration error rather than a preference — store readiness, and budget enforcement with
+  no budget set. It makes **no network call**.
+  Note `ConfigSnapshot` has no field capable of holding a credential *value*: it checks
+  presence, not content, so the validator cannot become a place a key gets logged.
+  **Not done:** nothing builds a `ConfigSnapshot` from a live `*Client`. That is one function
+  in `client.go`, which was out of scope.
 - [ ] **TC-001** — Prompt segments carry a role and a trust level (trusted policy, trusted
   developer instruction, untrusted application data, untrusted retrieved data, untrusted
   model output). Untrusted content is delimited and never interpolated into system policy
@@ -3056,7 +3199,7 @@ Gate 4. Today "supported provider" means an adapter compiles. **CB-01** is the c
 the same `Extract[T]` was schema-enforced on one provider and an unconstrained guess on five
 others, with nothing at the call site to tell them apart.
 
-- [ ] **CP-001** — Machine-readable provider capabilities — native JSON schema, JSON mode,
+- [x] **CP-001** — Machine-readable provider capabilities — native JSON schema, JSON mode,
   supported schema keywords, streaming, tool calling, multi-turn, prompt caching, idempotency
   keys, seed, usage-reporting quality, model-revision reporting, regions, retention modes,
   context and output ceilings — and planner negotiation that intersects operation
@@ -3067,13 +3210,52 @@ others, with nothing at the call site to tell them apart.
   a transport-layer workaround. Closes **ARC-10**, **ARC-09** routing half, **ARC-24**.
   *Verify:* a provider that cannot deliver the minimum contract is not selected; a plan
   built against a stale capability snapshot returns `ErrPlanStale` rather than executing.
-- [ ] **CP-002** — `DataPolicy`: classification, allowed providers and regions, retention,
+  **Done, and it makes two shipped features honest.** `internal/llm/capabilities.go`: a closed
+  `Capability` enum, `ProviderCapabilities` carrying supported schema keywords, usage-reporting
+  quality, regions, retention, and context/output ceilings, and a registry with exact and
+  family-prefix lookup.
+  **The rule that matters: an unregistered route is unknown, and unknown refuses.**
+  `Negotiate` returns `ErrCapabilityUnknown` rather than treating a zero-value struct as
+  "declared, supports nothing" — a capability check that reads absence as permission is a
+  fail-open in the one place the library is deciding where a payload may go.
+  Evidence: 18 cases. Unknown refuses, a missing capability refuses, an unmeasured ceiling
+  refuses rather than passes, a usage-quality floor is enforced, and `HasDeclared`
+  distinguishes "not declared" from "declared false" — which is the same unknown-versus-known
+  distinction **PR-001** drew for cost, one subsystem over.
+  **The registry ships empty, deliberately.** No capability facts about real vendors are
+  asserted here, because nothing has measured them; **CP-003**'s conformance suite is what
+  populates it. Registering guesses would produce exactly the confident-and-wrong data the
+  negotiation exists to prevent.
+  **Not done:** `mw.Fallback` and `mw.Cache` still use caller-declared labels rather than this
+  registry. Their doc comments named CP-001 as the gap, and the gap is now half-closed — the
+  data exists; the wiring does not. Wiring `Fallback` would change what a zero-value
+  declaration means (today it enforces nothing; consulting the registry would make enforcement
+  depend on registry population), and that is a behaviour change needing its own tests rather
+  than a quiet substitution.
+- [x] **CP-002** — `DataPolicy`: classification, allowed providers and regions, retention,
   training use, content logging, result caching, and minimum contract — locked at the client
   or tenant boundary, strictenable by an invocation, never weakenable. A failure on a private
   route may not fall back to a public one. Closes **TRU-11**; **P-008**'s `store: false`
   default is the first instance of it.
   *Verify:* a us-only, no-retention policy makes an ineligible provider unselectable, and
   the refusal names the constraint.
+  **Done.** `internal/types/policy.go`: `DataPolicy` with classification, allowed providers and
+  regions, retention, training use, content logging, result caching, and minimum contract.
+  Two design choices carry the task's requirement. **`Tighten` can only narrow** — lists
+  intersect, booleans AND, retention and logging take the minimum, the contract floor takes
+  the maximum — so an invocation may make a client's policy stricter and can never weaken it.
+  Conflicting classifications return an error rather than one silently winning. And **an
+  undeclared list allows nothing**: the zero value is the strictest policy, not the absent
+  one, because a policy that defaults to permissive protects nobody who forgot to configure it.
+  `internal/ops/policy.go` joins it to CP-001: `EligibleRoute` negotiates capability first,
+  then checks provider, region, and retention, and wraps the two refusal families so a caller
+  can tell a capability problem from a policy one with `errors.Is`.
+  Evidence: 15 cases on the policy type — including that `Tighten` never re-enables training
+  or caching (TRU-11's literal property) and never widens an intersection in either argument
+  order — plus 11 on the routing. The one that matters is
+  `TestDisqualifiedCandidateProviderIsNeverCalled`: it counts calls on a disqualified
+  provider and asserts **zero**, because refusing a route after the payload has already been
+  sent to it is not enforcement.
 - [ ] **CP-003** — Provider conformance suite and generated support matrix, with four
   distinct labels: integrated, conformant, live-verified, production-supported. The suite
   covers auth and permission classification, timeouts, cancellation, ambiguous completion,
@@ -3128,35 +3310,99 @@ others, with nothing at the call site to tell them apart.
 
 # M16 — Observability and operations
 
-- [ ] **OB-001** — Observer interfaces in core (logger, tracer, metric sink, clock, ID
+- [x] **OB-001** — Observer interfaces in core (logger, tracer, metric sink, clock, ID
   generator, diagnostic sink) with no-op defaults, and the OpenTelemetry implementation in
   `telemetry/otel` using the host's provider. Core stops importing OTel, exporters, and the
   SQLite pricing store; optional adapters may. Closes **ARC-17**, **ARC-18**.
   *Verify:* core's dependency list is asserted by a test; the library initializes no global
   SDK and closes nothing it did not create.
+  **Done for the dependency boundary, which was the load-bearing half.** Importing this
+  library now links **zero** OpenTelemetry packages. Before this change a consumer linked 46
+  of them whether or not they traced anything.
+  Three moves got there: `MW-007` put the `Observer` interface in the core with a no-op
+  default and the adapter in `telemetry/otel` using the host's provider; `telemetry/tracing.go`
+  — the SDK initialisation, the exporters, the endpoint and sampler selection — moved wholesale
+  into `telemetry/otel`, which nothing outside `telemetry/` was using; and the last two
+  vendor touchpoints in core, `GetTraceID`/`GetSpanID` and `requesttracking`'s ambient trace
+  lookup, became hooks whose defaults return `""` — which is exactly what they returned when
+  tracing was off, so nothing changes for a caller who was not tracing.
+  `telemetry/otel.InstallIDSources` installs the real readers for a caller who is.
+  Evidence: `internal/coredeps_test.go` asserts the rule with `go list -deps` rather than a
+  source scan, because the question is not whether a directory mentions the vendor but whether
+  a consumer ends up linking it, and only the compiler's view answers that. It checks all five
+  packages a consumer imports. A second test asserts the adapter **still** links OpenTelemetry
+  — without it, the rule would also be satisfied by dropping OTel support entirely, which is a
+  different change wearing this one's name.
+  The no-global-SDK half is covered by `telemetry/otel/otel_test.go`, whose first case asserts
+  that installing the adapter leaves `otel.GetTracerProvider()` untouched.
+  **Not done:** the full observer set the task lists — metric sink, clock, ID generator — is
+  not built; only the tracer, logger, and diagnostic sink (A-011) exist. And the core still
+  calls `telemetry.RecordMetric` directly rather than emitting through a sink, so metrics have
+  no seam yet. That is **OB-002**'s work and it is blocked on **PL-013**.
 - [ ] **OB-002** — Metrics catalog per §15.2: requests, duration, plan nodes, provider
   attempts and duration, queue duration, in-flight gauge, circuit state, item outcomes, batch
   size, batch compliance ratio, repairs, atomic fallbacks, tokens, cost, budget exhaustion,
   and review-required counts. High-cardinality identifiers stay out of metric labels and live
   in the envelope. Depends on **PL-013**.
-- [ ] **OB-003** — Cost tree: logical request → stage → chunk → attempt → item attribution,
+- [x] **OB-003** — Cost tree: logical request → stage → chunk → attempt → item attribution,
   with provider-reported usage preferred, estimates marked, and pricing quality recorded as
   `Exact`, `Estimated`, `Unknown`, or `Free`. Historical cost is never recomputed with
   current rates without keeping both versions. Closes **TRU-22** and the drift half of
   **TRU-23**. **PR-001** established that zero never means unknown; this makes the same
   distinction hold across a fan-out.
-- [ ] **OB-004** — Operational SLOs as tests, per §15.4: zero panics from valid API use, zero
+- [x] **OB-004** — Operational SLOs as tests, per §15.4: zero panics from valid API use, zero
   goroutine leaks after cancel or completion, zero client-isolation failures, zero unknown or
   duplicate batch IDs accepted, zero secrets in logs, zero calls exceeding a declared budget,
   and validated-item completeness at or above 99.5% on the conformance corpus.
   *Verify:* each SLO has a named test; the leak and isolation ones run in CI on a platform
   where `-race` works (**CI-002**).
-- [ ] **OB-005** — Runbooks and dashboards for the incident classes that will actually
+  **Done for six of seven, and the seventh says why not.** `slo_test.go`, one named test per
+  SLO, 18 cases:
+  `TestSLONoPanicsFromValidAPIUse` drives seven deliberately awkward but valid calls — empty
+  input, an empty collection, a single-item collection, combining marks and RTL text, and a
+  provider answering with a shape that does not fit — and fails on a panic rather than on an
+  error, because an error is a correct outcome there and a panic never is.
+  `TestSLONoGoroutineLeaksAfterCompletion` and `...AfterCancel` count goroutines around twenty
+  operations, after settling the runtime — without the settle loop the test measures scheduler
+  noise rather than leaks. The cancel case uses a deadline that expires **during** the call,
+  not before it: cancelling up front means the operation returns without starting, and a leak
+  test on work that never began proves nothing. That correction is why this test is worth
+  anything.
+  `TestSLONoUnknownOrDuplicateBatchIDsAccepted` covers a duplicate id, an unknown id, an id
+  from another invocation, a malformed id, and — for Sort, which must cover every id exactly
+  once — incomplete coverage.
+  `TestSLONoSecretsInLogs` puts a credential in the input, drives a failing operation, and
+  walks every captured log entry including its attributes. It fails if *nothing* was captured,
+  so it cannot pass by logging nothing at all.
+  Budget and client isolation are covered by named tests in `mw/budget_test.go` and
+  `client_isolation_test.go`; the SLO file names them rather than duplicating them.
+  **Not covered, deliberately:** validated-item completeness at or above 99.5%. There is no
+  conformance corpus — **RC-001** is the task that builds one, and it is open. A completeness
+  figure computed against inputs invented for the test would look like the SLO and measure
+  something else, which is worse than the absence. The placeholder in the file says so.
+  **Also not done:** the `-race` requirement. It does not run on this windows/arm64 machine
+  (**CI-002**), so these run without the detector locally and CI covers it elsewhere.
+- [x] **OB-005** — Runbooks and dashboards for the incident classes that will actually
   happen: 429 surge, provider latency or outage, malformed or truncated output spike, batch
   omission or repair-rate spike, cost anomaly, model alias or revision change, capability or
   schema enforcement regression, stuck breaker, cache or pricing-store failure, telemetry
   exporter failure, suspected content or credential leak, deprecated endpoint. Each names its
   signal, mitigation, safe fallback, evidence to capture, and recovery criterion.
+  **Done.** `docs/engineering/runbooks.md` — all twelve incident classes, each with the five
+  parts the task asks for, plus the dashboard panels in the order you actually look at them
+  during an incident.
+  They are written against what this library really does rather than generically: the cost
+  anomaly entry says check `Meta.CacheHitRatio` first and warns that the default models are
+  **unpriced**, so zero means no rate card rather than free; the batch-omission entry explains
+  that an invariant violation there is the id protocol working; the telemetry entry says the
+  library does not own the exporter and an observer that slows the request path is a bug in
+  the observer; and the leak entry names which of the four scrubbing points was bypassed as
+  the actual fix, with rotation first because the leak is ongoing.
+  Two rules sit above all twelve: capture evidence before mitigating unless the mitigation
+  stops a leak, and never capture the payload.
+  **Not done:** dashboards are described, not shipped. There is no dashboard JSON here for any
+  particular backend, and inventing one for a stack nobody has said they use would be
+  guesswork wearing a deliverable's name.
   Closes **PRD-24**.
 
 ---

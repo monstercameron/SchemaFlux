@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -251,5 +252,221 @@ func TestSchemalessJSONRequestsMentionJSON(t *testing.T) {
 	input, _ = body["input"].(string)
 	if input != "Return JSON describing the vendor." {
 		t.Errorf("a prompt that already mentions JSON was modified: %q", input)
+	}
+}
+
+// CP-001. The capability registry and negotiation function this file adds:
+// a route this codebase has never declared anything about must refuse a
+// requirement, not silently pass one that names nothing, and a known route
+// must be checked against exactly what it declares.
+
+func TestCapabilitiesForUnknownRouteIsUnknown(t *testing.T) {
+	ResetCapabilityRegistryForTest()
+	t.Cleanup(ResetCapabilityRegistryForTest)
+
+	caps, known := CapabilitiesFor("nobody-heard-of-this", "mystery-model")
+	if known {
+		t.Fatalf("known = true for a route nothing registered, caps = %+v", caps)
+	}
+}
+
+func TestCapabilitiesForExactMatch(t *testing.T) {
+	ResetCapabilityRegistryForTest()
+	t.Cleanup(ResetCapabilityRegistryForTest)
+
+	RegisterCapabilities(ProviderCapabilities{
+		Provider: "openai", Model: "gpt-4o",
+		Supports: map[Capability]bool{CapNativeJSONSchema: true, CapStreaming: true},
+	})
+
+	caps, known := CapabilitiesFor("openai", "gpt-4o")
+	if !known {
+		t.Fatal("known = false for a registered exact route")
+	}
+	if !caps.Has(CapNativeJSONSchema) || !caps.Has(CapStreaming) {
+		t.Fatalf("caps = %+v, want native json schema and streaming", caps)
+	}
+	if caps.Has(CapToolCalling) {
+		t.Fatal("caps.Has(CapToolCalling) = true, was never registered")
+	}
+}
+
+func TestCapabilitiesForFamilyPrefixMatch(t *testing.T) {
+	ResetCapabilityRegistryForTest()
+	t.Cleanup(ResetCapabilityRegistryForTest)
+
+	RegisterCapabilityFamily("openai", "gpt-5.6-", ProviderCapabilities{
+		Supports: map[Capability]bool{CapNativeJSONSchema: true},
+	})
+
+	for _, model := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+		caps, known := CapabilitiesFor("openai", model)
+		if !known {
+			t.Fatalf("known = false for family member %q", model)
+		}
+		if !caps.Has(CapNativeJSONSchema) {
+			t.Fatalf("model %q did not inherit the family capability", model)
+		}
+		if caps.Model != model {
+			t.Fatalf("caps.Model = %q, want %q (family lookup must stamp the actual model back on)", caps.Model, model)
+		}
+	}
+
+	if _, known := CapabilitiesFor("openai", "gpt-4o"); known {
+		t.Fatal("gpt-4o matched the gpt-5.6- family prefix, it should not have")
+	}
+}
+
+func TestCapabilitiesForLongestFamilyPrefixWins(t *testing.T) {
+	ResetCapabilityRegistryForTest()
+	t.Cleanup(ResetCapabilityRegistryForTest)
+
+	RegisterCapabilityFamily("openai", "gpt-5", ProviderCapabilities{
+		Supports: map[Capability]bool{CapToolCalling: true},
+	})
+	RegisterCapabilityFamily("openai", "gpt-5.6-", ProviderCapabilities{
+		Supports: map[Capability]bool{CapNativeJSONSchema: true},
+	})
+
+	caps, known := CapabilitiesFor("openai", "gpt-5.6-luna")
+	if !known {
+		t.Fatal("known = false")
+	}
+	if caps.Has(CapToolCalling) {
+		t.Fatal("the shorter, less specific family prefix won instead of the longer one")
+	}
+	if !caps.Has(CapNativeJSONSchema) {
+		t.Fatal("the longer, more specific family prefix did not win")
+	}
+}
+
+func TestNegotiateRefusesUnknownRoute(t *testing.T) {
+	caps := ProviderCapabilities{}
+	err := Negotiate(caps, false, Requirement{Capabilities: []Capability{CapNativeJSONSchema}})
+	if err == nil {
+		t.Fatal("Negotiate returned nil for an unknown route")
+	}
+	if !errors.Is(err, ErrCapabilityUnknown) {
+		t.Fatalf("err = %v, want it to wrap ErrCapabilityUnknown", err)
+	}
+}
+
+func TestNegotiateRefusesMissingCapability(t *testing.T) {
+	caps := ProviderCapabilities{
+		Provider: "p", Model: "m",
+		Supports: map[Capability]bool{CapJSONMode: true},
+	}
+	err := Negotiate(caps, true, Requirement{Capabilities: []Capability{CapNativeJSONSchema}})
+	if err == nil {
+		t.Fatal("Negotiate returned nil for a route lacking the required capability")
+	}
+	if !errors.Is(err, ErrCapabilityUnmet) {
+		t.Fatalf("err = %v, want it to wrap ErrCapabilityUnmet", err)
+	}
+}
+
+func TestNegotiateAcceptsSatisfiedRequirement(t *testing.T) {
+	caps := ProviderCapabilities{
+		Provider: "p", Model: "m",
+		Supports:              map[Capability]bool{CapNativeJSONSchema: true, CapStreaming: true},
+		UsageReportingQuality: UsageExact,
+		ContextWindow:         128000,
+		MaxOutputTokens:       4096,
+	}
+	req := Requirement{
+		Capabilities:       []Capability{CapNativeJSONSchema, CapStreaming},
+		MinUsageQuality:    UsageEstimated,
+		MinContextWindow:   32000,
+		MinMaxOutputTokens: 1024,
+	}
+	if err := Negotiate(caps, true, req); err != nil {
+		t.Fatalf("Negotiate refused a fully-satisfied requirement: %v", err)
+	}
+	if !Meets(caps, req) {
+		t.Fatal("Meets = false for the same requirement Negotiate accepted")
+	}
+}
+
+func TestNegotiateRefusesBelowUsageQualityFloor(t *testing.T) {
+	caps := ProviderCapabilities{
+		Provider: "p", Model: "m",
+		UsageReportingQuality: UsageEstimated,
+	}
+	err := Negotiate(caps, true, Requirement{MinUsageQuality: UsageExact})
+	if err == nil {
+		t.Fatal("Negotiate accepted estimated usage against a required exact floor")
+	}
+}
+
+// UsageUnknown (the zero value) never satisfies a declared minimum -- a
+// route that never said anything about its usage reporting is not the same
+// as one that was measured and found estimated.
+func TestUnknownUsageQualityNeverMeetsADeclaredFloor(t *testing.T) {
+	caps := ProviderCapabilities{Provider: "p", Model: "m"}
+	if err := Negotiate(caps, true, Requirement{MinUsageQuality: UsageEstimated}); err == nil {
+		t.Fatal("an undeclared usage quality satisfied a declared minimum")
+	}
+}
+
+func TestNegotiateRefusesUnmeasuredContextWindow(t *testing.T) {
+	caps := ProviderCapabilities{Provider: "p", Model: "m", Supports: map[Capability]bool{}}
+	err := Negotiate(caps, true, Requirement{MinContextWindow: 8000})
+	if err == nil {
+		t.Fatal("Negotiate accepted a requirement against an unmeasured (zero) context window")
+	}
+}
+
+func TestNegotiateRefusesInsufficientContextWindow(t *testing.T) {
+	caps := ProviderCapabilities{Provider: "p", Model: "m", ContextWindow: 4000}
+	if err := Negotiate(caps, true, Requirement{MinContextWindow: 8000}); err == nil {
+		t.Fatal("Negotiate accepted a context window below the requirement")
+	}
+}
+
+func TestNegotiateRefusesMissingSchemaKeyword(t *testing.T) {
+	caps := ProviderCapabilities{
+		Provider: "p", Model: "m",
+		Supports:       map[Capability]bool{CapNativeJSONSchema: true},
+		SchemaKeywords: []string{"required", "type"},
+	}
+	req := Requirement{
+		Capabilities:   []Capability{CapNativeJSONSchema},
+		SchemaKeywords: []string{"required", "additionalProperties"},
+	}
+	err := Negotiate(caps, true, req)
+	if err == nil {
+		t.Fatal("Negotiate accepted a route silently missing a required schema keyword")
+	}
+	if !strings.Contains(err.Error(), "additionalProperties") {
+		t.Fatalf("error does not name the missing keyword: %v", err)
+	}
+}
+
+// A zero Requirement names nothing, so it is satisfied by any KNOWN route --
+// but still refuses an unknown one, because "no route was ever checked" is
+// not the same fact as "this route meets an empty bar."
+func TestZeroRequirementStillRequiresAKnownRoute(t *testing.T) {
+	if err := Negotiate(ProviderCapabilities{}, false, Requirement{}); err == nil {
+		t.Fatal("a zero Requirement was satisfied against an unknown route")
+	}
+	caps := ProviderCapabilities{Provider: "p", Model: "m"}
+	if err := Negotiate(caps, true, Requirement{}); err != nil {
+		t.Fatalf("a zero Requirement was refused against a known route: %v", err)
+	}
+}
+
+func TestHasDeclaredDistinguishesUndeclaredFromExplicitFalse(t *testing.T) {
+	caps := ProviderCapabilities{
+		Provider: "p", Model: "m",
+		Supports: map[Capability]bool{CapToolCalling: false},
+	}
+	if !caps.HasDeclared(CapToolCalling) {
+		t.Fatal("HasDeclared = false for an explicitly declared (false) capability")
+	}
+	if caps.HasDeclared(CapSeed) {
+		t.Fatal("HasDeclared = true for a capability never mentioned")
+	}
+	if caps.Has(CapToolCalling) {
+		t.Fatal("Has = true for a capability explicitly declared false")
 	}
 }

@@ -224,10 +224,59 @@ type CostInfo struct {
 	// number, which is worse than reporting nothing.
 	PricingSource string `json:"pricing_source,omitempty"`
 
+	// Quality says how much the figures above are worth (OB-003).
+	//
+	// Priced is a boolean and therefore cannot distinguish the two things that
+	// both make a cost zero: a model nobody has a rate card for, and a model
+	// that genuinely costs nothing. Reading the first as the second understates
+	// spend; reading the second as the first hides a working configuration
+	// behind a warning. Quality separates them, and separates both from a
+	// figure that was estimated rather than computed from reported usage.
+	Quality PricingQuality `json:"pricing_quality,omitempty"`
+
 	// Cost tracking metadata
 	BillingPeriod  string `json:"billing_period,omitempty"`
 	OrganizationID string `json:"organization_id,omitempty"`
 	ProjectID      string `json:"project_id,omitempty"`
+}
+
+// PricingQuality says what a cost figure is worth. It exists because a
+// boolean cannot: zero is produced by "no rate card", by "genuinely free", and
+// by "nothing was spent", and those need different reactions.
+type PricingQuality string
+
+const (
+	// PricingUnknown means no rate card was found for this model. The cost
+	// fields are zero because nothing is known, not because nothing was spent,
+	// and summing these with real costs understates the bill by exactly the
+	// amount nobody can see.
+	PricingUnknown PricingQuality = "unknown"
+
+	// PricingExact means the figures were computed from a rate card for this
+	// exact model, using usage the provider reported.
+	PricingExact PricingQuality = "exact"
+
+	// PricingEstimated means the figures came from a rate card but the usage
+	// was estimated rather than reported -- a plan made before the call, or a
+	// provider that answered without usage. Marked rather than presented as
+	// exact, because a number that looks measured and is not is the whole
+	// failure this library is being rebuilt against.
+	PricingEstimated PricingQuality = "estimated"
+
+	// PricingFree means the model has a rate card and that rate card is zero:
+	// a local or mock provider, or a genuinely free tier. Distinct from
+	// unknown, because this one is a fact.
+	PricingFree PricingQuality = "free"
+)
+
+// Known reports whether the figures mean anything at all -- true for exact,
+// estimated, and free, false for unknown.
+func (q PricingQuality) Known() bool {
+	switch q {
+	case PricingExact, PricingEstimated, PricingFree:
+		return true
+	}
+	return false
 }
 
 // DebugInfo provides detailed debugging information for an operation

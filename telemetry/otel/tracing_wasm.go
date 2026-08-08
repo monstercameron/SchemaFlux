@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-package telemetry
+package otel
 
 import (
 	"context"

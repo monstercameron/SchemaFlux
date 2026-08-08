@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/monstercameron/schemaflux/internal/requesttracking"
 	"github.com/monstercameron/schemaflux/telemetry"
 )
 
@@ -126,4 +127,38 @@ func (o *Observer) OperationFinished(ctx context.Context, result telemetry.Opera
 		span.SetAttributes(attribute.String("schemaflux.error.kind", result.ErrorKind))
 		span.SetStatus(codes.Error, result.ErrorKind)
 	}
+}
+
+// InstallIDSources lets the core read the trace and span IDs of a span already
+// on the context without importing OpenTelemetry itself.
+//
+// internal/requesttracking used to call oteltrace.SpanFromContext directly for
+// this one string, which was the last OpenTelemetry import anywhere in the
+// core -- so every consumer of this library compiled against the vendor
+// whether or not they used it. It is a hook now, defaulting to "", and this
+// installs the real reader. Returns the restore function.
+func InstallIDSources() (restore func()) {
+	restoreTracking := requesttracking.SetTraceIDSource(traceIDFromContext)
+	restoreTelemetry := telemetry.SetSpanIDSources(traceIDFromContext, spanIDFromContext)
+
+	return func() {
+		restoreTelemetry()
+		restoreTracking()
+	}
+}
+
+func traceIDFromContext(ctx context.Context) string {
+	spanContext := oteltrace.SpanFromContext(ctx).SpanContext()
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
+}
+
+func spanIDFromContext(ctx context.Context) string {
+	spanContext := oteltrace.SpanFromContext(ctx).SpanContext()
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.SpanID().String()
 }

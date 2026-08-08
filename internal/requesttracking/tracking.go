@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type IDStrategy string
@@ -292,19 +290,45 @@ func generateTimestampID(prefix string) string {
 	return fmt.Sprintf("%s_%d_%d_%d", prefix, time.Now().UnixNano(), os.Getpid(), counter)
 }
 
+// TraceIDSource reports the trace ID of the span already on the context, or
+// "" when there is none.
+//
+// It is a hook rather than a direct OpenTelemetry call because this package is
+// core, and core does not import a telemetry vendor (OB-001, ARC-17). Reading
+// the ambient trace ID was the last thing in the whole of internal/ that
+// imported OpenTelemetry, which meant every consumer of this library compiled
+// against it whether or not they used it.
+//
+// The default returns "", so a correlation ID falls back to the request ID
+// exactly as it does when no span exists. telemetry/otel installs the real one.
+type TraceIDSource func(context.Context) string
+
+var traceIDSource atomic.Pointer[TraceIDSource]
+
+// SetTraceIDSource installs the source and returns a function restoring the
+// previous one. Passing nil restores the default rather than storing a nil to
+// be called later.
+func SetTraceIDSource(source TraceIDSource) (restore func()) {
+	previous := traceIDSource.Load()
+
+	if source == nil {
+		traceIDSource.Store(nil)
+	} else {
+		traceIDSource.Store(&source)
+	}
+
+	return func() { traceIDSource.Store(previous) }
+}
+
 func currentTraceID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	span := oteltrace.SpanFromContext(ctx)
-	if span == nil {
+	source := traceIDSource.Load()
+	if source == nil {
 		return ""
 	}
-	spanContext := span.SpanContext()
-	if !spanContext.IsValid() {
-		return ""
-	}
-	return spanContext.TraceID().String()
+	return (*source)(ctx)
 }
 
 func envEnabled(raw string) bool {

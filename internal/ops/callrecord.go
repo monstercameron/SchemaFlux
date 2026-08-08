@@ -149,6 +149,7 @@ func envelopeFrom(records []*types.ResultMetadata, operation string) types.Meta 
 	if !meta.Cost.Priced {
 		meta.Cost.PricingSource = ""
 	}
+	meta.Cost.Quality = combinedPricingQuality(records)
 
 	// CA-006. Measured from what the provider reported, not estimated: the
 	// share of prompt tokens it said came from its own prefix cache. Guarded
@@ -159,4 +160,54 @@ func envelopeFrom(records []*types.ResultMetadata, operation string) types.Meta 
 	}
 
 	return meta
+}
+
+// combinedPricingQuality reports what the summed cost across a request's
+// attempts is worth (OB-003).
+//
+// The rule is that the total is only as good as its worst part, and the order
+// is deliberate: one unknown attempt makes the total unknown, because the
+// missing amount is unbounded and adding zero for it understates the bill by
+// exactly the figure nobody can see. One estimated attempt among exact ones
+// makes the total estimated. Free plus exact is exact -- adding a genuine zero
+// to a measured figure loses nothing. Only when every attempt was free is the
+// total free.
+func combinedPricingQuality(records []*types.ResultMetadata) types.PricingQuality {
+	sawAny := false
+	sawEstimated := false
+	sawPriced := false
+
+	for _, record := range records {
+		if record == nil || record.CostInfo == nil {
+			continue
+		}
+		sawAny = true
+
+		switch record.CostInfo.Quality {
+		case types.PricingUnknown, "":
+			// The empty string is a record from a path that has not been
+			// taught to classify yet; treating it as unknown is the safe
+			// direction, since the alternative is claiming a figure is exact
+			// on the strength of a zero value.
+			return types.PricingUnknown
+		case types.PricingEstimated:
+			sawEstimated = true
+			sawPriced = true
+		case types.PricingExact:
+			sawPriced = true
+		case types.PricingFree:
+			// Contributes nothing either way.
+		}
+	}
+
+	switch {
+	case !sawAny:
+		return types.PricingUnknown
+	case sawEstimated:
+		return types.PricingEstimated
+	case sawPriced:
+		return types.PricingExact
+	default:
+		return types.PricingFree
+	}
 }

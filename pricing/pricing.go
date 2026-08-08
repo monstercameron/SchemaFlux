@@ -275,6 +275,7 @@ func CalculateCost(usage *types.TokenUsage, model string, provider string) *type
 		return &types.CostInfo{
 			Currency: "USD",
 			Priced:   false,
+			Quality:  types.PricingUnknown,
 		}
 	}
 
@@ -303,7 +304,41 @@ func CalculateCost(usage *types.TokenUsage, model string, provider string) *type
 		PricePerCompletionToken: pricing.PricePerCompletionToken,
 		Priced:                  true,
 		PricingSource:           pricing.Model,
+		// A rate card that prices everything at zero is a fact -- a local or
+		// mock provider, or a free tier -- and is not the same as having no
+		// rate card at all. Reporting both as "priced: true, total: 0" made
+		// them indistinguishable in the other direction (OB-003).
+		Quality: pricingQualityFor(pricing),
 	}
+}
+
+// pricingQualityFor classifies a rate card that was found. Usage here is always
+// the provider's reported figures, so a found rate card is exact; an estimate
+// is produced by whoever priced a call *before* making it, and marks itself.
+func pricingQualityFor(model PricingModel) types.PricingQuality {
+	if model.PricePerPromptToken == 0 && model.PricePerCompletionToken == 0 &&
+		model.PriceCachedToken == 0 && model.PriceReasoningToken == 0 {
+		return types.PricingFree
+	}
+	return types.PricingExact
+}
+
+// EstimateCost prices a call that has not been made yet, from projected token
+// counts, and marks the result estimated.
+//
+// A plan that reports a cost has to say that the number is a projection: the
+// token counts are guesses, and a projection presented as a measurement is the
+// same failure as an invented confidence. An unpriced model still reports
+// unknown here rather than zero.
+func EstimateCost(projected *types.TokenUsage, model, provider string) *types.CostInfo {
+	cost := CalculateCost(projected, model, provider)
+	if cost == nil {
+		return nil
+	}
+	if cost.Quality == types.PricingExact {
+		cost.Quality = types.PricingEstimated
+	}
+	return cost
 }
 
 // TrackCost records a cost entry for monitoring and budgeting

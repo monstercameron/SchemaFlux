@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/monstercameron/schemaflux/internal/types"
@@ -116,4 +117,56 @@ func ObserveOperationStart(ctx context.Context, event OperationEvent) context.Co
 // ObserveOperationEnd emits a finish event.
 func ObserveOperationEnd(ctx context.Context, result OperationResult) {
 	CurrentObserver().OperationFinished(ctx, result)
+}
+
+// SpanIDSource reports the trace or span ID of whatever span is already on the
+// context, or "" when there is none.
+//
+// These are hooks for the same reason the observer is (OB-001): reading two
+// strings off an ambient span was, along with requesttracking's trace lookup,
+// what kept OpenTelemetry in the build of every consumer of this library. The
+// defaults return "", which is also what the previous implementation returned
+// when tracing was disabled -- so nothing changes for anyone who was not
+// tracing, and telemetry/otel installs the real readers for anyone who is.
+type SpanIDSource func(context.Context) string
+
+var (
+	traceIDSource atomic.Pointer[SpanIDSource]
+	spanIDSource  atomic.Pointer[SpanIDSource]
+)
+
+// SetSpanIDSources installs the readers and returns a function restoring the
+// previous pair. Either may be nil, which restores that one's default.
+func SetSpanIDSources(traceID, spanID SpanIDSource) (restore func()) {
+	previousTrace := traceIDSource.Load()
+	previousSpan := spanIDSource.Load()
+
+	if traceID == nil {
+		traceIDSource.Store(nil)
+	} else {
+		traceIDSource.Store(&traceID)
+	}
+	if spanID == nil {
+		spanIDSource.Store(nil)
+	} else {
+		spanIDSource.Store(&spanID)
+	}
+
+	return func() {
+		traceIDSource.Store(previousTrace)
+		spanIDSource.Store(previousSpan)
+	}
+}
+
+// GetTraceID returns the ambient trace ID, or "" when nothing is tracing.
+func GetTraceID(ctx context.Context) string { return readSpanID(traceIDSource.Load(), ctx) }
+
+// GetSpanID returns the ambient span ID, or "" when nothing is tracing.
+func GetSpanID(ctx context.Context) string { return readSpanID(spanIDSource.Load(), ctx) }
+
+func readSpanID(source *SpanIDSource, ctx context.Context) string {
+	if source == nil || ctx == nil {
+		return ""
+	}
+	return (*source)(ctx)
 }

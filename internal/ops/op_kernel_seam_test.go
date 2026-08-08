@@ -306,7 +306,7 @@ func TestSinkCapturesTruncatedRedactedBodyAndErrorCarriesReference(t *testing.T)
 	sink := &recordingSink{}
 	ctx := WithDiagnosticSink(context.Background(), sink, types.DiagnosticPolicy{MaxBodyBytes: 32})
 
-	leaking := "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789 plus a very long trailing tail that exceeds the configured bound"
+	leaking := "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789 plus a very long trailing tail that exceeds the configured bound" // secret-scan: allow
 	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
 		return leaking, nil
 	})
@@ -368,10 +368,10 @@ func TestCaptureDiagnosticRedactsSeveralCredentialShapes(t *testing.T) {
 		body   string
 		marker string
 	}{
-		{"openai key", "the key is sk-proj-abcdefghijklmnopqrstuvwxyz and nothing else", "sk-proj-abcdefghijklmnopqrstuvwxyz"},
-		{"anthropic key", "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789", "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"},
-		{"aws key", "AKIAABCDEFGHIJKLMNOP is the access key", "AKIAABCDEFGHIJKLMNOP"},
-		{"github token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
+		{"openai key", "the key is sk-proj-abcdefghijklmnopqrstuvwxyz and nothing else", "sk-proj-abcdefghijklmnopqrstuvwxyz"}, // secret-scan: allow
+		{"anthropic key", "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789", "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"},        // secret-scan: allow
+		{"aws key", "AKIAABCDEFGHIJKLMNOP is the access key", "AKIAABCDEFGHIJKLMNOP"},                                          // secret-scan: allow
+		{"github token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},               // secret-scan: allow
 		{"bearer header", `Authorization: Bearer abc.def.ghi`, "abc.def.ghi"},
 	}
 
@@ -397,7 +397,7 @@ func TestCaptureDiagnosticRedactsSeveralCredentialShapes(t *testing.T) {
 // behaviour at the types package level directly, independent of the ops
 // wiring: a nil sink is the ordinary, unconfigured case.
 func TestCaptureDiagnosticWithNilSinkCapturesNothing(t *testing.T) {
-	ref := types.CaptureDiagnostic(nil, types.DiagnosticPolicy{}, "op", types.KindMalformedOutput, "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789")
+	ref := types.CaptureDiagnostic(nil, types.DiagnosticPolicy{}, "op", types.KindMalformedOutput, "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789") // secret-scan: allow
 	if !ref.IsZero() {
 		t.Fatalf("CaptureDiagnostic with a nil sink returned %+v, want the zero value", ref)
 	}

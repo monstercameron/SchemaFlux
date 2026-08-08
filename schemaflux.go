@@ -1841,3 +1841,99 @@ func WithDiagnosticSink(ctx context.Context, sink DiagnosticSink, policy Diagnos
 func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt OpOptions) (Result[Out], error) {
 	return ops.RunOpResult(ctx, op, input, opt)
 }
+
+// --- Planning and execution shapes (M11).
+//
+// A plan is what the library intends to do, produced without doing any of it:
+// eligibility, chunking, the maximum number of calls, the budget, and the
+// estimated cost. Preflight makes no provider call, which is the property that
+// makes it worth having — a preflight that spends money to tell you what
+// something will cost is a call, not a plan.
+type (
+	// ExecutionShape is how an operation runs over its input: one call per
+	// item, one call for many items, many calls for one item, or one call over
+	// everything.
+	ExecutionShape = types.ExecutionShape
+
+	// PlanRequest is the input to Preflight.
+	PlanRequest = types.PlanRequest
+
+	// Plan is the immutable result. It serializes without any of the caller's
+	// values — shapes, counts, and identifiers only — so it can be logged,
+	// stored, and diffed.
+	Plan = types.Plan
+
+	// ChunkPlan is one planned call's share of the work.
+	ChunkPlan = types.ChunkPlan
+
+	// OversizedItem is an item no chunk can hold, named with the bound it
+	// broke rather than silently truncated.
+	OversizedItem = types.OversizedItem
+
+	// CostEstimate is a plan's projected cost. It reports unpriced honestly
+	// rather than estimating zero for a model with no rate card.
+	CostEstimate = types.CostEstimate
+
+	// PolicySnapshot and CapabilitySnapshot are the inputs a plan is
+	// deterministic with respect to.
+	PolicySnapshot     = types.PolicySnapshot
+	CapabilitySnapshot = types.CapabilitySnapshot
+
+	// AlgebraKind is what a batched operation's answer has to satisfy as a
+	// whole: independent, a subset, a permutation, a partition, and so on.
+	AlgebraKind = types.AlgebraKind
+
+	// BatchCoverage reports how a batched response measured up against the ids
+	// it was given: which were missing, duplicated, or unknown.
+	BatchCoverage = ops.BatchCoverage
+
+	// PlanBuilder forces a shape. Forcing atomicity for risk reasons and
+	// forcing batching for cost reasons are both legitimate, so both are
+	// expressible.
+	PlanBuilder = ops.PlanBuilder
+)
+
+const (
+	ShapeUnspecified = types.ShapeUnspecified
+	ShapeAtomic      = types.ShapeAtomic
+	ShapeMDSP        = types.ShapeMDSP
+	ShapeSDMP        = types.ShapeSDMP
+	ShapeGlobal      = types.ShapeGlobal
+
+	AlgebraIndependent  = types.AlgebraIndependent
+	AlgebraSubset       = types.AlgebraSubset
+	AlgebraPermutation  = types.AlgebraPermutation
+	AlgebraPartition    = types.AlgebraPartition
+	AlgebraGraph        = types.AlgebraGraph
+	AlgebraHierarchical = types.AlgebraHierarchical
+	AlgebraSequential   = types.AlgebraSequential
+)
+
+// Preflight returns the plan for running op over items, without running any of
+// it and without calling a provider.
+func Preflight[In, Out any](op Op[In, Out], items []In, req PlanRequest) (Plan, error) {
+	return ops.Preflight(op, items, req)
+}
+
+// NewPlanBuilder starts a plan whose shape the caller chooses.
+func NewPlanBuilder(opt OpOptions) *PlanBuilder {
+	return ops.NewPlanBuilder(opt)
+}
+
+// RunOpBatch runs one operation over many items in a single call, using the id
+// protocol: items go out tagged, the answer names ids, and coverage is checked
+// in Go. Output position is never trusted.
+func RunOpBatch[In, Out any](ctx context.Context, op Op[In, Out], items []In, opt OpOptions) ([]Out, error) {
+	return ops.RunOpBatch(ctx, op, items, opt)
+}
+
+// RunOpBatchResult is RunOpBatch with the envelope.
+func RunOpBatchResult[In, Out any](ctx context.Context, op Op[In, Out], items []In, opt OpOptions) (Result[[]Out], error) {
+	return ops.RunOpBatchResult(ctx, op, items, opt)
+}
+
+// RunOpMany plans and then executes, returning one result per item alongside
+// the plan that produced them.
+func RunOpMany[In, Out any](ctx context.Context, op Op[In, Out], items []In, req PlanRequest) ([]Result[Out], Plan, error) {
+	return ops.RunOpMany(ctx, op, items, req)
+}

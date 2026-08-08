@@ -1,7 +1,7 @@
 //go:build !js
 
 // package telemetry - OpenTelemetry integration for distributed tracing
-package telemetry
+package otel
 
 import (
 	"context"
