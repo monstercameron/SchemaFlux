@@ -430,11 +430,35 @@ func Score[T any](input T, opts ScoreOptions) (ScoreResult, error) {
 
 	criteriaJSON, _ := json.Marshal(criteriaList)
 
+	// Weights was a declared, exported, documented field that nothing read --
+	// not the prompt, not the decode. dead_options_test.go missed it because it
+	// matches by bare field name across every options type, and
+	// ArbitrateOptions.Weights is a live field with the same name.
+	//
+	// A weight naming a criterion that is not being scored is a caller typo,
+	// and it is checkable here without asking the model anything.
+	var weightsSection string
+	if len(opts.Weights) > 0 {
+		known := make(map[string]struct{}, len(criteriaList))
+		for _, criterion := range criteriaList {
+			known[criterion] = struct{}{}
+		}
+		for criterion := range opts.Weights {
+			if _, ok := known[criterion]; !ok {
+				log.Error("Score was given a weight for an unknown criterion", "criterion", criterion)
+				return result, fmt.Errorf(
+					"score: Weights names %q, which is not among the criteria being scored", criterion)
+			}
+		}
+		weightsJSON, _ := json.Marshal(opts.Weights)
+		weightsSection = fmt.Sprintf("Criterion weights (relative importance): %s\n", string(weightsJSON))
+	}
+
 	systemPrompt := fmt.Sprintf(`You are a scoring expert. Evaluate the input and provide a comprehensive assessment.
 
 Score Range: %.1f to %.1f
 Criteria: %s
-
+%s
 Rules:
 - Assign an overall score between %.1f and %.1f
 - Provide a breakdown score for each criterion
@@ -447,7 +471,7 @@ Return a JSON object with these fields:
 - "reasoning": explanation of the scoring
 - "strengths": array of identified strengths
 - "weaknesses": array of identified weaknesses`,
-		opts.ScaleMin, opts.ScaleMax, string(criteriaJSON),
+		opts.ScaleMin, opts.ScaleMax, string(criteriaJSON), weightsSection,
 		opts.ScaleMin, opts.ScaleMax,
 		opts.ScaleMin, opts.ScaleMax)
 
@@ -483,8 +507,29 @@ Return a JSON object with these fields:
 		llmResult.Value = score
 	}
 
-	// Normalize to scale
+	// A score outside the requested scale is a refusal, not a clamp.
+	//
+	// Clamping was worse than not checking at all. The scale is stated three
+	// times in the prompt, so an answer outside it means the model scored
+	// against some other scale entirely -- and clamping turns "the model
+	// answered 87 on a 0-100 scale" into "Value: 10, NormalizedValue: 1.0"
+	// against a requested 0-10 range. That is a perfect score, indistinguishable
+	// from a real one, with nothing anywhere recording that the range was
+	// ignored. Refusing is the only answer that does not invent a number.
+	//
+	// The tolerance absorbs float round-tripping through JSON, not a model
+	// scoring off-scale.
+	const scaleTolerance = 1e-9
 	score := llmResult.Value
+	if score < opts.ScaleMin-scaleTolerance || score > opts.ScaleMax+scaleTolerance {
+		log.Error("Score returned a value outside the requested scale",
+			"value", score, "scaleMin", opts.ScaleMin, "scaleMax", opts.ScaleMax)
+		return result, fmt.Errorf(
+			"score: model returned %v, outside the requested scale [%v, %v]",
+			score, opts.ScaleMin, opts.ScaleMax)
+	}
+	// Round the tolerance away so a value that only just cleared the bound does
+	// not escape into NormalizedValue as a hair over 1.0.
 	if score < opts.ScaleMin {
 		score = opts.ScaleMin
 	} else if score > opts.ScaleMax {

@@ -1377,7 +1377,15 @@ type ScoreOptions struct {
 	// Scoring rubric
 	Rubric map[string]string
 
-	// Weight for each criterion
+	// Weight for each criterion, keyed by criterion name. Keys must appear in
+	// Criteria or Rubric; a key naming neither is a typo, and a silently
+	// ignored weight is worse than a rejected one.
+	//
+	// This reaches the model as instruction and is not postchecked: the
+	// overall value and the per-criterion breakdown are both the model's own
+	// claims, so "is the overall the weighted mean of the breakdown" only
+	// checks one claim against another. What IS checked is that every weight
+	// names a criterion the model was actually asked to score.
 	Weights map[string]float64
 
 	// Include breakdown by criteria

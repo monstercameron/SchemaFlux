@@ -312,6 +312,26 @@ Return a JSON object with:
 		return result, fmt.Errorf("failed to parse enriched result: %w", err)
 	}
 
+	// AddOnly means what it says, and it was not being checked.
+	//
+	// The option is documented as "only adds fields, doesn't modify existing",
+	// and it appeared in the prompt and nowhere else -- so a response that
+	// rewrote an existing value came back with a nil error and the caller's
+	// data silently changed. Enrich is supposed to be additive; a caller who
+	// set AddOnly did so precisely because the existing values matter.
+	//
+	// The comparison is on the JSON encoding rather than on Go values because
+	// the input and the answer can be different types (Enrich[T, U]), so a
+	// field-by-field reflect comparison has nothing stable to compare across.
+	if opts.AddOnly {
+		if changed, ok := changedExistingField(input, parsed.Enriched); ok {
+			log.Error("Enrich operation failed: an existing field changed under AddOnly",
+				"field", changed)
+			return result, fmt.Errorf(
+				"enrich: AddOnly was set and field %q was changed; enrichment must add, not overwrite", changed)
+		}
+	}
+
 	result.Enriched = parsed.Enriched
 
 	// Computed, not reported. See the field's own comment.
@@ -397,4 +417,46 @@ Return ONLY the enriched data matching the schema (no wrapper object).`, typeSch
 
 	log.Debug("EnrichInPlace succeeded")
 	return result, nil
+}
+
+// changedExistingField reports the first field present in both the input and
+// the answer whose value differs, which is what AddOnly forbids.
+//
+// It compares the JSON encodings because Enrich's input and output are separate
+// type parameters: there is no common Go type to walk, and the wire shape is
+// what both sides agree on anyway. A field absent from either side is not a
+// change -- one is an addition, which is the whole point of the operation, and
+// the other is a removal that the field-set accounting already reports.
+func changedExistingField(input, enriched any) (string, bool) {
+	before := jsonObjectOf(input)
+	after := jsonObjectOf(enriched)
+	if before == nil || after == nil {
+		return "", false
+	}
+
+	for name, original := range before {
+		produced, present := after[name]
+		if !present {
+			continue
+		}
+		if !reflect.DeepEqual(original, produced) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// jsonObjectOf renders a value as a generic JSON object, or nil when it is not
+// one. A non-object input (a string, a slice) has no named fields for AddOnly
+// to protect, so there is nothing to compare.
+func jsonObjectOf(value any) map[string]any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return nil
+	}
+	return object
 }

@@ -59,22 +59,16 @@ func TestScoreParsesStructuredResponse(t *testing.T) {
 	}
 }
 
-// TestScoreClampsOutOfRangeValue proves a model that returns a value outside
-// the caller's declared scale is clamped rather than passed straight through
-// -- the scale is a contract the caller set, not a suggestion the model is
-// free to ignore.
-func TestScoreClampsOutOfRangeValue(t *testing.T) {
+// TestScoreRefusesOutOfRangeValue proves a model that returns a value outside
+// the caller's declared scale is refused rather than reinterpreted -- the scale
+// is a contract the caller set, not a suggestion the model is free to ignore.
+// This used to clamp, which turned an ignored scale into a perfect score.
+func TestScoreRefusesOutOfRangeValue(t *testing.T) {
 	installAnalysisResponse(t, `{"value": 999, "reasoning": "way too high"}`)
 
-	result, err := Score[string]("text", NewScoreOptions().WithScaleMin(0).WithScaleMax(10))
-	if err != nil {
-		t.Fatalf("Score: %v", err)
-	}
-	if result.Value != 10 {
-		t.Fatalf("Value = %v, want clamped to 10", result.Value)
-	}
-	if result.NormalizedValue != 1 {
-		t.Fatalf("NormalizedValue = %v, want 1", result.NormalizedValue)
+	_, err := Score[string]("text", NewScoreOptions().WithScaleMin(0).WithScaleMax(10))
+	if err == nil {
+		t.Fatal("Score accepted 999 against a 0-10 scale")
 	}
 }
 
