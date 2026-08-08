@@ -133,6 +133,28 @@ func TestSetObserverRestoresThePrevious(t *testing.T) {
 // nil restores the no-op rather than being stored and panicking later at an
 // emission site, which would turn a caller's mistake into a crash somewhere
 // else entirely.
+// Calling a restore func twice must not panic or corrupt state -- a defer
+// stacked with an explicit early restore is a normal pattern, and the second
+// call is a no-op that reassigns the same previous value.
+func TestSetObserverRestoreCalledTwiceIsSafe(t *testing.T) {
+	first := &recordingObserver{}
+	restoreToNop := SetObserver(first)
+
+	second := &recordingObserver{}
+	restore := SetObserver(second)
+
+	restore()
+	if CurrentObserver() != Observer(first) {
+		t.Fatal("first restore did not put the previous observer back")
+	}
+	restore() // second call: must not panic, must not change anything further
+	if CurrentObserver() != Observer(first) {
+		t.Fatal("calling restore a second time changed the installed observer")
+	}
+
+	restoreToNop()
+}
+
 func TestANilObserverRestoresTheNoOp(t *testing.T) {
 	restore := SetObserver(nil)
 	defer restore()
@@ -141,6 +163,18 @@ func TestANilObserverRestoresTheNoOp(t *testing.T) {
 		t.Fatal("CurrentObserver is nil after SetObserver(nil)")
 	}
 	ObserveOperationEnd(ObserveOperationStart(context.Background(), OperationEvent{}), OperationResult{})
+}
+
+// The no-op observer's OperationFinished must be a real, callable method --
+// not just OperationStarted -- since ObserveOperationEnd reaches it directly
+// whenever nothing has installed an observer.
+func TestNopObserverOperationFinishedIsCallable(t *testing.T) {
+	restore := SetObserver(nil) // force the no-op, regardless of what an earlier test left installed
+	defer restore()
+
+	// Must not panic, and must not block -- the whole contract of a "no-op".
+	nopObserver{}.OperationFinished(context.Background(), OperationResult{Operation: "extract"})
+	CurrentObserver().OperationFinished(context.Background(), OperationResult{Operation: "extract"})
 }
 
 func TestObservationIsSafeUnderConcurrency(t *testing.T) {
@@ -206,4 +240,80 @@ func fieldNamesOf(value any) []string {
 		names = append(names, t.Field(i).Name)
 	}
 	return names
+}
+
+// OB-001. Before anything installs a reader, GetTraceID/GetSpanID must
+// return "" -- the same thing the previous OpenTelemetry-backed
+// implementation returned when tracing was disabled, so a host that never
+// calls SetSpanIDSources sees no behaviour change.
+func TestSpanIDSourcesDefaultToEmpty(t *testing.T) {
+	if got := GetTraceID(context.Background()); got != "" {
+		t.Errorf("GetTraceID with no source installed = %q, want empty", got)
+	}
+	if got := GetSpanID(context.Background()); got != "" {
+		t.Errorf("GetSpanID with no source installed = %q, want empty", got)
+	}
+}
+
+// A nil context must not panic a reader that was never taught to expect one.
+func TestSpanIDSourcesToleratesNilContext(t *testing.T) {
+	restore := SetSpanIDSources(
+		func(context.Context) string { return "trace-should-not-be-reached" },
+		func(context.Context) string { return "span-should-not-be-reached" },
+	)
+	defer restore()
+
+	if got := GetTraceID(nil); got != "" { //nolint:staticcheck // deliberately exercising the nil-ctx guard
+		t.Errorf("GetTraceID(nil) = %q, want empty without invoking the source", got)
+	}
+	if got := GetSpanID(nil); got != "" { //nolint:staticcheck
+		t.Errorf("GetSpanID(nil) = %q, want empty without invoking the source", got)
+	}
+}
+
+// SetSpanIDSources installs the pair of readers this package's own emission
+// sites (telemetry/otel's adapter) use to attach the ambient span to an
+// event, and returns a restore func mirroring SetObserver's contract.
+func TestSetSpanIDSourcesInstallsAndRestores(t *testing.T) {
+	restore := SetSpanIDSources(
+		func(context.Context) string { return "trace-123" },
+		func(context.Context) string { return "span-456" },
+	)
+
+	if got := GetTraceID(context.Background()); got != "trace-123" {
+		t.Errorf("GetTraceID = %q, want trace-123", got)
+	}
+	if got := GetSpanID(context.Background()); got != "span-456" {
+		t.Errorf("GetSpanID = %q, want span-456", got)
+	}
+
+	restore()
+
+	if got := GetTraceID(context.Background()); got != "" {
+		t.Errorf("after restore, GetTraceID = %q, want empty", got)
+	}
+	if got := GetSpanID(context.Background()); got != "" {
+		t.Errorf("after restore, GetSpanID = %q, want empty", got)
+	}
+}
+
+// Passing nil for either reader restores that one's default without
+// disturbing the other -- the same "nil restores no-op" contract
+// SetObserver(nil) has.
+func TestSetSpanIDSourcesNilLeavesTheOtherReaderInPlace(t *testing.T) {
+	restoreBoth := SetSpanIDSources(
+		func(context.Context) string { return "trace-first" },
+		func(context.Context) string { return "span-first" },
+	)
+	defer restoreBoth()
+
+	restoreTraceOnly := SetSpanIDSources(nil, func(context.Context) string { return "span-second" })
+	defer restoreTraceOnly()
+
+	if got := GetTraceID(context.Background()); got != "" {
+		t.Errorf("GetTraceID after nil = %q, want empty (default restored)", got)
+	}
+	if got := GetSpanID(context.Background()); got != "span-second" {
+		t.Errorf("GetSpanID = %q, want span-second (untouched by the nil trace source)", got)
+	}
 }

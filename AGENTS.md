@@ -116,7 +116,21 @@ Recently changed files are the register to match — `internal/ops/invariants.go
 
 ## The gate
 
-`.github/workflows/ci.yml` is the required gate. Run its steps locally before reporting anything done:
+`.github/workflows/ci.yml` is the required gate, and `./scripts/check.sh` runs
+every one of its steps in one command:
+
+```
+./scripts/check.sh              # everything
+./scripts/check.sh --fast       # skips the shuffled run and the examples gate
+./scripts/check.sh --list       # prints what would run, runs nothing
+```
+
+It clears `SCHEMAFLUX_LIVE_TESTS` before anything executes, so no check can
+become a billed provider call; reports a missing tool as SKIPPED rather than
+passed; and states the `-race` skip on windows/arm64 instead of hiding it.
+
+The individual steps, for reference — this list, CONTRIBUTING.md's, and the CI
+workflow are meant to stay identical, and drifted apart once already:
 
 ```
 go build ./...

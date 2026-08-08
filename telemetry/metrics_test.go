@@ -101,6 +101,102 @@ func TestRecordMetricDisabledSkipsStorage(t *testing.T) {
 	}
 }
 
+// GetMetricSnapshot for a metric/tag combination nobody recorded must report
+// "not found" rather than a zero-valued snapshot that reads as "this metric
+// really was observed, and it was zero every time."
+func TestGetMetricSnapshotUnknownMetricReportsNotFound(t *testing.T) {
+	ResetMetrics()
+	t.Cleanup(ResetMetrics)
+
+	snapshot, ok := GetMetricSnapshot("no_such_metric_was_ever_recorded", nil)
+	if ok {
+		t.Fatalf("expected ok=false for an unrecorded metric, got snapshot %+v", snapshot)
+	}
+	if snapshot.Name != "" || snapshot.Count != 0 || len(snapshot.Tags) != 0 {
+		t.Fatalf("expected the zero MetricSnapshot on a miss, got %+v", snapshot)
+	}
+}
+
+// Average on a snapshot nothing has recorded into (Count == 0) must return 0
+// rather than dividing by zero.
+func TestMetricSnapshotAverageWithNoObservations(t *testing.T) {
+	var snapshot MetricSnapshot
+	if got := snapshot.Average(); got != 0 {
+		t.Fatalf("Average() on an empty snapshot = %v, want 0", got)
+	}
+}
+
+// RecordMetricValue with a blank (or whitespace-only) name must be silently
+// skipped -- there is no metric to attach a series to.
+func TestRecordMetricValueBlankNameIsSkipped(t *testing.T) {
+	ResetMetrics()
+	t.Cleanup(ResetMetrics)
+	t.Setenv("SCHEMAFLUX_METRICS", "")
+	original := config.IsMetricsEnabled()
+	t.Cleanup(func() { config.SetMetricsEnabled(original) })
+	config.SetMetricsEnabled(true)
+
+	RecordMetricValue("", 1, nil)
+	RecordMetricValue("   ", 1, nil)
+
+	if snapshots := SnapshotMetrics(); len(snapshots) != 0 {
+		t.Fatalf("expected a blank metric name to record nothing, got %d snapshots", len(snapshots))
+	}
+}
+
+// RegisterMetricSink(nil) must return a harmless no-op unregister rather than
+// panicking later when the registry is walked with a nil sink inside it.
+func TestRegisterMetricSinkNilIsHarmless(t *testing.T) {
+	ResetMetrics()
+	t.Cleanup(ResetMetrics)
+	t.Setenv("SCHEMAFLUX_METRICS", "")
+	original := config.IsMetricsEnabled()
+	t.Cleanup(func() { config.SetMetricsEnabled(original) })
+	config.SetMetricsEnabled(true)
+
+	unregister := RegisterMetricSink(nil)
+	if unregister == nil {
+		t.Fatal("RegisterMetricSink(nil) returned a nil unregister func")
+	}
+	unregister() // must not panic
+
+	// A real recording must still work: no nil sink was left behind to crash on.
+	RecordMetric("after_nil_sink", 1, nil)
+	if _, ok := GetMetricSnapshot("after_nil_sink", nil); !ok {
+		t.Fatal("expected the metric to be recorded even after registering/unregistering a nil sink")
+	}
+}
+
+// cloneTags(nil) and cloneTags({}) both return a non-nil empty map -- the
+// snapshot's Tags field is never nil, so a caller can range over it
+// unconditionally.
+func TestCloneTagsNormalizesEmptyAndNil(t *testing.T) {
+	if got := cloneTags(nil); got == nil || len(got) != 0 {
+		t.Fatalf("cloneTags(nil) = %#v, want a non-nil empty map", got)
+	}
+	if got := cloneTags(map[string]string{}); got == nil || len(got) != 0 {
+		t.Fatalf("cloneTags({}) = %#v, want a non-nil empty map", got)
+	}
+
+	original := map[string]string{"a": "1"}
+	cloned := cloneTags(original)
+	cloned["a"] = "mutated"
+	if original["a"] != "1" {
+		t.Fatal("cloneTags did not deep-copy; mutating the clone changed the source map")
+	}
+}
+
+// canonicalTags(nil)/({}) must both be "" so an untagged metric and an
+// explicitly-empty-tagged one collapse to the same aggregate key.
+func TestCanonicalTagsEmptyIsBlank(t *testing.T) {
+	if got := canonicalTags(nil); got != "" {
+		t.Fatalf("canonicalTags(nil) = %q, want empty", got)
+	}
+	if got := canonicalTags(map[string]string{}); got != "" {
+		t.Fatalf("canonicalTags({}) = %q, want empty", got)
+	}
+}
+
 func TestRegisterMetricSinkReceivesEvents(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)

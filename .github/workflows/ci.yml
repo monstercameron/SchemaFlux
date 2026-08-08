@@ -67,6 +67,27 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  # The same one command the maintainer runs locally (AGENTS.md, CONTRIBUTING.md).
+  # It exists because the required-check list lived in three places that drifted
+  # apart, and a contributor could satisfy either document and still be
+  # surprised here. This job is the tiebreaker: if check.sh passes and CI does
+  # not, the script is wrong and that is a bug worth fixing rather than working
+  # around.
+  #
+  # The dedicated jobs below still run individually, because a single failing
+  # step in a combined script is harder to read on a pull request than a red
+  # job with a name on it.
+  one-command-check:
+    name: scripts/check.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Run every gate in one command
+        run: ./scripts/check.sh --fast
+
   quality:
     name: quality
     runs-on: ubuntu-latest
