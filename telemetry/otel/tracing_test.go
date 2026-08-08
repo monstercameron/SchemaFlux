@@ -76,6 +76,22 @@ func TestAddSpanTags(t *testing.T) {
 }
 
 func TestGetSpanID(t *testing.T) {
+	// StartSpan is the LEGACY path: it reads the package-level `tracer` and
+	// `tracingEnabled`, which only InitTracing sets. Install() wires the
+	// Observer seam instead and deliberately does not touch those globals, so a
+	// span started here is non-recording however the provider is configured.
+	//
+	// This test previously asserted GetSpanID returned something, and passed --
+	// not because a span existed, but because GetSpanID returned the all-zero
+	// placeholder for an untraced context. Non-empty, so the assertion held
+	// while measuring nothing at all.
+	//
+	// With that fixed, the honest assertion is the one that is actually true on
+	// this path: with tracing uninitialised, there is no span and therefore no
+	// ID, and both accessors say so rather than inventing a plausible-looking
+	// one. TestAnUntracedContextYieldsNoIDRatherThanAZeroOne covers the same
+	// property from the other direction, and otel_more_test.go covers the
+	// Install()/Observer path where IDs are real.
 	ctx := context.Background()
 	opts := types.OpOptions{
 		Mode:         types.TransformMode,
@@ -85,10 +101,11 @@ func TestGetSpanID(t *testing.T) {
 	newCtx, span := StartSpan(ctx, "test-operation", opts)
 	defer span.End()
 
-	// Test getting span ID
-	spanID := GetSpanID(newCtx)
-	if spanID == "" {
-		t.Error("Expected span ID to be set")
+	if spanID := GetSpanID(newCtx); spanID != "" {
+		t.Errorf("GetSpanID = %q with tracing uninitialised; StartSpan returned a non-recording span, so there is no ID to report", spanID)
+	}
+	if traceID := GetTraceID(newCtx); traceID != "" {
+		t.Errorf("GetTraceID = %q with tracing uninitialised; want the empty string", traceID)
 	}
 }
 

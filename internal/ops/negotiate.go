@@ -278,7 +278,11 @@ Rules:
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Negotiate operation failed: parse error", "error", err, "response", response)
+		// The raw response is deliberately NOT logged. It can carry
+		// caller-derived content, and AGENTS.md forbids putting the caller's
+		// payload in a log line -- these two negotiate paths were the only
+		// operations in this package still doing it.
+		log.Error("Negotiate operation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse negotiation result: %w", err)
 	}
 
@@ -638,7 +642,8 @@ Rules:
 	}
 
 	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Adversarial negotiation failed: parse error", "error", err, "response", response)
+		// See Settle: the response body stays out of the log.
+		log.Error("Adversarial negotiation failed: parse error", "error", err)
 		return result, fmt.Errorf("failed to parse result: %w", err)
 	}
 

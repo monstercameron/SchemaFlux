@@ -594,12 +594,18 @@ Against these rules:
 
 	var result ValidationResult
 	if err := ParseJSONStrict(response, &result); err != nil {
-		// Try to parse as plain text if JSON parsing fails
-		result.Valid = strings.Contains(strings.ToLower(response), "valid")
-		result.ModelConfidence = 0.5
-		if !result.Valid {
-			result.Issues = []string{response}
-		}
+		// The old fallback here was `strings.Contains(lower, "valid")`, which
+		// reports Valid on a response saying the data is INVALID -- "invalid"
+		// contains "valid". A validation gate that fails open on an unparseable
+		// answer is worse than one that errors, because the caller proceeds
+		// believing the check ran.
+		//
+		// There is no honest way to recover a verdict from a body that did not
+		// parse, so this refuses instead of guessing. ValidateLegacy is
+		// deprecated, but a deprecated function that silently approves bad data
+		// is still approving bad data.
+		log.Error("ValidateLegacy operation failed: parse error", "error", err)
+		return result, fmt.Errorf("failed to parse validation result: %w", err)
 	}
 
 	log.Debug("Validate operation succeeded", "valid", result.Valid, "issuesCount", len(result.Issues))
@@ -936,11 +942,22 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), strategy)
 			return result, fmt.Errorf("failed to parse merged result: %w", err)
 		}
 		result.Merged = merged
-		result.ModelConfidence = 0.7
-		// Assume all sources were used
-		for i := range sources {
-			result.SourcesUsed = append(result.SourcesUsed, i)
-		}
+
+		// ModelConfidence stays at zero, and that is the fix rather than an
+		// omission. It was set to 0.7 here -- a number no model produced,
+		// written into a field whose whole contract is "this is the MODEL's
+		// claim about its own answer". A caller filtering on
+		// ModelConfidence >= 0.6 would have accepted every fallback parse on
+		// the strength of a constant invented in this function.
+		//
+		// The model did not report a confidence on this path, because the
+		// envelope carrying it is exactly what failed to parse. Zero means it
+		// said nothing, which is true.
+
+		// SourcesUsed is likewise left empty. It used to be filled with every
+		// index on the assumption that all sources were used; the response that
+		// would have said so is the one that did not parse, so the assumption
+		// was the same invention in a different field.
 		return result, nil
 	}
 

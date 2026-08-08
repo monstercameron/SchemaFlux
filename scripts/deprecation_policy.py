@@ -36,7 +36,45 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CATALOG = ROOT / "catalog.go"
+
+
+def _find_catalog() -> Path:
+    """Locate catalog.go wherever it currently lives.
+
+    It was hardcoded to the repository root, and when the root was reduced to a
+    single file the catalogue moved to internal/api/client and this script began
+    dying on a FileNotFoundError. A gate that crashes is at least loud; the worse
+    version is a gate that cannot find its input and reports success, which is
+    what a `try/except: pass` here would have produced.
+
+    So this searches, prefers the known home, and RAISES a readable error rather
+    than returning None -- if the catalogue cannot be found there is nothing to
+    check and saying so is the only honest outcome.
+    """
+    preferred = ROOT / "internal" / "api" / "client" / "catalog.go"
+    if preferred.exists():
+        return preferred
+
+    candidates = [
+        path for path in ROOT.rglob("catalog.go")
+        if "examples" not in path.parts and not path.name.endswith("_test.go")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise SystemExit(
+            "deprecation policy: cannot find catalog.go anywhere in the tree, so "
+            "there is no catalogue to check. If it was renamed, update "
+            "_find_catalog in scripts/deprecation_policy.py."
+        )
+    raise SystemExit(
+        "deprecation policy: found %d files named catalog.go (%s); it is ambiguous "
+        "which one is the operation catalogue. Name the right one in _find_catalog."
+        % (len(candidates), ", ".join(str(c.relative_to(ROOT)) for c in candidates))
+    )
+
+
+CATALOG = _find_catalog()
 
 # Files that are not this library's own API surface: vendored/copied
 # third-party source under examples/. A `// Deprecated:` marker there belongs

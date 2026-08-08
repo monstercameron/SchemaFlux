@@ -327,22 +327,35 @@ func InjectTraceContext(ctx context.Context, carrier map[string]string) {
 	propagator.Inject(ctx, propagation.MapCarrier(carrier))
 }
 
-// GetTraceID returns the current trace ID from context
+// GetTraceID returns the current trace ID from context, or "" when there is no
+// span on it.
+//
+// The `span != nil` guard these used to carry was dead code: trace.SpanFromContext
+// never returns nil, it returns a no-op span whose SpanContext is the zero value.
+// So a context with no span took the "success" branch and returned
+// "00000000000000000000000000000000" -- a string that looks like a trace ID,
+// passes an `if id != ""` check, and correlates nothing. Every log line and
+// stored result built from an untraced context carried it.
+//
+// IsValid() is the check that distinguishes a real span context from the zero
+// one, and it is what otel.go's traceIDFromContext already used -- these two
+// were the older, wrong copies.
 func GetTraceID(ctx context.Context) string {
-	span := trace.SpanFromContext(ctx)
-	if span != nil {
-		return span.SpanContext().TraceID().String()
+	spanContext := trace.SpanFromContext(ctx).SpanContext()
+	if !spanContext.IsValid() {
+		return ""
 	}
-	return ""
+	return spanContext.TraceID().String()
 }
 
-// GetSpanID returns the current span ID from context
+// GetSpanID returns the current span ID from context, or "" when there is no
+// span on it. See GetTraceID for why the nil check it used to have was wrong.
 func GetSpanID(ctx context.Context) string {
-	span := trace.SpanFromContext(ctx)
-	if span != nil {
-		return span.SpanContext().SpanID().String()
+	spanContext := trace.SpanFromContext(ctx).SpanContext()
+	if !spanContext.IsValid() {
+		return ""
 	}
-	return ""
+	return spanContext.SpanID().String()
 }
 
 // Helper functions

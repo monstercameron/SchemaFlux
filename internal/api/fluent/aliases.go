@@ -283,16 +283,37 @@ func Redact[T any](input T, opts RedactOptions) (T, error) {
 	return ops.Redact(input, opts)
 }
 
+// These three take their context from the options rather than starting a fresh
+// one, and that is a fix rather than a preference.
+//
+// They passed context.Background() unconditionally, so `.Context(ctx)` on
+// LLMRedacting, Completing, and CompletingField compiled, chained, and reached
+// nothing. The consequence was not merely a missing deadline: `Client.Context`
+// installs a per-call provider on the context (IN-004), so a client's provider
+// was silently discarded on these three paths and the call fell through to the
+// process-wide default -- exactly the cross-client leak the client snapshot
+// exists to prevent, on the only three entrypoints that bypassed it.
+//
+// callerContext falls back to Background() when the caller set none, so a caller
+// who never touched .Context() is unaffected.
+
+func callerContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 func RedactLLM(input string, opts RedactLLMOptions) (RedactLLMResult, error) {
-	return ops.RedactLLM(context.Background(), input, opts)
+	return ops.RedactLLM(callerContext(opts.Context), input, opts)
 }
 
 func Complete(input string, opts CompleteOptions) (CompleteResult, error) {
-	return ops.Complete(context.Background(), input, opts)
+	return ops.Complete(callerContext(opts.Context), input, opts)
 }
 
 func CompleteField[T any](input T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
-	return ops.CompleteField[T](context.Background(), input, opts)
+	return ops.CompleteField[T](callerContext(opts.Context), input, opts)
 }
 
 // Deprecated: use ValidateHybrid or ValidateDeterministically. This surface keeps the old spelling for now;
