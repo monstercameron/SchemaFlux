@@ -709,38 +709,44 @@ the file contains.
 ## Repository layout
 
 ```
-schemaflux.go   entry points          fluent.go       builder re-exports     |  the public API — package schemaflux
-client.go       the client             |
-catalog.go      the operation catalogue/
-
-tests/          the black-box suite — 29 files, package tests
-internal/       implementation; not importable by consumers
-mw/             optional middleware (cache, retry, circuit breaker)
-pricing/        cost calculation and budgets
-telemetry/      logging, metrics, tracing seams
-schemafluxtest/ fakes, recorder, and cassette replay for testing YOUR code
-cmd/            a live smoke command
-examples/       45 runnable examples, plus smarttodo (its own module)
+schemaflux.go        the only file at the root: the public API
+tests/               the black-box suite — package tests
+internal/api/client  the Client and catalogue, with their own tests
+internal/api/fluent  the builders
+internal/            the rest of the implementation, private by compiler rule
+internal/testfixtures  doubles shared between the test packages
+mw/                  optional middleware (cache, retry, circuit breaker)
+pricing/             cost calculation and budgets
+telemetry/           logging, metrics, tracing seams
+schemafluxtest/      fakes, recorder, and cassette replay for testing YOUR code
+cmd/                 a live smoke command
+examples/            45 runnable examples, plus smarttodo (its own module)
 ```
 
-Four source files at the root, and nine tests beside them. Those nine are
-`package schemaflux` because they exercise unexported identifiers — Go requires
-a package's own tests to sit in its directory, so they cannot move. Everything
-that only touches the public API lives in `tests/` instead.
+One file at the root, and it has to be there: for a Go module the root package is
+what `import "github.com/monstercameron/schemaflux"` resolves to, so the public
+API cannot live anywhere else. Moving it under `pkg/` would rename the import to
+`.../schemaflux/pkg` and break every consumer.
 
-The source files stay at the root because for a Go module the root package is
-what `import "github.com/monstercameron/schemaflux"` resolves to. Moving it into
-`pkg/` would change the import path to `.../schemaflux/pkg` and break every
-consumer. The widely-copied `pkg/`+`cmd/` layout comes from
-`golang-standards/project-layout`, which is not a Go standard, is not endorsed
-by the Go team, and targets applications rather than libraries; the standard
-library puts packages at the root too.
+Everything testable moved to where its tests can reach it. The `Client` and the
+catalogue are in `internal/api/client` with their own tests beside them, because
+Go requires a package's tests to sit in its directory and those tests reach
+unexported state. `schemaflux.Client` is a **type alias** for that package's
+type, not a wrapper, so it is the same type to the compiler and every method
+comes across without being re-declared.
 
-Fixtures shared between the two test packages live in `internal/testfixtures`,
-because a copy in each is how two fixtures that are meant to be identical drift
-apart and start proving different things. That is distinct from
-`schemafluxtest`, which is for consumers testing code built on this library —
-one is allowed to know things about the implementation, the other must not.
+That alias has one consequence worth knowing: `testdata/api_surface.txt`
+snapshots declarations found in the root directory, so it can no longer see the
+client's fifteen methods. They are pinned instead by an interface assertion in
+`tests/client_methods_test.go`, which is a stronger guarantee — removing or
+re-typing one breaks the build rather than a golden-file comparison, and it
+cannot be silenced by regenerating a snapshot.
+
+Fixtures shared between the two test packages live in `internal/testfixtures`
+rather than being copied into both, which is how two fixtures meant to be
+identical drift apart and start proving different things. That is distinct from
+`schemafluxtest`, which exists for consumers testing code built on this library:
+one may know things about the implementation, the other must not.
 
 ## Design Notes
 

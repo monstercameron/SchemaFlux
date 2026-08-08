@@ -107,3 +107,26 @@ func NewScriptedReplies(bodies ...string) *ScriptedProvider {
 func NewFailing(err error) *ScriptedProvider {
 	return &ScriptedProvider{err: err}
 }
+
+// NamedProvider answers with its own name inside the body, so a test can tell
+// WHICH provider served a call rather than only that some provider did. That
+// distinction is the whole point of an isolation test: two clients both
+// succeeding proves nothing if you cannot tell them apart.
+type NamedProvider struct {
+	name string
+}
+
+func NewNamed(name string) *NamedProvider { return &NamedProvider{name: name} }
+
+func (p *NamedProvider) Complete(_ context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+	return schemaflux.CompletionResponse{
+		Content:      p.name,
+		Provider:     "local",
+		Model:        req.Model,
+		FinishReason: "stop",
+	}, nil
+}
+
+func (p *NamedProvider) Name() string                                      { return "local" }
+func (p *NamedProvider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
+func (p *NamedProvider) RetryPolicy() (int, time.Duration)                 { return 0, 0 }

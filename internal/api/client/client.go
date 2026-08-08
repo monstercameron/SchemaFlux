@@ -1,4 +1,4 @@
-package schemaflux
+package client
 
 import (
 	"context"

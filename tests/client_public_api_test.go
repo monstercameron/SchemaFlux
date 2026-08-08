@@ -1,25 +1,21 @@
-package schemaflux
+package tests
 
 import (
 	"context"
 	"testing"
+
+	schemaflux "github.com/monstercameron/schemaflux"
 )
 
-func TestNewCommonOptionsDefaults(t *testing.T) {
-	opts := NewCommonOptions()
-
-	if opts.Mode != TransformMode {
-		t.Fatalf("expected default mode %v, got %v", TransformMode, opts.Mode)
-	}
-	if opts.Intelligence != Fast {
-		t.Fatalf("expected default intelligence %v, got %v", Fast, opts.Intelligence)
-	}
-}
+// These five came from the client package's own tests. They drive the public
+// builders, so they cannot live beside the client: the client package is
+// imported BY the root package, and a test there importing the root back would
+// be an import cycle. They were black-box tests wearing a white-box location.
 
 func TestExtractingBuilderAppliesCommonAndOperationOptions(t *testing.T) {
 	ctx := context.Background()
-	var seen ExtractOptions
-	_ = Extracting[struct {
+	var seen schemaflux.ExtractOptions
+	_ = schemaflux.Extracting[struct {
 		Name string `json:"name"`
 	}]("John Doe").
 		Strict().
@@ -31,15 +27,15 @@ func TestExtractingBuilderAppliesCommonAndOperationOptions(t *testing.T) {
 		CorrelationID("corr-123").
 		Partial(false).
 		SchemaHints(map[string]string{"name": "Full legal name"}).
-		Configure(func(opts ExtractOptions) ExtractOptions {
+		Configure(func(opts schemaflux.ExtractOptions) schemaflux.ExtractOptions {
 			seen = opts
 			return opts
 		})
 
-	if seen.CommonOptions.Mode != Strict {
+	if seen.CommonOptions.Mode != schemaflux.Strict {
 		t.Fatalf("expected strict mode, got %v", seen.CommonOptions.Mode)
 	}
-	if seen.CommonOptions.Intelligence != Smart {
+	if seen.CommonOptions.Intelligence != schemaflux.Smart {
 		t.Fatalf("expected smart intelligence, got %v", seen.CommonOptions.Intelligence)
 	}
 	if seen.CommonOptions.Steering != "focus on the contact record" {
@@ -66,21 +62,21 @@ func TestExtractingBuilderAppliesCommonAndOperationOptions(t *testing.T) {
 }
 
 func TestGenerateAndTransformBuildersAreConfigurable(t *testing.T) {
-	var genOpts GenerateOptions
-	_ = Generating[string]("write a release note").
+	var genOpts schemaflux.GenerateOptions
+	_ = schemaflux.Generating[string]("write a release note").
 		Creative().
 		Quick().
 		Style("concise").
 		Count(2).
-		Configure(func(opts GenerateOptions) GenerateOptions {
+		Configure(func(opts schemaflux.GenerateOptions) schemaflux.GenerateOptions {
 			genOpts = opts
 			return opts
 		})
 
-	if genOpts.CommonOptions.Mode != Creative {
+	if genOpts.CommonOptions.Mode != schemaflux.Creative {
 		t.Fatalf("expected creative mode, got %v", genOpts.CommonOptions.Mode)
 	}
-	if genOpts.CommonOptions.Intelligence != Quick {
+	if genOpts.CommonOptions.Intelligence != schemaflux.Quick {
 		t.Fatalf("expected quick intelligence, got %v", genOpts.CommonOptions.Intelligence)
 	}
 	if genOpts.Style != "concise" {
@@ -93,21 +89,21 @@ func TestGenerateAndTransformBuildersAreConfigurable(t *testing.T) {
 	type source struct{ Name string }
 	type target struct{ Label string }
 
-	var transformOpts TransformOptions
-	_ = Transforming[source, target](source{Name: "foo"}).
+	var transformOpts schemaflux.TransformOptions
+	_ = schemaflux.Transforming[source, target](source{Name: "foo"}).
 		Strict().
 		Fast().
 		Merge("merge").
 		Steer("preserve identifiers").
-		Configure(func(opts TransformOptions) TransformOptions {
+		Configure(func(opts schemaflux.TransformOptions) schemaflux.TransformOptions {
 			transformOpts = opts
 			return opts
 		})
 
-	if transformOpts.CommonOptions.Mode != Strict {
+	if transformOpts.CommonOptions.Mode != schemaflux.Strict {
 		t.Fatalf("expected strict mode, got %v", transformOpts.CommonOptions.Mode)
 	}
-	if transformOpts.CommonOptions.Intelligence != Fast {
+	if transformOpts.CommonOptions.Intelligence != schemaflux.Fast {
 		t.Fatalf("expected fast intelligence, got %v", transformOpts.CommonOptions.Intelligence)
 	}
 	if transformOpts.MergeStrategy != "merge" {
@@ -119,14 +115,14 @@ func TestGenerateAndTransformBuildersAreConfigurable(t *testing.T) {
 }
 
 func TestCollectionBuildersStayFluent(t *testing.T) {
-	var chooseOpts ChooseOptions
-	_ = Choosing([]string{"a", "b"}).
+	var chooseOpts schemaflux.ChooseOptions
+	_ = schemaflux.Choosing([]string{"a", "b"}).
 		By("best quality", "lowest cost").
 		Smart().
 		Reasoning(false).
 		Top(2).
 		Steer("prefer durable options").
-		Configure(func(opts ChooseOptions) ChooseOptions {
+		Configure(func(opts schemaflux.ChooseOptions) schemaflux.ChooseOptions {
 			chooseOpts = opts
 			return opts
 		})
@@ -134,7 +130,7 @@ func TestCollectionBuildersStayFluent(t *testing.T) {
 	if len(chooseOpts.Criteria) != 2 {
 		t.Fatalf("expected 2 criteria, got %d", len(chooseOpts.Criteria))
 	}
-	if chooseOpts.CommonOptions.Intelligence != Smart {
+	if chooseOpts.CommonOptions.Intelligence != schemaflux.Smart {
 		t.Fatalf("expected smart intelligence, got %v", chooseOpts.CommonOptions.Intelligence)
 	}
 	if chooseOpts.RequireReasoning {
@@ -147,14 +143,14 @@ func TestCollectionBuildersStayFluent(t *testing.T) {
 		t.Fatalf("unexpected steering: %q", chooseOpts.CommonOptions.Steering)
 	}
 
-	var filterOpts FilterOptions
-	_ = Filtering([]string{"a", "b"}).
+	var filterOpts schemaflux.FilterOptions
+	_ = schemaflux.Filtering([]string{"a", "b"}).
 		By("urgent only").
 		Quick().
 		KeepMatching(false).
 		MinConfidence(0.95).
 		Steer("drop backlog items").
-		Configure(func(opts FilterOptions) FilterOptions {
+		Configure(func(opts schemaflux.FilterOptions) schemaflux.FilterOptions {
 			filterOpts = opts
 			return opts
 		})
@@ -162,7 +158,7 @@ func TestCollectionBuildersStayFluent(t *testing.T) {
 	if filterOpts.Criteria != "urgent only" {
 		t.Fatalf("unexpected criteria: %q", filterOpts.Criteria)
 	}
-	if filterOpts.CommonOptions.Intelligence != Quick {
+	if filterOpts.CommonOptions.Intelligence != schemaflux.Quick {
 		t.Fatalf("expected quick intelligence, got %v", filterOpts.CommonOptions.Intelligence)
 	}
 	if filterOpts.KeepMatching {
@@ -175,13 +171,13 @@ func TestCollectionBuildersStayFluent(t *testing.T) {
 		t.Fatalf("unexpected steering: %q", filterOpts.CommonOptions.Steering)
 	}
 
-	var sortOpts SortOptions
-	_ = Sorting([]string{"a", "b"}).
+	var sortOpts schemaflux.SortOptions
+	_ = schemaflux.Sorting([]string{"a", "b"}).
 		By("highest priority first").
 		Fast().
 		Desc().
 		Steer("prioritize deadlines").
-		Configure(func(opts SortOptions) SortOptions {
+		Configure(func(opts schemaflux.SortOptions) schemaflux.SortOptions {
 			sortOpts = opts
 			return opts
 		})
@@ -189,7 +185,7 @@ func TestCollectionBuildersStayFluent(t *testing.T) {
 	if sortOpts.Criteria != "highest priority first" {
 		t.Fatalf("unexpected criteria: %q", sortOpts.Criteria)
 	}
-	if sortOpts.CommonOptions.Intelligence != Fast {
+	if sortOpts.CommonOptions.Intelligence != schemaflux.Fast {
 		t.Fatalf("expected fast intelligence, got %v", sortOpts.CommonOptions.Intelligence)
 	}
 	if sortOpts.Direction != "descending" {
@@ -200,102 +196,65 @@ func TestCollectionBuildersStayFluent(t *testing.T) {
 	}
 }
 
-func TestCollectionOptionTypesExposeCommonBuilders(t *testing.T) {
-	ctx := context.Background()
-
-	chooseOpts := NewChooseOptions().
-		WithMode(Strict).
-		WithIntelligence(Smart).
-		WithSteering("best fit").
-		WithThreshold(0.8).
-		WithContext(ctx).
-		WithRequestID("choose-1")
-	if chooseOpts.CommonOptions.Mode != Strict || chooseOpts.CommonOptions.Intelligence != Smart || chooseOpts.CommonOptions.Steering != "best fit" || chooseOpts.CommonOptions.Threshold != 0.8 || chooseOpts.CommonOptions.Context != ctx || chooseOpts.CommonOptions.RequestID != "choose-1" {
-		t.Fatalf("choose options lost common builder state: %#v", chooseOpts)
-	}
-
-	filterOpts := NewFilterOptions().
-		WithMode(Strict).
-		WithIntelligence(Quick).
-		WithSteering("keep only compliant").
-		WithThreshold(0.7).
-		WithContext(ctx).
-		WithRequestID("filter-1")
-	if filterOpts.CommonOptions.Mode != Strict || filterOpts.CommonOptions.Intelligence != Quick || filterOpts.CommonOptions.Steering != "keep only compliant" || filterOpts.CommonOptions.Threshold != 0.7 || filterOpts.CommonOptions.Context != ctx || filterOpts.CommonOptions.RequestID != "filter-1" {
-		t.Fatalf("filter options lost common builder state: %#v", filterOpts)
-	}
-
-	sortOpts := NewSortOptions().
-		WithMode(Strict).
-		WithIntelligence(Fast).
-		WithSteering("latest first").
-		WithThreshold(0.6).
-		WithContext(ctx).
-		WithRequestID("sort-1")
-	if sortOpts.CommonOptions.Mode != Strict || sortOpts.CommonOptions.Intelligence != Fast || sortOpts.CommonOptions.Steering != "latest first" || sortOpts.CommonOptions.Threshold != 0.6 || sortOpts.CommonOptions.Context != ctx || sortOpts.CommonOptions.RequestID != "sort-1" {
-		t.Fatalf("sort options lost common builder state: %#v", sortOpts)
-	}
-}
-
 func TestExtendedBuildersExposeFluentConfiguration(t *testing.T) {
-	var classifyOpts ClassifyOptions
-	_ = Classifying[string, string]("refund requested").
+	var classifyOpts schemaflux.ClassifyOptions
+	_ = schemaflux.Classifying[string, string]("refund requested").
 		Categories("billing", "support").
 		Smart().
 		Steer("prefer the most actionable label").
-		Configure(func(opts ClassifyOptions) ClassifyOptions {
+		Configure(func(opts schemaflux.ClassifyOptions) schemaflux.ClassifyOptions {
 			classifyOpts = opts
 			return opts
 		})
 	if len(classifyOpts.Categories) != 2 {
 		t.Fatalf("expected categories to be captured, got %#v", classifyOpts.Categories)
 	}
-	if classifyOpts.CommonOptions.Intelligence != Smart {
+	if classifyOpts.CommonOptions.Intelligence != schemaflux.Smart {
 		t.Fatalf("expected smart intelligence, got %v", classifyOpts.CommonOptions.Intelligence)
 	}
 
-	var parseOpts ParseOptions
-	_ = Parsing[map[string]any]("name|john").
+	var parseOpts schemaflux.ParseOptions
+	_ = schemaflux.Parsing[map[string]any]("name|john").
 		AllowLLMFallback(true).
 		AutoFix(true).
 		Quick().
 		RequestID("parse-1").
-		Configure(func(opts ParseOptions) ParseOptions {
+		Configure(func(opts schemaflux.ParseOptions) schemaflux.ParseOptions {
 			parseOpts = opts
 			return opts
 		})
 	if !parseOpts.AllowLLMFallback || !parseOpts.AutoFix {
 		t.Fatalf("expected parse flags to be enabled: %#v", parseOpts)
 	}
-	if parseOpts.OpOptions.Intelligence != Quick || parseOpts.OpOptions.RequestID != "parse-1" {
+	if parseOpts.OpOptions.Intelligence != schemaflux.Quick || parseOpts.OpOptions.RequestID != "parse-1" {
 		t.Fatalf("expected parse op options to be updated: %#v", parseOpts.OpOptions)
 	}
 
-	var questionOpts QuestionOptions
-	_ = Asking[string, string]("quarterly report", "What changed?").
+	var questionOpts schemaflux.QuestionOptions
+	_ = schemaflux.Asking[string, string]("quarterly report", "What changed?").
 		Strict().
 		Steer("answer briefly").
-		Configure(func(opts QuestionOptions) QuestionOptions {
+		Configure(func(opts schemaflux.QuestionOptions) schemaflux.QuestionOptions {
 			questionOpts = opts
 			return opts
 		})
 	if questionOpts.Question != "What changed?" {
 		t.Fatalf("unexpected question: %q", questionOpts.Question)
 	}
-	if questionOpts.CommonOptions.Mode != Strict || questionOpts.CommonOptions.Steering != "answer briefly" {
+	if questionOpts.CommonOptions.Mode != schemaflux.Strict || questionOpts.CommonOptions.Steering != "answer briefly" {
 		t.Fatalf("unexpected question common options: %#v", questionOpts.CommonOptions)
 	}
 }
 
 func TestDirectStyleBuildersExposeUnifiedControls(t *testing.T) {
-	var resolveOpts ResolveOptions
-	_ = Resolving([]string{"a", "b"}).
+	var resolveOpts schemaflux.ResolveOptions
+	_ = schemaflux.Resolving([]string{"a", "b"}).
 		Strategy("merge").
 		Smart().
 		RequestID("resolve-1").
 		CorrelationID("corr-resolve").
 		Steer("prefer the most complete record").
-		Configure(func(opts ResolveOptions) ResolveOptions {
+		Configure(func(opts schemaflux.ResolveOptions) schemaflux.ResolveOptions {
 			resolveOpts = opts
 			return opts
 		})
@@ -305,22 +264,41 @@ func TestDirectStyleBuildersExposeUnifiedControls(t *testing.T) {
 	if resolveOpts.RequestID != "resolve-1" || resolveOpts.CorrelationID != "corr-resolve" {
 		t.Fatalf("unexpected resolve tracking fields: %#v", resolveOpts)
 	}
-	if resolveOpts.Intelligence != Smart || resolveOpts.Steering != "prefer the most complete record" {
+	if resolveOpts.Intelligence != schemaflux.Smart || resolveOpts.Steering != "prefer the most complete record" {
 		t.Fatalf("unexpected resolve direct options: %#v", resolveOpts)
 	}
 
-	var projectOpts ProjectOptions
-	_ = Projecting[map[string]any, map[string]any](map[string]any{"id": 1}).
+	var projectOpts schemaflux.ProjectOptions
+	_ = schemaflux.Projecting[map[string]any, map[string]any](map[string]any{"id": 1}).
 		Exclude("secret", "token").
 		Fast().
-		Configure(func(opts ProjectOptions) ProjectOptions {
+		Configure(func(opts schemaflux.ProjectOptions) schemaflux.ProjectOptions {
 			projectOpts = opts
 			return opts
 		})
 	if len(projectOpts.Exclude) != 2 {
 		t.Fatalf("expected projected exclude fields, got %#v", projectOpts.Exclude)
 	}
-	if projectOpts.Intelligence != Fast {
+	if projectOpts.Intelligence != schemaflux.Fast {
 		t.Fatalf("expected fast intelligence, got %v", projectOpts.Intelligence)
 	}
 }
+
+// --- from providerconfig_override_test.go ---
+
+// Client.providerConfig copies a caller's schemaflux.ProviderConfig field by field, and a
+// hand-written copy list cannot fail when somebody adds a field to the struct
+// it copies. It had already silently lost two: EndpointPolicy (SEC-004) and
+// HTTPClient (SC-007), both opt-in and both security-relevant, so a caller
+// switching endpoint enforcement on through the public API got a nil policy and
+// no enforcement, while the check one layer down looked implemented and tested.
+//
+// This is A-014's bug in a second place (applyDefaults, internal/ops), so it
+// gets A-014's guard: walk the struct by reflection rather than naming fields,
+// because the only moment a list needed to fail is the moment somebody extended
+// the struct without extending the list.
+
+// nonZeroProviderConfig fills every field with a distinguishable non-zero
+// value. Adding a field to schemaflux.ProviderConfig without adding it here fails
+// TestEveryProviderConfigFieldIsPopulatedInTheFixture, so the fixture cannot
+// quietly fall behind the struct either.
