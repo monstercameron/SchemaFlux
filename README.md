@@ -1,16 +1,22 @@
 # SchemaFlux
 
-SchemaFlux is a Go library for typed LLM operations.
+**Structured AI that ships.**
+
+SchemaFlux is a Go library for typed LLM operations — it makes a language model return a typed Go
+value instead of a wall of text you have to parse.
 
 It gives you a single public API built around fluent request builders so application code stays readable while retries, structured output contracts, logging, metrics, and cost tracking stay centralized.
 
-**Status: v1.0.0.** The public API listed in `testdata/api_surface.txt` is
+→ **[Read the case study](https://www.earlcameron.com/projects/schemaflux)** — what it does, what it
+is built on, and what was hard.
+
+**Status: v1.1.0.** The public API listed in `testdata/api_surface.txt` is
 stable under the deprecation policy below — a snapshot test fails the build if
 it changes, so an addition or a removal is a reviewed decision rather than a
 side effect. Every behaviour claim in this README is backed by a test in the
 repository.
 
-Twelve of the project's own 32 acceptance criteria are not met at 1.0. They are
+Twelve of the project's own 32 acceptance criteria were not met at 1.0. They are
 listed with a reason each in `TODOS.md`, and
 [ADR 0005](docs/adr/0005-shipping-1-0-with-twelve-unmet-criteria.md) says why
 the version ships anyway. The short version is in
