@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="design/branding/schemaflux-poster.webp" alt="SchemaFlux — structured AI that ships" width="820">
+</p>
+
 # SchemaFlux
 
 **Structured AI that ships.**
