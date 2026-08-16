@@ -62,6 +62,56 @@ func TestBuildResponsesRequestBodyOmitsToolsWhenUnset(t *testing.T) {
 	}
 }
 
+// TestBuildResponsesRequestBodyWebSearchAlone proves the built-in web_search
+// tool reaches the wire as a bare type marker even when no function tools are
+// declared -- the declaration is what grants the model any web access at all.
+func TestBuildResponsesRequestBodyWebSearchAlone(t *testing.T) {
+	provider := &OpenAIProvider{config: ProviderConfig{}}
+	body := provider.buildResponsesRequestBody(CompletionRequest{
+		Model:      "gpt-5.6-luna",
+		UserPrompt: "what happened today",
+		WebSearch:  true,
+	}, false)
+
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected exactly the web_search tool, got %#v", body["tools"])
+	}
+	if tools[0]["type"] != "web_search" {
+		t.Errorf("tool.type = %v, want %q", tools[0]["type"], "web_search")
+	}
+	if _, ok := tools[0]["name"]; ok {
+		t.Errorf("built-in tool must not carry a name, got %v", tools[0]["name"])
+	}
+	if _, ok := tools[0]["parameters"]; ok {
+		t.Errorf("built-in tool must not carry parameters, got %v", tools[0]["parameters"])
+	}
+}
+
+// TestBuildResponsesRequestBodyWebSearchAlongsideFunctionTools proves the two
+// tool kinds share one tools array: function tools keep their shape and order,
+// and web_search rides after them.
+func TestBuildResponsesRequestBodyWebSearchAlongsideFunctionTools(t *testing.T) {
+	provider := &OpenAIProvider{config: ProviderConfig{}}
+	body := provider.buildResponsesRequestBody(CompletionRequest{
+		Model:      "gpt-5.6-luna",
+		UserPrompt: "what's the weather",
+		WebSearch:  true,
+		Tools:      []Tool{{Name: "get_weather", Description: "d"}},
+	}, false)
+
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected function tool + web_search, got %#v", body["tools"])
+	}
+	if tools[0]["type"] != "function" || tools[0]["name"] != "get_weather" {
+		t.Errorf("first tool should be the declared function, got %#v", tools[0])
+	}
+	if tools[1]["type"] != "web_search" {
+		t.Errorf("second tool should be web_search, got %#v", tools[1])
+	}
+}
+
 // TestBuildResponsesRequestBodySendsToolsInAPIShape proves a declared tool
 // reaches the wire as the Responses API's function-tool shape: type,
 // name, description, and parameters as the caller's schema.

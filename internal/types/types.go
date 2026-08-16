@@ -157,6 +157,14 @@ type OpOptions struct {
 	// Empty means no pin: the tier mapping decides, as before.
 	Model string
 
+	// WebSearch declares the provider's built-in web-search tool on the
+	// call, giving the model live web access it otherwise has none of. The
+	// model still decides per-request whether to actually search. False
+	// leaves the wire request exactly as it was before this field existed;
+	// providers without a built-in search tool ignore it. See
+	// llm.CompletionRequest.WebSearch.
+	WebSearch bool
+
 	// SchemaID is the schema's full identity -- name, version, hash, dialect --
 	// rendered for a log line, a cache key, or a stored result's provenance.
 	//

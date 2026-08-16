@@ -279,6 +279,7 @@ func streamLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.
 		JSONSchema:     opts.JSONSchema,
 		SchemaName:     opts.SchemaName,
 		PromptCacheKey: promptCacheKeyFor(opts, model, responseFormat, stableSystemPrompt),
+		WebSearch:      opts.WebSearch,
 	}
 
 	streamCtx, cancel := operationContext(ctx, config.GetTimeout())

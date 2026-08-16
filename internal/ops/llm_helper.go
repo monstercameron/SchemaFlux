@@ -263,6 +263,7 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		JSONSchema:     opts.JSONSchema,
 		SchemaName:     opts.SchemaName,
 		PromptCacheKey: promptCacheKeyFor(opts, model, responseFormat, stableSystemPrompt),
+		WebSearch:      opts.WebSearch,
 	}
 
 	start := time.Now()

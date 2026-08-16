@@ -133,6 +133,20 @@ type CompletionRequest struct {
 	// see Complete.
 	ToolChoice string
 
+	// WebSearch declares OpenAI's built-in web_search tool on the request,
+	// letting the model search the live web before answering. Unlike Tools,
+	// nothing comes back for the caller to execute -- the provider runs the
+	// search itself and the answer arrives as an ordinary message (the
+	// search-call output items are skipped by content(), exactly as
+	// reasoning items are). Whether the model actually searches is its own
+	// call unless ToolChoice forces it; declaring the tool is the only way
+	// the model gets ANY web access at all.
+	//
+	// False produces the exact wire body this library sent before the field
+	// existed. Providers without a built-in search tool (Anthropic path,
+	// chat/completions-compatible, local) ignore it.
+	WebSearch bool
+
 	// Messages, when non-empty, carries an explicit multi-turn transcript
 	// and takes priority over SystemPrompt/UserPrompt for the "input" the
 	// Responses API receives: SystemPrompt still becomes "instructions" (the
@@ -644,8 +658,8 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 	// Tools/ToolChoice are omitted entirely rather than sent empty/"auto" by
 	// default, so a request that never mentions tools produces the exact
 	// same wire body it produced before tool calling existed.
-	if len(req.Tools) > 0 {
-		tools := make([]map[string]interface{}, 0, len(req.Tools))
+	if len(req.Tools) > 0 || req.WebSearch {
+		tools := make([]map[string]interface{}, 0, len(req.Tools)+1)
 		for _, tool := range req.Tools {
 			parameters := tool.Parameters
 			if parameters == nil {
@@ -660,6 +674,11 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 				"description": tool.Description,
 				"parameters":  parameters,
 			})
+		}
+		if req.WebSearch {
+			// The built-in tool is a bare type marker: the provider hosts
+			// the implementation, so there is no name/parameters half.
+			tools = append(tools, map[string]interface{}{"type": "web_search"})
 		}
 		requestBody["tools"] = tools
 	}

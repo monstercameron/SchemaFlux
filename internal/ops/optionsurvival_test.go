@@ -29,6 +29,7 @@ func nonZeroOpOptions() types.OpOptions {
 		Mode:            types.Strict,
 		Intelligence:    types.Quick,
 		Model:           "pinned-model",
+		WebSearch:       true,
 		ExactFields:     true,
 		CompleteFields:  true,
 		Context:         context.Background(),

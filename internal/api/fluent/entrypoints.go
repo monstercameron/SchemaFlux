@@ -347,6 +347,18 @@ func (r GenerateRequest[T]) Strict() GenerateRequest[T] {
 	return r
 }
 
+// WebSearch declares the provider's built-in web-search tool on this call,
+// giving the model live web access it otherwise has none of -- without the
+// declaration the model cannot browse at all, whatever the prompt asks. The
+// model still decides per-request whether searching is warranted. Providers
+// without a built-in search tool ignore the flag, and a request that never
+// calls this produces the exact wire body it produced before the method
+// existed.
+func (r GenerateRequest[T]) WebSearch() GenerateRequest[T] {
+	r.opts = r.opts.WithWebSearch()
+	return r
+}
+
 // ExactFields rejects a property the schema does not name, without also
 // requiring every field to be non-empty.
 //

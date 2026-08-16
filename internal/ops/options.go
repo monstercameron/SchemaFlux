@@ -945,6 +945,17 @@ func (g GenerateOptions) WithIntelligence(intelligence types.Speed) GenerateOpti
 	return g
 }
 
+// WithWebSearch declares the provider's built-in web-search tool on the
+// call, giving the model live web access it otherwise has none of. The
+// model still decides per-request whether to actually search. The flag has
+// one home -- types.OpOptions.WebSearch -- so this writes to the embedded
+// OpOptions rather than growing a second CommonOptions copy for the merge
+// to forget (the ST-010/DX-001 two-homes trap).
+func (g GenerateOptions) WithWebSearch() GenerateOptions {
+	g.OpOptions.WebSearch = true
+	return g
+}
+
 func (g GenerateOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(g.CommonOptions, g.OpOptions)
 }

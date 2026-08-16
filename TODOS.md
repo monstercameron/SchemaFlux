@@ -2797,6 +2797,24 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   **Limitation:** `ClassifyCompletion` called directly on a tool-call response with empty
   content still reports `KindMalformedOutput`. The provider path no longer routes through
   that, so it only bites a caller who ignores `ToolCalls` and classifies by hand.
+- [x] **PS-011** — Expose OpenAI's built-in `web_search` tool. **PS-004** added function
+  tools; a built-in tool is a different animal — the provider hosts the implementation, the
+  declaration is a bare `{"type": "web_search"}` in the same tools array, and without it the
+  model has no web access at all, whatever the prompt asks (reported from AnimeFeedFlux,
+  whose "watch" feeds need the model to check the live web).
+  **Done.** One home for the flag, per the ST-010/DX-001 two-homes lesson:
+  `types.OpOptions.WebSearch`, carried to `llm.CompletionRequest.WebSearch` by both the
+  buffered and streamed request builders, serialized only on the Responses path. Anthropic,
+  chat/completions-compatible, and local providers ignore it. False produces the exact wire
+  body sent before the field existed. Fluent surface: `Generating[T](...).WebSearch()` /
+  `GenerateOptions.WithWebSearch()`. Nothing new comes back to execute — the provider runs
+  the search itself and `content()`/`toolCalls()` already skip the search-call output items
+  the way they skip reasoning items.
+  Evidence: `internal/llm/toolcalling_test.go` (web_search alone as a bare type marker;
+  alongside function tools in one array, functions first); the reflection suites
+  (`optionsurvival_test.go`, `mergecoverage_test.go`) picked the field up via the fixture.
+  *Verify:* unset ⇒ no `tools` key at all; set ⇒ `{"type":"web_search"}` on the wire; the
+  option survives `applyDefaults` and the embedded merge.
 - [x] **PS-005** — Multi-turn support: `CompletionRequest` carries one system string and one
   user string, with no message history. `Asking`, `Negotiating`, and
   `NegotiatingAdversarially` are naturally multi-turn operations implemented as one round
