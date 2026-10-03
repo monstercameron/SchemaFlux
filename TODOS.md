@@ -7595,6 +7595,17 @@ session's working files and their findings are entered here as they are acted on
      differently from its Record; option `Validate` messages in the old root echo the caller's option
      string (24 sites); a stream whose provider ignores cancellation ends its span late; no middleware
      forwards a stream (a client with middleware cannot stream: documented, not built).
+     *Found after the lanes were stopped, by a test that finished late:*
+     `tests/log_leak_catalog_test.go` (`TestEveryOperationKeepsWhatItWasGivenOutOfTheLog`) drives all
+     103 catalogued operations of the old root with canaries in the input, the options, the answer and
+     a provider's error, at debug level, and FAILS on this tree: on a provider failure, 88 operations
+     log the vendor's text and the caller's input (about 195 lines of the form
+     `log.Error("<Op> operation LLM call failed", "error", err)` in `internal/ops`; only the sites
+     that use `loggedError(err)` are clean); `Generate` and `Transform` log the caller's field names
+     in a schema line (`core.go`); `Rewrite` logs a required word; `Explain`, `Suggest`, `Summarize`
+     and `NormalizeBatch` log a refused option's value. The fix is mechanical: every such line logs
+     `loggedError(err)` (the kind only). Version 2's client logger already withholds these through
+     its guard handler; the old root does not.
   7. *Release.* Port the README (the old one is unchanged), write the migration notes, then the swap:
      move `v2/` to the repository root, delete the old root, the fluent builders and `internal/tools`,
      and change the module line to `github.com/monstercameron/schemaflux/v2`. Go requires that suffix
