@@ -48,8 +48,10 @@ func (m Mode) String() string {
 	}
 }
 
-// Speed defines the quality vs latency tradeoff for operations.
-// Higher quality models have higher latency but better results.
+// Speed names the tier of model an operation asks for, from the quality it needs
+// to the latency it can afford. It is a label, not a model: config.GetModel
+// resolves it, per provider and with the SCHEMAFLUX_MODEL_* overrides, and a
+// provider is free to map every tier to one model.
 type Speed int
 
 const (
@@ -59,16 +61,18 @@ const (
 	// F-01.
 	TierUnset Speed = iota
 
-	// Smart uses the highest quality model (GPT-4 class).
-	// ~2-5s latency, best for complex reasoning and critical decisions.
+	// Smart is the tier for complex reasoning and critical decisions.
+	// config.GetModel resolves it to a model for the provider in use; for OpenAI
+	// that is the same model as the other tiers, so the tier is a label until
+	// someone maps it to a different one with SCHEMAFLUX_MODEL_SMART.
 	Smart
 
-	// Fast uses balanced performance models (GPT-3.5 Turbo).
-	// ~1-2s latency, default for most operations.
+	// Fast is the default tier for most operations, resolved by
+	// config.GetModel.
 	Fast
 
-	// Quick uses the fastest available model.
-	// <1s latency, for real-time and high-volume operations.
+	// Quick is the tier for real-time and high-volume operations, resolved by
+	// config.GetModel.
 	Quick
 )
 
@@ -87,6 +91,24 @@ func (s Speed) String() string {
 		return "unknown"
 	}
 }
+
+// Effort is how much a model reasons before it answers. The words are the
+// provider's own; which of them a model takes depends on its family.
+type Effort string
+
+const (
+	// EffortDefault leaves the effort to the operation and the provider.
+	EffortDefault Effort = ""
+	// EffortNone turns reasoning off: fastest, and not to be used for
+	// arithmetic.
+	EffortNone    Effort = "none"
+	EffortMinimal Effort = "minimal"
+	EffortLow     Effort = "low"
+	EffortMedium  Effort = "medium"
+	EffortHigh    Effort = "high"
+	EffortXHigh   Effort = "xhigh"
+	EffortMax     Effort = "max"
+)
 
 // OpOptions configures individual LLM operations.
 // All fields are optional with sensible defaults.
@@ -156,6 +178,22 @@ type OpOptions struct {
 	//
 	// Empty means no pin: the tier mapping decides, as before.
 	Model string
+
+	// Effort is how much the model reasons before it answers. Empty leaves it
+	// to the operation and the provider, as before this field existed.
+	//
+	// It is the largest single lever on latency. Measured on gpt-6-luna
+	// (TODOS.md LX-105): with reasoning off, 18 kinds of judgment scored the
+	// same as at the default and ran 29% faster at the median and 47% faster
+	// at the 90th percentile, and arithmetic went from 24 right in 24 to 13.
+	// So EffortNone suits a choice, a match or a yes or no, and anything that
+	// computes wants EffortLow or more.
+	//
+	// A value the model does not take is refused before the request is sent,
+	// with the values it does take. A provider that cannot set an effort at
+	// all refuses any value. The local stand-in provider used in tests and
+	// examples is the exception: it does not reason, and ignores it.
+	Effort Effort
 
 	// WebSearch declares the provider's built-in web-search tool on the
 	// call, giving the model live web access it otherwise has none of. The
@@ -408,6 +446,11 @@ type ResultMetadata struct {
 	Mode         Mode   `json:"mode"`
 	Intelligence Speed  `json:"intelligence"`
 
+	// Timing is where the call's time went (LAT-001): the wait for a slot in
+	// the client's scheduler and the phases of the HTTP call, summed over the
+	// attempts that got an answer. Nil when nothing was timed.
+	Timing *Timing `json:"timing,omitempty"`
+
 	// Token usage tracking
 	TokenUsage *TokenUsage `json:"token_usage,omitempty"`
 
@@ -419,6 +462,24 @@ type ResultMetadata struct {
 	CacheHit   bool          `json:"cache_hit"`
 	LatencyP50 time.Duration `json:"latency_p50,omitempty"`
 	LatencyP95 time.Duration `json:"latency_p95,omitempty"`
+
+	// ServiceTier is the service tier the provider says served the request, as
+	// it reported it. Empty when it reported none.
+	ServiceTier string `json:"service_tier,omitempty"`
+
+	// Hedged reports that a second copy of the request was sent, whichever
+	// copy answered.
+	Hedged bool `json:"hedged,omitempty"`
+
+	// FinishReason is why the provider stopped generating, as it reported it.
+	// Empty when it reported none.
+	FinishReason string `json:"finish_reason,omitempty"`
+
+	// UsageOnly marks the record of an attempt whose answer was refused. It
+	// carries that attempt's usage and cost and nothing else a reader should
+	// take for the call: it counts no attempt (the record of the request
+	// does), and its identity fields are not the call's.
+	UsageOnly bool `json:"usage_only,omitempty"`
 
 	// Error information
 	ErrorType string `json:"error_type,omitempty"`

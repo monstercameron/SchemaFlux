@@ -64,7 +64,7 @@ func TestScoreParsesStructuredResponse(t *testing.T) {
 // is a contract the caller set, not a suggestion the model is free to ignore.
 // This used to clamp, which turned an ignored scale into a perfect score.
 func TestScoreRefusesOutOfRangeValue(t *testing.T) {
-	installAnalysisResponse(t, `{"value": 999, "reasoning": "way too high"}`)
+	installAnalysisResponse(t, `{"value": 999, "reasoning": "way too high", "breakdown": {}, "strengths": [], "weaknesses": []}`)
 
 	_, err := Score[string]("text", NewScoreOptions().WithScaleMin(0).WithScaleMax(10))
 	if err == nil {
@@ -72,17 +72,15 @@ func TestScoreRefusesOutOfRangeValue(t *testing.T) {
 	}
 }
 
-// TestScoreFallsBackToBareNumber exercises the legacy fallback path: a
-// response that is not the structured JSON object but a bare quoted number.
-func TestScoreFallsBackToBareNumber(t *testing.T) {
+// A bare number is not the JSON object that was asked for. The fallback that
+// read one also read "NaN" and hexadecimal floats, so it is gone; the table of
+// refusals is TestScoreRefusesWhatIsNotANumberOnTheScale.
+func TestScoreRefusesABareNumber(t *testing.T) {
 	installAnalysisResponse(t, `"7.5"`)
 
 	result, err := Score[string]("text", NewScoreOptions())
-	if err != nil {
-		t.Fatalf("Score: %v", err)
-	}
-	if result.Value != 7.5 {
-		t.Fatalf("Value = %v, want 7.5 from the bare-number fallback", result.Value)
+	if err == nil {
+		t.Fatalf("Score accepted a bare number: %+v", result)
 	}
 }
 
@@ -131,7 +129,7 @@ func TestCompareParsesStructuredResponse(t *testing.T) {
 		"similarities": [{"aspect": "purpose", "description": "both are widgets"}],
 		"differences": [{"aspect": "color", "description": "one is red", "severity": "minor"}],
 		"verdict": "mostly alike",
-		"aspect_scores": {"purpose": 0.9}
+		"aspect_scores": {"purpose": 0.9, "color": 0.2}
 	}`)
 
 	a := comparedThing{Name: "A"}
@@ -234,36 +232,19 @@ func TestSimilarParsesStructuredResponse(t *testing.T) {
 	}
 }
 
-// TestSimilarFallsBackToBareBoolean exercises the legacy fallback: a plain
-// "true"/"false" body rather than the structured object, deriving a score
-// that straddles the configured threshold in the expected direction.
-func TestSimilarFallsBackToBareBoolean(t *testing.T) {
-	t.Run("true", func(t *testing.T) {
-		installAnalysisResponse(t, "TRUE")
+// TestSimilarRefusesABareBoolean replaces a test that asserted the opposite: a
+// plain "true" or "false" body was accepted and given a score of the threshold
+// plus or minus 0.1, and the test checked that the invented score fell on the
+// right side. That score is a number no model produced (LX-022). The full table
+// is TestSimilarAnswersAreCheckedAgainstTheThreshold.
+func TestSimilarRefusesABareBoolean(t *testing.T) {
+	for _, body := range []string{"TRUE", "false"} {
+		installAnalysisResponse(t, body)
 		result, err := Similar[string]("a", "b", NewSimilarOptions().WithSimilarityThreshold(0.5))
-		if err != nil {
-			t.Fatalf("Similar: %v", err)
+		if err == nil {
+			t.Fatalf("a bare %q was accepted with Score=%v", body, result.Score)
 		}
-		if !result.IsSimilar {
-			t.Fatal("IsSimilar = false, want true from the bare-boolean fallback")
-		}
-		if result.Score <= 0.5 {
-			t.Fatalf("Score = %v, want above the 0.5 threshold", result.Score)
-		}
-	})
-	t.Run("false", func(t *testing.T) {
-		installAnalysisResponse(t, "false")
-		result, err := Similar[string]("a", "b", NewSimilarOptions().WithSimilarityThreshold(0.5))
-		if err != nil {
-			t.Fatalf("Similar: %v", err)
-		}
-		if result.IsSimilar {
-			t.Fatal("IsSimilar = true, want false from the bare-boolean fallback")
-		}
-		if result.Score >= 0.5 {
-			t.Fatalf("Score = %v, want below the 0.5 threshold", result.Score)
-		}
-	})
+	}
 }
 
 func TestSimilarRefusesUnparseableResponse(t *testing.T) {

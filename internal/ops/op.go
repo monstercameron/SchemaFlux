@@ -99,6 +99,13 @@ type OutputContract[Out any] struct {
 type BatchAlgebra[In, Out any] struct {
 	Class types.BatchClass
 
+	// checksEachItem is set by NewIDBatchAlgebra, whose Merge reads the answer
+	// as JSON, requires every id to be answered exactly once, and decodes each
+	// output on its own. A Merge written by hand is a function this package
+	// cannot see into, and a batch built on one is vouched for no further than
+	// that the provider answered (batchContractLevel).
+	checksEachItem bool
+
 	// Kind is PL-006's finer taxonomy over Class: independent, subset,
 	// permutation, partition, graph, hierarchical, or sequential. Class says
 	// how much validation a batch carries; Kind says what shape that
@@ -137,7 +144,7 @@ type BatchAlgebra[In, Out any] struct {
 //
 // In and Out are the operation's input and output types. It holds no
 // context.Context and no provider -- data plus pure functions -- which is
-// what makes planning, recipes, loop fusion, and middleware possible without
+// what makes planning, batching, and middleware possible without
 // a second execution path: anything that can read this struct can reason
 // about the operation, and nothing about running it requires touching this
 // struct's shape.
@@ -175,9 +182,9 @@ type Op[In, Out any] struct {
 // form a caller can handle.
 func NewOp[In, Out any](op Op[In, Out]) (Op[In, Out], error) {
 	if op.Semantics.Stability == types.StabilityStable && op.Batch.Class == types.BatchUnspecified {
-		return Op[In, Out]{}, fmt.Errorf(
+		return Op[In, Out]{}, types.Classified(types.KindConfiguration, fmt.Errorf(
 			"op %s is declared stable but has no batch class; a stable operation must say how it composes across a batch (types.BatchNone if it has none)",
-			op.ID)
+			op.ID))
 	}
 
 	// PL-006: a stable operation whose batch form actually composes many
@@ -192,9 +199,9 @@ func NewOp[In, Out any](op Op[In, Out]) (Op[In, Out], error) {
 	if op.Semantics.Stability == types.StabilityStable &&
 		(op.Batch.Class == types.BatchItemwise || op.Batch.Class == types.BatchAggregate) &&
 		op.Batch.Kind == types.AlgebraUnspecified {
-		return Op[In, Out]{}, fmt.Errorf(
+		return Op[In, Out]{}, types.Classified(types.KindConfiguration, fmt.Errorf(
 			"op %s is declared stable with batch class %s but no algebra kind; a stable batched operation must say how it composes (independent, subset, permutation, partition, graph, hierarchical, or sequential)",
-			op.ID, op.Batch.Class)
+			op.ID, op.Batch.Class))
 	}
 	return op, nil
 }
@@ -219,14 +226,31 @@ func MustNewOp[In, Out any](op Op[In, Out]) Op[In, Out] {
 // operation in this package already runs through (A-002's Run does the same
 // for the fluent builders) -- adding a second way to supply a provider here
 // would be the second execution path the Op design exists to avoid.
-func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types.OpOptions) (Out, RepairResult, error) {
+func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types.OpOptions) (_ Out, _ RepairResult, runErr error) {
 	var zero Out
 
+	// The client the call runs on is fixed first, and its deadline binds a call
+	// whose context has none: this path derives none of its own.
+	ctx, _ = PinExec(ctx)
+	ctx, cancel := clientDeadline(ctx)
+	defer cancel()
+
+	// OB-006: name the operation for the telemetry CallLLM emits below.
+	// RunOp is the one place on this path that knows it.
+	ctx = WithOperationName(ctx, op.ID.Name)
+
+	// One call of the operation, to the installed observers: its requests, the
+	// decoding and checking of each answer, and the repairs, ending with the
+	// kind of whatever error this returns. It starts before the two refusals
+	// below, which are part of the call and show on its span.
+	ctx, observed := observeOperation(ctx, op.ID.Name)
+	defer observed.end(&runErr)
+
 	if op.BuildPrompt == nil {
-		return zero, RepairResult{}, fmt.Errorf("op %s: no BuildPrompt to render a request from", op.ID)
+		return zero, RepairResult{}, types.Newf(types.KindConfiguration, "run", "op %s has no BuildPrompt to render a request from", op.ID)
 	}
 	if op.Contract.Decode == nil {
-		return zero, RepairResult{}, fmt.Errorf("op %s: no Decode to turn a response into %T", op.ID, zero)
+		return zero, RepairResult{}, types.Newf(types.KindConfiguration, "run", "op %s has no Decode to turn a response into %T", op.ID, zero)
 	}
 
 	system, user := op.BuildPrompt(input, opt)
@@ -333,12 +357,35 @@ func RunOp[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types
 // execution as RunOp -- it calls RunOp and wraps call recording around it --
 // so there is one path, not two that could drift (T-01's lesson, the same
 // one ExtractResult already follows for Extract).
-func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types.OpOptions) (types.Result[Out], error) {
+func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt types.OpOptions) (_ types.Result[Out], runErr error) {
 	ctx, records := withCallRecording(ctx)
+
+	// The call is one unit to the installed observers from here, so a refusal
+	// by a contract floor or policy below is its outcome too. RunOp, called
+	// inside it, joins this unit and starts none of its own.
+	ctx, observed := observeOperation(ctx, op.ID.Name)
+	defer observed.end(&runErr)
+
+	// A floor this call cannot reach is refused before anything is sent. It
+	// was asked about only after the provider had answered and been paid.
+	//
+	// What the call can reach is what the operation's contract declares, on
+	// the route it is about to take: a call that sends a schema to a route
+	// that does not enforce one is delivered at "well-formed JSON" whatever
+	// the contract says (negotiatedContractLevel). That was worked out after
+	// the answer, so this check passed and the one after the call refused.
+	planned := plannedContractLevel(ctx, declaredContractLevel(op.Contract), opt)
+	if floorErr := checkContractFloor(ctx, planned); floorErr != nil {
+		return types.Result[Out]{Meta: types.Meta{
+			Operation:         op.ID.String(),
+			RequestedTier:     opt.Intelligence,
+			RequestedContract: declaredContractLevel(op.Contract),
+		}}, floorErr
+	}
 
 	value, repair, err := RunOp(ctx, op, input, opt)
 
-	meta := envelopeFrom(records.collect(), op.ID.String())
+	meta := records.meta(op.ID.String())
 
 	// envelopeFrom sums Attempts from the provider-call records it collected,
 	// which is the same number RepairResult.Attempts carries -- both count
@@ -382,8 +429,8 @@ func RunOpResult[In, Out any](ctx context.Context, op Op[In, Out], input In, opt
 	// point in RunOpResult where "which route served this" is known and can
 	// be checked against what that route is declared to support. See
 	// negotiatedContractLevel's doc comment for why this reads opt.JSONSchema
-	// rather than op.Contract.SchemaName, and why it is a no-op for every
-	// caller in this repository today.
+	// rather than op.Contract.SchemaName: a descriptor that names a schema and
+	// never sends one is delivered as well formed.
 	meta.DeliveredContract = negotiatedContractLevel(meta.DeliveredContract, opt, meta.Provider, meta.Model)
 
 	// TC-004's other half: a degradation nobody approved does not go out as

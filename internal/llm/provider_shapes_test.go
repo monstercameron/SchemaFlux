@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,66 +22,78 @@ func TestOpenAIResponsesOutputShapes(t *testing.T) {
 	}{
 		{
 			"message_only",
-			`{"output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}`,
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}`,
 			"answer", false,
 		},
 		{
 			"reasoning_then_message",
-			`{"output":[{"type":"reasoning","content":[{"type":"output_text","text":"thinking"}]},
+			`{"status": "completed", "output":[{"type":"reasoning","content":[{"type":"output_text","text":"thinking"}]},
 			            {"type":"message","content":[{"type":"output_text","text":"answer"}]}]}`,
 			"answer", false,
 		},
 		{
 			"message_then_reasoning",
-			`{"output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]},
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]},
 			            {"type":"reasoning","content":[{"type":"output_text","text":"afterthought"}]}]}`,
 			"answer", false,
 		},
 		{
 			"several_message_items_concatenate",
-			`{"output":[{"type":"message","content":[{"type":"output_text","text":"one "}]},
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"one "}]},
 			            {"type":"message","content":[{"type":"output_text","text":"two"}]}]}`,
 			"one two", false,
 		},
 		{
 			"several_content_parts_concatenate",
-			`{"output":[{"type":"message","content":[{"type":"output_text","text":"one "},{"type":"output_text","text":"two"}]}]}`,
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"one "},{"type":"output_text","text":"two"}]}]}`,
 			"one two", false,
 		},
 		{
 			// An untyped item is a message: the field is optional on the wire.
 			"untyped_item_is_a_message",
-			`{"output":[{"content":[{"text":"answer"}]}]}`,
+			`{"status":"completed","output":[{"content":[{"text":"answer"}]}]}`,
 			"answer", false,
 		},
 		{
 			"non_text_content_is_skipped",
-			`{"output":[{"type":"message","content":[{"type":"refusal","text":"no"},{"type":"output_text","text":"answer"}]}]}`,
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_audio","text":"x"},{"type":"output_text","text":"answer"}]}]}`,
 			"answer", false,
 		},
 		{
+			// A refusal beside text is a refusal: the model said no, and the text
+			// is not trusted to be an answer.
+			"refusal_beside_text_is_an_error",
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"refusal","refusal":"no"},{"type":"output_text","text":"answer"}]}]}`,
+			"", true,
+		},
+		{
+			"refusal_alone_is_an_error",
+			`{"status": "completed", "output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}`,
+			"", true,
+		},
+		{
 			"reasoning_only_is_an_error",
-			`{"output":[{"type":"reasoning","content":[{"type":"output_text","text":"thinking"}]}]}`,
+			`{"status": "completed", "output":[{"type":"reasoning","content":[{"type":"output_text","text":"thinking"}]}]}`,
 			"", true,
 		},
 		{
 			"empty_output_is_an_error",
-			`{"output":[]}`,
+			`{"status": "completed", "output":[]}`,
 			"", true,
 		},
 		{
 			"missing_output_is_an_error",
-			`{"usage":{"input_tokens":1}}`,
+			`{"status":"completed","usage":{"input_tokens":1}}`,
 			"", true,
 		},
 		{
 			"message_with_no_content_is_an_error",
-			`{"output":[{"type":"message","content":[]}]}`,
+			`{"status":"completed","output":[{"type":"message","content":[]}]}`,
 			"", true,
 		},
 		{
 			"tool_call_only_is_an_error",
-			`{"output":[{"type":"function_call","content":[{"type":"output_text","text":"x"}]}]}`,
+			`{"status": "completed", "output":[{"type":"function_call","content":[{"type":"output_text","text":"x"}]}]}`,
 			"", true,
 		},
 	}
@@ -122,16 +135,16 @@ func TestOpenAIResponsesUsageShapes(t *testing.T) {
 		wantCached    int
 		wantReasoning int
 	}{
-		{"full", `{"output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
+		{"full", `{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
 		           "usage":{"input_tokens":10,"output_tokens":5,
 		                    "input_tokens_details":{"cached_tokens":4},
 		                    "output_tokens_details":{"reasoning_tokens":3}}}`, 10, 5, 4, 3},
-		{"no_details", `{"output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
+		{"no_details", `{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
 		                "usage":{"input_tokens":10,"output_tokens":5}}`, 10, 5, 0, 0},
-		{"no_usage", `{"output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}]}`, 0, 0, 0, 0},
-		{"zero_usage", `{"output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
+		{"no_usage", `{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}]}`, 0, 0, 0, 0},
+		{"zero_usage", `{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
 		                "usage":{"input_tokens":0,"output_tokens":0}}`, 0, 0, 0, 0},
-		{"cached_only", `{"output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
+		{"cached_only", `{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"a"}]}],
 		                 "usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":10}}}`, 10, 0, 10, 0},
 	}
 
@@ -152,6 +165,12 @@ func TestOpenAIResponsesUsageShapes(t *testing.T) {
 			if response.Usage.CompletionTokens != tc.wantOut {
 				t.Errorf("CompletionTokens = %d, want %d", response.Usage.CompletionTokens, tc.wantOut)
 			}
+			if response.Usage.CachedTokens != tc.wantCached {
+				t.Errorf("CachedTokens = %d, want %d", response.Usage.CachedTokens, tc.wantCached)
+			}
+			if response.Usage.ReasoningTokens != tc.wantReasoning {
+				t.Errorf("ReasoningTokens = %d, want %d", response.Usage.ReasoningTokens, tc.wantReasoning)
+			}
 		})
 	}
 }
@@ -160,17 +179,18 @@ func TestOpenAIResponsesUsageShapes(t *testing.T) {
 // completion.
 func TestOpenAIResponsesTransportFailures(t *testing.T) {
 	cases := []struct {
-		name   string
-		status int
-		body   string
+		name       string
+		status     int
+		body       string
+		wantStatus int // 0 for a failure that is not an HTTP status
 	}{
-		{"rate_limited", http.StatusTooManyRequests, `{"error":{"message":"slow down"}}`},
-		{"server_error", http.StatusInternalServerError, `{"error":{"message":"boom"}}`},
-		{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`},
-		{"forbidden", http.StatusForbidden, `{"error":{"message":"no access"}}`},
-		{"html_error_page", http.StatusBadGateway, `<html>502</html>`},
-		{"truncated_json", http.StatusOK, `{"output":[{"type":"mess`},
-		{"empty_body", http.StatusOK, ``},
+		{"rate_limited", http.StatusTooManyRequests, `{"error":{"message":"slow down"}}`, http.StatusTooManyRequests},
+		{"server_error", http.StatusInternalServerError, `{"error":{"message":"boom"}}`, http.StatusInternalServerError},
+		{"unauthorized", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`, http.StatusUnauthorized},
+		{"forbidden", http.StatusForbidden, `{"error":{"message":"no access"}}`, http.StatusForbidden},
+		{"html_error_page", http.StatusBadGateway, `<html>502</html>`, http.StatusBadGateway},
+		{"truncated_json", http.StatusOK, `{"output":[{"type":"mess`, 0},
+		{"empty_body", http.StatusOK, ``, 0},
 	}
 
 	for _, tc := range cases {
@@ -187,6 +207,16 @@ func TestOpenAIResponsesTransportFailures(t *testing.T) {
 			})
 			if err == nil {
 				t.Fatalf("a %d response must be an error, got content %q", tc.status, response.Content)
+			}
+			if !isEmptyResponse(response) {
+				t.Errorf("a result came back beside the error: %+v", response)
+			}
+			status, isStatus := StatusCodeFrom(err)
+			if isStatus != (tc.wantStatus != 0) || status != tc.wantStatus {
+				t.Errorf("StatusCodeFrom = %d, %v; want %d", status, isStatus, tc.wantStatus)
+			}
+			if errors.Is(err, ErrNoMessageOutput) {
+				t.Errorf("a transport failure was reported as an answer with no message: %v", err)
 			}
 		})
 	}
@@ -232,7 +262,7 @@ func TestOpenAIResponsesRequestShape(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+		_, _ = w.Write([]byte(`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -274,7 +304,7 @@ func TestOpenAIResponsesParsesCacheWriteTokens(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			body := `{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
+			body := `{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
 			          "usage":{"input_tokens":1000,"output_tokens":5,"input_tokens_details":` + tc.details + `}}`
 
 			server := responsesServer(t, body)

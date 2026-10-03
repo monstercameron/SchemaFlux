@@ -60,21 +60,20 @@ func TestKnownModelReportsSource(t *testing.T) {
 	}
 }
 
-// The gpt-5.6 family has no published rates in the table yet. It must therefore
-// report unpriced -- not zero, and not another model's rates. When TODOS.md
-// PR-002 adds the entries this test is expected to fail and be updated.
-func TestGPT56FamilyIsUnpricedUntilRatesAreKnown(t *testing.T) {
-	if _, known := pricingModels["gpt-5.6-luna"]; known {
-		t.Skip("the gpt-5.6 family now has rates; update this test alongside TODOS.md PR-002")
-	}
-	for _, model := range []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+// Of the gpt-5.6 family only luna has published rates. Sol and terra must
+// report unpriced -- not zero, and not luna's rates.
+func TestGPT56SolAndTerraAreUnpricedWhileLunaIsPriced(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6", "gpt-5.6-sol-2026-07-30"} {
 		cost := CalculateCost(usage(), model, "openai")
 		if cost.Priced {
-			t.Errorf("%s: reported as priced, but no rates exist for it", model)
+			t.Errorf("%s: reported as priced (source %q), but no rates exist for it", model, cost.PricingSource)
 		}
 		if cost.TotalCost != 0 {
 			t.Errorf("%s: unpriced model reported a non-zero cost %v", model, cost.TotalCost)
 		}
+	}
+	if cost := CalculateCost(usage(), "gpt-5.6-luna", "openai"); !cost.Priced || cost.PricingSource != "gpt-5.6-luna" {
+		t.Errorf("gpt-5.6-luna: Priced = %v, source %q; it has an entry of its own", cost.Priced, cost.PricingSource)
 	}
 }
 
@@ -99,16 +98,59 @@ func TestDatedSnapshotsStillPriceFromBaseModel(t *testing.T) {
 	}
 }
 
-// A minor-version bump is a different model, never a snapshot.
-func TestVersionBumpIsNotTreatedAsSnapshot(t *testing.T) {
-	if isSnapshotOf("gpt-5.6-luna", "gpt-5") {
-		t.Error("gpt-5.6-luna must not be treated as a snapshot of gpt-5")
+// An exact entry is exact, a dated snapshot of a model takes that model's
+// rates and names it as the source, and any other name -- a version bump, a
+// sibling such as -pro or -mini, a variant such as -codex -- is unpriced rather
+// than priced as its base model.
+func TestOnlyExactEntriesAndDatedSnapshotsArePriced(t *testing.T) {
+	cases := []struct {
+		model      string
+		wantSource string // empty means unpriced
+	}{
+		{"gpt-5", "gpt-5"},
+		{"gpt-5-mini", "gpt-5-mini"},
+		{"gpt-5-2025-08-07", "gpt-5-2025-08-07"}, // has an entry of its own
+		{"gpt-5.6-luna", "gpt-5.6-luna"},
+		{"gpt-6-luna", "gpt-6-luna"},
+		{"GPT-5", "gpt-5"},
+		{"  gpt-5  ", "gpt-5"},
+		{"gpt-5-2099-01-01", "gpt-5"},
+		{"gpt-5-20990101", "gpt-5"},
+		{"gpt-5-mini-2099-01-01", "gpt-5-mini"},
+		{"gpt-5.4-2099-01-01", "gpt-5.4"},
+		{"gpt-6-luna-2099-01-01", "gpt-6-luna"},
+		{"claude-3-opus-20240229", "claude-3-opus"},
+		{"gpt-5-pro", ""},
+		{"gpt-5-codex", ""},
+		{"gpt-5.4-mini", ""},
+		{"gpt-5.4-mini-2099-01-01", ""},
+		{"gpt-6-luna-mini", ""},
+		{"gpt-5.6", ""},
+		{"gpt-5.7", ""},
+		{"gpt-5-", ""},
+		{"gpt-50", ""},
+		{"gpt-5-2099-13", ""},
+		{"gpt-5:latest", ""},
+		{"ft:gpt-5:acme", ""},
+		{"", ""},
 	}
-	if !isSnapshotOf("gpt-5-2025-08-07", "gpt-5") {
-		t.Error("gpt-5-2025-08-07 is a snapshot of gpt-5")
-	}
-	if !isSnapshotOf("gpt-5", "gpt-5") {
-		t.Error("a model is a snapshot of itself")
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			cost := CalculateCost(usage(), tc.model, "openai")
+			if tc.wantSource == "" {
+				if cost.Priced || cost.TotalCost != 0 || cost.Quality != types.PricingUnknown {
+					t.Fatalf("%q was priced as %q (total %v, quality %q); it has no rate card of its own",
+						tc.model, cost.PricingSource, cost.TotalCost, cost.Quality)
+				}
+				return
+			}
+			if !cost.Priced {
+				t.Fatalf("%q is unpriced, want rates from %q", tc.model, tc.wantSource)
+			}
+			if cost.PricingSource != tc.wantSource {
+				t.Errorf("%q: PricingSource = %q, want %q", tc.model, cost.PricingSource, tc.wantSource)
+			}
+		})
 	}
 }
 
@@ -116,7 +158,7 @@ func TestVersionBumpIsNotTreatedAsSnapshot(t *testing.T) {
 func TestPricedCostArithmeticIsCorrect(t *testing.T) {
 	model, ok := pricingModels["gpt-4"]
 	if !ok {
-		t.Skip("gpt-4 not in the table")
+		t.Fatal("gpt-4 is not in the table; this case prices a model of the table")
 	}
 
 	use := &types.TokenUsage{PromptTokens: 1000, CompletionTokens: 2000, TotalTokens: 3000}

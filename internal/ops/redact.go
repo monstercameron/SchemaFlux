@@ -1,4 +1,5 @@
-// package ops - Redact operation for intelligent data masking
+// Redact operation for intelligent data masking.
+
 package ops
 
 import (
@@ -8,12 +9,26 @@ import (
 	"math/rand"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+// maxRedactDepth bounds how deep the traversal follows pointers, slices, maps
+// and structs. A value that refers back to itself would otherwise recurse until
+// the stack is exhausted, which is a fatal error rather than a panic and cannot
+// be recovered.
+const maxRedactDepth = 200
+
+// maxRedactMaskLength bounds a fixed mask, which is allocated for every value
+// it replaces.
+const maxRedactMaskLength = 1 << 16
+
+var timeType = reflect.TypeOf(time.Time{})
 
 // RedactResult contains detailed information about redaction operations
 type RedactResult struct {
@@ -34,7 +49,7 @@ type RedactStrategy string
 const (
 	RedactNil      RedactStrategy = "nil"      // Replace with nil/null
 	RedactMask     RedactStrategy = "mask"     // Replace with mask text
-	RedactRemove   RedactStrategy = "remove"   // Remove property entirely
+	RedactRemove   RedactStrategy = "remove"   // Replace with an empty string; no key or field is removed
 	RedactJumble   RedactStrategy = "jumble"   // Scramble characters
 	RedactScramble RedactStrategy = "scramble" // Alias for jumble
 )
@@ -64,16 +79,41 @@ type RedactOptions struct {
 	// a pointer because RedactOptions is copied by value through the recursive
 	// traversal, and every copy has to record into the same place.
 	report *redactionReport
+
+	// compiledCustom holds CustomPatterns compiled once, by prepared, so a
+	// pattern is not compiled again for every string the traversal meets.
+	compiledCustom []*regexp.Regexp
 }
 
 // redactionReport accumulates what a redaction pass replaced.
 type redactionReport struct {
 	byCategory map[string][]string
 	fields     []string
+
+	// unreadable names the struct fields the traversal could not read, and so
+	// left as they were. Only names: the values are the caller's data.
+	unreadable map[string]struct{}
 }
 
 func newRedactionReport() *redactionReport {
-	return &redactionReport{byCategory: map[string][]string{}}
+	return &redactionReport{byCategory: map[string][]string{}, unreadable: map[string]struct{}{}}
+}
+
+func (r *redactionReport) addUnreadable(name string) {
+	if r == nil {
+		return
+	}
+	r.unreadable[name] = struct{}{}
+}
+
+// unreadableFields returns the names recorded by addUnreadable, sorted.
+func (r *redactionReport) unreadableFields() []string {
+	names := make([]string, 0, len(r.unreadable))
+	for name := range r.unreadable {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (r *redactionReport) addValues(found map[string][]string) {
@@ -156,10 +196,30 @@ func (opts RedactOptions) WithCustomPatterns(patterns []string) RedactOptions {
 	return opts
 }
 
-// Validate checks if the options are valid
+// Validate checks if the options are valid.
+//
+// A category must be one of pii, secrets or financial (case and surrounding
+// space ignored). An unrecognised one used to redact nothing and return a nil
+// error, so a misspelt label returned the text untouched as a success. A custom
+// pattern must compile and must not match the empty string, for the same reason:
+// one that cannot be applied is an error, not a pass that quietly leaves out
+// what the caller asked to remove.
 func (opts RedactOptions) Validate() error {
+	_, err := opts.prepared()
+	return err
+}
+
+// prepared validates the options and returns them with the custom patterns
+// compiled.
+func (opts RedactOptions) prepared() (RedactOptions, error) {
 	if len(opts.Categories) == 0 {
-		return fmt.Errorf("at least one category must be specified")
+		return RedactOptions{}, types.Newf(types.KindConfiguration, "redact", "at least one category must be specified")
+	}
+	for i, category := range opts.Categories {
+		if !knownRedactCategory(category) {
+			return RedactOptions{}, types.Newf(types.KindConfiguration, "redact",
+				"category %d (%q) is not one of pii, secrets or financial", i, category)
+		}
 	}
 
 	validStrategies := []RedactStrategy{RedactNil, RedactMask, RedactRemove, RedactJumble, RedactScramble}
@@ -171,10 +231,39 @@ func (opts RedactOptions) Validate() error {
 		}
 	}
 	if !strategyValid {
-		return fmt.Errorf("invalid strategy: %s", opts.Strategy)
+		return RedactOptions{}, types.Newf(types.KindConfiguration, "redact", "invalid strategy: %s", opts.Strategy)
 	}
 
-	return nil
+	if opts.MaskLength < -1 || opts.MaskLength > maxRedactMaskLength {
+		return RedactOptions{}, types.Newf(types.KindConfiguration, "redact",
+			"MaskLength %d is out of range: use -1 for the length of the value, or 0 to %d", opts.MaskLength, maxRedactMaskLength)
+	}
+
+	compiled := make([]*regexp.Regexp, 0, len(opts.CustomPatterns))
+	for i, raw := range opts.CustomPatterns {
+		pattern, err := regexp.Compile(raw)
+		if err != nil {
+			return RedactOptions{}, &types.OperationError{
+				Kind: types.KindConfiguration, Op: "redact", Message: fmt.Sprintf("custom pattern %d does not compile", i), Cause: err,
+			}
+		}
+		if pattern.MatchString("") {
+			return RedactOptions{}, types.Newf(types.KindConfiguration, "redact",
+				"custom pattern %d matches the empty string, so it would match between every two characters", i)
+		}
+		compiled = append(compiled, pattern)
+	}
+	opts.compiledCustom = compiled
+	return opts, nil
+}
+
+// knownRedactCategory reports whether a category is one Redact detects.
+func knownRedactCategory(category string) bool {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "pii", "secrets", "financial":
+		return true
+	}
+	return false
 }
 
 // resolveRedactOptions picks the options to use, defaulting when none are
@@ -223,12 +312,11 @@ func Redact[T any](input T, opts ...RedactOptions) (T, error) {
 	log := logger.GetLogger()
 	log.Debug("Starting redact operation", "requestID", "unknown", "inputType", fmt.Sprintf("%T", input))
 
-	options := resolveRedactOptions(opts...)
-
-	if err := options.Validate(); err != nil {
+	options, err := resolveRedactOptions(opts...).prepared()
+	if err != nil {
 		log.Error("Redact operation validation failed", "requestID", "unknown", "error", err)
 		var zero T
-		return zero, fmt.Errorf("invalid options: %w", err)
+		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	result, err := redactValue(input, options)
@@ -252,24 +340,30 @@ func Redact[T any](input T, opts ...RedactOptions) (T, error) {
 // had done, so an audit of a redaction pass read as "nothing was redacted" with
 // a nil error. That is worth knowing when reading old output: an empty report
 // from a released version before that is not evidence of anything.
+//
+// Metadata["unreadable_fields"] lists, sorted, the names of struct fields the
+// traversal could not read (unexported ones) and so copied as they were. A
+// caller who needs those redacted has to export them or tag them: a tagged
+// field that cannot be read is an error, not a name in this list.
+//
+// On an error the result is empty.
 func RedactWithResult[T any](input T, opts ...RedactOptions) (T, RedactResult, error) {
 	result := RedactResult{
 		Redacted: make(map[string][]string),
 		Metadata: make(map[string]any),
 	}
 
-	options := resolveRedactOptions(opts...)
-	options.report = newRedactionReport()
-
-	if err := options.Validate(); err != nil {
+	options, err := resolveRedactOptions(opts...).prepared()
+	if err != nil {
 		var zero T
-		return zero, result, fmt.Errorf("invalid options: %w", err)
+		return zero, RedactResult{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
+	options.report = newRedactionReport()
 
 	redacted, err := redactValue(input, options)
 	if err != nil {
 		var zero T
-		return zero, result, err
+		return zero, RedactResult{}, err
 	}
 
 	// This used to return an empty map with a nil error whatever it had done,
@@ -281,6 +375,7 @@ func RedactWithResult[T any](input T, opts ...RedactOptions) (T, RedactResult, e
 	}
 	result.FieldsRedacted = options.report.fields
 	result.Metadata["fields_redacted"] = len(options.report.fields)
+	result.Metadata["unreadable_fields"] = options.report.unreadableFields()
 
 	total := 0
 	for _, values := range result.Redacted {
@@ -292,48 +387,260 @@ func RedactWithResult[T any](input T, opts ...RedactOptions) (T, RedactResult, e
 	return redacted, result, nil
 }
 
-// redactValue performs the actual redaction using reflection
+// / redactValue redacts a caller's value. The traversal is in redactReflect.
+//
+// A nil interface is refused: it carries nothing to redact, and returning it as
+// a success would read as "looked and found nothing".
 func redactValue[T any](input T, opts RedactOptions) (T, error) {
+	var zero T
 	v := reflect.ValueOf(input)
 	if !v.IsValid() {
-		var zero T
-		return zero, fmt.Errorf("invalid input")
+		return zero, types.Newf(types.KindInvalidRequest, "redact", "invalid input: a nil interface carries nothing to redact")
 	}
 
-	// Handle different types
+	out, err := redactReflect(v, opts, 0)
+	if err != nil {
+		return zero, err
+	}
+	redacted, ok := out.Interface().(T)
+	if !ok {
+		return zero, types.Newf(types.KindInvariantViolation, "redact", "the redacted value is not a %T", input)
+	}
+	return redacted, nil
+}
+
+// redactReflect returns a redacted copy of v, of the same type as v. It never
+// writes to v.
+//
+// What it cannot read it leaves alone: the unexported fields of a struct are
+// copied with it and named in the report. What it cannot redact it reports as
+// an error rather than returning in the clear: see redactStructValue.
+//
+// It used to panic on unexported fields (every struct holding a time.Time), on
+// a nil pointer reached through a field, a slice or an interface, on a named
+// string type, and on an array, because each recursive call went through
+// interface{} and the result was stored back with Set, which requires the exact
+// type.
+func redactReflect(v reflect.Value, opts RedactOptions, depth int) (reflect.Value, error) {
+	if depth > maxRedactDepth {
+		return reflect.Value{}, types.Newf(types.KindInvalidRequest, "redact",
+			"the value is nested more than %d levels deep, which means it refers back to itself or is too deep to walk", maxRedactDepth)
+	}
+
 	switch v.Kind() {
 	case reflect.String:
-		redactedStr := redactString(v.String(), opts)
-		return reflect.ValueOf(redactedStr).Interface().(T), nil
+		out := reflect.New(v.Type()).Elem()
+		out.SetString(redactString(v.String(), opts))
+		return out, nil
+
+	case reflect.Interface:
+		if v.IsNil() {
+			return v, nil
+		}
+		inner, err := redactReflect(v.Elem(), opts, depth+1)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(inner)
+		return out, nil
+
+	case reflect.Pointer:
+		if v.IsNil() {
+			return v, nil
+		}
+		inner, err := redactReflect(v.Elem(), opts, depth+1)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(inner)
+		return out, nil
 
 	case reflect.Struct:
-		return redactStruct(input, opts)
+		return redactStructValue(v, opts, depth)
 
-	case reflect.Slice, reflect.Array:
-		return redactSlice(input, opts)
+	case reflect.Slice:
+		if v.IsNil() {
+			return v, nil
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		if err := redactElements(out, v, opts, depth); err != nil {
+			return reflect.Value{}, err
+		}
+		return out, nil
+
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		if err := redactElements(out, v, opts, depth); err != nil {
+			return reflect.Value{}, err
+		}
+		return out, nil
 
 	case reflect.Map:
-		return redactMap(input, opts)
-
-	case reflect.Ptr:
-		if v.IsNil() {
-			var zero T
-			return zero, nil
-		}
-		elem := v.Elem()
-		redactedElem, err := redactValue(elem.Interface(), opts)
-		if err != nil {
-			var zero T
-			return zero, err
-		}
-		// Create new pointer with redacted value
-		newPtr := reflect.New(elem.Type())
-		newPtr.Elem().Set(reflect.ValueOf(redactedElem))
-		return newPtr.Interface().(T), nil
+		return redactMapValue(v, opts, depth)
 
 	default:
-		// For other types, return as-is
-		return input, nil
+		// Numbers, booleans, channels and functions hold nothing a pattern can
+		// match.
+		return v, nil
+	}
+}
+
+// redactElements fills dst, a slice or an array of src's type and length, with
+// the redacted elements of src.
+func redactElements(dst, src reflect.Value, opts RedactOptions, depth int) error {
+	if !typeMayHoldText(src.Type().Elem()) {
+		// A []byte or a []float64 has nothing to redact, and one reflect call
+		// per element is slow on a large one.
+		reflect.Copy(dst, src)
+		return nil
+	}
+	for i := 0; i < src.Len(); i++ {
+		elem, err := redactReflect(src.Index(i), opts, depth+1)
+		if err != nil {
+			return err
+		}
+		dst.Index(i).Set(elem)
+	}
+	return nil
+}
+
+// typeMayHoldText reports whether a value of the type can contain a string.
+func typeMayHoldText(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.String, reflect.Interface, reflect.Pointer, reflect.Struct,
+		reflect.Slice, reflect.Array, reflect.Map:
+		return true
+	}
+	return false
+}
+
+// redactStructValue redacts the exported fields of a struct.
+//
+// A field named as sensitive, or carrying a redact tag, is replaced wholesale
+// by redactNamed. Any other field is walked, and the part of it that matches a
+// pattern is replaced, so a notes field with a phone number in it keeps the
+// note. Only the first of the two is recorded as a redacted field: the second is
+// in the report as values.
+//
+// The unexported fields are copied as they are, because reflection cannot read
+// or set them, and named in the report. A tagged one is the exception: the
+// caller named it for redaction and it cannot be redacted, so the call fails
+// with the field's name rather than returning it in the clear.
+//
+// A time.Time is copied as a whole and not reported: its fields are unexported
+// and it holds no text.
+func redactStructValue(v reflect.Value, opts RedactOptions, depth int) (reflect.Value, error) {
+	t := v.Type()
+	out := reflect.New(t).Elem()
+	out.Set(v)
+	if t == timeType {
+		return out, nil
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tagged := field.Tag.Get("redact") != ""
+
+		if !field.IsExported() {
+			if tagged {
+				return reflect.Value{}, types.Newf(types.KindInvalidRequest, "redact",
+					"field %q is tagged for redaction but is unexported, so it cannot be read or replaced", field.Name)
+			}
+			opts.report.addUnreadable(field.Name)
+			continue
+		}
+
+		var redacted reflect.Value
+		var err error
+		if tagged || fieldNameIsSensitive(field.Name) {
+			opts.report.addField(field.Name)
+			redacted, err = redactNamed(v.Field(i), opts, depth+1)
+		} else {
+			redacted, err = redactReflect(v.Field(i), opts, depth+1)
+		}
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		out.Field(i).Set(redacted)
+	}
+	return out, nil
+}
+
+// redactMapValue redacts the values of a map. A key names its value exactly as a
+// struct field name does, so a value under "ssn" is replaced wholesale.
+func redactMapValue(v reflect.Value, opts RedactOptions, depth int) (reflect.Value, error) {
+	if v.IsNil() {
+		return v, nil
+	}
+	out := reflect.MakeMapWithSize(v.Type(), v.Len())
+	iter := v.MapRange()
+	for iter.Next() {
+		key, value := iter.Key(), iter.Value()
+
+		var redacted reflect.Value
+		var err error
+		if key.Kind() == reflect.String && fieldNameIsSensitive(key.String()) {
+			opts.report.addField(key.String())
+			redacted, err = redactNamed(value, opts, depth+1)
+		} else {
+			redacted, err = redactReflect(value, opts, depth+1)
+		}
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		out.SetMapIndex(key, redacted)
+	}
+	return out, nil
+}
+
+// redactNamed replaces a value the caller named for redaction, by field name,
+// map key or tag, in the way its kind allows: a string gets the strategy
+// applied, a pointer or an interface has what it holds replaced, and anything
+// else is set to its zero value. The result has the type of v.
+//
+// Anything else used to come back unchanged under the default mask, with the
+// field listed as redacted: a Password []byte, an integer SSN, or a slice of
+// secrets was reported as handled and returned in the clear.
+func redactNamed(v reflect.Value, opts RedactOptions, depth int) (reflect.Value, error) {
+	if depth > maxRedactDepth {
+		return reflect.Value{}, types.Newf(types.KindInvalidRequest, "redact",
+			"the value is nested more than %d levels deep", maxRedactDepth)
+	}
+
+	switch v.Kind() {
+	case reflect.String:
+		out := reflect.New(v.Type()).Elem()
+		out.SetString(applyRedactionStrategy(v.String(), opts))
+		return out, nil
+
+	case reflect.Interface:
+		if v.IsNil() {
+			return v, nil
+		}
+		inner, err := redactNamed(v.Elem(), opts, depth+1)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(inner)
+		return out, nil
+
+	case reflect.Pointer:
+		if v.IsNil() {
+			return v, nil
+		}
+		inner, err := redactNamed(v.Elem(), opts, depth+1)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(inner)
+		return out, nil
+
+	default:
+		return reflect.Zero(v.Type()), nil
 	}
 }
 
@@ -364,25 +671,14 @@ func redactStringWithReport(input string, opts RedactOptions) (string, map[strin
 		}
 
 		if categoryUsesCardDetection(category) {
-			result = cardCandidatePattern.ReplaceAllStringFunc(result, func(match string) string {
-				// Shape is not enough: an order number is 16 digits too. Luhn
-				// is what separates a payment card from a sequence number, and
-				// it is why an unformatted PAN is caught now and "New York"
-				// never was a card in the first place.
-				if !luhn(digitsOnly(match)) {
-					return match
-				}
+			result = replaceCardNumbers(result, func(match string) string {
 				report[category] = append(report[category], match)
 				return applyRedactionStrategy(match, opts)
 			})
 		}
 	}
 
-	for _, raw := range opts.CustomPatterns {
-		pattern, err := regexp.Compile(raw)
-		if err != nil {
-			continue // Skip invalid patterns
-		}
+	for _, pattern := range opts.customRegexps() {
 		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
 			report["custom"] = append(report["custom"], match)
 			return applyRedactionStrategy(match, opts)
@@ -392,129 +688,38 @@ func redactStringWithReport(input string, opts RedactOptions) (string, map[strin
 	return result, report
 }
 
-// redactStruct redacts sensitive fields from a struct
-func redactStruct[T any](input T, opts RedactOptions) (T, error) {
-	v := reflect.ValueOf(input)
-	t := reflect.TypeOf(input)
-
-	if v.Kind() != reflect.Struct {
-		return input, fmt.Errorf("input must be a struct")
+// customRegexps returns the compiled custom patterns. The options reaching a
+// redaction pass went through prepared, which compiled them and refused any
+// that did not compile; the fallback is for internal callers that did not.
+func (opts RedactOptions) customRegexps() []*regexp.Regexp {
+	if opts.compiledCustom != nil || len(opts.CustomPatterns) == 0 {
+		return opts.compiledCustom
 	}
-
-	// Create a new struct of the same type
-	newStruct := reflect.New(t).Elem()
-
-	// Copy all fields, redacting sensitive ones
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		fieldType := t.Field(i)
-		fieldName := fieldType.Name
-
-		// A field named as sensitive is replaced wholesale; a field that merely
-		// contains something sensitive has that part replaced, so a notes field
-		// with a phone number in it keeps the note. Recording which of the two
-		// happened is what makes RedactWithResult an audit rather than a count.
-		byName := fieldNameIsSensitive(fieldName) || fieldType.Tag.Get("redact") != ""
-
-		if byName {
-			opts.report.addField(fieldName)
-			newStruct.Field(i).Set(applyRedactionToValue(field, opts))
-		} else if field.Kind() == reflect.String &&
-			valueIsSensitive(field.String(), opts.Categories, opts.CustomPatterns) {
-			redacted, found := redactStringWithReport(field.String(), opts)
-			opts.report.addField(fieldName)
-			_ = found // redactStringWithReport already recorded into opts.report
-			newStruct.Field(i).SetString(redacted)
-		} else {
-			// Recursively redact nested structs/slices/maps
-			redactedValue, err := redactValue(field.Interface(), opts)
-			if err != nil {
-				// If redaction fails, keep original value
-				newStruct.Field(i).Set(field)
-			} else {
-				newStruct.Field(i).Set(reflect.ValueOf(redactedValue))
-			}
-		}
+	prepared, err := opts.prepared()
+	if err != nil {
+		return nil
 	}
-
-	return newStruct.Interface().(T), nil
+	return prepared.compiledCustom
 }
 
-// redactSlice redacts elements in a slice
-func redactSlice[T any](input T, opts RedactOptions) (T, error) {
-	v := reflect.ValueOf(input)
-	if v.Kind() != reflect.Slice && v.Kind() != reflect.Array {
-		return input, fmt.Errorf("input must be a slice or array")
-	}
-
-	// Create new slice
-	newSlice := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
-
-	for i := 0; i < v.Len(); i++ {
-		elem := v.Index(i)
-		redactedElem, err := redactValue(elem.Interface(), opts)
-		if err != nil {
-			// Keep original if redaction fails
-			newSlice.Index(i).Set(elem)
-		} else {
-			newSlice.Index(i).Set(reflect.ValueOf(redactedElem))
-		}
-	}
-
-	return newSlice.Interface().(T), nil
-}
-
-// redactMap redacts values in a map
-func redactMap[T any](input T, opts RedactOptions) (T, error) {
-	v := reflect.ValueOf(input)
-	if v.Kind() != reflect.Map {
-		return input, fmt.Errorf("input must be a map")
-	}
-
-	// Create new map
-	newMap := reflect.MakeMap(v.Type())
-
-	for _, key := range v.MapKeys() {
-		value := v.MapIndex(key)
-
-		// A map key names its value exactly as a struct field name does, and
-		// this used to ignore it entirely: map[string]any{"ssn": ...} was
-		// redacted only if the value happened to match a pattern.
-		if key.Kind() == reflect.String && fieldNameIsSensitive(key.String()) {
-			opts.report.addField(key.String())
-			newMap.SetMapIndex(key, applyRedactionToValue(value, opts))
-			continue
-		}
-
-		redactedValue, err := redactValue(value.Interface(), opts)
-		if err != nil {
-			// Keep original if redaction fails
-			newMap.SetMapIndex(key, value)
-		} else {
-			newMap.SetMapIndex(key, reflect.ValueOf(redactedValue))
-		}
-	}
-
-	return newMap.Interface().(T), nil
-}
-
-// generateMaskText creates mask text based on the options
+// generateMaskText creates mask text based on the options. A MaskLength of -1
+// makes the mask as long as the value in characters.
 func generateMaskText(originalValue string, opts RedactOptions) string {
 	// If custom mask text is provided, use it
 	if opts.MaskText != "" {
 		return opts.MaskText
 	}
 
-	// Generate mask based on MaskChar and MaskLength
-	var length int
-	if opts.MaskLength == -1 {
-		// Use original length
-		length = len(originalValue)
-	} else {
-		length = opts.MaskLength
+	length := opts.MaskLength
+	if length == -1 {
+		length = utf8.RuneCountInString(originalValue)
+	}
+	if length < 0 || length > maxRedactMaskLength {
+		// Validate refuses these; an internal caller that skipped it gets the
+		// default rather than a panic from make.
+		length = 3
 	}
 
-	// Create mask string
 	mask := make([]rune, length)
 	for i := range mask {
 		mask[i] = opts.MaskChar
@@ -538,43 +743,6 @@ func applyRedactionStrategy(value string, opts RedactOptions) string {
 	}
 }
 
-// applyRedactionToValue applies redaction to a reflect.Value
-func applyRedactionToValue(value reflect.Value, opts RedactOptions) reflect.Value {
-	// A map[string]any holds interface values, so the string inside has to be
-	// unwrapped or nothing is ever redacted by key name.
-	if value.Kind() == reflect.Interface && !value.IsNil() {
-		redacted := applyRedactionToValue(value.Elem(), opts)
-		wrapper := reflect.New(value.Type()).Elem()
-		if redacted.Type().AssignableTo(value.Type()) {
-			wrapper.Set(redacted)
-			return wrapper
-		}
-		return value
-	}
-
-	switch value.Kind() {
-	case reflect.String:
-		redacted := applyRedactionStrategy(value.String(), opts)
-		return reflect.ValueOf(redacted)
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if opts.Strategy == RedactNil {
-			return reflect.Zero(value.Type())
-		}
-		return value // Keep numbers as-is for now
-	case reflect.Float32, reflect.Float64:
-		if opts.Strategy == RedactNil {
-			return reflect.Zero(value.Type())
-		}
-		return value // Keep floats as-is for now
-	default:
-		if opts.Strategy == RedactNil {
-			return reflect.Zero(value.Type())
-		}
-		return value
-	}
-}
-
-// jumbleString scrambles a string according to the jumble mode
 // jumbleString permutes the characters of the input.
 //
 // # This is obfuscation, not anonymization
@@ -628,14 +796,31 @@ func unpredictableSeed() int64 {
 	return time.Now().UnixNano()
 }
 
-// jumbleBasic performs simple character scrambling
+// jumbleBasic performs simple character scrambling.
+//
+// A shuffle drawn at random is the identity one time in n!, which for a short
+// value is often enough that a field listed as redacted came back readable. A
+// result equal to the input is therefore changed by exchanging the first
+// character with the first one that differs from it. A value with nothing to
+// rearrange, one character or one repeated, has no other arrangement and is
+// returned as it is.
 func jumbleBasic(input string, r *rand.Rand) string {
 	runes := []rune(input)
 	for i := len(runes) - 1; i > 0; i-- {
 		j := r.Intn(i + 1)
 		runes[i], runes[j] = runes[j], runes[i]
 	}
-	return string(runes)
+	jumbled := string(runes)
+	if jumbled != input {
+		return jumbled
+	}
+	for i := 1; i < len(runes); i++ {
+		if runes[i] != runes[0] {
+			runes[0], runes[i] = runes[i], runes[0]
+			return string(runes)
+		}
+	}
+	return jumbled
 }
 
 // jumbleSmart replaces each character with another of the same class, so the
@@ -705,16 +890,24 @@ func matchCase(original, replacement rune) rune {
 	return replacement
 }
 
+// The shapes jumbleTypeAware tells apart, compiled once.
+var (
+	jumbleEmailShape = regexp.MustCompile(`\S+@\S+\.\S+`)
+	jumblePhoneShape = regexp.MustCompile(`\b\d{3}-\d{3}-\d{4}\b`)
+	jumbleNameShape  = regexp.MustCompile(`\b[A-Z][a-z]+ [A-Z][a-z]+\b`)
+	jumbleDigit      = regexp.MustCompile(`\d`)
+)
+
 // jumbleTypeAware uses data type-specific scrambling rules
 func jumbleTypeAware(input string, r *rand.Rand) string {
 	// Detect data type and apply appropriate scrambling
-	if matched, _ := regexp.MatchString(`\S+@\S+\.\S+`, input); matched {
+	if jumbleEmailShape.MatchString(input) {
 		return jumbleEmail(input, r)
 	}
-	if matched, _ := regexp.MatchString(`\b\d{3}-\d{3}-\d{4}\b`, input); matched {
+	if jumblePhoneShape.MatchString(input) {
 		return jumblePhone(input, r)
 	}
-	if matched, _ := regexp.MatchString(`\b[A-Z][a-z]+ [A-Z][a-z]+\b`, input); matched {
+	if jumbleNameShape.MatchString(input) {
 		return jumbleName(input, r)
 	}
 
@@ -742,7 +935,7 @@ func jumbleEmail(email string, r *rand.Rand) string {
 // jumblePhone scrambles a phone number while preserving format
 func jumblePhone(phone string, r *rand.Rand) string {
 	// Simple digit scrambling while preserving hyphens
-	digits := regexp.MustCompile(`\d`).FindAllString(phone, -1)
+	digits := jumbleDigit.FindAllString(phone, -1)
 
 	// Scramble digits
 	for i := len(digits) - 1; i > 0; i-- {

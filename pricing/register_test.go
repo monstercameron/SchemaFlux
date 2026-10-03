@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -157,6 +158,12 @@ func TestRegistrationRejectsWhatItCannotUse(t *testing.T) {
 		{"negative completion rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PricePerCompletionToken: -1}},
 		{"negative cached rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PriceCachedToken: -1}},
 		{"negative reasoning rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PriceReasoningToken: -1}},
+		{"NaN prompt rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: math.NaN(), PricePerCompletionToken: 0.001}},
+		{"NaN completion rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PricePerCompletionToken: math.NaN()}},
+		{"NaN cached rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PriceCachedToken: math.NaN()}},
+		{"NaN reasoning rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PriceReasoningToken: math.NaN()}},
+		{"infinite prompt rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: math.Inf(1)}},
+		{"negative infinite rate", PricingModel{Provider: "o", Model: "acme", PricePerPromptToken: 0.001, PricePerCompletionToken: math.Inf(-1)}},
 	}
 
 	for _, tc := range cases {
@@ -302,5 +309,81 @@ func TestLunaIsPricedAsItself(t *testing.T) {
 	// A million prompt tokens at $0.20 per million.
 	if got := cost.TotalCost; got < 0.19 || got > 0.21 {
 		t.Errorf("a million prompt tokens cost %v, want about $0.20", got)
+	}
+}
+
+func TestPricingModelNamedSaysWhatTheTableHoldsUnderExactlyThatName(t *testing.T) {
+	restorePricing(t)
+	if err := RegisterPricingModel(PricingModel{Provider: "acme", Model: "Named-Model-X", PricePerPromptToken: 0.001, PricePerCompletionToken: 0.002}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name  string
+		model string
+		found bool
+	}{
+		{"the name as registered, lower case", "named-model-x", true},
+		{"the name in upper case", "NAMED-MODEL-X", true},
+		{"the name with space around it", "  named-model-x\t", true},
+		{"a name nobody registered", "named-model-y", false},
+		{"an empty name", "", false},
+		{"a dated snapshot of the registered name, which a lookup prices but the table does not hold", "named-model-x-2025-08-07", false},
+		{"a built-in model", "gpt-5", true},
+		{"a built-in model in other case", "GPT-5", true},
+		{"a prefix of the registered name", "named-model", false},
+		{"only a version", "2025-08-07", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card, ok := PricingModelNamed(tc.model)
+			if ok != tc.found {
+				t.Fatalf("PricingModelNamed(%q) found = %v, want %v", tc.model, ok, tc.found)
+			}
+			if ok && card.Model == "" {
+				t.Errorf("the card has no model name: %+v", card)
+			}
+			if !ok && card != (PricingModel{}) {
+				t.Errorf("a card %+v was returned beside not found", card)
+			}
+		})
+	}
+}
+
+func TestReplacePricingModelPutsACardBackExactlyAsItWasAndRemovesWhatIsNil(t *testing.T) {
+	restorePricing(t)
+	original, ok := PricingModelNamed("gpt-5")
+	if !ok {
+		t.Fatal("gpt-5 is not in the table")
+	}
+	cases := []struct {
+		name  string
+		model string
+		card  *PricingModel
+		want  bool
+	}{
+		{"a new entry", "replace-new-1", &PricingModel{Provider: "p", Model: "replace-new-1", PricePerPromptToken: 1}, true},
+		{"a new entry named in upper case", "REPLACE-NEW-2", &PricingModel{Provider: "p", Model: "replace-new-2", PricePerPromptToken: 1}, true},
+		{"a card that RegisterPricingModel would refuse is put as it is given", "replace-new-3", &PricingModel{Provider: "p", Model: "replace-new-3"}, true},
+		{"a card of both rates zero", "replace-new-4", &PricingModel{Provider: "", Model: "replace-new-4"}, true},
+		{"a built-in entry replaced", "gpt-5", &PricingModel{Provider: "p", Model: "gpt-5", PricePerPromptToken: 7}, true},
+		{"a built-in entry put back", "gpt-5", &original, true},
+		{"nil removes an entry that is there", "replace-new-1", nil, false},
+		{"nil removes an entry that is not there", "replace-never-there", nil, false},
+		{"nil removes in other case", "replace-new-2", nil, false},
+		{"nil with space around the name", " replace-new-3 ", nil, false},
+	}
+	for _, tc := range cases {
+		ReplacePricingModel(tc.model, tc.card)
+		card, ok := PricingModelNamed(tc.model)
+		if ok != tc.want {
+			t.Errorf("%s: found = %v, want %v", tc.name, ok, tc.want)
+			continue
+		}
+		if tc.card != nil && card != *tc.card {
+			t.Errorf("%s: the table holds %+v, want %+v", tc.name, card, *tc.card)
+		}
+	}
+	if card, _ := PricingModelNamed("gpt-5"); card != original {
+		t.Errorf("gpt-5 is %+v after being put back, want %+v", card, original)
 	}
 }

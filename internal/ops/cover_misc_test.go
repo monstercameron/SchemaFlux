@@ -210,89 +210,6 @@ func TestMatchOnePropagatesFailure(t *testing.T) {
 	}
 }
 
-// ===================== rank.go =====================
-
-type rankDoc struct {
-	Title string `json:"title"`
-}
-
-func TestRankEmptyItemsIsNoOp(t *testing.T) {
-	result, err := Rank([]rankDoc{}, NewRankOptions().WithQuery("anything"))
-	if err != nil {
-		t.Fatalf("Rank: %v", err)
-	}
-	if result.TotalItems != 0 || len(result.Items) != 0 {
-		t.Fatalf("result = %+v, want empty", result)
-	}
-}
-
-func TestRankRejectsInvalidOptions(t *testing.T) {
-	_, err := Rank([]rankDoc{{Title: "a"}}, NewRankOptions().WithQuery(""))
-	if err == nil {
-		t.Fatal("Rank accepted an empty query")
-	}
-}
-
-func TestRankParsesAndFiltersByMinScoreAndTopK(t *testing.T) {
-	installMiscResponse(t, `{
-		"rankings": [
-			{"index": 0, "score": 0.9, "explanation": "best"},
-			{"index": 1, "score": 0.1, "explanation": "below floor"},
-			{"index": 2, "score": 0.5, "explanation": "second"}
-		]
-	}`)
-
-	docs := []rankDoc{{Title: "A"}, {Title: "B"}, {Title: "C"}}
-	result, err := Rank(docs, NewRankOptions().
-		WithQuery("relevance").
-		WithMinScore(0.3).
-		WithTopK(1).
-		WithRankingFactors([]string{"recency"}).
-		WithFactorWeights(map[string]float64{"recency": 0.5}).
-		WithBoostFields(map[string]float64{"title": 1.2}).
-		WithPenalizeFields(map[string]float64{"title": 0.5}).
-		WithIncludeExplanation(true))
-	if err != nil {
-		t.Fatalf("Rank: %v", err)
-	}
-	// index 1 is below MinScore (filtered), TopK=1 keeps only the first
-	// surviving item (index 0).
-	if result.ReturnedItems != 1 {
-		t.Fatalf("ReturnedItems = %d, want 1 (filtered by MinScore then capped by TopK)", result.ReturnedItems)
-	}
-	if result.Items[0].Item.Title != "A" {
-		t.Fatalf("Items[0] = %+v, want the highest-scoring survivor", result.Items[0])
-	}
-}
-
-func TestRankSkipsOutOfRangeIndex(t *testing.T) {
-	installMiscResponse(t, `{"rankings": [{"index": 99, "score": 0.9}]}`)
-
-	result, err := Rank([]rankDoc{{Title: "A"}}, NewRankOptions().WithQuery("q"))
-	if err != nil {
-		t.Fatalf("Rank: %v", err)
-	}
-	if result.ReturnedItems != 0 {
-		t.Fatalf("ReturnedItems = %d, want 0: an out-of-range index must be dropped, not indexed into", result.ReturnedItems)
-	}
-}
-
-func TestRankRefusesUnparseableResponse(t *testing.T) {
-	installMiscResponse(t, "not json")
-	_, err := Rank([]rankDoc{{Title: "A"}}, NewRankOptions().WithQuery("q"))
-	if err == nil {
-		t.Fatal("Rank accepted an unparseable response")
-	}
-}
-
-func TestRankSurfacesLLMFailure(t *testing.T) {
-	installMiscFailure(t)
-	_, err := Rank([]rankDoc{{Title: "A"}}, NewRankOptions().WithQuery("q"))
-	if err == nil {
-		t.Fatal("Rank did not surface the provider's failure")
-	}
-}
-
 // ===================== resolve.go =====================
 
 type resolveCustomer struct {
@@ -316,8 +233,8 @@ func TestResolveSingleSourceShortCircuits(t *testing.T) {
 	if result.Resolved != source {
 		t.Fatalf("Resolved = %+v, want the single source echoed back", result.Resolved)
 	}
-	if result.Strategy != "single-source" || result.ModelConfidence != 1.0 {
-		t.Fatalf("Strategy/Confidence = %q/%v, want single-source/1.0", result.Strategy, result.ModelConfidence)
+	if result.Strategy != "single-source" || result.ModelConfidence != 0 {
+		t.Fatalf("Strategy/Confidence = %q/%v, want single-source/0 (no model was asked)", result.Strategy, result.ModelConfidence)
 	}
 }
 
@@ -445,78 +362,12 @@ func TestMergeResolveOptionsZeroUserLeavesDefaults(t *testing.T) {
 	}
 }
 
-// ===================== predict.go =====================
-
-type predictMetrics struct {
-	Value float64 `json:"value"`
-}
-
-func TestPredictRejectsInvalidOptions(t *testing.T) {
-	_, err := Predict[predictMetrics]([]int{1, 2, 3}, NewPredictOptions().WithHorizon(""))
-	if err == nil {
-		t.Fatal("Predict accepted an empty horizon")
-	}
-}
-
-func TestPredictParsesStructuredResponse(t *testing.T) {
-	installMiscResponse(t, `{
-		"prediction": {"value": 42.5},
-		"confidence": 0.7,
-		"interval": {"lower": 40, "upper": 45, "confidence_level": 0.8},
-		"scenarios": [{"name": "optimistic", "description": "growth continues", "prediction": {"value": 50}, "probability": 0.3, "conditions": ["stable market"]}],
-		"factors": [{"name": "seasonality", "impact": "positive", "weight": 0.4, "reasoning": "holiday season"}],
-		"reasoning": "trend extrapolation",
-		"assumptions": ["no policy change"],
-		"risks": ["demand shock"]
-	}`)
-
-	result, err := Predict[predictMetrics]([]float64{10, 20, 30}, NewPredictOptions().
-		WithMethod("trend").
-		WithFactors([]string{"seasonality"}).
-		WithAssumptions([]string{"no policy change"}).
-		WithIncludeScenarios(true).
-		WithNumScenarios(2).
-		WithHistoryWindow("last 3 quarters"))
-	if err != nil {
-		t.Fatalf("Predict: %v", err)
-	}
-	if result.Prediction.Value != 42.5 {
-		t.Fatalf("Prediction = %+v", result.Prediction)
-	}
-	if result.Interval == nil || result.Interval.Upper != 45 {
-		t.Fatalf("Interval = %+v", result.Interval)
-	}
-	if len(result.Scenarios) != 1 || len(result.Factors) != 1 {
-		t.Fatalf("Scenarios/Factors = %+v / %+v", result.Scenarios, result.Factors)
-	}
-}
-
-func TestPredictRefusesUnparseableResponse(t *testing.T) {
-	installMiscResponse(t, "not json")
-	_, err := Predict[predictMetrics]([]int{1, 2, 3}, NewPredictOptions())
-	if err == nil {
-		t.Fatal("Predict accepted an unparseable response")
-	}
-}
-
-func TestPredictSurfacesLLMFailure(t *testing.T) {
-	installMiscFailure(t)
-	_, err := Predict[predictMetrics]([]int{1, 2, 3}, NewPredictOptions())
-	if err == nil {
-		t.Fatal("Predict did not surface the provider's failure")
-	}
-}
-
-func TestPredictRefusesUnmarshalableHistoricalData(t *testing.T) {
-	_, err := Predict[predictMetrics](unmarshalableData{C: make(chan int)}, NewPredictOptions())
-	if err == nil {
-		t.Fatal("Predict accepted historical data that cannot be marshaled")
-	}
-}
-
 // ===================== verify.go: VerifyClaim =====================
 
-func TestVerifyClaimReturnsFirstClaimWhenPresent(t *testing.T) {
+// The scripted answer holds a verified claim and then a false one. VerifyClaim
+// used to return the first, so this asserted "verified" for content the same
+// answer called false (LX-028).
+func TestVerifyClaimReportsTheWorstClaimFound(t *testing.T) {
 	installVerifyResponse(t)
 
 	result, err := VerifyClaim("Water boils at 100C", NewVerifyOptions().WithMinConfidence(0))
@@ -524,35 +375,43 @@ func TestVerifyClaimReturnsFirstClaimWhenPresent(t *testing.T) {
 		t.Fatalf("VerifyClaim: %v", err)
 	}
 	if result.Claim != "Water boils at 100C" {
-		t.Fatalf("Claim = %q, want the first parsed claim echoed back", result.Claim)
+		t.Fatalf("Claim = %q, want the caller's claim", result.Claim)
 	}
-	if result.Verdict != "verified" {
-		t.Fatalf("Verdict = %q, want verified", result.Verdict)
+	if result.Verdict != "false" {
+		t.Fatalf("Verdict = %q, want the worst of the claims found", result.Verdict)
+	}
+	// What comes with the verdict is the false claim's own: its confidence
+	// and its evidence. This asserted the lowest confidence and the evidence
+	// of both claims, which paired "false" with the verified claim's 0.95 and
+	// its supporting evidence (review round 9).
+	if result.ModelConfidence != 0.99 {
+		t.Fatalf("ModelConfidence = %v, want the false claim's own", result.ModelConfidence)
+	}
+	if len(result.Evidence) != 1 {
+		t.Fatalf("Evidence = %v, want the false claim's own", result.Evidence)
 	}
 }
 
-// TestVerifyClaimFallsBackToOverallVerdictWithNoClaims covers the branch
-// where the model returns no per-claim breakdown at all: VerifyClaim must
-// still answer using the overall verdict rather than returning a zero value.
-func TestVerifyClaimFallsBackToOverallVerdictWithNoClaims(t *testing.T) {
+// TestVerifyClaimHasNoVerdictWhenNoClaimWasAssessed covers the branch where
+// the model returns no per-claim breakdown at all. It used to answer with the
+// overall verdict, and this test asserted "verified" for it.
+func TestVerifyClaimHasNoVerdictWhenNoClaimWasAssessed(t *testing.T) {
 	installMiscResponse(t, `{
-		"overall_verdict": "verified",
+		"claims": [], "logic_issues": [], "consistency_issues": [],
 		"overall_confidence": 0.9,
+		"trust_score": 0.9,
 		"summary": "checked as a whole"
 	}`)
 
+	// There is no fallback any more. A review that assessed no claim has no
+	// verdict for the claim, and this used to hand back the overall one, which
+	// could be "verified" (LX-028).
 	result, err := VerifyClaim("The sky is blue", NewVerifyOptions().WithMinConfidence(0))
-	if err != nil {
-		t.Fatalf("VerifyClaim: %v", err)
+	if err == nil {
+		t.Fatalf("VerifyClaim returned %+v for a claim nobody assessed", result)
 	}
-	if result.Claim != "The sky is blue" {
-		t.Fatalf("Claim = %q, want the input claim echoed back on the fallback path", result.Claim)
-	}
-	if result.Verdict != "verified" {
-		t.Fatalf("Verdict = %q, want the overall verdict on the fallback path", result.Verdict)
-	}
-	if result.Reasoning != "checked as a whole" {
-		t.Fatalf("Reasoning = %q, want the overall summary on the fallback path", result.Reasoning)
+	if result.Verdict != "" || result.Reasoning != "" {
+		t.Fatalf("a refused claim came back with a verdict: %+v", result)
 	}
 }
 
@@ -619,19 +478,18 @@ func TestSynthesizeParsesStructuredResponse(t *testing.T) {
 	}
 }
 
-// TestSynthesizeStringTargetAcceptsRawStringPayload covers the fallback
-// path where T is string and the "synthesized" field is not valid JSON for
-// T directly nor a JSON string wrapping JSON -- so the raw bytes become the
-// string result rather than the call failing.
-func TestSynthesizeStringTargetAcceptsRawStringPayload(t *testing.T) {
-	installMiscResponse(t, `{"synthesized": "a plain unquoted-in-JSON-terms summary is not how this arrives, so use an object test instead", "source_coverage": {}}`)
+// A string target takes a JSON string as the synthesis. It does not take an
+// object or a list and read its JSON text as the string, which an earlier
+// fallback did; synthesize_test.go has the refusals.
+func TestSynthesizeStringTargetAcceptsAStringPayload(t *testing.T) {
+	installMiscResponse(t, `{"synthesized":"a unified summary of the sources","source_coverage":{},"facts":[],"insights":[],"conflicts":[]}`)
 
-	result, err := Synthesize[string]([]any{"source"}, NewSynthesizeOptions())
+	result, err := Synthesize[string]([]any{"source"}, NewSynthesizeOptions().WithCiteSources(false))
 	if err != nil {
 		t.Fatalf("Synthesize: %v", err)
 	}
-	if result.Synthesized == "" {
-		t.Fatal("Synthesized is empty for a string target")
+	if result.Synthesized != "a unified summary of the sources" {
+		t.Fatalf("Synthesized = %q", result.Synthesized)
 	}
 }
 
@@ -886,7 +744,7 @@ func TestValidateResultToJudgmentNoClaimsWhenNeitherIsSet(t *testing.T) {
 
 func installValidateResponse(t *testing.T) {
 	t.Helper()
-	installMiscResponse(t, `{"valid": true, "errors": [], "warnings": [{"field": "Name", "message": "a warning"}], "info": []}`)
+	installMiscResponse(t, `{"valid": true, "errors": [], "warnings": [{"field": "Name", "message": "a warning"}], "info": [], "confidence": 0.9,"summary":"s"}`)
 }
 
 func TestValidateFailOnWarningTreatsWarningsAsFailure(t *testing.T) {
@@ -947,17 +805,18 @@ func TestFormatSurfacesLLMFailure(t *testing.T) {
 	}
 }
 
-func TestFormatNonMarshalableDataFallsBackToGoSyntax(t *testing.T) {
-	// Format's data-to-string step falls back to fmt.Sprintf("%v", data) on a
-	// marshal failure rather than refusing outright -- the template still
-	// reaches the model with *something* describing the input.
-	installMiscResponse(t, "formatted output")
+func TestFormatRefusesDataJSONCannotWrite(t *testing.T) {
+	// Format used to fall back to fmt.Sprintf("%v", data) on a marshal failure,
+	// which prints every field of a struct, one the type leaves out of JSON
+	// included. A value JSON cannot write is an invalid request and nothing is
+	// sent.
+	model := coreAnswer(t, "formatted output")
 	out, err := Format(unmarshalableData{C: make(chan int)}, "a bio")
-	if err != nil {
-		t.Fatalf("Format: %v", err)
+	if types.KindOf(err) != types.KindInvalidRequest || out != "" {
+		t.Fatalf("Format = %q, %v; want an invalid request and nothing", out, err)
 	}
-	if out != "formatted output" {
-		t.Fatalf("out = %q", out)
+	if model.count() != 0 {
+		t.Errorf("%d requests were made", model.count())
 	}
 }
 

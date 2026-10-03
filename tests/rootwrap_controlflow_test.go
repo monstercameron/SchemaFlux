@@ -222,7 +222,7 @@ func TestDecomposeToSliceProviderFailureIsAnError(t *testing.T) {
 // --- NormalizeBatch ----------------------------------------------------------
 
 func TestNormalizeBatchNormalizesEveryItemInOrder(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"normalized":"NORMALIZED","changes":[]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"normalized":"NORMALIZED","changes":[],"warnings":[]}`, nil)
 
 	results, err := schemaflux.NormalizeBatch([]string{"a", "b", "c"}, schemaflux.NewNormalizeOptions())
 	if err != nil {

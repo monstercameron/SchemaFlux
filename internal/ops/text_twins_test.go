@@ -130,6 +130,7 @@ func translateTwinOptions() TranslateOptions {
 	opts.SourceLanguage = "English"
 	opts.Dialect = "Quebec"
 	opts.PreserveFormatting = true
+	opts.Glossary = map[string]string{"gamma": "c", "alpha": "a", "beta": "b"}
 	opts.OpOptions.Steering = "keep it dry"
 	return opts
 }
@@ -142,4 +143,46 @@ func expandTwinOptions() ExpandOptions {
 	opts.ElaborateOn = []string{"the cost model"}
 	opts.OpOptions.Steering = "keep it dry"
 	return opts
+}
+
+// The twins agreeing with each other is not enough: two that dropped the same
+// clause would still agree. This pins what is sent, word for word, and sends it
+// twice, so an order that changes from one call to the next (a glossary ranged
+// over as a map) shows up as a difference between the calls.
+func TestTextTwinsSendTheExactSteering(t *testing.T) {
+	cases := []struct {
+		name      string
+		runPlain  func() error
+		runDetail func() error
+		want      string
+	}{
+		{"summarize",
+			func() error { _, err := Summarize("some text", summarizeTwinOptions()); return err },
+			func() error { _, err := SummarizeWithMetadata("some text", summarizeTwinOptions()); return err },
+			"keep it dry. Target length: 3 sentences. Style: executive. Focus on: cost, risk. Must preserve: the invoice number"},
+		{"rewrite",
+			func() error { _, err := Rewrite("some text", rewriteTwinOptions()); return err },
+			func() error { _, err := RewriteWithMetadata("some text", rewriteTwinOptions()); return err },
+			"keep it dry. Target tone: formal. Target audience: executives. Avoid: synergy. Preserve all factual information"},
+		{"translate",
+			func() error { _, err := Translate("some text", translateTwinOptions()); return err },
+			func() error { _, err := TranslateWithMetadata("some text", translateTwinOptions()); return err },
+			"keep it dry. Translate to French. From English. Use Quebec dialect. Preserve formatting. Use glossary: alpha=a, beta=b, gamma=c"},
+		{"expand",
+			func() error { _, err := Expand("some text", expandTwinOptions()); return err },
+			func() error { _, err := ExpandWithMetadata("some text", expandTwinOptions()); return err },
+			"keep it dry. Expand by 3.0x. Detail level: 8/10. Style: balanced. Include relevant examples. Elaborate on: the cost model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for round := 0; round < 3; round++ {
+				if got := captureSteering(t, tc.runPlain); got != tc.want {
+					t.Errorf("round %d, plain: got %q, want %q", round, got, tc.want)
+				}
+				if got := captureSteering(t, tc.runDetail); got != tc.want {
+					t.Errorf("round %d, with metadata: got %q, want %q", round, got, tc.want)
+				}
+			}
+		})
+	}
 }

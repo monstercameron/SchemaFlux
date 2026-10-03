@@ -50,6 +50,11 @@ func TestValidateModelResolutionRejectsUnmappedProviders(t *testing.T) {
 			if !errors.Is(err, ErrNoModelMapping) {
 				t.Errorf("errors.Is(err, ErrNoModelMapping) = false; err = %v", err)
 			}
+			// Classified like NoDefaultModelError, which reports the same fault at
+			// call time: one fault, one identity.
+			if types.KindOf(err) != types.KindConfiguration || !errors.Is(err, types.ErrConfiguration) {
+				t.Errorf("the construction-time error is not classified as configuration: kind %v, err %v", types.KindOf(err), err)
+			}
 			if !strings.Contains(err.Error(), provider) {
 				t.Errorf("error does not name the provider: %v", err)
 			}
@@ -71,7 +76,7 @@ func TestValidateModelResolutionRejectsUnmappedProviders(t *testing.T) {
 // model is how they do it.
 func TestGlobalModelOverrideRescuesAnUnmappedProvider(t *testing.T) {
 	clearModelEnv(t)
-	t.Setenv("SCHEMAFLUX_MODEL", "my-local-model")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL", "my-local-model")
 
 	if err := ValidateModelResolution("my-internal-gateway"); err != nil {
 		t.Fatalf("ValidateModelResolution = %v, want nil with SCHEMAFLUX_MODEL set", err)
@@ -96,7 +101,7 @@ func TestPartialTierOverridesStillFail(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearModelEnv(t)
-			t.Setenv(tc.env, "some-model")
+			setenvAndReload(t, tc.env, "some-model")
 
 			err := ValidateModelResolution("qwen")
 			if err == nil {
@@ -114,9 +119,9 @@ func TestPartialTierOverridesStillFail(t *testing.T) {
 // TestAllThreeTierOverridesSucceed — the complete version of the case above.
 func TestAllThreeTierOverridesSucceed(t *testing.T) {
 	clearModelEnv(t)
-	t.Setenv("SCHEMAFLUX_MODEL_SMART", "big")
-	t.Setenv("SCHEMAFLUX_MODEL_FAST", "medium")
-	t.Setenv("SCHEMAFLUX_MODEL_QUICK", "small")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_SMART", "big")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_FAST", "medium")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_QUICK", "small")
 
 	if err := ValidateModelResolution("zai"); err != nil {
 		t.Fatalf("ValidateModelResolution = %v, want nil with all three tiers overridden", err)

@@ -81,7 +81,8 @@ func TestRedactLLMProviderFailureIsAnError(t *testing.T) {
 	}
 }
 
-// Complete forwards partialText and opts to ops.Complete(context.Background(), ...).
+// Complete forwards partialText and opts to ops.Complete, on the context the
+// options carry.
 func TestCompleteForwardsToOps(t *testing.T) {
 	testfixtures.WithScriptedProvider(t, "sentence continues here.", nil)
 
@@ -169,7 +170,7 @@ func TestDeduplicateSingleItemMakesNoProviderCall(t *testing.T) {
 // one unique item and one recorded removal -- proving the threshold and items
 // reached ops.Deduplicate and its grouping response was applied.
 func TestDeduplicateGroupsScriptedDuplicates(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"groups":[[0,1]]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"duplicates":[{"index":1,"duplicate_of":0,"similarity":0.95}]}`, nil)
 
 	result, err := schemaflux.Deduplicate([]string{"Ada Lovelace", "Ada  Lovelace"}, 0.85)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/monstercameron/schemaflux/internal/types"
@@ -71,8 +72,7 @@ func schedOutcomeClass(err error) string {
 }
 
 // runWithDeadline fails t if fn does not complete within d, so a hang becomes
-// a failed test rather than a stalled build -- the same discipline
-// fanout.go's doc comment calls out FanOutGate's real deadlock for missing.
+// a failed test rather than a stalled build.
 func runWithDeadline(t *testing.T, d time.Duration, fn func()) {
 	t.Helper()
 	done := make(chan struct{})
@@ -252,24 +252,50 @@ func TestChaosSchedulerMixedTenantsAndPrioritiesCompleteUnderLoad(t *testing.T) 
 // reintroduction of the head-of-line defect times out here well before the
 // deadline this test allows.
 func TestChaosSchedulerManyBusyProvidersNeverStallManyIdleOnes(t *testing.T) {
-	s := NewScheduler(SchedulerLimits{MaxConcurrent: 100, MaxQueued: 1000, PerProviderConcurrency: 1})
-	defer s.Close(context.Background())
+	synctest.Test(t, func(t *testing.T) {
+		s := NewScheduler(SchedulerLimits{MaxConcurrent: 100, MaxQueued: 1000, PerProviderConcurrency: 1})
+		defer s.Close(context.Background())
 
-	const busyProviders = 4
-	const backlogPerProvider = 15
-	const idleProviders = 6
+		const busyProviders = 4
+		const backlogPerProvider = 15
+		const idleProviders = 6
 
-	release := make(chan struct{})
-	var wg sync.WaitGroup
+		release := make(chan struct{})
+		var wg sync.WaitGroup
 
-	for p := 0; p < busyProviders; p++ {
-		provider := fmt.Sprintf("busy-%d", p)
-		for i := 0; i < backlogPerProvider; i++ {
+		for p := 0; p < busyProviders; p++ {
+			provider := fmt.Sprintf("busy-%d", p)
+			for i := 0; i < backlogPerProvider; i++ {
+				wg.Add(1)
+				go func(provider string) {
+					defer wg.Done()
+					Submit(context.Background(), s, SubmitRequest{Provider: provider, Tenant: provider},
+						func(ctx context.Context) (int, error) {
+							select {
+							case <-release:
+							case <-ctx.Done():
+							}
+							return 1, ctx.Err()
+						})
+				}(provider)
+			}
+		}
+
+		// One admitted per busy provider (PerProviderConcurrency: 1), the rest
+		// queued behind it -- the exact state the head-of-line defect needs.
+		waitForStat(t, s, func(st SchedulerStats) bool {
+			return st.InFlight == busyProviders && st.Queued == busyProviders*(backlogPerProvider-1)
+		})
+
+		var idleStarted int64
+		for p := 0; p < idleProviders; p++ {
+			provider := fmt.Sprintf("idle-%d", p)
 			wg.Add(1)
 			go func(provider string) {
 				defer wg.Done()
 				Submit(context.Background(), s, SubmitRequest{Provider: provider, Tenant: provider},
 					func(ctx context.Context) (int, error) {
+						atomic.AddInt64(&idleStarted, 1)
 						select {
 						case <-release:
 						case <-ctx.Done():
@@ -278,52 +304,21 @@ func TestChaosSchedulerManyBusyProvidersNeverStallManyIdleOnes(t *testing.T) {
 					})
 			}(provider)
 		}
-	}
 
-	// One admitted per busy provider (PerProviderConcurrency: 1), the rest
-	// queued behind it -- the exact state the head-of-line defect needs.
-	waitForStat(t, s, func(st SchedulerStats) bool {
-		return st.InFlight == busyProviders && st.Queued == busyProviders*(backlogPerProvider-1)
+		// Before the fix InFlight stayed at busyProviders.
+		waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == busyProviders+idleProviders })
+
+		// Stats().InFlight flips the moment the scheduler reserves a slot under
+		// its lock, which is not the same as the admitted goroutine having begun
+		// its work. waitForStat has returned with every goroutine settled, so
+		// the work's own counter is final.
+		if got := atomic.LoadInt64(&idleStarted); got != idleProviders {
+			t.Errorf("idle providers actually started = %d, want %d", got, idleProviders)
+		}
+
+		close(release)
+		wg.Wait()
 	})
-
-	var idleStarted int64
-	for p := 0; p < idleProviders; p++ {
-		provider := fmt.Sprintf("idle-%d", p)
-		wg.Add(1)
-		go func(provider string) {
-			defer wg.Done()
-			Submit(context.Background(), s, SubmitRequest{Provider: provider, Tenant: provider},
-				func(ctx context.Context) (int, error) {
-					atomic.AddInt64(&idleStarted, 1)
-					select {
-					case <-release:
-					case <-ctx.Done():
-					}
-					return 1, ctx.Err()
-				})
-		}(provider)
-	}
-
-	// Before the fix this times out with InFlight stuck at busyProviders.
-	waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == busyProviders+idleProviders })
-
-	// Stats().InFlight flips the moment the scheduler reserves a slot under
-	// its lock, which can be before the admitted goroutine has actually been
-	// scheduled onto a thread and incremented idleStarted -- the same timing
-	// gap gatedWork's own doc comment (scheduler_test.go) warns about. Poll
-	// idleStarted directly rather than asserting on it immediately after
-	// waitForStat returns, or this assertion can read a stale value on a
-	// loaded machine and fail on nothing but scheduler noise.
-	deadline := time.Now().Add(5 * time.Second)
-	for atomic.LoadInt64(&idleStarted) < idleProviders && time.Now().Before(deadline) {
-		runtime.Gosched()
-	}
-	if got := atomic.LoadInt64(&idleStarted); got != idleProviders {
-		t.Errorf("idle providers actually started = %d, want %d", got, idleProviders)
-	}
-
-	close(release)
-	wg.Wait()
 }
 
 // TestChaosSchedulerCloseDuringStormAnswersEverySubmission fires a storm of

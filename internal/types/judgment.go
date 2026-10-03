@@ -86,6 +86,11 @@ type JudgmentIssue struct {
 	// Suggestion is how to fix it, when the operation produced one.
 	Suggestion string
 
+	// Rule is the rule this issue is a breach of, when the caller supplied
+	// named rules and the issue belongs to one: for Audit, the policy, in the
+	// caller's own words. Empty when the issue is not tied to a supplied rule.
+	Rule string
+
 	// Evidence is the specific support for this issue: a quoted fragment,
 	// a pattern that matched, a source index rendered as text. It is kept
 	// as its own field rather than folded into Message so a caller can

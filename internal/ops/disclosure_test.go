@@ -74,8 +74,20 @@ func TestRedactionDocumentsWhatItDetects(t *testing.T) {
 		// about. RedactWithResult reports rather than returning an empty map;
 		// RedactLLM locates spans by their text, so the interesting disclosure
 		// is what happens to a span it cannot find, not offset validation.
+		//
+		// Updated again for LX-020: the model is no longer asked for a
+		// position at all, so the disclosures are which occurrences are masked,
+		// which are left alone, and what a failed call returns.
 		{"RedactWithResult", []string{"reports what it replaced", "audit"}},
-		{"RedactLLM", []string{"offsets", "hint", "dropped", "not classification"}},
+		{"RedactLLM", []string{
+			"is not asked where the value is",
+			"Anything longer is masked wherever it appears",
+			"left_inside_longer_words",
+			"also a common word",
+			"dropped",
+			"carries no text",
+			"not classification",
+		}},
 	}
 
 	for _, tc := range cases {

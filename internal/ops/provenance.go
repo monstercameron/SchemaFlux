@@ -8,26 +8,18 @@ import (
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// TC-003, wiring half. internal/types/provenance.go defines the shape of a
-// result's lineage; this is where RunOpResult (op.go) fills one in.
+// internal/types/provenance.go defines the shape of a result's lineage; this is
+// where RunOpResult (op.go) fills one in.
 //
-// Scope, stated plainly: this wires TC-003 for operations that run through
-// RunOp/RunOpResult -- the generic Op[In, Out] execution path
-// (schemaflux.RunOpResult, and everything plan_many.go/partial.go/
-// recover.go build on it: PlanMany, batch recovery, the atomic-fallback
-// path). It is the one execution path visible from this task's permitted
-// files that has an Op descriptor, the resolved input, the resolved
-// options, the repair outcome, and the finished envelope all in one place
-// at once. Operations still on the pre-Op path -- Choose, Filter, Sort,
-// Classify, Summarize, Transform's and Extract's own top-level entry
-// points in core.go, all built directly in collection.go/textresult.go/
-// opextract.go -- are outside this task's permitted files (or, for
-// core.go, do not go through RunOpResult even where core.go itself is
-// editable: Extract calls RunOp directly with In=any and a nil input,
-// through runExtractOp in opextract.go, which this task may not edit) and
-// do not get a Provenance filled in by this change. Their Meta.Provenance
-// is the zero value, which types.Provenance.FullyTraced() correctly
-// reports as untraced.
+// Provenance is filled in for operations that run through RunOp/RunOpResult,
+// the generic Op[In, Out] execution path, and everything plan_many.go,
+// partial.go and recover.go build on it. That is the one path that has an Op
+// descriptor, the resolved input, the resolved options, the repair outcome and
+// the finished envelope all in one place. Operations built directly in
+// collection.go, textresult.go and core.go (Choose, Filter, Sort, Classify,
+// Summarize, Transform and Extract's top-level entry points) do not go through
+// RunOpResult, so their Meta.Provenance is the zero value, which
+// types.Provenance.FullyTraced() reports as untraced.
 
 // buildProvenance fills in a Provenance for one RunOpResult call, from the
 // Op descriptor, the input actually supplied, the resolved options, the

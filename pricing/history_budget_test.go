@@ -3,12 +3,44 @@ package pricing
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
+
+// lockedLog is a log destination safe to write from any goroutine.
+type lockedLog struct {
+	mu   sync.Mutex
+	text strings.Builder
+}
+
+func (b *lockedLog) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.Write(p)
+}
+
+func (b *lockedLog) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.text.String()
+}
+
+// captureLog sends the library's log to a buffer for the length of a test and
+// returns a function reading what was logged so far.
+func captureLog(t *testing.T) func() string {
+	t.Helper()
+	buffer := &lockedLog{}
+	previous := logger.GetLogger()
+	logger.ConfigureLogger(logger.LoggerConfig{Level: logger.DebugLevel, Format: "text", Output: buffer})
+	t.Cleanup(func() { logger.SetLogger(previous) })
+	return buffer.String
+}
 
 // track records one request at the given cost, the way CallLLM does.
 func track(t *testing.T, requestID string, cost float64) {
@@ -322,6 +354,29 @@ func TestZeroBudgetMeansUnlimited(t *testing.T) {
 	}
 }
 
+// A negative or NaN limit is a configuration mistake, not a budget: it must not
+// refuse every call (a negative number is always exceeded) nor fire an alert on
+// every cost (a comparison against NaN is never false the right way round).
+func TestANegativeOrNaNBudgetLimitIsNoLimit(t *testing.T) {
+	for name, limit := range map[string]float64{"negative": -5, "NaN": math.NaN(), "negative infinity": math.Inf(-1)} {
+		t.Run(name, func(t *testing.T) {
+			resetAll(t)
+			var alerts int
+			SetBudget(limit, limit, limit, func(float64, float64, string) { alerts++ })
+			SetBudgetEnforcement(true)
+			track(t, "req-1", 0.9)
+			track(t, "req-2", 0.9)
+
+			if err := CheckBudget(); err != nil {
+				t.Errorf("CheckBudget refused under a limit of %v: %v", limit, err)
+			}
+			if alerts != 0 {
+				t.Errorf("%d budget alerts under a limit of %v, want none", alerts, limit)
+			}
+		})
+	}
+}
+
 // SetCostHistoryLimit(0) restores the default rather than disabling recording.
 func TestZeroHistoryLimitRestoresTheDefault(t *testing.T) {
 	resetAll(t)
@@ -334,5 +389,357 @@ func TestZeroHistoryLimitRestoresTheDefault(t *testing.T) {
 	}
 	if got := CostHistoryLen(); got != 20 {
 		t.Errorf("CostHistoryLen = %d, want 20 -- a zero limit should mean the default, not seven", got)
+	}
+}
+
+// The callback used to run while TrackCost held the ledger's write lock, so a
+// callback that read a total, checked the budget or tracked a cost -- the first
+// things an alert hook reaches for -- waited on a lock its own caller held.
+func TestTheBudgetCallbackMayCallBackIntoThePackage(t *testing.T) {
+	resetAll(t)
+	SetBudgetEnforcement(true)
+
+	var seen struct {
+		total    float64
+		checkErr error
+		fired    int
+	}
+	SetBudget(1.0, 0, 0, func(current, limit float64, period string) {
+		seen.fired++
+		seen.total = GetTotalCost(time.Time{}, nil)
+		seen.checkErr = CheckBudget()
+		_ = GetCostSummary(time.Time{}, nil)
+		_ = GetCostBreakdown(time.Time{})
+		track(t, fmt.Sprintf("from-callback-%d", seen.fired), 0)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		track(t, "req-1", 0.9)
+		track(t, "req-2", 0.2)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("TrackCost did not return: the budget callback ran under the ledger lock")
+	}
+
+	if seen.fired != 2 {
+		t.Fatalf("callback fired %d times, want 2 (the 80%% and 100%% crossings)", seen.fired)
+	}
+	if seen.total < 1.0 {
+		t.Errorf("the callback read a total of %v, want the 1.1 just recorded", seen.total)
+	}
+	if !errors.Is(seen.checkErr, ErrBudgetExceeded) {
+		t.Errorf("CheckBudget inside the callback = %v, want ErrBudgetExceeded", seen.checkErr)
+	}
+}
+
+// The callback is the caller's code. A panic in it must not unwind through the
+// operation that recorded the cost, and must not stop later costs recording.
+func TestAPanickingBudgetCallbackDoesNotReachTheCaller(t *testing.T) {
+	resetAll(t)
+
+	var calls int
+	SetBudget(1.0, 0, 0, func(float64, float64, string) {
+		calls++
+		panic("alert hook failed with customer data in the message")
+	})
+
+	logs := captureLog(t)
+	track(t, "req-1", 0.9)
+	track(t, "req-2", 0.2)
+
+	if calls != 2 {
+		t.Errorf("callback ran %d times, want 2", calls)
+	}
+	text := logs()
+	if !strings.Contains(text, "Budget callback panicked") {
+		t.Errorf("the panic was not logged at all\nlog:\n%s", text)
+	}
+	if strings.Contains(text, "customer data") {
+		t.Errorf("the panic value reached the log\nlog:\n%s", text)
+	}
+	if CostHistoryLen() != 2 {
+		t.Errorf("CostHistoryLen = %d, want 2: a panic in the callback lost a record", CostHistoryLen())
+	}
+	if usd, _ := GetTotalSpend(time.Time{}, nil); !closeEnough(usd, 1.1) {
+		t.Errorf("total = %v, want 1.1", usd)
+	}
+}
+
+// trackUnpriced records one call whose cost is not known.
+func trackUnpriced(t *testing.T, requestID string) {
+	t.Helper()
+	TrackCost(
+		&types.CostInfo{Currency: "USD", Priced: false, Quality: types.PricingUnknown},
+		&types.ResultMetadata{RequestID: requestID, Operation: "extract", Model: "gpt-5.6-sol", Provider: "openai", EndTime: time.Now()},
+	)
+}
+
+// A total that includes a call of unknown cost is a floor, and says so.
+func TestATotalHoldingAnUnpricedCallIsMarkedIncomplete(t *testing.T) {
+	resetAll(t)
+
+	if usd, complete := GetTotalSpend(time.Time{}, nil); usd != 0 || !complete {
+		t.Fatalf("an empty ledger reported (%v, %v), want (0, true): nothing is missing from it", usd, complete)
+	}
+
+	track(t, "req-priced", 0.25)
+	if usd, complete := GetTotalSpend(time.Time{}, nil); !closeEnough(usd, 0.25) || !complete {
+		t.Fatalf("priced calls only: (%v, %v), want (0.25, true)", usd, complete)
+	}
+
+	trackUnpriced(t, "req-unpriced")
+	usd, complete := GetTotalSpend(time.Time{}, nil)
+	if !closeEnough(usd, 0.25) || complete {
+		t.Errorf("with an unpriced call: (%v, %v), want (0.25, false)", usd, complete)
+	}
+	if total := GetTotalCost(time.Time{}, nil); !closeEnough(total, 0.25) {
+		t.Errorf("GetTotalCost = %v, want the same floor, 0.25", total)
+	}
+
+	// The flag follows the range asked about, not the whole history.
+	cases := []struct {
+		name     string
+		filters  map[string]string
+		complete bool
+	}{
+		{"every call", nil, false},
+		{"only the priced call", map[string]string{"request_id": "req-priced"}, true},
+		{"only the unpriced call", map[string]string{"request_id": "req-unpriced"}, false},
+		{"a model the unpriced call used", map[string]string{"model": "gpt-5.6-sol"}, false},
+		{"a model nothing used", map[string]string{"model": "gpt-4"}, true},
+	}
+	for _, tc := range cases {
+		if _, got := GetTotalSpend(time.Time{}, tc.filters); got != tc.complete {
+			t.Errorf("%s: complete = %v, want %v", tc.name, got, tc.complete)
+		}
+	}
+	if _, got := GetTotalSpend(time.Now().Add(time.Hour), nil); !got {
+		t.Error("a range after every record reported incomplete")
+	}
+}
+
+// With enforcement on, a refusal says how many calls of unknown cost the
+// period holds, because the spend it names is then a floor.
+func TestRefusingABudgetNamesTheUnpricedCalls(t *testing.T) {
+	resetAll(t)
+	SetBudget(0.50, 0, 0, nil)
+	SetBudgetEnforcement(true)
+
+	track(t, "req-1", 0.60)
+	err := CheckBudget()
+	if !errors.Is(err, ErrBudgetExceeded) || strings.Contains(err.Error(), "unknown cost") {
+		t.Fatalf("with no unpriced call: %v", err)
+	}
+
+	trackUnpriced(t, "req-2")
+	trackUnpriced(t, "req-3")
+	err = CheckBudget()
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("CheckBudget = %v, want ErrBudgetExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "2 call(s) of unknown cost") {
+		t.Errorf("the refusal does not say the spend is a floor: %v", err)
+	}
+}
+
+// Unpriced calls do not unlock the gate, and do not close it either: only
+// priced spend is compared with the limit.
+func TestUnpricedCallsAloneNeitherRefuseNorHideASpentBudget(t *testing.T) {
+	resetAll(t)
+	SetBudget(0.50, 0, 0, nil)
+	SetBudgetEnforcement(true)
+
+	for i := 0; i < 5; i++ {
+		trackUnpriced(t, fmt.Sprintf("req-%d", i))
+	}
+	if err := CheckBudget(); err != nil {
+		t.Fatalf("CheckBudget = %v: unpriced calls alone must not lock out a subscription transport", err)
+	}
+	track(t, "req-priced", 0.5)
+	if err := CheckBudget(); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("CheckBudget = %v, want ErrBudgetExceeded once the priced spend reaches the limit", err)
+	}
+}
+
+// A cost that is not a finite non-negative number used to be added to the
+// running totals as it was. NaN made every later total NaN, and NaN is never
+// at or above a limit, so the budget stopped ever refusing.
+func TestAnInvalidCostAmountDoesNotPoisonTheTotals(t *testing.T) {
+	resetAll(t)
+	SetBudget(0.50, 0, 0, nil)
+	SetBudgetEnforcement(true)
+
+	bad := []struct {
+		name string
+		cost types.CostInfo
+	}{
+		{"NaN total", types.CostInfo{TotalCost: math.NaN(), Priced: true}},
+		{"positive infinity", types.CostInfo{TotalCost: math.Inf(1), Priced: true}},
+		{"negative infinity", types.CostInfo{TotalCost: math.Inf(-1), Priced: true}},
+		{"negative total", types.CostInfo{TotalCost: -3, Priced: true}},
+		{"NaN prompt cost", types.CostInfo{TotalCost: 1, PromptCost: math.NaN(), Priced: true}},
+		{"negative completion cost", types.CostInfo{TotalCost: 1, CompletionCost: -1, Priced: true}},
+		{"infinite cached cost", types.CostInfo{TotalCost: 1, CachedCost: math.Inf(1), Priced: true}},
+		{"NaN reasoning cost", types.CostInfo{TotalCost: 1, ReasoningCost: math.NaN(), Priced: true}},
+		{"negative cached cost", types.CostInfo{TotalCost: 1, CachedCost: -0.5, Priced: true}},
+		{"infinite reasoning cost", types.CostInfo{TotalCost: 1, ReasoningCost: math.Inf(1), Priced: true}},
+	}
+	for i, tc := range bad {
+		cost := tc.cost
+		TrackCost(&cost, &types.ResultMetadata{RequestID: fmt.Sprintf("bad-%d", i), EndTime: time.Now()})
+	}
+
+	usd, complete := GetTotalSpend(time.Time{}, nil)
+	if usd != 0 || complete {
+		t.Fatalf("after %d invalid costs: (%v, %v), want (0, false): recorded as unknown, adding nothing", len(bad), usd, complete)
+	}
+	if summary := GetCostSummary(time.Time{}, nil); summary.UnpricedRequests != len(bad) {
+		t.Errorf("UnpricedRequests = %d, want %d", summary.UnpricedRequests, len(bad))
+	}
+	record, ok := GetRequestCost("bad-0")
+	if !ok || record.Cost.Priced || math.IsNaN(record.Cost.TotalCost) {
+		t.Errorf("the stored record of a NaN cost = %+v, want an unpriced record holding no NaN", record.Cost)
+	}
+
+	track(t, "req-real", 0.6)
+	if err := CheckBudget(); !errors.Is(err, ErrBudgetExceeded) {
+		t.Errorf("CheckBudget = %v: a real cost over the limit must still refuse after invalid ones", err)
+	}
+}
+
+// When more than one period is over its limit the one named is the same every
+// time; it used to be whichever the map iteration reached first.
+func TestRefusalNamesTheShortestPeriodOverItsLimit(t *testing.T) {
+	resetAll(t)
+	SetBudget(0.10, 0.10, 0.10, nil)
+	SetBudgetEnforcement(true)
+	track(t, "req-1", 0.5)
+
+	for i := 0; i < 50; i++ {
+		err := CheckBudget()
+		if err == nil || !strings.Contains(err.Error(), "daily spend") {
+			t.Fatalf("attempt %d: %v, want the refusal to name the daily period", i, err)
+		}
+	}
+}
+
+// Only the first call of an unpriced model logs a warning; a loop over such a
+// model logged once per call.
+func TestAnUnpricedModelIsWarnedAboutOnce(t *testing.T) {
+	unpricedWarnMu.Lock()
+	saved := unpricedWarned
+	unpricedWarned = map[string]bool{}
+	unpricedWarnMu.Unlock()
+	t.Cleanup(func() {
+		unpricedWarnMu.Lock()
+		unpricedWarned = saved
+		unpricedWarnMu.Unlock()
+	})
+
+	logs := captureLog(t)
+	for i := 0; i < 100; i++ {
+		CalculateCost(usage(), "warned-once-model", "openai")
+	}
+	CalculateCost(usage(), "warned-once-model", "anthropic")
+	CalculateCost(usage(), "another-warned-model", "openai")
+
+	if got := strings.Count(logs(), "No pricing information available"); got != 3 {
+		t.Errorf("%d warnings logged for 102 calls on three (provider, model) pairs, want 3\nlog:\n%s", got, logs())
+	}
+
+	unpricedWarnMu.Lock()
+	remembered := len(unpricedWarned)
+	unpricedWarnMu.Unlock()
+	if remembered != 3 {
+		t.Errorf("%d distinct (provider, model) pairs remembered, want 3", remembered)
+	}
+
+	for i := 0; i < unpricedWarnLimit+50; i++ {
+		CalculateCost(usage(), fmt.Sprintf("flood-%d", i), "openai")
+	}
+	unpricedWarnMu.Lock()
+	remembered = len(unpricedWarned)
+	unpricedWarnMu.Unlock()
+	if remembered > unpricedWarnLimit {
+		t.Errorf("%d pairs remembered, want at most %d", remembered, unpricedWarnLimit)
+	}
+}
+
+// The error of an exhausted budget has a kind, so a caller that branches on
+// types.KindOf, and anything that reads errors.Is against the library's own
+// sentinel, sees a refused budget. Its text and the sentinel it always matched
+// are what they were.
+func TestAnExhaustedBudgetsErrorHasAKindAndKeepsItsTextAndItsSentinel(t *testing.T) {
+	unpriced := func(t *testing.T) {
+		t.Helper()
+		TrackCost(&types.CostInfo{Priced: false, Currency: "USD"}, &types.ResultMetadata{
+			RequestID: "req-unpriced", Operation: "extract", Model: "unlisted", Provider: "openai",
+			EndTime: time.Now(), TokenUsage: &types.TokenUsage{PromptTokens: 10, TotalTokens: 10},
+		})
+	}
+	cases := []struct {
+		name                   string
+		daily, weekly, monthly float64
+		spend                  []float64
+		withUnpricedCall       bool
+		want                   string
+	}{
+		{"the daily limit", 0.50, 0, 0, []float64{0.55}, false,
+			"cost budget exceeded: daily spend $0.5500 has reached the $0.50 limit"},
+		{"the weekly limit alone", 0, 0.50, 0, []float64{0.55}, false,
+			"cost budget exceeded: weekly spend $0.5500 has reached the $0.50 limit"},
+		{"the monthly limit alone", 0, 0, 0.50, []float64{0.55}, false,
+			"cost budget exceeded: monthly spend $0.5500 has reached the $0.50 limit"},
+		{"spend exactly at the limit", 0.50, 0, 0, []float64{0.30, 0.20}, false,
+			"cost budget exceeded: daily spend $0.5000 has reached the $0.50 limit"},
+		{"two limits over: the shortest period is the one reported", 0.50, 0.50, 0.50, []float64{0.60}, false,
+			"cost budget exceeded: daily spend $0.6000 has reached the $0.50 limit"},
+		{"the weekly one when the daily is not over", 5.00, 0.50, 0, []float64{0.60}, false,
+			"cost budget exceeded: weekly spend $0.6000 has reached the $0.50 limit"},
+		{"a limit with cents", 0.125, 0, 0, []float64{0.20}, false,
+			"cost budget exceeded: daily spend $0.2000 has reached the $0.12 limit"},
+		{"a spend of many small calls", 0.10, 0, 0, []float64{0.03, 0.03, 0.03, 0.03}, false,
+			"cost budget exceeded: daily spend $0.1200 has reached the $0.10 limit"},
+		{"a floor, with a call of unknown cost", 0.50, 0, 0, []float64{0.55}, true,
+			"cost budget exceeded: daily spend $0.5500 has reached the $0.50 limit (plus 1 call(s) of unknown cost, so the spend is a floor)"},
+		{"a large limit", 1000, 0, 0, []float64{1200}, false,
+			"cost budget exceeded: daily spend $1200.0000 has reached the $1000.00 limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetAll(t)
+			SetBudget(tc.daily, tc.weekly, tc.monthly, nil)
+			SetBudgetEnforcement(true)
+			for i, cost := range tc.spend {
+				track(t, fmt.Sprintf("req-%d", i), cost)
+			}
+			if tc.withUnpricedCall {
+				unpriced(t)
+			}
+
+			err := CheckBudget()
+			if err == nil {
+				t.Fatal("CheckBudget = nil, want a refusal")
+			}
+			if err.Error() != tc.want {
+				t.Errorf("the text is %q, want %q", err.Error(), tc.want)
+			}
+			if got := types.KindOf(err); got != types.KindBudgetExceeded {
+				t.Errorf("the kind is %v, want %v", got, types.KindBudgetExceeded)
+			}
+			if !errors.Is(err, ErrBudgetExceeded) {
+				t.Error("the error no longer matches pricing.ErrBudgetExceeded")
+			}
+			if !errors.Is(err, types.ErrBudgetExceeded) {
+				t.Error("the error does not match the library's budget sentinel")
+			}
+			if errors.Is(err, types.ErrRateLimited) || errors.Is(err, types.ErrConfiguration) {
+				t.Error("the error matches the sentinel of another kind")
+			}
+		})
 	}
 }

@@ -175,12 +175,12 @@ func TestTheShorthandHelpersReachTheProvider(t *testing.T) {
 // were the least covered: nineteen entrypoints each, all thin delegations, none
 // of which any test had ever dispatched.
 func TestTheAnalysisAndExtendedEntrypointsReachTheProvider(t *testing.T) {
-	reaches(t, "Classifying", `{"category":"a","confidence":0.9}`, func(ctx context.Context) error {
+	reaches(t, "Classifying", `{"category":"a","confidence":0.9,"reasoning":"r"}`, func(ctx context.Context) error {
 		_, err := Classifying[string, string]("input").Categories("a", "b").Context(ctx).Run()
 		return err
 	})
 
-	reaches(t, "Scoring", `{"value":0.5,"normalized_value":0.5}`, func(ctx context.Context) error {
+	reaches(t, "Scoring", `{"value":0.5,"breakdown":{},"reasoning":"r","strengths":[],"weaknesses":[]}`, func(ctx context.Context) error {
 		_, err := Scoring("input").Context(ctx).Run()
 		return err
 	})

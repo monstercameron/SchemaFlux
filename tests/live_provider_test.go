@@ -8,6 +8,8 @@ import (
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 )
 
 // These are the only tests in the repository that spend money. They are gated
@@ -171,7 +173,7 @@ func TestLiveHonoursContextCancellation(t *testing.T) {
 func TestLiveUnknownModelIsReported(t *testing.T) {
 	requireLive(t)
 
-	t.Setenv("SCHEMAFLUX_MODEL", "gpt-5.6-does-not-exist")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "gpt-5.6-does-not-exist")
 	if err := schemaflux.InitWithEnv(); err != nil {
 		t.Fatalf("InitWithEnv: %v", err)
 	}

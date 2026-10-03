@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -24,8 +23,8 @@ import (
 
 // EmbeddingRequest asks a provider to turn text into vectors.
 type EmbeddingRequest struct {
-	// Model names the embedding model. Left empty, EmbeddingProvider
-	// implementations fall back to a documented default rather than
+	// Model names the embedding model. Left empty, an
+	// implementation of Embed falls back to a documented default rather than
 	// rejecting the request -- the caller asked for "an embedding", not
 	// necessarily a specific model.
 	Model string
@@ -44,63 +43,6 @@ type EmbeddingResponse struct {
 	Model    string
 	Provider string
 	Usage    types.TokenUsage
-}
-
-// EmbeddingProvider is implemented by a Provider that can turn text into
-// vectors.
-//
-// It is deliberately not a method on Provider itself, for the same reason
-// StreamingProvider is not: adding a required method there breaks every
-// existing implementation of Provider in this repository. A caller that
-// wants embeddings type-asserts a Provider for this interface; a provider
-// that does not implement it cannot embed, and RequestEmbedding reports that
-// via KindUnsupportedCapability rather than silently falling back to a
-// chat completion asked to describe similarity in prose -- which is exactly
-// the LLM round trip PS-006 exists to remove, not relocate.
-type EmbeddingProvider interface {
-	Provider
-
-	// Embed turns req.Input into vectors. An implementation that cannot
-	// preserve input order must say so in its own doc comment rather than
-	// silently returning vectors in a different order -- every caller in
-	// this library treats EmbeddingResponse.Vectors[i] as the embedding of
-	// req.Input[i].
-	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error)
-}
-
-// RequestEmbedding embeds via provider if it supports EmbeddingProvider, or
-// refuses with KindUnsupportedCapability if it does not.
-//
-// This is the one call site that decides what "cannot embed" means, so a
-// provider without the capability degrades the same way regardless of which
-// caller reaches it -- never a buffered chat call dressed up as a vector by
-// asking the model to estimate a similarity score, which is the exact
-// "measurement vs. claim" confusion this task explicitly warns against: an
-// embedding-based similarity is a measurement of vectors, and a model
-// asked "how similar are these, 0 to 1" is answering with a claim, not
-// filling in for the vector maths.
-func RequestEmbedding(ctx context.Context, provider Provider, req EmbeddingRequest) (EmbeddingResponse, error) {
-	if provider == nil {
-		return EmbeddingResponse{}, ErrNoProviderForEmbedding
-	}
-	embedder, ok := provider.(EmbeddingProvider)
-	if !ok {
-		return EmbeddingResponse{}, &types.OperationError{
-			Kind:     types.KindUnsupportedCapability,
-			Provider: provider.Name(),
-			Message:  fmt.Sprintf("provider %q does not support embeddings", provider.Name()),
-		}
-	}
-	return embedder.Embed(ctx, req)
-}
-
-// ErrNoProviderForEmbedding reports a nil provider, distinct from a provider
-// that exists but lacks the capability -- KindConfiguration, not
-// KindUnsupportedCapability, because the caller has not chosen a provider
-// yet rather than having chosen one that cannot do this.
-var ErrNoProviderForEmbedding = &types.OperationError{
-	Kind:    types.KindConfiguration,
-	Message: "no provider configured for embeddings",
 }
 
 // DefaultOpenAIEmbeddingModel is used when an EmbeddingRequest leaves Model
@@ -135,7 +77,7 @@ type openAIEmbeddingResponseBody struct {
 	} `json:"usage"`
 }
 
-// Embed implements EmbeddingProvider for OpenAI's POST /v1/embeddings.
+// Embed turns req.Input into vectors with OpenAI's POST /v1/embeddings.
 func (provider *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error) {
 	if len(req.Input) == 0 {
 		return EmbeddingResponse{}, fmt.Errorf("openai: embedding request carried no input")
@@ -145,6 +87,9 @@ func (provider *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest)
 	if model == "" {
 		model = DefaultOpenAIEmbeddingModel
 	}
+
+	ctx, cancel := callContext(ctx, provider.config)
+	defer cancel()
 
 	url := "https://api.openai.com/v1/embeddings"
 	if provider.config.BaseURL != "" {
@@ -170,18 +115,18 @@ func (provider *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest)
 	if err != nil {
 		return EmbeddingResponse{}, fmt.Errorf("OpenAI embedding request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		if isRateLimited(resp.StatusCode) {
-			return EmbeddingResponse{}, rateLimitError("openai", model, resp, string(bodyBytes))
-		}
-		return EmbeddingResponse{}, NewAPIError("openai", model, resp.StatusCode, string(bodyBytes))
+		return EmbeddingResponse{}, statusError("openai", model, resp, provider.config)
 	}
 
+	raw, err := readBounded(resp.Body, maxEmbeddingBodyBytes)
+	if err != nil {
+		return EmbeddingResponse{}, fmt.Errorf("failed to read embedding response: %w", err)
+	}
 	var body openAIEmbeddingResponseBody
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return EmbeddingResponse{}, fmt.Errorf("failed to decode embedding response: %w", err)
 	}
 
@@ -202,9 +147,18 @@ func (provider *OpenAIProvider) Embed(ctx context.Context, req EmbeddingRequest)
 		}
 		vectors[entry.Index] = entry.Embedding
 	}
+	// Every input gets a vector of the same, non-zero length. An empty vector is
+	// not an embedding of anything, and vectors of different lengths cannot be
+	// compared with each other, which is all a caller does with a set of them.
 	for i, v := range vectors {
 		if v == nil {
 			return EmbeddingResponse{}, fmt.Errorf("openai: embedding response missing vector for input %d", i)
+		}
+		if len(v) == 0 {
+			return EmbeddingResponse{}, fmt.Errorf("openai: embedding response carried an empty vector for input %d", i)
+		}
+		if len(v) != len(vectors[0]) {
+			return EmbeddingResponse{}, fmt.Errorf("openai: embedding response carried vectors of %d and %d dimensions", len(vectors[0]), len(v))
 		}
 	}
 

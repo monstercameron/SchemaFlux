@@ -93,28 +93,12 @@ func jsonObjectCandidates(text string) []string {
 		}
 		start += offset
 
-		depth := 0
-		end := -1
-		for i := start; i < len(text); i++ {
-			switch text[i] {
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					end = i
-				}
-			}
-			if end >= 0 {
-				break
-			}
-		}
-		if end < 0 {
+		object, ok := balancedFrom(text, start, '{', '}')
+		if !ok {
 			break
 		}
-
-		found = append(found, text[start:end+1])
-		offset = end + 1
+		found = append(found, object)
+		offset = start + len(object)
 	}
 
 	// Reverse: later objects first.
@@ -283,42 +267,7 @@ func firstJSONObject(text string) (string, bool) {
 	if start < 0 {
 		return "", false
 	}
-
-	depth := 0
-	inString := false
-	escaped := false
-
-	for i := start; i < len(text); i++ {
-		c := text[i]
-
-		if escaped {
-			escaped = false
-			continue
-		}
-		if c == '\\' && inString {
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inString = !inString
-			continue
-		}
-		if inString {
-			continue
-		}
-
-		switch c {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return text[start : i+1], true
-			}
-		}
-	}
-
-	return "", false
+	return balancedFrom(text, start, '{', '}')
 }
 
 // valueForFormat answers a JSON Schema `format` annotation with something that
@@ -400,7 +349,13 @@ func mockCollectionResponse(req CompletionRequest) (string, bool) {
 	// in this library asks for. If the operation wanted a verdict rather than an
 	// item, this fails its field check exactly as the keyword answer does, so
 	// the guess costs nothing and sometimes wins.
-	if !expectsArray(req) {
+	//
+	// A request that declares a schema has declared something this layer can
+	// read, so the guess is not made for it: the caller falls through to an
+	// answer in the declared shape. Without this, an operation that declares
+	// its answer and takes content holding a list was answered with one element
+	// of that list.
+	if !expectsArray(req) && req.JSONSchema == nil {
 		if _, ok := firstJSONObject(req.SystemPrompt); !ok {
 			if encoded, err := json.Marshal(items[0]); err == nil {
 				return string(encoded), true
@@ -598,7 +553,10 @@ func lastJSONArray(text string) ([]any, bool) {
 	return nil, false
 }
 
-func balancedFrom(text string, start int, open, close byte) (string, bool) {
+// balancedFrom returns the run from text[start], which holds opener, to the
+// closer that balances it, string- and escape-aware so that a bracket inside a
+// quoted string does not count.
+func balancedFrom(text string, start int, opener, closer byte) (string, bool) {
 	depth := 0
 	inString := false
 	escaped := false
@@ -623,9 +581,9 @@ func balancedFrom(text string, start int, open, close byte) (string, bool) {
 		}
 
 		switch c {
-		case open:
+		case opener:
 			depth++
-		case close:
+		case closer:
 			depth--
 			if depth == 0 {
 				return text[start : i+1], true

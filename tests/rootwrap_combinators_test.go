@@ -170,7 +170,7 @@ func TestUntilRunningOutOfAttemptsIsAnError(t *testing.T) {
 	if attempts != 3 {
 		t.Errorf("attempts = %d, want 3 (the max)", attempts)
 	}
-	if value != 1 {
-		t.Errorf("value = %d, want the last rejected answer returned alongside the error", value)
+	if value != 0 {
+		t.Errorf("value = %d, want the zero value: an answer the predicate rejected is not returned beside the error", value)
 	}
 }

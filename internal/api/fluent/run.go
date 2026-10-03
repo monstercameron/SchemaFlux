@@ -1,8 +1,10 @@
 package fluent
 
 import (
+	"context"
 	"time"
 
+	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -40,7 +42,16 @@ import (
 // delivered-contract detail are left at zero rather than guessed:
 // AGENTS.md's rule against inventing a number applies to an envelope's
 // fields exactly as it applies to an operation's answer.
-func runEnvelope[T any](operation, requestID, correlationID string, call func() (T, error)) (types.Result[T], error) {
+//
+// Because it establishes no contract level it can show, a call under a policy
+// whose contract floor is above prompt-only is refused here, before it is
+// made: the envelope would report the lowest level for an answer the caller
+// required more of. This path built an envelope with no check at all.
+func runEnvelope[T any](ctx context.Context, operation, requestID, correlationID string, call func() (T, error)) (types.Result[T], error) {
+	if err := ops.CheckContractFloor(ctx, types.ContractPromptOnly); err != nil {
+		return types.Result[T]{Meta: types.Meta{Operation: operation, RequestID: requestID, CorrelationID: correlationID}}, err
+	}
+
 	start := time.Now()
 	value, err := call()
 

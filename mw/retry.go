@@ -8,6 +8,7 @@ import (
 
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/telemetry"
 )
 
 // defaultMaxDelay bounds the backoff between retries when nothing else says
@@ -39,6 +40,15 @@ const defaultMaxDelay = llm.MaxRetryAfter
 // same way by every caller means every caller retries at the same instants,
 // so a provider recovering from an outage gets hit by a synchronized second
 // wave the moment it comes back up; jitter spreads that wave out.
+//
+// Retries are made here and nowhere else. A chain that holds a Retry reports
+// "never retry" to whatever calls it (RetryPolicy), so a client does not repeat
+// what this middleware has repeated already. Two Retry middleware in one chain
+// do multiply, the outer one repeating the whole of the inner one, and so does
+// one that wraps a provider that retries by itself; the number of requests is
+// their counts multiplied, and a chain that wants fewer gives one of them fewer.
+// A circuit that is open is not repeated (see retryRepeats), and neither is a
+// full bulkhead, which is not a failure that waiting cures.
 //
 // A Retry-After the provider stated, or that mw.RateLimit attached to its
 // own refusal, overrides the computed wait -- the server said exactly how
@@ -133,9 +143,8 @@ func (p *retryProvider) Complete(ctx context.Context, req llm.CompletionRequest)
 		}
 		lastErr = err
 
-		kind := llm.Classify(err)
-		if !(&types.OperationError{Kind: kind}).Retryable() {
-			return resp, err
+		if !retryRepeats(err) {
+			return llm.CompletionResponse{}, err
 		}
 		if attempt == maxAttempts {
 			break
@@ -147,12 +156,40 @@ func (p *retryProvider) Complete(ctx context.Context, req llm.CompletionRequest)
 			prevWait = wait
 		}
 
+		noteRetry(ctx, attempt, err, wait)
+
 		if serr := p.sleep(ctx, wait); serr != nil {
-			return llm.CompletionResponse{}, serr
+			// The wait ended because the caller's context did. That is the
+			// kind of the result, and the failure that was being waited out
+			// stays in the chain behind it: a request that was rate limited for
+			// an hour and then given up on is both, and errors.Is finds either.
+			return llm.CompletionResponse{}, &types.OperationError{
+				Kind:    llm.Classify(serr),
+				Op:      "mw.Retry",
+				Message: "the request ended while it waited to be repeated",
+				Cause:   errors.Join(serr, lastErr),
+			}
 		}
 	}
 
 	return llm.CompletionResponse{}, lastErr
+}
+
+// noteRetry tells the observers of the request that attempt failed with err and
+// that another will be made after wait, so that a trace shows the repeats this
+// middleware makes. The note carries the name of the failure's kind and nothing
+// of the error's text. With no observer installed it does nothing and allocates
+// nothing.
+func noteRetry(ctx context.Context, attempt int, err error, wait time.Duration) {
+	if !telemetry.HasObserver() {
+		return
+	}
+	telemetry.ObserveOperationNote(ctx, telemetry.Note{
+		Name:      telemetry.NoteRetry,
+		Attempt:   attempt,
+		ErrorKind: llm.Classify(err).String(),
+		Wait:      wait,
+	})
 }
 
 func (p *retryProvider) Name() string { return p.next.Name() }
@@ -161,8 +198,26 @@ func (p *retryProvider) EstimateCost(req llm.CompletionRequest) float64 {
 	return p.next.EstimateCost(req)
 }
 
+// RetryPolicy says that whatever calls this one is not to retry: the repeats
+// of a request are this middleware's, and a caller that retried the whole chain
+// again would send as many requests as the two counts multiplied. The call path
+// reads zero retries as never. The backoff is the wrapped provider's, which is
+// still the base of this middleware's own waits.
 func (p *retryProvider) RetryPolicy() (int, time.Duration) {
-	return p.next.RetryPolicy()
+	_, backoff := p.next.RetryPolicy()
+	return 0, backoff
+}
+
+// retryRepeats reports whether err is a failure that sending the request again
+// can cure. The kind decides, as it does everywhere in the library, with one
+// exception that is this layer's own: an open circuit is not repeated. It is a
+// refusal made without sending anything, by a breaker that stays open for much
+// longer than a backoff, so a repeat is the same refusal after a wait, and it
+// would hold back a Fallback listed outside this middleware from using the next
+// route at once.
+func retryRepeats(err error) bool {
+	kind := llm.Classify(err)
+	return kindIsRetryable(kind) && kind != types.KindCircuitOpen
 }
 
 // effectivePolicy resolves attempts and base delay: an explicit option wins,
@@ -198,15 +253,19 @@ func (p *retryProvider) effectivePolicy() (maxAttempts int, baseDelay time.Durat
 // the provider-error path (llm.RetryAfterFrom, which reads *llm.RateLimitError)
 // and the OperationError path (which is what mw.RateLimit's own refusal, and
 // any other layer that has adopted the shared taxonomy, carries). It reports
-// a wait only when one was actually stated, never a guess.
+// a wait only when one was actually stated, never a guess. A stated wait is
+// honoured up to llm.MaxRetryAfter: a header is clamped to it where it is
+// parsed, and an OperationError can come from any layer or a custom provider,
+// so the same ceiling is applied here, or an hour-long RetryAfter would park the
+// caller for an hour.
 func statedRetryAfter(err error) (time.Duration, bool) {
 	if wait, limited := llm.RetryAfterFrom(err); limited && wait > 0 {
-		return wait, true
+		return min(wait, llm.MaxRetryAfter), true
 	}
 
 	var opErr *types.OperationError
 	if errors.As(err, &opErr) && opErr.RetryAfter > 0 {
-		return opErr.RetryAfter, true
+		return min(opErr.RetryAfter, llm.MaxRetryAfter), true
 	}
 
 	return 0, false

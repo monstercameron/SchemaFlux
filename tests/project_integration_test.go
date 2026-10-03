@@ -59,7 +59,7 @@ func TestIntegrationProjectWithholdsExcludedValues(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := testfixtures.WithScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"confidence":0.9}`, nil)
+			provider := testfixtures.WithScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"mappings":[],"lost":[],"inferred":[],"confidence":0.9}`, nil)
 
 			if _, err := schemaflux.Project[internalUser, publicProfile](
 				sampleUser(), schemaflux.ProjectOptions{Exclude: tc.exclude}); err != nil {
@@ -93,7 +93,7 @@ func TestIntegrationProjectWithholdsExcludedValues(t *testing.T) {
 func TestIntegrationProjectProducesTheProfile(t *testing.T) {
 	testfixtures.WithScriptedProvider(t, `{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},
 	                          "mappings":[{"source_field":"id","target_field":"user_id","method":"rename"}],
-	                          "lost":["email"],"confidence":0.91}`, nil)
+	                          "lost":["email"],"inferred":[],"confidence":0.91}`, nil)
 
 	result, err := schemaflux.Project[internalUser, publicProfile](
 		sampleUser(), schemaflux.ProjectOptions{Exclude: []string{"ssn", "password_hash"}})
@@ -111,7 +111,7 @@ func TestIntegrationProjectProducesTheProfile(t *testing.T) {
 // A projection that carries an excluded value back is an error, not a result.
 func TestIntegrationProjectRefusesALeakedValue(t *testing.T) {
 	testfixtures.WithScriptedProvider(t, fmt.Sprintf(
-		`{"projected":{"user_id":"u1","display_name":"Ada (%s)"},"confidence":0.9}`, testHash), nil)
+		`{"projected":{"user_id":"u1","display_name":"Ada (%s)"},"mappings":[],"lost":[],"inferred":[],"confidence":0.9}`, testHash), nil)
 
 	result, err := schemaflux.Project[internalUser, publicProfile](
 		sampleUser(), schemaflux.ProjectOptions{Exclude: []string{"password_hash"}})
@@ -139,7 +139,7 @@ func TestIntegrationProjectPropagatesProviderErrors(t *testing.T) {
 // never reach the provider. It runs under go test with a scripted provider: no
 // credential, no spend.
 func Example_projectWithholdsFields() {
-	provider := testfixtures.NewScripted(`{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"confidence":0.93}`)
+	provider := testfixtures.NewScripted(`{"projected":{"user_id":"u1","display_name":"Ada Lovelace"},"mappings":[],"lost":[],"inferred":[],"confidence":0.93}`)
 	schemaflux.NewClient("example-key").WithProviderInstance(provider)
 
 	result, err := schemaflux.Project[internalUser, publicProfile](

@@ -54,7 +54,7 @@ func TestIntegrationValidateReportsIssues(t *testing.T) {
 	testfixtures.WithScriptedProvider(t, `{"valid": false, "errors": [
 	  {"field":"age","severity":"error","message":"must be at least 18"},
 	  {"field":"country","severity":"error","message":"must be ISO alpha-2"}
-	], "summary":"two errors"}`, nil)
+	], "warnings": [], "info": [], "confidence": 0.9, "summary":"two errors"}`, nil)
 
 	result, err := schemaflux.Validate(
 		customer{Email: "a@b.com", Country: "ZZZ", Age: 3},
@@ -72,7 +72,7 @@ func TestIntegrationValidateReportsIssues(t *testing.T) {
 
 // And a clean record passes.
 func TestIntegrationValidateAcceptsCleanRecord(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"valid": true, "summary": "no issues"}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"errors": [], "warnings": [], "info": [], "confidence": 0.9, "summary": "no issues"}`, nil)
 
 	result, err := schemaflux.Validate(
 		customer{Email: "a@b.com", Country: "US", Age: 30},
@@ -102,7 +102,7 @@ func TestIntegrationValidatePropagatesProviderError(t *testing.T) {
 // a response the operation cannot parse is an error rather than a pass. It runs
 // under go test with a scripted provider: no credential, no spend.
 func Example_validateGate() {
-	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"valid": false, "errors": [{"field":"age","severity":"error","message":"must be at least 18"}], "summary":"one error"}`))
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"errors": [{"field":"age","message":"must be at least 18"}], "warnings": [], "info": [], "confidence": 0.9, "summary":"one error"}`))
 
 	result, err := schemaflux.Validate(
 		customer{Email: "ada@example.com", Country: "GB", Age: 12},
@@ -142,7 +142,7 @@ func Example_validateFailsClosed() {
 // Validity derivation must hold at the public boundary too: a response claiming
 // valid alongside errors is not a pass.
 func TestIntegrationValidateDerivesValidityFromIssues(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"valid":true,"errors":[{"field":"age","severity":"error","message":"below 18"}]}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"valid":true,"errors":[{"field":"age","severity":"error","message":"below 18"}],"warnings":[],"info":[],"confidence":0.9,"summary":"s"}`, nil)
 
 	result, err := schemaflux.Validate(customer{Age: 3}, schemaflux.NewValidateOptions().WithRules("age >= 18"))
 	if err != nil {
@@ -156,7 +156,7 @@ func TestIntegrationValidateDerivesValidityFromIssues(t *testing.T) {
 // AutoCorrect surfaces a correction, and reports one that does not fit.
 func TestIntegrationValidateCorrections(t *testing.T) {
 	t.Run("usable", func(t *testing.T) {
-		testfixtures.WithScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad age"}],"corrected":{"email":"a@b.com","country":"US","age":21}}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"errors":[{"message":"bad age"}],"warnings":[],"info":[],"confidence":0.9,"corrected":{"email":"a@b.com","country":"US","age":21},"summary":"s"}`, nil)
 		result, err := schemaflux.Validate(customer{Age: 3}, schemaflux.NewValidateOptions().WithRules("age >= 18"))
 		if err != nil {
 			t.Fatalf("Validate: %v", err)
@@ -167,7 +167,7 @@ func TestIntegrationValidateCorrections(t *testing.T) {
 	})
 
 	t.Run("unusable_is_reported", func(t *testing.T) {
-		testfixtures.WithScriptedProvider(t, `{"valid":false,"errors":[{"message":"bad"}],"corrected":{"age":"twenty-one"}}`, nil)
+		testfixtures.WithScriptedProvider(t, `{"errors":[{"message":"bad"}],"warnings":[],"info":[],"confidence":0.9,"corrected":{"age":"twenty-one"},"summary":"s"}`, nil)
 		if _, err := schemaflux.Validate(customer{}, schemaflux.NewValidateOptions().WithRules("any")); err == nil {
 			t.Fatal("a correction that does not fit the type must be reported")
 		}
@@ -177,7 +177,7 @@ func TestIntegrationValidateCorrections(t *testing.T) {
 // Example_validateAutoCorrect shows the correction path, which is the reason to
 // reach for AutoCorrect at all.
 func Example_validateAutoCorrect() {
-	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"valid":false,"errors":[{"field":"country","severity":"error","message":"must be ISO alpha-2"}],"corrected":{"email":"ada@example.com","country":"GB","age":36}}`))
+	schemaflux.NewClient("example-key").WithProviderInstance(testfixtures.NewScripted(`{"errors":[{"field":"country","message":"must be ISO alpha-2"}],"warnings":[],"info":[],"confidence":0.9,"corrected":{"email":"ada@example.com","country":"GB","age":36},"summary":"s"}`))
 
 	result, err := schemaflux.Validate(
 		customer{Email: "ada@example.com", Country: "Great Britain", Age: 36},

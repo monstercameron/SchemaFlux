@@ -1,6 +1,10 @@
 package testfixtures
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/monstercameron/schemaflux/internal/config"
+)
 
 // ResponsesMessage builds a Responses API body carrying a reasoning item before
 // the message item, which is the shape a reasoning model returns.
@@ -10,8 +14,11 @@ import "encoding/json"
 // would pass against a parser that is wrong about real traffic.
 func ResponsesMessage(answer string) string {
 	payload, _ := json.Marshal(answer)
+	// The model the response reports is the library's default, so a fixture does
+	// not name a model the library no longer targets.
+	model, _ := json.Marshal(config.ModelDefaultFast)
 	return `{
-	  "id":"resp","status":"completed","model":"gpt-5.6-luna",
+	  "id":"resp","status":"completed","model":` + string(model) + `,
 	  "output":[
 	    {"type":"reasoning","content":[{"type":"reasoning_text","text":"Let me work through this step by step."}]},
 	    {"type":"message","content":[{"type":"output_text","text":` + string(payload) + `}]}

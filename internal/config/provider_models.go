@@ -17,6 +17,35 @@ import (
 // turned back into a sentence at every call site that cared.
 var ErrNoModelMapping = errors.New("provider has no model mapping")
 
+// noModelAdvice is the way out of a provider with no model, in the order a
+// caller is likely to reach for them. The environment variables are kept in the
+// words callers and tests already match on.
+const noModelAdvice = "name one with Client.WithModel (and make the call on Client.Context), " +
+	"or with Model on the call's options, or set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK"
+
+// NoDefaultModelError reports that a call named no model and the library has
+// none to use for provider.
+//
+// A provider whose name is not in the model table is not a provider the library
+// can guess for: a custom one injected with WithProviderInstance, a gateway, or
+// a built-in one such as qwen with no tier mapping. The error says what to do,
+// which the inline message in CallLLM said only in terms of the environment, so
+// a caller using a client had to find Client.WithModel by reading source.
+//
+// It is classified: types.KindOf reports a configuration error, errors.Is
+// matches both types.ErrConfiguration and ErrNoModelMapping, and the message
+// still contains "no default model for provider", the phrase the text fallback
+// of the error classifier and the existing tests match on.
+func NoDefaultModelError(provider string) error {
+	return &types.OperationError{
+		Kind: types.KindConfiguration,
+		Op:   "model resolution",
+		Message: fmt.Sprintf("no default model for provider %q; %s. Providers with a built-in mapping: %s",
+			provider, noModelAdvice, strings.Join(KnownProviders(), ", ")),
+		Cause: ErrNoModelMapping,
+	}
+}
+
 // providerModels maps a provider to the model it should use at each tier.
 //
 // Before this existed, GetModel special-cased three providers and let every
@@ -66,6 +95,29 @@ var providerModels = map[string]map[types.Speed]string{
 		types.Fast:  "local-mock",
 		types.Quick: "local-mock",
 	},
+
+	// The decision providers (internal/llm, systemone.go). Each answers decisions
+	// with one model, so the three tiers are the model the preset sends: a client
+	// whose only provider is one of these has a model without being told one. This
+	// package cannot read the presets, since internal/llm imports it, so the names
+	// are repeated here and a test in internal/api/client holds them to the
+	// presets'. Through OpenRouter the alias is "~typesafe/jev-latest", which
+	// OpenRouter resolves to the newest version.
+	"jev": {
+		types.Smart: "jev-latest",
+		types.Fast:  "jev-latest",
+		types.Quick: "jev-latest",
+	},
+	"jev-openrouter": {
+		types.Smart: "~typesafe/jev-latest",
+		types.Fast:  "~typesafe/jev-latest",
+		types.Quick: "~typesafe/jev-latest",
+	},
+	"jev-litellm": {
+		types.Smart: "jev-latest",
+		types.Fast:  "jev-latest",
+		types.Quick: "jev-latest",
+	},
 }
 
 // normaliseProviderName folds the spellings a caller might use into the one the
@@ -75,7 +127,7 @@ func normaliseProviderName(provider string) string {
 }
 
 // isOpenAIProvider reports whether a provider name means OpenAI itself, which
-// is the only one entitled to the gpt-5.6 tier defaults.
+// is the only one entitled to the OpenAI tier defaults in config.go.
 func isOpenAIProvider(provider string) bool {
 	switch normaliseProviderName(provider) {
 	case "", "openai":
@@ -131,9 +183,17 @@ func ValidateModelResolution(provider string) error {
 		return nil
 	}
 
-	return fmt.Errorf(
-		"%w: provider %q resolves no model for %s; set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK. Providers with a built-in mapping: %s",
-		ErrNoModelMapping, provider, strings.Join(missing, ", "), strings.Join(KnownProviders(), ", "))
+	// The same classified error NoDefaultModelError gives at call time, so the
+	// construction-time and call-time reports of one fault have one identity:
+	// types.KindOf reports a configuration error, and errors.Is matches both
+	// types.ErrConfiguration and ErrNoModelMapping.
+	return &types.OperationError{
+		Kind: types.KindConfiguration,
+		Op:   "model resolution",
+		Message: fmt.Sprintf("provider %q resolves no model for %s; %s. Providers with a built-in mapping: %s",
+			provider, strings.Join(missing, ", "), noModelAdvice, strings.Join(KnownProviders(), ", ")),
+		Cause: ErrNoModelMapping,
+	}
 }
 
 func tierName(tier types.Speed) string {

@@ -7,17 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// CF-005. PipelineOptions.SaveProgress used to be declared and never read --
-// exactly what dead_options_test.go exists to catch -- and it was deleted
-// under F-023 rather than implemented, because "resume from failure" is
-// deterministic machinery no prompt can deliver and Pipeline's steps are
-// caller-provided functions the library cannot fingerprint. This file is that
-// deleted promise's real replacement, built as its own combinator instead of
-// as a Pipeline option: nothing in internal/ops/pipeline.go declares
-// SaveProgress any more, so there is nothing left there to remove or wire up.
+// CF-005. Resuming a multi-step run from failure is deterministic machinery
+// that no prompt can deliver, and the steps of a run are caller-provided
+// functions the library cannot fingerprint, so it is a combinator of its own
+// and not an option on a run: Checkpoint wraps one step, and the caller says
+// what input it was run on.
 //
 // The two failure modes a resume must not have:
 //
@@ -94,24 +94,25 @@ func Checkpoint[T any](ctx context.Context, store CheckpointStore, runID, step s
 	var zero T
 
 	if store == nil {
-		return zero, CheckpointOutcome{}, errors.New("checkpoint: no store")
+		return zero, CheckpointOutcome{}, types.Classified(types.KindConfiguration, errors.New("checkpoint: no store"))
 	}
 	if runID == "" {
-		return zero, CheckpointOutcome{}, errors.New("checkpoint: empty run id")
+		return zero, CheckpointOutcome{}, types.Classified(types.KindConfiguration, errors.New("checkpoint: empty run id"))
 	}
 	if step == "" {
-		return zero, CheckpointOutcome{}, errors.New("checkpoint: empty step name")
+		return zero, CheckpointOutcome{}, types.Classified(types.KindConfiguration, errors.New("checkpoint: empty step name"))
 	}
 	if produce == nil {
-		return zero, CheckpointOutcome{}, errors.New("checkpoint: no step to run")
+		return zero, CheckpointOutcome{}, types.Classified(types.KindConfiguration, errors.New("checkpoint: no step to run"))
 	}
 	if err := ctx.Err(); err != nil {
-		return zero, CheckpointOutcome{}, err
+		return zero, CheckpointOutcome{}, contextEnded(err)
 	}
 
 	hash, err := fingerprintInput(input)
 	if err != nil {
-		return zero, CheckpointOutcome{}, fmt.Errorf("checkpoint: fingerprinting input for %s/%s: %w", runID, step, err)
+		return zero, CheckpointOutcome{}, types.Classified(types.KindConfiguration,
+			fmt.Errorf("checkpoint: fingerprinting input for %s/%s: %w", runID, step, err))
 	}
 
 	var outcome CheckpointOutcome
@@ -124,7 +125,8 @@ func Checkpoint[T any](ctx context.Context, store CheckpointStore, runID, step s
 		if record.InputHash == hash {
 			var value T
 			if err := json.Unmarshal(record.Value, &value); err != nil {
-				return zero, CheckpointOutcome{}, fmt.Errorf("checkpoint: decoding stored result for %s/%s: %w", runID, step, err)
+				return zero, CheckpointOutcome{}, types.Classified(types.KindMalformedOutput,
+					fmt.Errorf("checkpoint: decoding stored result for %s/%s: %w", runID, step, err))
 			}
 			outcome.Resumed = true
 			return value, outcome, nil
@@ -142,7 +144,8 @@ func Checkpoint[T any](ctx context.Context, store CheckpointStore, runID, step s
 
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return zero, outcome, fmt.Errorf("checkpoint: encoding result for %s/%s: %w", runID, step, err)
+		return zero, outcome, types.Classified(types.KindConfiguration,
+			fmt.Errorf("checkpoint: encoding result for %s/%s: %w", runID, step, err))
 	}
 	if err := store.Save(ctx, runID, step, CheckpointRecord{InputHash: hash, Value: encoded}); err != nil {
 		return zero, outcome, fmt.Errorf("checkpoint: saving %s/%s: %w", runID, step, err)
@@ -177,22 +180,29 @@ func NewMemoryCheckpointStore() *MemoryCheckpointStore {
 	return &MemoryCheckpointStore{records: make(map[string]CheckpointRecord)}
 }
 
-// Load implements CheckpointStore.
+// Load implements CheckpointStore. The record it returns holds its own copy of
+// the value, so a caller that changes the bytes does not change the store.
 func (m *MemoryCheckpointStore) Load(ctx context.Context, runID, step string) (CheckpointRecord, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return CheckpointRecord{}, false, err
+		return CheckpointRecord{}, false, contextEnded(err)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	record, ok := m.records[checkpointKey(runID, step)]
-	return record, ok, nil
+	if !ok {
+		return CheckpointRecord{}, false, nil
+	}
+	record.Value = append([]byte(nil), record.Value...)
+	return record, true, nil
 }
 
-// Save implements CheckpointStore.
+// Save implements CheckpointStore. The store keeps its own copy of the value,
+// so a caller that reuses the slice afterwards does not change what was saved.
 func (m *MemoryCheckpointStore) Save(ctx context.Context, runID, step string, record CheckpointRecord) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return contextEnded(err)
 	}
+	record.Value = append([]byte(nil), record.Value...)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.records == nil {
@@ -202,10 +212,23 @@ func (m *MemoryCheckpointStore) Save(ctx context.Context, runID, step string, re
 	return nil
 }
 
-// checkpointKey joins runID and step with a byte that cannot appear in either
-// -- both are Go strings a caller typed, not fields with a documented
-// character set, so a separator has to be one no realistic caller writes
-// rather than one that is merely uncommon.
+// Delete removes the record for (runID, step), if there is one, so that a
+// long-lived process can let go of the runs it has finished. A record that is
+// not there is not an error.
+func (m *MemoryCheckpointStore) Delete(ctx context.Context, runID, step string) error {
+	if err := ctx.Err(); err != nil {
+		return contextEnded(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.records, checkpointKey(runID, step))
+	return nil
+}
+
+// checkpointKey joins runID and step so that two different pairs never share a
+// key. Both are strings a caller typed, so no separator byte is safe: the first
+// is written with its length, which makes the join unambiguous whatever either
+// contains. A byte separator made ("a\x00b", "c") and ("a", "b\x00c") one key.
 func checkpointKey(runID, step string) string {
-	return runID + "\x00" + step
+	return strconv.Itoa(len(runID)) + ":" + runID + step
 }

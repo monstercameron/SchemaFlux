@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // A 429 was reported as a plain formatted error, so the `Retry-After: 53` that
@@ -35,6 +37,17 @@ func TestParseRetryAfter(t *testing.T) {
 		{"http_date_in_the_past", now.Add(-time.Hour).UTC().Format(http.TimeFormat), 0},
 		{"clamped", "86400", MaxRetryAfter},
 		{"clamped_date", now.Add(24 * time.Hour).UTC().Format(http.TimeFormat), MaxRetryAfter},
+		// ParseFloat accepts these, and converting an out-of-range float to a
+		// Duration gives a different answer on each architecture: a negative one on
+		// amd64, which the clamp does not catch, and a saturated one on arm64.
+		{"infinity_is_clamped", "Inf", MaxRetryAfter},
+		{"plus_infinity_is_clamped", "+Inf", MaxRetryAfter},
+		{"negative_infinity_is_no_answer", "-Inf", 0},
+		{"nan_is_no_answer", "NaN", 0},
+		{"huge_exponent_is_clamped", "1e30", MaxRetryAfter},
+		{"just_past_the_duration_range_is_clamped", "9.3e9", MaxRetryAfter},
+		{"hex_float_is_clamped", "0x1p62", MaxRetryAfter},
+		{"tiny_positive_is_a_tiny_wait", "0.001", time.Millisecond},
 	}
 
 	for _, tc := range cases {
@@ -58,17 +71,100 @@ func TestRetryAfterIsBounded(t *testing.T) {
 	}
 }
 
-// Which statuses mean "come back later" rather than "this request was wrong".
-func TestIsRateLimited(t *testing.T) {
+// Which statuses carry a Retry-After worth reading: the two that mean "come back
+// later" rather than "this request was wrong". What kind of failure each is, is
+// decided by Classify.
+func TestCarriesRetryAfter(t *testing.T) {
 	retryable := []int{http.StatusTooManyRequests, http.StatusServiceUnavailable}
 	for _, status := range retryable {
-		if !isRateLimited(status) {
-			t.Errorf("status %d should be treated as a rate limit", status)
+		if !carriesRetryAfter(status) {
+			t.Errorf("status %d should carry a Retry-After", status)
 		}
 	}
 	for _, status := range []int{200, 400, 401, 403, 404, 422, 500, 502, 504} {
-		if isRateLimited(status) {
-			t.Errorf("status %d must not be treated as a rate limit", status)
+		if carriesRetryAfter(status) {
+			t.Errorf("status %d must not carry a Retry-After", status)
+		}
+	}
+}
+
+// The same status means the same thing from every provider. 429 is a rate limit
+// and 503 is the provider being unavailable; both are retried, both carry the
+// Retry-After the server sent, and neither carries the body.
+func TestEveryProviderClassifiesThrottlingByStatus(t *testing.T) {
+	type call func(t *testing.T, baseURL string) error
+	providers := map[string]call{
+		"openai": func(t *testing.T, baseURL string) error {
+			p, err := NewOpenAIProvider(ProviderConfig{APIKey: "k", BaseURL: baseURL, Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Complete(context.Background(), CompletionRequest{Model: "gpt-5.6-luna", UserPrompt: "x"})
+			return err
+		},
+		"openai stream": func(t *testing.T, baseURL string) error {
+			p, err := NewOpenAIProvider(ProviderConfig{APIKey: "k", BaseURL: baseURL, Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, err := range p.CompleteStream(context.Background(), CompletionRequest{Model: "gpt-5.6-luna", UserPrompt: "x"}) {
+				return err
+			}
+			return nil
+		},
+		"openai embeddings": func(t *testing.T, baseURL string) error {
+			p, err := NewOpenAIProvider(ProviderConfig{APIKey: "k", BaseURL: baseURL, Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Embed(context.Background(), EmbeddingRequest{Input: []string{"x"}})
+			return err
+		},
+		"chat completions": func(t *testing.T, baseURL string) error {
+			p, err := NewOpenAICompatibleProvider("cerebras", ProviderConfig{APIKey: "k", BaseURL: baseURL, Timeout: 5 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = p.Complete(context.Background(), CompletionRequest{Model: "m", UserPrompt: "x"})
+			return err
+		},
+		"anthropic": func(t *testing.T, baseURL string) error {
+			p := newTestAnthropicProvider(t, baseURL)
+			_, err := p.Complete(context.Background(), CompletionRequest{UserPrompt: "x"})
+			return err
+		},
+	}
+	statuses := []struct {
+		status int
+		kind   types.ErrorKind
+	}{
+		{http.StatusTooManyRequests, types.KindRateLimited},
+		{http.StatusServiceUnavailable, types.KindProviderUnavailable},
+	}
+	for name, run := range providers {
+		for _, tc := range statuses {
+			t.Run(fmt.Sprintf("%s_%d", name, tc.status), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Retry-After", "7")
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, `{"error":{"message":"busy"}}`)
+				}))
+				defer server.Close()
+
+				err := run(t, server.URL)
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				if got := Classify(err); got != tc.kind {
+					t.Errorf("Classify = %v, want %v (%v)", got, tc.kind, err)
+				}
+				if !(&types.OperationError{Kind: Classify(err)}).Retryable() {
+					t.Errorf("status %d is not retryable", tc.status)
+				}
+				if wait, ok := RetryAfterFrom(err); !ok || wait != 7*time.Second {
+					t.Errorf("RetryAfterFrom = %v, %v; want 7s, true", wait, ok)
+				}
+			})
 		}
 	}
 }
@@ -119,10 +215,16 @@ func TestRateLimitErrorMessage(t *testing.T) {
 		RetryAfter: 53 * time.Second,
 	}
 	message := withWait.Error()
-	for _, want := range []string{"cerebras", "429", "53s", "per minute limit exceeded"} {
+	for _, want := range []string{"cerebras", "429", "53s", "message withheld"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the message does not mention %q: %s", want, message)
 		}
+	}
+	if strings.Contains(message, "per minute limit exceeded") {
+		t.Errorf("the vendor's message is in the error's text: %s", message)
+	}
+	if detail := withWait.Detail(); !strings.Contains(detail, "per minute limit exceeded") || !strings.Contains(detail, "retry after 53s") {
+		t.Errorf("Detail() does not carry the vendor's message and the wait: %s", detail)
 	}
 
 	withoutWait := &RateLimitError{APIError: &APIError{Provider: "cerebras", StatusCode: 429, Body: "slow down"}}
@@ -239,7 +341,11 @@ func TestOpenAIProviderSurfacesRateLimits(t *testing.T) {
 	if wait != 20*time.Second {
 		t.Errorf("wait = %v, want 20s", wait)
 	}
-	if !strings.Contains(err.Error(), "Rate limit reached") {
+	var rateLimit *RateLimitError
+	if !errors.As(err, &rateLimit) || !strings.Contains(rateLimit.Message, "Rate limit reached") || !strings.Contains(rateLimit.Detail(), "Rate limit reached") {
 		t.Errorf("the reason was lost: %v", err)
+	}
+	if strings.Contains(err.Error(), "Rate limit reached") {
+		t.Errorf("the vendor's message is in the error's text: %v", err)
 	}
 }

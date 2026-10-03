@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -74,7 +75,7 @@ func TestCacheReadTrackingCountsARepeatingPrefix(t *testing.T) {
 
 	usage := types.TokenUsage{PromptTokens: 900}
 	for i := 0; i < cacheReadWarnAfter; i++ {
-		noteCacheReads("key-a", usage)
+		noteCacheReads(logger.GetLogger(), "key-a", usage)
 	}
 
 	cacheReadMu.Lock()
@@ -97,7 +98,7 @@ func TestCacheReadDiagnosticFiresOnlyOnce(t *testing.T) {
 
 	usage := types.TokenUsage{PromptTokens: 900}
 	for i := 0; i < cacheReadWarnAfter*5; i++ {
-		noteCacheReads("key-b", usage)
+		noteCacheReads(logger.GetLogger(), "key-b", usage)
 	}
 
 	cacheReadMu.Lock()
@@ -117,7 +118,7 @@ func TestCacheReadTrackingStaysQuietBelowTheThreshold(t *testing.T) {
 
 	usage := types.TokenUsage{PromptTokens: 900}
 	for i := 0; i < cacheReadWarnAfter-1; i++ {
-		noteCacheReads("key-c", usage)
+		noteCacheReads(logger.GetLogger(), "key-c", usage)
 	}
 
 	cacheReadMu.Lock()
@@ -135,9 +136,9 @@ func TestAReportedCacheReadClearsTheCount(t *testing.T) {
 	defer resetCacheReadTracking()
 
 	for i := 0; i < cacheReadWarnAfter-1; i++ {
-		noteCacheReads("key-d", types.TokenUsage{PromptTokens: 900})
+		noteCacheReads(logger.GetLogger(), "key-d", types.TokenUsage{PromptTokens: 900})
 	}
-	noteCacheReads("key-d", types.TokenUsage{PromptTokens: 900, CachedTokens: 800})
+	noteCacheReads(logger.GetLogger(), "key-d", types.TokenUsage{PromptTokens: 900, CachedTokens: 800})
 
 	cacheReadMu.Lock()
 	_, counted := cacheReadCounts["key-d"]
@@ -154,7 +155,7 @@ func TestCacheReadTrackingIgnoresAnEmptyKey(t *testing.T) {
 	defer resetCacheReadTracking()
 
 	for i := 0; i < cacheReadWarnAfter*2; i++ {
-		noteCacheReads("", types.TokenUsage{PromptTokens: 900})
+		noteCacheReads(logger.GetLogger(), "", types.TokenUsage{PromptTokens: 900})
 	}
 
 	cacheReadMu.Lock()
@@ -173,7 +174,7 @@ func TestCacheReadTrackingIsBounded(t *testing.T) {
 	defer resetCacheReadTracking()
 
 	for i := 0; i < cacheReadTrackerCap*3; i++ {
-		noteCacheReads(fmt.Sprintf("key-%d", i), types.TokenUsage{PromptTokens: 900})
+		noteCacheReads(logger.GetLogger(), fmt.Sprintf("key-%d", i), types.TokenUsage{PromptTokens: 900})
 	}
 
 	cacheReadMu.Lock()
@@ -195,7 +196,7 @@ func TestCacheReadTrackingIsSafeUnderConcurrency(t *testing.T) {
 		go func(worker int) {
 			defer wg.Done()
 			for i := 0; i < 50; i++ {
-				noteCacheReads(fmt.Sprintf("key-%d", i%4), types.TokenUsage{PromptTokens: 900})
+				noteCacheReads(logger.GetLogger(), fmt.Sprintf("key-%d", i%4), types.TokenUsage{PromptTokens: 900})
 			}
 		}(worker)
 	}
@@ -207,5 +208,45 @@ func TestCacheReadTrackingIsSafeUnderConcurrency(t *testing.T) {
 
 	if size == 0 || size > 4 {
 		t.Errorf("tracker holds %d entries for 4 distinct keys", size)
+	}
+}
+
+// logProbe is a log sink that records whether cacheReadMu was free while it was
+// being written to.
+type logProbe struct {
+	writes int
+	locked int
+}
+
+func (p *logProbe) Write(entry []byte) (int, error) {
+	p.writes++
+	if cacheReadMu.TryLock() {
+		cacheReadMu.Unlock()
+	} else {
+		p.locked++
+	}
+	return len(entry), nil
+}
+
+// The diagnostic is written after the lock is released. A slow log sink under
+// the lock held up the cache bookkeeping of every call in the process.
+func TestCacheReadDiagnosticIsLoggedWithoutHoldingTheLock(t *testing.T) {
+	resetCacheReadTracking()
+	defer resetCacheReadTracking()
+
+	probe := &logProbe{}
+	previous := logger.GetLogger()
+	logger.ConfigureLogger(logger.LoggerConfig{Level: logger.WarnLevel, Output: probe, DisableStderr: false})
+	defer logger.SetLogger(previous)
+
+	for i := 0; i < cacheReadWarnAfter; i++ {
+		noteCacheReads(logger.GetLogger(), "key-lock", types.TokenUsage{PromptTokens: 900})
+	}
+
+	if probe.writes == 0 {
+		t.Fatal("no diagnostic was written, so this test proves nothing")
+	}
+	if probe.locked != 0 {
+		t.Errorf("cacheReadMu was held while the diagnostic was written %d time(s)", probe.locked)
 	}
 }

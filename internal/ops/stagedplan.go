@@ -2,16 +2,14 @@ package ops
 
 import (
 	"context"
-	"fmt"
-	"sync"
 
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// PL-010. SDMP staged plans over one datum, with reuse.
+// Staged plans over one datum, with reuse.
 //
-// The task names four things a staged plan has to do that a caller writing
-// "call extract, then call verify" by hand does not get for free:
+// A caller writing "call extract, then call verify" by hand does not get four
+// things for free, and a staged plan does them:
 //
 //   - pass the STRUCTURED output of one stage into the next, rather than
 //     resending the original source -- Stage[T] fixes In and Out to the same
@@ -19,29 +17,34 @@ import (
 //     Value, never anything reconstructed from the source.
 //   - reuse deterministic preprocessing and schema artifacts across stages --
 //     RunStagedPlan takes ONE types.OpOptions and passes it, unmodified except
-//     for ParentResultIDs, to every stage. A caller who set SchemaID,
+//     for ParentResultIDs (the caller's own, then the previous stage's result),
+//     to every stage. A caller who set SchemaID,
 //     CacheIdentity, or JSONSchema once does not rebuild them per stage, and
 //     every stage's provider request shares the same cache-key material
 //     (llm_helper.go's promptCacheKeyFor reads exactly these fields).
-//   - run independent checks concurrently under one budget -- a PlanStep with
-//     more than one Stage runs them concurrently, and StagedPlan.Scheduler,
-//     when set, is the SAME *Scheduler for every stage in the plan, so
-//     MaxConcurrent/MaxInFlightCost/MaxInFlightTokens bound the whole plan's
-//     provider calls together, not one ceiling per group.
 //   - skip the model stage entirely when a deterministic check already
-//     establishes the required contract -- Stage.DeterministicCheck, below.
-//     This is the clause a plan that always calls its Op has not implemented,
-//     which is why stagedplan_reuse_test.go proves it by provider CALL COUNT,
-//     not by inspecting the returned value: a call that happened to agree
-//     with the deterministic answer is indistinguishable from a skip by any
-//     other observation.
+//     establishes the required contract -- Stage.DeterministicCheck, below. This
+//     is the clause a plan that always calls its Op has not implemented, which is
+//     why stagedplan_reuse_test.go proves it by provider CALL COUNT, not by
+//     inspecting the returned value: a call that happened to agree with the
+//     deterministic answer is indistinguishable from a skip by any other
+//     observation.
+//   - chain the lineage: each stage's result names the previous stage's result as
+//     its parent.
 //
-// What this does not do: choose among several stages' outputs to build a new
-// datum (see PlanStep's doc comment), fuse or reorder stages (that is
-// PL-012), or recover a failed stage by retrying with a smaller unit of work
-// (that is PL-009, over a different execution path -- RunOpManyRecover -- this
-// file does not touch). A stage that fails ends the plan; there is no partial
-// staged-plan result.
+// The stages run one after another on the caller's goroutine. What bounds the
+// requests they make is the client's scheduler, once, in the call path: a plan
+// has no scheduler of its own, because a stage that ran inside the plan's slot
+// while the call it made asked the client's scheduler for another waited on
+// itself whenever both were the same scheduler with one slot.
+//
+// What this does not do: fuse or reorder stages, or recover a failed stage by
+// retrying with a smaller unit of work (that is the recovering run, over a
+// different execution path, which this file does not touch). A stage that fails
+// ends the plan, and no value is produced: what the stages that completed cost,
+// and what the one that failed did, come back in the outcomes beside the error. A
+// caller who wants several stages at once runs them with Gather over RunOpResult,
+// which bounds them by the client's scheduler in the same way.
 
 // Stage is one step of a StagedPlan over datum type T.
 //
@@ -61,7 +64,9 @@ type Stage[T any] struct {
 	// It returns the value to use (normally input itself, unmodified, but a
 	// check that also normalizes -- trims, canonicalizes -- may return an
 	// adjusted value), the types.ContractLevel the check can actually attest
-	// to having verified, and whether it was able to decide at all.
+	// to having verified, and whether it was able to decide at all. The level
+	// is what the check says: the library cannot verify a claim made by the
+	// caller's own code.
 	//
 	// ok=false means the check could not determine the answer (not "the
 	// answer is bad" -- that is level being too low with ok=true) and Op
@@ -88,49 +93,18 @@ type Stage[T any] struct {
 	RequiredContract types.ContractLevel
 }
 
-// PlanStep groups the stages that run at one point in a StagedPlan.
+// StagedPlan is an ordered sequence of stages that all operate on one datum.
 //
-// A step with exactly one Stage runs it against the plan's current datum,
-// and its output becomes the new current datum for the next step -- the
-// ordinary, sequential case.
-//
-// A step with more than one Stage is PL-010's "independent checks": every
-// stage in the group receives the SAME current datum, runs concurrently
-// (through StagedPlan.Scheduler when one is set), and every stage must
-// succeed for the plan to continue. A group does not choose among its
-// stages' outputs to build a new datum -- there is no general rule for
-// merging N independently-computed values of an arbitrary T, and inventing
-// one (first stage wins, last stage wins) would be a silent, undocumented
-// tie-break exactly where this library elsewhere refuses to guess. The
-// datum entering the step after a group is the SAME datum that entered the
-// group. A plan needing to both check something concurrently and change the
-// datum from what it learns is two steps: a group, then a single-stage step
-// whose Op or DeterministicCheck reads what it needs from the datum the
-// group already validated.
-type PlanStep[T any] struct {
-	Stages []Stage[T]
-}
-
-// StagedPlan is an ordered sequence of steps that all operate on one datum.
-//
-// ID identifies the plan for error messages and for SubmitRequest.Tenant
-// when Scheduler is set (below) -- every stage in the same plan shares one
-// tenant bucket, which is what makes Scheduler's per-tenant concurrency
-// limit describe the whole plan rather than one stage of it.
+// ID identifies the plan in error messages and names the plan when a stage has no
+// name of its own. The plan has no scheduler of its own: the requests its stages
+// make are bounded by the client's. It has no groups of stages either: what runs
+// several operations at once is Gather over RunOpResult, which says what happens
+// to the datum and to the first failure in the caller's own code and is bounded by
+// the client's scheduler; the plan's own goroutines ran the caller's BuildPrompt,
+// Decode and checks with no guard around them.
 type StagedPlan[T any] struct {
-	ID    types.OperationID
-	Steps []PlanStep[T]
-
-	// Scheduler bounds every stage's provider call -- solo or grouped --
-	// under one shared admission budget. Nil runs every stage (and every
-	// stage within a concurrent group) with no such ceiling: the plan still
-	// runs stages concurrently within a group, just without a bound on how
-	// many, which is the correct behavior for a caller who wants the
-	// concurrency but has not chosen to cap it. A caller who wants a real
-	// ceiling constructs one *Scheduler and sets it here -- constructing a
-	// fresh one per group would give each group its own budget, which is
-	// the opposite of what "one budget" (the task's own words) asks for.
-	Scheduler *Scheduler
+	ID     types.OperationID
+	Stages []Stage[T]
 }
 
 // StageOutcome is what one Stage produced.
@@ -139,10 +113,10 @@ type StageOutcome[T any] struct {
 	Value   T
 
 	// Skipped is true when DeterministicCheck already established the
-	// stage's required contract, so Op was never called. This is the fact
-	// PL-010's verify line asks a provider call count to prove; Skipped is
-	// this package's own record of the same fact, so a caller does not have
-	// to infer it indirectly from Meta.Attempts being zero.
+	// stage's required contract, so Op was never called. This is the fact a
+	// provider call count proves from outside; Skipped is this package's own
+	// record of the same fact, so a caller does not have to infer it indirectly
+	// from Meta.Attempts being zero.
 	Skipped bool
 
 	// DeliveredContract is the level actually established for this stage --
@@ -160,129 +134,186 @@ type StageOutcome[T any] struct {
 	// Provenance is filled in for every stage, called or skipped, so a
 	// caller reading outcomes does not have to reach into Meta (which is
 	// zero for a skipped stage) to get the one thing every stage produces
-	// regardless: TC-003 lineage naming this stage's own operation identity
-	// and the parent stage(s) it followed. For a called stage this is a copy
-	// of Meta.Provenance.
+	// regardless: the lineage naming this stage's own operation identity
+	// and the stage it followed. For a called stage this is a copy of
+	// Meta.Provenance.
 	Provenance types.Provenance
+
+	// Err is why the stage failed, and nil for a stage that completed. Only the
+	// last outcome of a run that failed has one, and its Value is the zero value.
+	Err error
 }
 
 // StagedPlanResult is what running a StagedPlan produced.
 type StagedPlanResult[T any] struct {
+	// Value is what the last stage answered. It is the zero value for a run that
+	// failed.
 	Value T
 
-	// Steps holds one entry per PlanStep, each holding one StageOutcome per
-	// Stage in that step, in the order the plan declared them -- not the
-	// order goroutines happened to finish in, for a concurrent group (see
-	// runStepStages).
-	Steps [][]StageOutcome[T]
+	// Stages holds one entry per stage that ran, in the order the plan declared
+	// them. For a run that failed it holds the stages that completed and then the
+	// one that failed, with its Meta, so that what the run spent is not lost with
+	// the value: the stages after the failed one were not run and have no entry.
+	Stages []StageOutcome[T]
 }
 
-// RunStagedPlan runs plan's steps in order against input, threading the
-// datum and its lineage forward one step at a time.
+// RunStagedPlan runs plan's stages in order against input, threading the datum
+// and its lineage forward one stage at a time.
 //
-// opt is resolved ONCE by the caller and reused for every stage's call --
-// see StagedPlan's doc comment for why passing the same OpOptions to every
-// stage, rather than letting each stage build its own, is the "reuse ...
-// schema artifacts across stages" half of PL-010.
-func RunStagedPlan[T any](ctx context.Context, plan StagedPlan[T], input T, opt types.OpOptions) (StagedPlanResult[T], error) {
+// opt is resolved ONCE by the caller and reused for every stage's call -- every
+// stage gets the same options, so a schema or a cache identity set once is not
+// rebuilt per stage. The one option that differs between stages is
+// ParentResultIDs: every stage names the parents the caller gave in opt, and then
+// the result of the stage before it.
+//
+// A call that cannot be run is refused before anything is sent and before any
+// function of the caller's is called, with the empty result and an error: a nil
+// context, a context that is already over and a plan with no stages (an invalid
+// request, or canceled or timeout for the context); a stage whose operation has no
+// BuildPrompt or Decode (configuration); and a contract floor that a stage without
+// a deterministic check cannot reach (a policy violation). A stage with a check is
+// not held to the floor up front, because the check may settle it without asking
+// the model.
+//
+// A stage that fails ends the plan. The error is classified with the kind of the
+// stage's own failure, names the stage by its position and the name of its
+// operation, and carries nothing the caller supplied as data: not the datum, and
+// not the text of the stage's failure, which stays in the cause. StageOutcome.Err
+// of the failed stage is that same error. The result comes back beside it with the
+// outcomes of the stages that ran, the failed one included
+// (StagedPlanResult.Stages), and no value. That is the one place in the package
+// where a value comes back beside an error, so that what the stages that completed
+// cost can be reported, and a caller that exposes this function hides it.
+//
+// An engine that spends money does not lose the account of it. A panic in a stage's
+// BuildPrompt, Decode, invariant, Normalize or DeterministicCheck does not escape:
+// it is that stage's failure, of kind invariant violation and marked as a panic,
+// with no panic value in the error (the type of it is logged), and the result holds
+// the stages that completed and what the failed stage cost. A function that ends
+// its goroutine with runtime.Goexit is caught the same way, because the stage's
+// functions run on a goroutine of the library's, and the request it was answering
+// leaves no account.
+//
+// A stage a deterministic check settles asks nothing of the model, and still has to
+// pass the client's contract floor: a check whose level is below it is read as not
+// having settled the stage, and the model is asked. A level that is not one of the
+// contract levels is a configuration error. The check's level is what the check
+// says; the library cannot verify it.
+//
+// The plan is one call of the operation to an installed observer, named for the
+// plan. A function of the caller's that blocks and ignores the context it cannot
+// see holds the call: nothing in Go can end it.
+func RunStagedPlan[T any](ctx context.Context, plan StagedPlan[T], input T, opt types.OpOptions) (_ StagedPlanResult[T], runErr error) {
 	var zero StagedPlanResult[T]
-	if len(plan.Steps) == 0 {
-		return zero, fmt.Errorf("staged plan %s: no steps to run", plan.ID)
+	label := plan.ID.Name
+	if label == "" {
+		label = "staged plan"
 	}
-	for i, step := range plan.Steps {
-		if len(step.Stages) == 0 {
-			return zero, fmt.Errorf("staged plan %s: step %d has no stages", plan.ID, i)
+	if ctx == nil {
+		return zero, types.Newf(types.KindInvalidRequest, label, "a nil context was given")
+	}
+	// The plan is one call to an observer, named for the plan, and the operations
+	// of its stages are its children: a stage used to be an operation of its own
+	// beside the others, and nothing tied the stages of one run together.
+	name := plan.ID.Name
+	if name == "" {
+		name = "staged_plan"
+	}
+	ctx, observed := observeOperation(ctx, name)
+	defer observed.end(&runErr)
+	if over := contextOver(ctx); over != nil {
+		return zero, failureOf(label, batchFailureKind(over), over, "the context had already ended, so nothing was run")
+	}
+	if len(plan.Stages) == 0 {
+		return zero, types.Newf(types.KindInvalidRequest, label, "the plan has no stages to run")
+	}
+	for i, stage := range plan.Stages {
+		if stage.Op.BuildPrompt == nil || stage.Op.Contract.Decode == nil {
+			return zero, types.Newf(types.KindConfiguration, label, "stage %d of %d has an operation with no BuildPrompt or no Decode", i+1, len(plan.Stages))
+		}
+	}
+
+	// The client every stage runs on is fixed once, so that a default replaced
+	// between two stages does not give one the provider of one client and the
+	// next the budget of another.
+	ctx, _ = PinExec(ctx)
+
+	// A stage that will certainly ask the model is held to the floor before the
+	// first request, so that a plan whose later stage cannot reach it does not pay
+	// for the earlier ones first.
+	for _, stage := range plan.Stages {
+		if stage.DeterministicCheck != nil {
+			continue
+		}
+		planned := plannedContractLevel(ctx, declaredContractLevel(stage.Op.Contract), opt)
+		if floorErr := checkContractFloor(ctx, planned); floorErr != nil {
+			return zero, floorErr
 		}
 	}
 
 	current := input
-	var parents []string
-	result := StagedPlanResult[T]{Steps: make([][]StageOutcome[T], 0, len(plan.Steps))}
+	callerParents := append([]string(nil), opt.ParentResultIDs...)
+	var previous string
+	result := StagedPlanResult[T]{Stages: make([]StageOutcome[T], 0, len(plan.Stages))}
 
-	for _, step := range plan.Steps {
-		outcomes, err := runStepStages(ctx, plan, step, current, opt, parents)
+	for i, stage := range plan.Stages {
+		// The stage's lineage names the parents the caller gave, and the stage that
+		// ran before it.
+		parents := append([]string(nil), callerParents...)
+		if previous != "" {
+			parents = append(parents, previous)
+		}
+
+		outcome, err := runStage(ctx, plan, i, stage, current, opt, parents)
+		result.Stages = append(result.Stages, outcome)
 		if err != nil {
-			return zero, err
-		}
-		result.Steps = append(result.Steps, outcomes)
-
-		// The next step's lineage names every stage THIS step actually ran --
-		// TC-003's ParentResultIDs, one level up: a stage derived from several
-		// concurrent siblings names all of them, not just the one whose value
-		// happened to carry forward (which, for a group, is none of them --
-		// see PlanStep's doc comment).
-		parents = make([]string, 0, len(outcomes))
-		for _, o := range outcomes {
-			if o.Provenance.ResultID != "" {
-				parents = append(parents, o.Provenance.ResultID)
-			}
+			return result, err
 		}
 
-		if len(step.Stages) == 1 {
-			current = outcomes[0].Value
-		}
+		previous = outcome.Provenance.ResultID
+		current = outcome.Value
 	}
 
 	result.Value = current
 	return result, nil
 }
 
-// runStepStages runs one PlanStep's stages against datum: sequentially for a
-// single stage, concurrently (each against the same datum) for a group.
-//
-// A group's stages are launched together and joined together, but outcomes
-// is written by index so the returned slice is in the plan's declared order
-// regardless of which goroutine finished first -- a caller correlating
-// Steps[i][j] back to plan.Steps[i].Stages[j] must get the stage it asked
-// about, not whichever one happened to answer fastest.
-func runStepStages[T any](ctx context.Context, plan StagedPlan[T], step PlanStep[T], datum T, opt types.OpOptions, parents []string) ([]StageOutcome[T], error) {
-	n := len(step.Stages)
-	outcomes := make([]StageOutcome[T], n)
-
-	if n == 1 {
-		outcome, err := runStage(ctx, plan, step.Stages[0], datum, opt, parents)
-		if err != nil {
-			return nil, err
-		}
-		outcomes[0] = outcome
-		return outcomes, nil
-	}
-
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i, stage := range step.Stages {
-		go func(i int, stage Stage[T]) {
-			defer wg.Done()
-			outcome, err := runStage(ctx, plan, stage, datum, opt, parents)
-			outcomes[i] = outcome
-			errs[i] = err
-		}(i, stage)
-	}
-	wg.Wait()
-
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
-	return outcomes, nil
-}
-
 // runStage runs one Stage: the deterministic check first, Op only when the
-// check does not already establish RequiredContract.
-func runStage[T any](ctx context.Context, plan StagedPlan[T], stage Stage[T], input T, opt types.OpOptions, parents []string) (StageOutcome[T], error) {
+// check does not already establish RequiredContract at a level the client's floor
+// accepts. For a stage that fails the outcome it returns holds the failure and what
+// the stage spent.
+//
+// The caller's functions run on a goroutine of the library's (onWorker), so that a
+// panic or a runtime.Goexit in one is the stage's failure, and runOpItem keeps the
+// account of what a request cost when a function panics on its answer.
+func runStage[T any](ctx context.Context, plan StagedPlan[T], index int, stage Stage[T], input T, opt types.OpOptions, parents []string) (StageOutcome[T], error) {
 	id := stage.ID
 	if id == (types.OperationID{}) {
 		id = stage.Op.ID
 	}
 
-	parentCopy := append([]string(nil), parents...)
+	failed := func(meta types.Meta, cause error) (StageOutcome[T], error) {
+		failure := stageFailure(plan, index, id, cause)
+		return StageOutcome[T]{StageID: id, Meta: meta, Provenance: meta.Provenance, Err: failure}, failure
+	}
 
 	if stage.DeterministicCheck != nil {
-		if value, level, ok := stage.DeterministicCheck(input); ok {
-			required := requiredContractFor(stage)
-			if level >= required {
+		var value T
+		var level types.ContractLevel
+		var decided bool
+		if failure := onWorker(ctx, "staged plan", func() error {
+			value, level, decided = stage.DeterministicCheck(input)
+			return nil
+		}); failure != nil {
+			return failed(types.Meta{}, failure)
+		}
+		if decided {
+			if level > types.ContractFullyGoverned {
+				return failed(types.Meta{}, types.Newf(types.KindConfiguration, "staged plan", "the check attested to a contract level that is not one"))
+			}
+			// The level the check claims is held to the client's floor as a model's
+			// answer is: below it, the stage is not settled and the model is asked.
+			if level >= requiredContractFor(stage) && enforceContractPolicy(ctx, level) == nil {
 				return StageOutcome[T]{
 					StageID:           id,
 					Value:             value,
@@ -290,7 +321,7 @@ func runStage[T any](ctx context.Context, plan StagedPlan[T], stage Stage[T], in
 					DeliveredContract: level,
 					Provenance: types.Provenance{
 						ResultID:         types.NewResultID(),
-						ParentResultIDs:  parentCopy,
+						ParentResultIDs:  parents,
 						InputDigest:      types.DigestValue(input),
 						OperationVersion: id.String(),
 						PromptVersion:    id.Version,
@@ -299,29 +330,27 @@ func runStage[T any](ctx context.Context, plan StagedPlan[T], stage Stage[T], in
 					},
 				}, nil
 			}
-			// The check ran and reports a level below what this stage
-			// requires -- not an error, a fact that a shortcut does not
-			// apply this time. Op runs below exactly as if no check had
-			// been registered.
+			// The check ran and reports a level below what this stage requires, or
+			// below what the client's contract policy accepts -- not an error, a fact
+			// that a shortcut does not apply this time. Op runs below exactly as if no
+			// check had been registered.
 		}
 	}
 
 	localOpt := opt
-	localOpt.ParentResultIDs = parentCopy
-
-	runFn := func(runCtx context.Context) (types.Result[T], error) {
-		return RunOpResult(runCtx, stage.Op, input, localOpt)
-	}
+	localOpt.ParentResultIDs = parents
 
 	var result types.Result[T]
 	var err error
-	if plan.Scheduler != nil {
-		result, err = Submit(ctx, plan.Scheduler, SubmitRequest{Tenant: plan.ID.String()}, runFn)
-	} else {
-		result, err = runFn(ctx)
+	if failure := onWorker(ctx, "staged plan", func() error {
+		result, err = runOpItem(ctx, stage.Op, input, localOpt)
+		return nil
+	}); failure != nil {
+		// The function ended its goroutine: whatever the request cost is lost with it.
+		return failed(types.Meta{}, failure)
 	}
 	if err != nil {
-		return StageOutcome[T]{}, fmt.Errorf("staged plan %s, stage %s: %w", plan.ID, id, err)
+		return failed(result.Meta, err)
 	}
 
 	return StageOutcome[T]{
@@ -331,6 +360,21 @@ func runStage[T any](ctx context.Context, plan StagedPlan[T], stage Stage[T], in
 		Meta:              result.Meta,
 		Provenance:        result.Meta.Provenance,
 	}, nil
+}
+
+// stageFailure is the error a failed stage ends the plan with: the kind of the
+// stage's own failure, the stage's position and the name of its operation, and
+// the failure as the cause. The text of the cause stays out of the message, since
+// what a decoder or a check of the caller's reports can hold the datum.
+func stageFailure[T any](plan StagedPlan[T], index int, id types.OperationID, cause error) error {
+	name := id.Name
+	if name == "" {
+		name = plan.ID.Name
+	}
+	if name == "" {
+		name = "staged plan"
+	}
+	return failureOf(name, batchFailureKind(cause), cause, "stage %d of %d failed", index+1, len(plan.Stages))
 }
 
 // requiredContractFor reads stage.RequiredContract, or -- when left at the

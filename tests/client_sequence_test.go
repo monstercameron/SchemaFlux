@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
 
@@ -18,7 +19,7 @@ import (
 // drives a real operation (Format) from the root package, and the client
 // package cannot import the package that imports it.
 func TestClientsBuiltInSequenceDoNotRepointEachOther(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	clientA := schemaflux.NewClient("").WithProviderInstance(testfixtures.NewNamed("client-a"))
 	_ = schemaflux.NewClient("").WithProviderInstance(testfixtures.NewNamed("client-b"))

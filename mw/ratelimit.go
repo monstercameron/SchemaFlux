@@ -2,6 +2,7 @@ package mw
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
@@ -24,6 +25,18 @@ import (
 // gets that without writing their own queue. Reject() switches to failing
 // immediately instead, for a caller who would rather drop a request than
 // wait for one.
+//
+// Callers that are waiting are not served in the order they arrived. Each
+// computes how long until a token is due, sleeps that long, and takes a token
+// if one is there when it wakes; callers that wake together compete for the
+// lock, and one that arrives later can take the token a longer-waiting caller
+// was woken for. The limit holds, and no waiter is refused, but under sustained
+// load the wait of a single caller is not bounded by its position in a queue.
+// A caller that needs first-come, first-served order puts its own queue in
+// front of the chain.
+//
+// The bucket belongs to the Middleware this returns, not to a Handler: the one
+// Middleware applied to two providers limits them together.
 func RateLimit(n int, interval time.Duration, opts ...RateLimitOption) Middleware {
 	if n <= 0 {
 		n = 1
@@ -32,14 +45,12 @@ func RateLimit(n int, interval time.Duration, opts ...RateLimitOption) Middlewar
 		interval = time.Second
 	}
 
+	// WithBurst ignores a non-positive capacity, so burst is never below one.
 	cfg := rateLimiterConfig{burst: n}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
 		}
-	}
-	if cfg.burst <= 0 {
-		cfg.burst = n
 	}
 
 	bucket := newTokenBucket(n, interval, cfg.burst, time.Now)
@@ -166,8 +177,24 @@ func (b *tokenBucket) tryAcquire() (ok bool, wait time.Duration) {
 		return true, 0
 	}
 
+	// The wait is bounded by what the library will make a caller wait on a
+	// server's word (llm.MaxRetryAfter). A long interval, or a rate that rounds to
+	// nothing, gives a number of seconds that does not fit a Duration, and
+	// converting it wrapped to a negative wait: a caller that was refused was told
+	// to retry in the past, and one that was waiting did not sleep and spun. The
+	// loop in wait takes the token when it is due, however many bounded sleeps
+	// that takes.
+	//
+	// The wait is rounded up to a whole nanosecond, and is never less than one.
+	// Rounded down, a caller woke a nanosecond before its token was due, found the
+	// bucket a fraction short, computed a wait of zero and went round the loop
+	// without sleeping until the clock caught up.
 	needed := 1 - b.tokens
-	return false, time.Duration(needed / b.rate * float64(time.Second))
+	seconds := needed / b.rate
+	if !(seconds < llm.MaxRetryAfter.Seconds()) {
+		return false, llm.MaxRetryAfter
+	}
+	return false, max(time.Duration(math.Ceil(seconds*float64(time.Second))), time.Nanosecond)
 }
 
 // wait blocks (or, in reject mode, fails) until a token is available or ctx

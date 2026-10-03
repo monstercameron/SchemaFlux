@@ -113,6 +113,11 @@ func (p *Provider) Reply(bodies ...string) *Provider {
 
 // Fail makes every call return err, which is how a test exercises the paths
 // that matter most: what your code does when the provider is unreachable.
+//
+// It replaces any scripted bodies. Complete repeats the last scripted error
+// once the list of errors is used up, but only while no bodies remain, so
+// leaving the constructor's default body in place would end the outage after
+// the first call.
 func (p *Provider) Fail(err error) *Provider {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -121,6 +126,7 @@ func (p *Provider) Fail(err error) *Provider {
 		err = fmt.Errorf("schemafluxtest: provider unavailable")
 	}
 	p.errs = []error{err}
+	p.replies = nil
 	p.index = 0
 	return p
 }
@@ -199,7 +205,6 @@ func (p *Provider) CallCount() int {
 	return len(p.requests)
 }
 
-// Reset clears the recorded requests and rewinds the reply sequence.
 // ReplyFunc answers each call from the request it was sent, rather than from a
 // fixed list.
 //
@@ -251,6 +256,7 @@ func (p *Provider) ContextN(n int) context.Context {
 	return p.contexts[n]
 }
 
+// Reset clears the recorded requests and rewinds the reply sequence.
 func (p *Provider) Reset() *Provider {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -274,6 +280,7 @@ func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionReques
 	replies := p.replies
 	usage := p.usage
 	name := p.name
+	shaped := p.shaped
 	p.mu.Unlock()
 
 	if delay > 0 {
@@ -314,16 +321,6 @@ func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionReques
 	}
 
 	body := "{}"
-	if p.shaped && len(replies) == 0 {
-		// No scripted reply, and the caller asked for shape rather than
-		// silence: answer whatever the request declared. `{}` is a valid JSON
-		// object and an invalid answer to almost every operation, so a test
-		// that only cares about *what was sent* would otherwise have to script
-		// a body per operation to get past the parse.
-		if shaped := llm.ShapedMockResponse(req); shaped != "" {
-			body = shaped
-		}
-	}
 	if len(replies) > 0 {
 		replyIndex := position - len(errs)
 		if replyIndex < 0 {
@@ -333,6 +330,15 @@ func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionReques
 			replyIndex = len(replies) - 1
 		}
 		body = replies[replyIndex]
+	} else if shaped {
+		// No scripted reply, and the caller asked for shape rather than
+		// silence: answer whatever the request declared. `{}` is a valid JSON
+		// object and an invalid answer to almost every operation, so a test
+		// that only cares about *what was sent* would otherwise have to script
+		// a body per operation to get past the parse.
+		if answer := llm.ShapedMockResponse(req); answer != "" {
+			body = answer
+		}
 	}
 
 	return schemaflux.CompletionResponse{

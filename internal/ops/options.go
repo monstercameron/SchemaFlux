@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
@@ -47,6 +48,10 @@ type CommonOptions struct {
 	// Model pins the exact model, bypassing the Intelligence tier's mapping.
 	// TC-005; see types.OpOptions.Model for why a tier is not a pin.
 	Model string
+
+	// Effort is how much the model reasons before it answers. See
+	// types.OpOptions.Effort. LX-105.
+	Effort types.Effort
 
 	// Context for cancellation
 	Context context.Context
@@ -124,7 +129,9 @@ func (c CommonOptions) GetTimeout() time.Duration {
 
 // Validate performs basic validation on common options
 func (c CommonOptions) Validate() error {
-	if c.Threshold < 0 || c.Threshold > 1 {
+	// NaN is tested by name: it is below nothing and above nothing, so the
+	// range comparison alone lets it through.
+	if math.IsNaN(c.Threshold) || c.Threshold < 0 || c.Threshold > 1 {
 		return fmt.Errorf("threshold must be between 0 and 1, got %f", c.Threshold)
 	}
 	return nil
@@ -138,28 +145,54 @@ func (c CommonOptions) Validate() error {
 // enforces it, so this is only the one place that needs to call it, now that
 // CommonOptions has somewhere to keep the value.
 //
-// There is no single call site downstream that owns "this request is done"
-// the way a defer would need -- the context this returns outlives the
-// function that built it. The goroutine below is the resolution: it holds no
-// reference to anything but the child context and exits the moment Done
-// fires, which happens no later than the deadline either way, so it cannot
-// outlive what it is waiting on.
+// A context is derived only when that makes the deadline earlier. An options
+// value is resolved several times in one call, and each resolution used to
+// derive a context of its own whether or not it shortened anything.
+//
+// Nothing waits on the context this derives. A goroutine used to, one for every
+// context, parked until the deadline so that it could call a cancel function
+// that had nothing left to release by then: a call with a five-minute timeout
+// left about six of them behind for the five minutes. The timer releases
+// itself when it fires or when the parent ends, which is all the goroutine
+// was waiting to do.
+//
+// That is later than the end of the call: a call that finishes early leaves the
+// timer, and under a parent that can be cancelled the child's registration with
+// it, in place until the deadline passes or the parent ends. Calling cancel
+// when the call ended would release them sooner, but the conversions that reach
+// this function hand the context on and never see the end of the call, so
+// nothing has a place to call it. The cancel function is kept on the context
+// only so that vet's lost-cancel check has something to point at; no code calls
+// it.
 func applyTimeout(ctx context.Context, timeout time.Duration) context.Context {
 	if timeout <= 0 {
 		return ctx
 	}
-	child, cancel := context.WithTimeout(ctx, timeout)
-	go func() {
-		<-child.Done()
-		cancel()
-	}()
-	return child
+	deadline := time.Now().Add(timeout)
+	if existing, ok := ctx.Deadline(); ok && !existing.After(deadline) {
+		return ctx
+	}
+	child, cancel := context.WithDeadline(ctx, deadline)
+	return context.WithValue(child, timeoutCancelKey{}, cancel)
 }
+
+type timeoutCancelKey struct{}
 
 // toOpOptions converts to legacy OpOptions for backward compatibility
 func (c CommonOptions) toOpOptions() types.OpOptions {
 	ctx := applyTimeout(c.GetContext(), c.Timeout)
 	ctx, tracking := requesttracking.Ensure(ctx, c.RequestID, c.CorrelationID)
+	converted := c.opOptionsWithoutIdentity()
+	converted.Context = ctx
+	converted.RequestID = tracking.RequestID
+	converted.CorrelationID = tracking.CorrelationID
+	return converted
+}
+
+// opOptionsWithoutIdentity is the conversion without the context, which carries
+// the Timeout and the IDs, and without the IDs. Code that reads the converted
+// options and runs nothing under them uses it, so that the reading makes no ID.
+func (c CommonOptions) opOptionsWithoutIdentity() types.OpOptions {
 	return types.OpOptions{
 		Steering:       c.Steering,
 		Threshold:      c.Threshold,
@@ -168,9 +201,7 @@ func (c CommonOptions) toOpOptions() types.OpOptions {
 		CompleteFields: c.CompleteFields,
 		Intelligence:   c.Intelligence,
 		Model:          c.Model,
-		Context:        ctx,
-		RequestID:      tracking.RequestID,
-		CorrelationID:  tracking.CorrelationID,
+		Effort:         c.Effort,
 	}
 }
 
@@ -180,6 +211,14 @@ func (c CommonOptions) toOpOptions() types.OpOptions {
 // an unguarded assignment would do on a chain that set a model earlier.
 func (c CommonOptions) WithModel(model string) CommonOptions {
 	c.Model = model
+	return c
+}
+
+// WithEffort sets how much the model reasons before it answers.
+// types.EffortDefault clears it. See types.OpOptions.Effort for what the
+// levels cost and buy.
+func (c CommonOptions) WithEffort(effort types.Effort) CommonOptions {
+	c.Effort = effort
 	return c
 }
 
@@ -299,16 +338,35 @@ func NewExtractOptions() ExtractOptions {
 
 // Validate validates ExtractOptions
 func (e ExtractOptions) Validate() error {
+	if err := e.validateShape(); err != nil {
+		return err
+	}
+	if err := checkLockedLimits(e); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateShape is the part of Validate that reads the options as they are
+// written, which needs no merge.
+func (e ExtractOptions) validateShape() error {
 	if err := e.CommonOptions.Validate(); err != nil {
 		return err
 	}
 	if e.StrictSchema && e.AllowPartial {
 		return errors.New("cannot have both StrictSchema and AllowPartial")
 	}
-	if err := checkLockedLimits(e); err != nil {
+	return nil
+}
+
+// validateResolved is Validate for a call that has resolved its options already:
+// the same checks, in the same order, with the lock read off the resolved options
+// and not off a second merge of the written ones.
+func (e ExtractOptions) validateResolved(resolved types.OpOptions) error {
+	if err := e.validateShape(); err != nil {
 		return err
 	}
-	return nil
+	return checkLockedLimitsOf(resolved)
 }
 
 // WithSchemaHints sets schema hints
@@ -427,7 +485,26 @@ func effectiveSteering(common CommonOptions, embedded types.OpOptions) string {
 	return embedded.Steering
 }
 
+// mergeEmbeddedOpOptions is what every options type's toOpOptions returns.
+//
+// Fourteen of them returned CommonOptions.toOpOptions() instead, which is the
+// CommonOptions half alone (LX-060). Whatever a caller set on the embedded
+// half was dropped with no error: the context, and with it a client's
+// provider, a cancellation and a deadline; a model pin; steering; and the
+// three settings that exist only on that half, MaxOutputTokens, WebSearch and
+// JSONSchema, which therefore compiled and did nothing.
 func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) types.OpOptions {
+	return mergeOptionHalves(common, embedded, true)
+}
+
+// mergeOptionHalves is the merge. With forRunning false it only reconciles
+// the fields: it applies no Timeout and makes no request or correlation ID, and
+// the merged Context is the base context as it was found. Code that reads the
+// merged options and runs nothing under them (optionsForReading) merges that
+// way; it used to merge in full, which minted an ID from the system's random
+// source, wrapped the context twice and read the environment, to throw all of
+// it away.
+func mergeOptionHalves(common CommonOptions, embedded types.OpOptions, forRunning bool) types.OpOptions {
 	merged := embedded
 
 	if common.Steering != "" {
@@ -481,6 +558,11 @@ func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) type
 	if common.Model != "" {
 		merged.Model = common.Model
 	}
+	// Effort has the same two homes and the same rule: the CommonOptions side
+	// wins when it says something.
+	if common.Effort != types.EffortDefault {
+		merged.Effort = common.Effort
+	}
 
 	requestID := common.RequestID
 	if requestID == "" {
@@ -500,6 +582,13 @@ func mergeEmbeddedOpOptions(common CommonOptions, embedded types.OpOptions) type
 	}
 	if baseContext == nil {
 		baseContext = context.Background()
+	}
+
+	if !forRunning {
+		merged.Context = baseContext
+		merged.RequestID = requestID
+		merged.CorrelationID = correlationID
+		return merged
 	}
 
 	// Timeout only lives on CommonOptions -- the embedded types.OpOptions has
@@ -591,114 +680,108 @@ func modeStrictness(mode types.Mode) int {
 // other eleven *Options types in this file do not call it yet -- see the
 // task report for why that is a stated limitation rather than an oversight.
 func checkLockedLimits(o BaseOptions) error {
-	limits, ok := lockedLimitsFrom(o.GetContext())
+	// The lock is read off the context the options resolve to, from either
+	// half. GetContext is CommonOptions' alone, so a lock on the embedded
+	// half's context was not seen and its limits were not applied.
+	opt, _ := optionsForReading(o)
+	return checkLockedLimitsOf(opt)
+}
+
+// checkLockedLimitsOf is checkLockedLimits for options that are already
+// resolved, for a call that has merged its options and does not merge them again
+// to ask. The lock is found on the resolved context, which is derived from the
+// caller's and so carries it.
+//
+// What it refuses is a configuration error, classified here and not by each
+// caller: the options ask for more than the client allows, which is a setting
+// that is wrong and not an argument that cannot be used.
+func checkLockedLimitsOf(opt types.OpOptions) error {
+	limits, ok := lockedLimitsFrom(opt.Context)
 	if !ok {
 		return nil
 	}
 
-	opt := o.toOpOptions()
-
 	if limits.MaxOutputTokens > 0 && opt.MaxOutputTokens > limits.MaxOutputTokens {
-		return fmt.Errorf(
+		return types.Classified(types.KindConfiguration, fmt.Errorf(
 			"locked policy: max output tokens %d exceeds the client-scope ceiling of %d",
-			opt.MaxOutputTokens, limits.MaxOutputTokens)
+			opt.MaxOutputTokens, limits.MaxOutputTokens))
 	}
 
 	if limits.MinMode != types.ModeUnset && opt.Mode != types.ModeUnset &&
 		modeStrictness(opt.Mode) < modeStrictness(limits.MinMode) {
-		return fmt.Errorf(
+		return types.Classified(types.KindConfiguration, fmt.Errorf(
 			"locked policy: mode %s is weaker than the client-scope floor of %s",
-			opt.Mode, limits.MinMode)
+			opt.Mode, limits.MinMode))
 	}
 
 	return nil
 }
 
-// resolveField compares an operation's final value for one setting against
-// the operation's own default and reports which scope produced it: equal to
-// the default means nothing narrower said anything (ScopeOperationDescriptor);
-// different means an invocation set it (ScopeInvocation), unless that value
-// is exactly what a lock requires, in which case the lock is what is actually
-// binding (ScopeClient) even though the invocation's builder call is what
-// wrote the field.
-func resolveField[T comparable](name string, final, operationDefault T, render func(T) string, lockedValue *T) ResolvedSetting {
-	if lockedValue != nil && final == *lockedValue {
-		return ResolvedSetting{Name: name, Value: render(final), Source: types.ScopeClient, Locked: true}
-	}
-	if final == operationDefault {
-		return ResolvedSetting{Name: name, Value: render(final), Source: types.ScopeOperationDescriptor}
-	}
-	return ResolvedSetting{Name: name, Value: render(final), Source: types.ScopeInvocation}
+// checkFlatLockedLimits is checkLockedLimitsOf for the option types that spell
+// their common fields out and so cannot be handed to it as they are: it reads
+// the same four fields of them. Each is called with the options after the merge,
+// the ones the request is built from.
+func checkFlatLockedLimits(ctx context.Context, mode types.Mode, intelligence types.Speed, maxOutputTokens int) error {
+	return checkLockedLimitsOf(types.OpOptions{Mode: mode, Intelligence: intelligence, MaxOutputTokens: maxOutputTokens, Context: ctx})
 }
 
-// ResolvedSetting and ResolutionPlan are types.ResolvedSetting and
-// types.ResolutionPlan under package-local names, so Explain's signature
-// below reads without a types. prefix on every field. They are the same
-// type; a caller across the package boundary sees types.ResolutionPlan.
-type (
-	ResolvedSetting = types.ResolvedSetting
-	ResolutionPlan  = types.ResolutionPlan
-)
-
-// ExplainResolution builds a printable resolution plan comparing an option
-// value's final state against the operation's own default (operationDefault
-// is normally NewXOptions()), so a caller debugging why a setting did not
-// take effect can read where it actually came from instead of stepping
-// through the merge.
+// optionsForReading merges an options value the way a call would, for code that
+// reads the result and runs nothing under it: the lock check in Validate. The
+// caller's Timeout is left unapplied, so reading the options does not start a
+// timer that the call then starts again.
 //
-// Named ExplainResolution rather than Explain because Explain is already the
-// LLM operation in explain.go -- this is deterministic, reads no field it did
-// not resolve itself, and never calls a provider.
+// It also returns the context the caller supplied, from whichever half, before
+// anything is derived from it. A deadline on that context is one the request
+// carried; a deadline on the merged one may only be the caller's own Timeout.
 //
-// It covers the cross-cutting settings every *Options type carries through
-// CommonOptions and the shared MaxOutputTokens field on types.OpOptions --
-// the ones A-004 is about. It does not cover operation-specific fields
-// (ChooseOptions.TopN, ScoreOptions.ScaleMax, and so on): those are the
-// "Params struct for operation inputs" half of the review's own distinction
-// between operation inputs and cross-cutting knobs, and they carry no scope
-// or lock semantics to explain.
-func ExplainResolution(final, operationDefault BaseOptions) ResolutionPlan {
-	ctx := final.GetContext()
-	limits, hasLock := lockedLimitsFrom(ctx)
-
-	var lockedMaxTokens *int
-	var lockedMinMode *types.Mode
-	if hasLock {
-		if limits.MaxOutputTokens > 0 {
-			lockedMaxTokens = &limits.MaxOutputTokens
+// The merge mints a request id and a correlation id when the caller set
+// neither, so the merged identifiers are not the caller's. They are put back
+// to what the caller set, from whichever half, empty included.
+func optionsForReading(o BaseOptions) (merged types.OpOptions, callers context.Context) {
+	switch options := o.(type) {
+	case interface {
+		optionHalves() (CommonOptions, types.OpOptions)
+	}:
+		common, embedded := options.optionHalves()
+		callers = common.Context
+		if callers == nil {
+			callers = embedded.Context
 		}
-		if limits.MinMode != types.ModeUnset {
-			lockedMinMode = &limits.MinMode
+		merged = mergeOptionHalves(common, embedded, false)
+		merged.RequestID = firstSet(common.RequestID, embedded.RequestID)
+		merged.CorrelationID = firstSet(common.CorrelationID, embedded.CorrelationID)
+	case CommonOptions:
+		callers = options.Context
+		merged = options.opOptionsWithoutIdentity()
+		merged.Context = options.GetContext()
+		merged.RequestID, merged.CorrelationID = options.RequestID, options.CorrelationID
+	default:
+		callers = o.GetContext()
+		merged = o.toOpOptions()
+		merged.RequestID, merged.CorrelationID = o.GetRequestID(), o.GetCorrelationID()
+	}
+	if callers == nil {
+		callers = context.Background()
+	}
+	return merged, callers
+}
+
+// firstSet returns the first of its arguments that is not empty.
+func firstSet(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
 		}
 	}
-
-	finalOpt := final.toOpOptions()
-	defaultOpt := operationDefault.toOpOptions()
-
-	plan := ResolutionPlan{Settings: []ResolvedSetting{
-		resolveField("Steering", final.GetSteering(), operationDefault.GetSteering(), func(v string) string { return v }, nil),
-		resolveField("Threshold", final.GetThreshold(), operationDefault.GetThreshold(), func(v float64) string { return fmt.Sprintf("%g", v) }, nil),
-		resolveField("Mode", final.GetMode(), operationDefault.GetMode(), func(v types.Mode) string { return v.String() }, lockedMinMode),
-		resolveField("Intelligence", final.GetIntelligence(), operationDefault.GetIntelligence(), func(v types.Speed) string { return v.String() }, nil),
-		resolveField("RequestID", final.GetRequestID(), operationDefault.GetRequestID(), func(v string) string { return v }, nil),
-		resolveField("CorrelationID", final.GetCorrelationID(), operationDefault.GetCorrelationID(), func(v string) string { return v }, nil),
-		resolveField("Timeout", final.GetTimeout(), operationDefault.GetTimeout(), func(v time.Duration) string { return v.String() }, nil),
-		resolveField("MaxOutputTokens", finalOpt.MaxOutputTokens, defaultOpt.MaxOutputTokens, func(v int) string { return fmt.Sprintf("%d", v) }, lockedMaxTokens),
-	}}
-
-	if deadline, ok := ctx.Deadline(); ok {
-		plan.Settings = append(plan.Settings, ResolvedSetting{
-			Name:   "Deadline",
-			Value:  deadline.Format(time.RFC3339Nano),
-			Source: types.ScopeRequestContext,
-		})
-	}
-
-	return plan
+	return ""
 }
 
 func (e ExtractOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(e.CommonOptions, e.OpOptions)
+}
+
+func (e ExtractOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return e.CommonOptions, e.OpOptions
 }
 
 // TransformOptions configures the Transform operation
@@ -790,6 +873,10 @@ func (t TransformOptions) WithIntelligence(intelligence types.Speed) TransformOp
 
 func (t TransformOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(t.CommonOptions, t.OpOptions)
+}
+
+func (t TransformOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return t.CommonOptions, t.OpOptions
 }
 
 // NewTransformOptions creates TransformOptions with defaults
@@ -960,6 +1047,10 @@ func (g GenerateOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(g.CommonOptions, g.OpOptions)
 }
 
+func (g GenerateOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return g.CommonOptions, g.OpOptions
+}
+
 // ========================================
 // Text Operation Options
 // ========================================
@@ -969,7 +1060,10 @@ type SummarizeOptions struct {
 	CommonOptions
 	types.OpOptions
 
-	// Target length (words, sentences, or paragraphs)
+	// Target length (words, sentences, or paragraphs). It is a request: it goes
+	// into the prompt, and Summarize returns what the model wrote without
+	// measuring it. SummarizeResult measures the summary, refuses one more
+	// than 20% over the target, and reports the length in Metadata.
 	TargetLength int
 
 	// Unit for target length ("words", "sentences", "paragraphs")
@@ -1056,6 +1150,10 @@ func (s SummarizeOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
 }
 
+func (s SummarizeOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return s.CommonOptions, s.OpOptions
+}
+
 // RewriteOptions configures the Rewrite operation
 type RewriteOptions struct {
 	CommonOptions
@@ -1117,6 +1215,10 @@ func (r RewriteOptions) WithMode(mode types.Mode) RewriteOptions {
 
 func (r RewriteOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(r.CommonOptions, r.OpOptions)
+}
+
+func (r RewriteOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return r.CommonOptions, r.OpOptions
 }
 
 // TranslateOptions configures the Translate operation
@@ -1189,6 +1291,10 @@ func (t TranslateOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(t.CommonOptions, t.OpOptions)
 }
 
+func (t TranslateOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return t.CommonOptions, t.OpOptions
+}
+
 // ExpandOptions configures the Expand operation
 type ExpandOptions struct {
 	CommonOptions
@@ -1248,6 +1354,10 @@ func (e ExpandOptions) WithMode(mode types.Mode) ExpandOptions {
 
 func (e ExpandOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(e.CommonOptions, e.OpOptions)
+}
+
+func (e ExpandOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return e.CommonOptions, e.OpOptions
 }
 
 // ========================================
@@ -1373,6 +1483,10 @@ func (c ClassifyOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
 }
 
+func (c ClassifyOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return c.CommonOptions, c.OpOptions
+}
+
 // ScoreOptions configures the Score operation
 type ScoreOptions struct {
 	CommonOptions
@@ -1492,6 +1606,10 @@ func (s ScoreOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
 }
 
+func (s ScoreOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return s.CommonOptions, s.OpOptions
+}
+
 // CompareOptions configures the Compare operation
 type CompareOptions struct {
 	CommonOptions
@@ -1572,6 +1690,10 @@ func (c CompareOptions) WithMode(mode types.Mode) CompareOptions {
 
 func (c CompareOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
+}
+
+func (c CompareOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return c.CommonOptions, c.OpOptions
 }
 
 // ========================================
@@ -1719,6 +1841,10 @@ func (c ChooseOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
 }
 
+func (c ChooseOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return c.CommonOptions, c.OpOptions
+}
+
 // FilterOptions configures the Filter operation
 type FilterOptions struct {
 	CommonOptions
@@ -1773,7 +1899,10 @@ func (f FilterOptions) Validate() error {
 	if f.Criteria == "" {
 		return errors.New("filter criteria is required")
 	}
-	if f.MinConfidence < 0 || f.MinConfidence > 1 {
+	// NaN is tested by name: it is below nothing and above nothing, so the range
+	// comparison alone lets it through, and a floor that is not a number holds
+	// no answer to anything.
+	if math.IsNaN(f.MinConfidence) || f.MinConfidence < 0 || f.MinConfidence > 1 {
 		return fmt.Errorf("min confidence must be between 0 and 1, got %f", f.MinConfidence)
 	}
 	if err := checkLockedLimits(f); err != nil {
@@ -1859,6 +1988,10 @@ func (f FilterOptions) WithRequestID(requestID string) FilterOptions {
 
 func (f FilterOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(f.CommonOptions, f.OpOptions)
+}
+
+func (f FilterOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return f.CommonOptions, f.OpOptions
 }
 
 // SortOptions configures the Sort operation
@@ -1991,6 +2124,10 @@ func (s SortOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
 }
 
+func (s SortOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return s.CommonOptions, s.OpOptions
+}
+
 // ========================================
 // Batch Operation Options
 // ========================================
@@ -2011,24 +2148,6 @@ type BatchOptions struct {
 
 	// Error handling strategy (fail-fast, continue, retry)
 	ErrorStrategy string
-
-	// Maximum retries per item
-	MaxRetries int
-}
-
-// NewBatchOptions creates BatchOptions with defaults
-func NewBatchOptions() BatchOptions {
-	return BatchOptions{
-		CommonOptions: CommonOptions{
-			Mode:         types.TransformMode,
-			Intelligence: types.Fast,
-		},
-		Mode:          "parallel",
-		Concurrency:   10,
-		BatchSize:     50,
-		ErrorStrategy: "continue",
-		MaxRetries:    3,
-	}
 }
 
 // Validate validates BatchOptions
@@ -2057,60 +2176,81 @@ func (b BatchOptions) toOpOptions() types.OpOptions {
 	return mergeEmbeddedOpOptions(b.CommonOptions, b.OpOptions)
 }
 
+func (b BatchOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return b.CommonOptions, b.OpOptions
+}
+
 // ========================================
 // Backward Compatibility
 // ========================================
 
 // ConvertOpOptions converts legacy OpOptions to appropriate specialized options
 func ConvertOpOptions(opts types.OpOptions, operationType string) BaseOptions {
+	// The model pin and the effort were left out, so a caller converting
+	// options lost both without a word.
 	common := CommonOptions{
-		Steering:     opts.Steering,
-		Threshold:    opts.Threshold,
-		Mode:         opts.Mode,
-		Intelligence: opts.Intelligence,
-		Context:      opts.Context,
-		RequestID:    opts.RequestID,
+		Steering:      opts.Steering,
+		Threshold:     opts.Threshold,
+		Mode:          opts.Mode,
+		Intelligence:  opts.Intelligence,
+		Model:         opts.Model,
+		Effort:        opts.Effort,
+		Context:       opts.Context,
+		RequestID:     opts.RequestID,
+		CorrelationID: opts.CorrelationID,
 	}
 
-	// Return appropriate specialized options based on operation type
+	// The whole of what was given rides along on the embedded half. The fields
+	// CommonOptions has no home for, the strictness flags, the output ceiling,
+	// web search and a declared schema, were dropped here, and ExtractBatch
+	// converts its options this way.
 	switch operationType {
 	case "extract":
-		return ExtractOptions{CommonOptions: common}
+		return ExtractOptions{CommonOptions: common, OpOptions: opts}
 	case "transform":
-		return TransformOptions{CommonOptions: common}
+		return TransformOptions{CommonOptions: common, OpOptions: opts}
 	case "generate":
-		return GenerateOptions{CommonOptions: common}
+		return GenerateOptions{CommonOptions: common, OpOptions: opts}
 	case "summarize":
-		return SummarizeOptions{CommonOptions: common}
+		return SummarizeOptions{CommonOptions: common, OpOptions: opts}
 	case "rewrite":
-		return RewriteOptions{CommonOptions: common}
+		return RewriteOptions{CommonOptions: common, OpOptions: opts}
 	case "translate":
-		return TranslateOptions{CommonOptions: common}
+		return TranslateOptions{CommonOptions: common, OpOptions: opts}
 	case "expand":
-		return ExpandOptions{CommonOptions: common}
+		return ExpandOptions{CommonOptions: common, OpOptions: opts}
 	case "classify":
-		return ClassifyOptions{CommonOptions: common}
+		return ClassifyOptions{CommonOptions: common, OpOptions: opts}
 	case "score":
-		return ScoreOptions{CommonOptions: common}
+		return ScoreOptions{CommonOptions: common, OpOptions: opts}
 	case "compare":
-		return CompareOptions{CommonOptions: common}
+		return CompareOptions{CommonOptions: common, OpOptions: opts}
 	case "choose":
-		return ChooseOptions{CommonOptions: common}
+		return ChooseOptions{CommonOptions: common, OpOptions: opts}
 	case "filter":
-		return FilterOptions{CommonOptions: common}
+		return FilterOptions{CommonOptions: common, OpOptions: opts}
 	case "sort":
-		return SortOptions{CommonOptions: common}
+		return SortOptions{CommonOptions: common, OpOptions: opts}
 	case "batch":
-		return BatchOptions{CommonOptions: common}
+		return BatchOptions{CommonOptions: common, OpOptions: opts}
 	default:
-		return common
+		return convertedOptions{CommonOptions: common, OpOptions: opts}
 	}
 }
 
-// IsLegacyOption checks if the option is a legacy OpOptions
-func IsLegacyOption(opt interface{}) bool {
-	_, ok := opt.(types.OpOptions)
-	return ok
+// convertedOptions is what ConvertOpOptions returns for an operation it has no
+// options type for: both halves, so nothing given is lost.
+type convertedOptions struct {
+	CommonOptions
+	types.OpOptions
+}
+
+func (c convertedOptions) toOpOptions() types.OpOptions {
+	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
+}
+
+func (c convertedOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return c.CommonOptions, c.OpOptions
 }
 
 // resolvedContext reports the context an operation should run under, given the
@@ -2127,12 +2267,30 @@ func IsLegacyOption(opt interface{}) bool {
 // it says something. This does not call toOpOptions, deliberately -- that
 // function mints request IDs as a side effect, and resolving a context should
 // not create identifiers.
+//
+// The caller's Timeout is applied here. It lives on CommonOptions and used to
+// be applied only by toOpOptions, so an operation that built its context from
+// this function ran under the default deadline whatever the caller had set.
 func resolvedContext(common CommonOptions, embedded types.OpOptions) context.Context {
-	if common.Context != nil {
-		return common.Context
+	ctx := context.Background()
+	switch {
+	case common.Context != nil:
+		ctx = common.Context
+	case embedded.Context != nil:
+		ctx = embedded.Context
 	}
-	if embedded.Context != nil {
-		return embedded.Context
-	}
-	return context.Background()
+	return applyTimeout(ctx, common.Timeout)
+}
+
+// useContext makes ctx the context an options value resolves to, whichever of
+// its two homes the caller used.
+//
+// A wrapper that derives a context, to attach a recorder or a chunk's own
+// cancellation, used to write it to the embedded half. The operation reads
+// CommonOptions first, so when the caller's context was there the derived one
+// was never seen: a Result wrapper returned an empty envelope, and a chunk kept
+// running on the context it was meant to be cancelled from.
+func useContext(common *CommonOptions, embedded *types.OpOptions, ctx context.Context) {
+	common.Context = ctx
+	embedded.Context = ctx
 }

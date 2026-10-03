@@ -2,68 +2,34 @@ package telemetry
 
 import "github.com/monstercameron/schemaflux/internal/types"
 
-// OB-002: the metrics catalog per docs/engineering/plans/to-production.md
-// §15.2, for the slice PL-013 unblocked -- item outcomes, batch size, batch
-// compliance ratio, repairs, atomic fallbacks, omissions, and cost (including
-// cost per accepted item) -- all read from types.BatchMetrics
-// (internal/types/batchresult.go), the same per-item accounting PL-008/
-// PL-009 already keep, rather than a second accounting pass computed here.
+// RecordBatchMetrics emits item- and batch-level metrics from a finished plural
+// run's summary: item outcomes by status, the share of valid items, repairs,
+// atomic fallbacks, omissions, and cost, including cost per accepted item.
+// Everything is read from types.BatchMetrics, the per-item accounting the batch
+// engines already keep, rather than computed again here.
 //
-// §15.1's rule is the one this file exists to honor: "Item IDs and request
-// IDs may be attributes only when cardinality and privacy policies permit.
-// High-cardinality details belong in logs or the envelope, not metric
-// labels." Every tag map built here is a fixed, small vocabulary --
-// operation name (a bounded, declared set, the same kind of value
-// RecordLLMMetrics already tags with "model"), shape, item status, pricing
-// currency and quality. None of them is a request ID, a correlation ID, a
-// batch id (batchprotocol.go's "i-000007" strings), or a schema hash --
-// those live in the envelope (types.Meta, types.ItemResult) and in logs,
-// never in a tag map RecordMetric turns into a metric series.
+// operation is the Op's own ID string (types.OperationID.String(), a bounded,
+// declared identifier, never a per-call request or correlation ID) and shape
+// names how the run executed ("mdsp_recover", "atomic_partial", or a similar
+// label the caller chooses).
 //
-// What this delivers, against §15.2's table: schemaflux_items_total,
-// schemaflux_batch_size, schemaflux_batch_compliance_ratio,
-// schemaflux_repairs_total, schemaflux_atomic_fallback_total,
-// schemaflux_omissions_total, schemaflux_cost_total, and
-// schemaflux_cost_per_accepted_item, plus schemaflux_plan_nodes from a
-// Preflight plan before any call is made.
+// Every tag comes from a small fixed vocabulary: operation, shape, item status,
+// and the pricing currency and quality. Request IDs, correlation IDs, batch item
+// IDs and schema hashes are never tags. Each distinct tag set is a separate
+// series, so those would multiply the series count by traffic; they belong in
+// logs and in the result envelope.
 //
-// schemaflux_omissions_total and schemaflux_cost_per_accepted_item are
-// PL-013's own two named numbers that were missing from this file even after
-// the rest of the catalog above shipped: omissions is right there on
-// types.BatchMetrics (an item no first MDSP pass resolved) and was simply
-// never wired to a series, and cost-per-accepted-item -- PL-013's "the number
-// that actually says whether a batch was worth running" -- was only ever
-// reconstructable by a caller dividing two other series by hand. Both follow
-// the same unpriced rule as schemaflux_cost_total below: an unpriced or
-// all-failed run emits no schemaflux_cost_per_accepted_item series, never a
-// confident zero.
+// A run that was not priced emits nothing on schemaflux_cost_total, because a
+// zero there would read as "this cost nothing". Cost per accepted item is also
+// withheld when no priced item was accepted, since there is nothing to divide.
 //
-// What this does not: schemaflux_requests_total/_duration_seconds (a
-// logical-request-level counter/histogram this package cannot emit from
-// inside internal/ops's batch engines without also owning the call sites
-// this task's file list excludes -- core.go's Extract/Transform/Generate
-// already emit their own *_duration metrics, see llm_metrics.go's doc
-// comment, and unifying them is a separate task); provider attempts/
-// duration, queue duration, in-flight gauge, and circuit state (owned by
-// the scheduler and resilience layers, internal/ops/scheduler.go and
-// resilience.go, both off limits to this task); tokens_total (BatchMetrics
-// carries cost, not a token count -- adding one is PL-013's own remaining
-// list, not this task's); and budget_exceeded_total/review_required_total
-// (policy.go's territory, also off limits). Each of those is a real gap in
-// the §15.2 catalog, not an oversight -- see this file's own doc comment for
-// which package would have to own it.
-
-// RecordBatchMetrics emits OB-002's item- and batch-level metrics from a
-// finished plural run's PL-013 summary. operation is the Op's own ID string
-// (types.OperationID.String(), a bounded, declared identifier -- never a
-// per-call request or correlation ID) and shape names how the run executed
-// ("mdsp_recover", "atomic_partial", or similar caller-chosen label).
+// Not emitted here: request-level counters and durations, provider attempts and
+// duration, queue duration, the in-flight gauge and circuit state (the
+// scheduler and resilience layers own those), token totals (BatchMetrics
+// carries cost, not tokens), and budget and review counts (the policy layer's).
 //
-// Gated the same way every other call site in this package is
-// (config.IsMetricsEnabled(), checked by the caller before this is called,
-// the same convention core.go's *_duration metrics already follow) --
-// RecordMetric itself re-checks it too, so a caller that forgets still costs
-// nothing.
+// The caller normally checks config.IsMetricsEnabled before calling, but
+// RecordMetric checks it again, so a caller that forgets costs nothing.
 func RecordBatchMetrics(operation, shape string, m types.BatchMetrics) {
 	base := map[string]string{"operation": operation, "shape": shape}
 
@@ -77,9 +43,9 @@ func RecordBatchMetrics(operation, shape string, m types.BatchMetrics) {
 	RecordMetric("schemaflux_omissions_total", int64(m.Omissions), base)
 
 	if !m.CostPriced {
-		// PR-002's rule, carried into metrics: an unpriced run emits nothing
-		// on schemaflux_cost_total rather than a confident zero that would
-		// read as "this cost nothing" to anyone graphing the series.
+		// An unpriced run emits nothing on schemaflux_cost_total rather than a
+		// confident zero that would read as "this cost nothing" to anyone
+		// graphing the series.
 		return
 	}
 	costTags := withTag(base, "currency", m.Currency)
@@ -103,12 +69,11 @@ func RecordBatchMetrics(operation, shape string, m types.BatchMetrics) {
 	}
 }
 
-// RecordPlanMetrics emits OB-002's fan-out metrics from a Preflight plan,
-// before any provider call is made -- schemaflux_plan_nodes (the call
-// ceiling a run's fan-out implies) and schemaflux_batch_size (one
-// observation per planned chunk, so the aggregate registry's min/max/average
-// describe the real chunk-size distribution PL-004's packing produced, not
-// just its total).
+// RecordPlanMetrics emits the fan-out metrics of a Preflight plan before any
+// provider call is made: schemaflux_plan_nodes (the call ceiling the run's
+// fan-out implies) and schemaflux_batch_size (one observation per planned
+// chunk, so the aggregate's min, max and average describe the chunk sizes the
+// packing produced, not just their total).
 func RecordPlanMetrics(operation string, plan types.Plan) {
 	if !plan.Eligible {
 		return

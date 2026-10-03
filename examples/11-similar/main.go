@@ -103,6 +103,11 @@ func main() {
 	fmt.Println("\n📝 Checking tickets for similarity:")
 	fmt.Println()
 
+	// compared counts the pairs that returned a result. A failed comparison is
+	// logged and skipped, so without the count a run in which every pair
+	// failed printed the summary and exited 0.
+	compared := 0
+
 	// Compare tickets pairwise to find duplicates
 	for i := 0; i < len(tickets); i++ {
 		for j := i + 1; j < len(tickets); j++ {
@@ -121,6 +126,7 @@ func main() {
 					"ticketA", ticketA.ID, "ticketB", ticketB.ID, "error", err)
 				continue
 			}
+			compared++
 
 			// Display results
 			fmt.Printf("🎫 Ticket #%d vs Ticket #%d\n", ticketA.ID, ticketB.ID)
@@ -167,6 +173,11 @@ func main() {
 			}
 			fmt.Println()
 		}
+	}
+
+	if compared == 0 {
+		fmt.Println("No pair could be compared: every call failed.")
+		os.Exit(1)
 	}
 
 	// Summary

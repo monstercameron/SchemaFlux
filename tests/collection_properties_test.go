@@ -242,7 +242,7 @@ func TestPropertyClusterPartitionsTheInput(t *testing.T) {
 		}
 
 		body := fmt.Sprintf(
-			`{"clusters":[{"name":"a","indices":%s},{"name":"b","indices":%s}],"outlier_indices":%s,"quality":0.8}`,
+			`{"clusters":[{"name":"a","indices":%s,"keywords":[]},{"name":"b","indices":%s,"keywords":[]}],"outlier_indices":%s,"quality":0.8}`,
 			encodeJSON(t, first), encodeJSON(t, second), encodeJSON(t, outliers))
 
 		testfixtures.WithScriptedProvider(t, body, nil)

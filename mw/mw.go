@@ -26,16 +26,21 @@
 //
 // Middlewares run in the order listed: the first one wraps every other, so
 // it sees a request first and a response or error last. In the example
-// above, RateLimit throttles the call before Retry ever decides whether to
-// repeat it -- which matters, because a retry that skipped the limiter would
-// spend the caller's whole budget on the provider's slowest window.
+// above, RateLimit is outside Retry, so it counts a call once and the repeats
+// Retry makes go past it: the limiter paces calls and not attempts. A limiter
+// that has to count every attempt, a repeat included, is listed after Retry,
+// inside it, where each attempt takes a token and a repeat waits for the bucket
+// to refill.
 package mw
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/ops"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // Handler is the thing a middleware wraps: anything that can complete a
@@ -56,9 +61,11 @@ type Middleware func(next Handler) Handler
 // Chain wraps base with mws, applied in the order listed: mws[0] is the
 // outermost wrapper, so it is the first to see a call and the last to see its
 // result. That ordering matters for how the pieces interact -- a rate limiter
-// listed before a retry throttles retries the same as first attempts; listed
-// after, it would only throttle the attempts that already got past the
-// retry's own pacing, which defeats the point of a client-side limiter.
+// listed before a retry counts the call once, and the repeats of the retry go
+// past it without taking a token; listed after, inside the retry, it counts each
+// attempt, the first and every repeat, and a repeat waits for the bucket. A limit
+// that is the provider's own quota, to be kept whatever is sent, goes inside; a
+// limit on calls the program makes goes outside.
 //
 // Chain with no middlewares returns base unchanged, so wiring in an empty or
 // nil-filtered options slice at a call site never has to special-case "no
@@ -72,6 +79,28 @@ func Chain(base Handler, mws ...Middleware) Handler {
 		wrapped = mws[i](wrapped)
 	}
 	return wrapped
+}
+
+// logPanic writes the line for a panic that was recovered in code of the
+// caller's, to the logger of the client the call was made with, and holds only the
+// type of what was thrown: its value can hold the text it was handed.
+func logPanic(ctx context.Context, message string, thrown any) {
+	ops.ExecLogger(ctx).Error(message, "thrown", fmt.Sprintf("%T", thrown))
+}
+
+// kindIsTerminal reports whether nothing this library can do will help for a
+// failure of the given kind, which is the answer types.OperationError.Terminal
+// gives. types.ErrorKind carries no such method, so the question is asked of an
+// error holding only the kind.
+func kindIsTerminal(kind types.ErrorKind) bool {
+	return (&types.OperationError{Kind: kind}).Terminal()
+}
+
+// kindIsRetryable reports whether repeating the same request could succeed for
+// a failure of the given kind, which is the answer types.OperationError.Retryable
+// gives.
+func kindIsRetryable(kind types.ErrorKind) bool {
+	return (&types.OperationError{Kind: kind}).Retryable()
 }
 
 // realSleep waits for d or until ctx is done, whichever comes first. It is

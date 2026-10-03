@@ -71,6 +71,26 @@ type CassetteResponse struct {
 	Content      string                `json:"content"`
 	FinishReason string                `json:"finish_reason,omitempty"`
 	Usage        schemaflux.TokenUsage `json:"usage"`
+
+	// UpstreamProvider and ServiceTier are what a gateway said served the
+	// request. A data policy reads the first, and the second can differ from
+	// the tier that was asked for, so a replay that dropped them would feed
+	// the runtime an answer with less provenance than the recorded one.
+	UpstreamProvider string `json:"upstream_provider,omitempty"`
+	ServiceTier      string `json:"service_tier,omitempty"`
+
+	// ToolCalls is what the model asked for instead of, or beside, an answer.
+	// A tool-call exchange recorded without it replays as an empty answer
+	// that still reports a finish reason of "tool_calls".
+	ToolCalls []CassetteToolCall `json:"tool_calls,omitempty"`
+}
+
+// CassetteToolCall is one recorded tool call. Arguments are kept as text so
+// that credential redaction can rewrite them like any other recorded string.
+type CassetteToolCall struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // CassetteFailure is a recorded failure and how it was classified.
@@ -125,9 +145,18 @@ func (r *Recorder) Complete(ctx context.Context, req schemaflux.CompletionReques
 		}
 	} else {
 		cassette.Response = &CassetteResponse{
-			Content:      resp.Content,
-			FinishReason: resp.FinishReason,
-			Usage:        resp.Usage,
+			Content:          resp.Content,
+			FinishReason:     resp.FinishReason,
+			Usage:            resp.Usage,
+			UpstreamProvider: resp.UpstreamProvider,
+			ServiceTier:      resp.ServiceTier,
+		}
+		for _, call := range resp.ToolCalls {
+			cassette.Response.ToolCalls = append(cassette.Response.ToolCalls, CassetteToolCall{
+				ID:        call.ID,
+				Name:      call.Name,
+				Arguments: string(call.Arguments),
+			})
 		}
 	}
 
@@ -149,6 +178,13 @@ func (r *Recorder) RetryPolicy() (int, time.Duration) { return r.inner.RetryPoli
 // Redaction happens at write time rather than at read time on purpose: a
 // secret that reaches the disk has leaked, and a reader that scrubs it is
 // scrubbing a file somebody has already committed.
+//
+// The directory ends up holding exactly the cassettes recorded here: numbered
+// .json files left by an earlier run are removed first, because Replay plays
+// every one it finds and a leftover would be played as part of this run. Files
+// that are not numbered cassettes are left alone. Nothing is removed or
+// written until every cassette has been encoded and checked, so a refusal
+// leaves the earlier recording as it was.
 func (r *Recorder) Save() error {
 	r.mu.Lock()
 	recorded := append([]Cassette(nil), r.recorded...)
@@ -157,10 +193,8 @@ func (r *Recorder) Save() error {
 	if len(recorded) == 0 {
 		return nil
 	}
-	if err := os.MkdirAll(r.directory, 0o755); err != nil {
-		return fmt.Errorf("schemafluxtest: creating %s: %w", r.directory, err)
-	}
 
+	files := make([][]byte, len(recorded))
 	for i, cassette := range recorded {
 		redacted := redactCassette(cassette)
 
@@ -174,7 +208,17 @@ func (r *Recorder) Save() error {
 					"Redaction runs before the write for exactly this reason; report the pattern that got through",
 				i, leak)
 		}
+		files[i] = encoded
+	}
 
+	if err := os.MkdirAll(r.directory, 0o755); err != nil {
+		return fmt.Errorf("schemafluxtest: creating %s: %w", r.directory, err)
+	}
+	if err := removeNumberedCassettes(r.directory); err != nil {
+		return err
+	}
+
+	for i, encoded := range files {
 		name := filepath.Join(r.directory, fmt.Sprintf("%03d.json", i))
 		if err := os.WriteFile(name, encoded, 0o644); err != nil {
 			return fmt.Errorf("schemafluxtest: writing %s: %w", name, err)
@@ -182,6 +226,69 @@ func (r *Recorder) Save() error {
 	}
 
 	return nil
+}
+
+// removeNumberedCassettes deletes the files in directory that Save would name:
+// a run of digits followed by .json. Directories and every other name stay.
+func removeNumberedCassettes(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("schemafluxtest: reading %s: %w", directory, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, numbered := cassetteNumber(entry.Name()); !numbered {
+			continue
+		}
+		name := filepath.Join(directory, entry.Name())
+		if err := os.Remove(name); err != nil {
+			return fmt.Errorf("schemafluxtest: removing the earlier cassette %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// cassetteNumber returns the digits of a numbered cassette file name such as
+// "007.json", and false for any other name.
+func cassetteNumber(name string) (string, bool) {
+	stem, ok := strings.CutSuffix(name, ".json")
+	if !ok || stem == "" {
+		return "", false
+	}
+	for _, r := range stem {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return stem, true
+}
+
+// cassetteFileLess orders cassette files for replay. Numbered files go by the
+// value of their number, so "1000.json" follows "999.json" where a string sort
+// would put it before "101.json"; the comparison is on the digits without
+// leading zeros, longer meaning larger, so no width of number overflows.
+// Names that are not numbers come after the numbered ones, in string order.
+func cassetteFileLess(a, b string) bool {
+	numberA, numberedA := cassetteNumber(a)
+	numberB, numberedB := cassetteNumber(b)
+	switch {
+	case numberedA && numberedB:
+		valueA, valueB := strings.TrimLeft(numberA, "0"), strings.TrimLeft(numberB, "0")
+		if len(valueA) != len(valueB) {
+			return len(valueA) < len(valueB)
+		}
+		if valueA != valueB {
+			return valueA < valueB
+		}
+		return a < b
+	case numberedA:
+		return true
+	case numberedB:
+		return false
+	}
+	return a < b
 }
 
 // Recorded returns what has been captured so far.
@@ -203,7 +310,9 @@ type Player struct {
 	strict bool
 }
 
-// Replay loads every cassette in a directory, in filename order.
+// Replay loads every .json cassette in a directory, in the order Save numbered
+// them: by the value of the number in the file name, then by name for files
+// that are not numbered.
 func Replay(directory string) (*Player, error) {
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -216,7 +325,7 @@ func Replay(directory string) (*Player, error) {
 			names = append(names, entry.Name())
 		}
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool { return cassetteFileLess(names[i], names[j]) })
 
 	if len(names) == 0 {
 		return nil, fmt.Errorf("schemafluxtest: no cassettes in %s", directory)
@@ -255,7 +364,16 @@ func (p *Player) Lenient() *Player {
 }
 
 // Complete implements schemaflux.Provider.
-func (p *Player) Complete(_ context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+//
+// A context that is already done is reported before a cassette is consumed,
+// as schemafluxtest.Provider does, so a test of cancellation or a deadline
+// sees what a real provider would do and the recording is still there for the
+// call that follows.
+func (p *Player) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return schemaflux.CompletionResponse{}, err
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -269,16 +387,27 @@ func (p *Player) Complete(_ context.Context, req schemaflux.CompletionRequest) (
 	p.position++
 
 	if p.strict {
-		if cassette.Request.SystemPrompt != req.SystemPrompt {
-			return schemaflux.CompletionResponse{}, fmt.Errorf(
-				"schemafluxtest: call %d sent a different system prompt than the cassette recorded; "+
-					"the prompt changed, so the recording no longer answers the question being asked",
-				p.position)
+		// Everything recorded about the request that changes what the model
+		// answers: the two prompts, the model, and the shape asked for. The
+		// schema itself is not stored, only whether one was sent.
+		checks := []struct {
+			what  string
+			match bool
+		}{
+			{"system prompt", cassette.Request.SystemPrompt == req.SystemPrompt},
+			{"user prompt", cassette.Request.UserPrompt == req.UserPrompt},
+			{"model", cassette.Model == req.Model},
+			{"response format", cassette.Request.ResponseFormat == req.ResponseFormat},
+			{"schema name", cassette.Request.SchemaName == req.SchemaName},
+			{"JSON schema", cassette.Request.HasJSONSchema == (len(req.JSONSchema) > 0)},
 		}
-		if cassette.Request.UserPrompt != req.UserPrompt {
-			return schemaflux.CompletionResponse{}, fmt.Errorf(
-				"schemafluxtest: call %d sent a different user prompt than the cassette recorded",
-				p.position)
+		for _, check := range checks {
+			if !check.match {
+				return schemaflux.CompletionResponse{}, fmt.Errorf(
+					"schemafluxtest: call %d sent a different %s than the cassette recorded; "+
+						"the request changed, so the recording no longer answers the question being asked",
+					p.position, check.what)
+			}
 		}
 	}
 
@@ -294,13 +423,23 @@ func (p *Player) Complete(_ context.Context, req schemaflux.CompletionRequest) (
 			"schemafluxtest: cassette %d records neither a response nor a failure", p.position-1)
 	}
 
-	return schemaflux.CompletionResponse{
-		Content:      cassette.Response.Content,
-		Provider:     cassette.Provider,
-		Model:        cassette.Model,
-		FinishReason: cassette.Response.FinishReason,
-		Usage:        cassette.Response.Usage,
-	}, nil
+	response := schemaflux.CompletionResponse{
+		Content:          cassette.Response.Content,
+		Provider:         cassette.Provider,
+		Model:            cassette.Model,
+		FinishReason:     cassette.Response.FinishReason,
+		Usage:            cassette.Response.Usage,
+		UpstreamProvider: cassette.Response.UpstreamProvider,
+		ServiceTier:      cassette.Response.ServiceTier,
+	}
+	for _, call := range cassette.Response.ToolCalls {
+		replayed := llm.ToolCall{ID: call.ID, Name: call.Name}
+		if call.Arguments != "" {
+			replayed.Arguments = json.RawMessage(call.Arguments)
+		}
+		response.ToolCalls = append(response.ToolCalls, replayed)
+	}
+	return response, nil
 }
 
 // Name reports "local", which is the name reserved for an in-process double.
@@ -319,19 +458,25 @@ func (p *Player) Remaining() int {
 }
 
 // credentialPatterns are the shapes that must never reach a committed file.
-// They mirror scripts/secret_scan.py, which is the check that runs over the
-// whole repository; this is the same rule applied one step earlier, before the
-// file exists.
+// They are the shapes scripts/secret_scan.py looks for over the whole
+// repository, applied one step earlier, before the file exists. The order
+// matters twice: an Anthropic key also fits the OpenAI pattern, so it comes
+// first to be named correctly, and a private key is matched as a whole block
+// before the header-only form, which is the fallback for a block that was cut
+// off and has no end line.
 var credentialPatterns = []struct {
 	name    string
 	pattern *regexp.Regexp
 }{
-	{"OpenAI key", regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}`)},
 	{"Anthropic key", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}`)},
+	{"OpenAI key", regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}`)},
 	{"Google API key", regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{30,}`)},
 	{"AWS access key ID", regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)},
 	{"GitHub token", regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`)},
+	{"Slack token", regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`)},
 	{"bearer header", regexp.MustCompile(`(?i)authorization"?\s*[:=]\s*"?bearer\s+\S+`)},
+	{"private key block", regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----.*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)},
+	{"private key block", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:\r?\n[A-Za-z0-9+/=]{8,})*`)},
 }
 
 const redactedMarker = "[redacted by schemafluxtest]"
@@ -342,6 +487,16 @@ func redactCassette(cassette Cassette) Cassette {
 	if cassette.Response != nil {
 		response := *cassette.Response
 		response.Content = redactCredentials(response.Content)
+		if len(response.ToolCalls) > 0 {
+			response.ToolCalls = make([]CassetteToolCall, len(cassette.Response.ToolCalls))
+			for i, call := range cassette.Response.ToolCalls {
+				response.ToolCalls[i] = CassetteToolCall{
+					ID:        redactCredentials(call.ID),
+					Name:      redactCredentials(call.Name),
+					Arguments: redactCredentials(call.Arguments),
+				}
+			}
+		}
 		cassette.Response = &response
 	}
 	if cassette.Failure != nil {
@@ -373,11 +528,25 @@ func findCredential(text string) string {
 //
 // By name rather than by number, so a cassette recorded today still means the
 // same thing after a constant is inserted in the middle of the taxonomy.
+//
+// The search is bounded by the size of the kind's own range, not by whichever
+// kind was last when this was written: a kind added later is found without
+// this function being told. A value with no name reads "unknown", the same as
+// KindUnknown, so that name is answered up front rather than matched by the
+// first unnamed value the loop reaches.
 func kindByName(name string) types.ErrorKind {
-	for kind := types.KindUnknown; kind <= types.KindReviewRequired; kind++ {
+	if name == types.KindUnknown.String() {
+		return types.KindUnknown
+	}
+	for kind := types.KindUnknown + 1; kind <= maxKindProbed; kind++ {
 		if kind.String() == name {
 			return kind
 		}
 	}
 	return types.KindUnknown
 }
+
+// maxKindProbed is how far above KindUnknown kindByName looks. The taxonomy
+// has a couple of dozen kinds; this leaves room for it to grow by an order of
+// magnitude before a named kind could fall outside the search.
+const maxKindProbed types.ErrorKind = 255

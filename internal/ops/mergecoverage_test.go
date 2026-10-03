@@ -90,6 +90,11 @@ var sharedFieldChecks = map[string]sharedFieldCheck{
 		ok:  func(o types.OpOptions) bool { return o.Model == "the-sentinel-model" },
 		why: "DX-001: every .Model(...) pin is dropped and the call runs on whatever the tier resolved",
 	},
+	"Effort": {
+		set: func(c *CommonOptions) { c.Effort = types.EffortHigh },
+		ok:  func(o types.OpOptions) bool { return o.Effort == types.EffortHigh },
+		why: "LX-105: a reasoning effort set with WithEffort is dropped and the call runs at the default",
+	},
 	"Context": {
 		// Identity cannot be compared: the merge wraps the context with
 		// tracking metadata and any invocation timeout, so what comes out is
@@ -214,6 +219,7 @@ func TestMergeFallsBackToTheEmbeddedSide(t *testing.T) {
 		Mode:          types.Creative,
 		Intelligence:  types.Quick,
 		Model:         "model-from-embedded",
+		Effort:        types.EffortLow,
 		RequestID:     "request-from-embedded",
 		CorrelationID: "correlation-from-embedded",
 	}
@@ -230,6 +236,7 @@ func TestMergeFallsBackToTheEmbeddedSide(t *testing.T) {
 		{"Mode", merged.Mode, types.Creative},
 		{"Intelligence", merged.Intelligence, types.Quick},
 		{"Model", merged.Model, "model-from-embedded"},
+		{"Effort", merged.Effort, types.EffortLow},
 		{"RequestID", merged.RequestID, "request-from-embedded"},
 		{"CorrelationID", merged.CorrelationID, "correlation-from-embedded"},
 	} {

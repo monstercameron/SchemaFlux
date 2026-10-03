@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -254,64 +255,65 @@ func TestMockProviderFactoryIsALocalProvider(t *testing.T) {
 	}
 }
 
-// TestLocalProviderMockResponseFallbackKeywords pins the keyword-guessing
-// fallback mockResponse falls back to when mockShapedResponse finds nothing
-// to shape from (no JSONSchema, no JSON template in the system prompt) --
-// the branches mockShapedResponse's own doc comment calls out as "the
-// fallback for requests that declare neither".
-func TestLocalProviderMockResponseFallbackKeywords(t *testing.T) {
+// A request that declares no shape and was not scripted is answered with
+// something no operation can mistake for an answer. The provider guessed from
+// words in the prompt: "validate" got `{"valid": true, "confidence": 0.95}`, a
+// judgment made by nobody and reported as one, and "extract" got a person.
+func TestLocalProviderAnswersAnUnscriptedUnshapedRequestWithNoAnswer(t *testing.T) {
 	provider, err := NewLocalProvider(ProviderConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalProvider: %v", err)
 	}
 
-	cases := []struct {
-		name string
-		req  CompletionRequest
-		want string
-	}{
-		{
-			"extract json",
-			CompletionRequest{UserPrompt: "please extract the fields", ResponseFormat: "json"},
-			`"name": "John Doe"`,
-		},
-		{
-			"extract text",
-			CompletionRequest{UserPrompt: "please extract the fields"},
-			"Extracted data:",
-		},
-		{
-			"validate",
-			CompletionRequest{UserPrompt: "please validate this record"},
-			`"valid": true`,
-		},
-		{
-			"transform",
-			CompletionRequest{UserPrompt: "please transform this record"},
-			`"result": "transformed data"`,
-		},
-		{
-			"default json",
-			CompletionRequest{UserPrompt: "do something else entirely", ResponseFormat: "json"},
-			`"response": "Mock response for testing"`,
-		},
-		{
-			"default text",
-			CompletionRequest{UserPrompt: "do something else entirely"},
-			"Mock response for: do something else entirely",
-		},
+	prompts := []string{
+		"please extract the fields", "please validate this record", "please transform this record",
+		"do something else entirely", "is this valid", "", "validation", "Validate: {}",
+	}
+	for _, format := range []string{"", "json", "text"} {
+		for _, prompt := range prompts {
+			t.Run(format+"/"+prompt, func(t *testing.T) {
+				resp, err := provider.Complete(context.Background(), CompletionRequest{
+					UserPrompt: prompt, SystemPrompt: "validation extraction transform", ResponseFormat: format,
+				})
+				if err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+				if !strings.Contains(resp.Content, unscriptedAnswerText) {
+					t.Errorf("Content = %q, want it to say nothing was scripted", resp.Content)
+				}
+				for _, fabricated := range []string{`"valid"`, "John Doe", "confidence", "transformed data", "Mock response"} {
+					if strings.Contains(resp.Content, fabricated) {
+						t.Errorf("Content = %q carries the fabricated %q", resp.Content, fabricated)
+					}
+				}
+				if format == "json" {
+					var decoded map[string]any
+					if err := json.Unmarshal([]byte(resp.Content), &decoded); err != nil {
+						t.Fatalf("a JSON request got something that is not JSON: %v", err)
+					}
+					if len(decoded) != 1 {
+						t.Errorf("decoded = %v, want the one field that says nothing was scripted", decoded)
+					}
+				}
+			})
+		}
+	}
+}
+
+// What a request declares is still answered in the declared shape, and a scripted
+// answer is still the answer.
+func TestLocalProviderStillAnswersInADeclaredShapeAndScriptedAnswersWin(t *testing.T) {
+	provider, _ := NewLocalProvider(ProviderConfig{})
+	schema := map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}}}
+	resp, err := provider.Complete(context.Background(), CompletionRequest{UserPrompt: "x", JSONSchema: schema, ResponseFormat: "json"})
+	if err != nil || strings.Contains(resp.Content, unscriptedAnswerText) || !strings.Contains(resp.Content, `"name"`) {
+		t.Fatalf("a request that declared a schema got %q, %v", resp.Content, err)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resp, err := provider.Complete(context.Background(), tc.req)
-			if err != nil {
-				t.Fatalf("Complete: %v", err)
-			}
-			if !strings.Contains(resp.Content, tc.want) {
-				t.Errorf("Content = %q, want it to contain %q", resp.Content, tc.want)
-			}
-		})
+	provider.WithHandler(func(context.Context, CompletionRequest) (string, error) { return `{"valid":false}`, nil })
+	resp, err = provider.Complete(context.Background(), CompletionRequest{UserPrompt: "validate"})
+	if err != nil || resp.Content != `{"valid":false}` {
+		t.Fatalf("a scripted answer was not returned as it was: %q, %v", resp.Content, err)
 	}
 }
 

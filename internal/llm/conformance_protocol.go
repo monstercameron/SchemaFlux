@@ -30,7 +30,7 @@ import (
 func ProtocolConformanceChecks() []ConformanceCheck {
 	return []ConformanceCheck{
 		{ID: "timeout", Category: CategoryProtocol,
-			Description: "a request that outlives its context deadline is classified as a timeout, not left to hang",
+			Description: "a request that outlives the provider's configured timeout is classified as a timeout, not left to hang",
 			Run:         checkTimeout},
 		{ID: "cancellation", Category: CategoryProtocol,
 			Description: "a cancelled context returns promptly and is classified as canceled",
@@ -54,7 +54,7 @@ func ProtocolConformanceChecks() []ConformanceCheck {
 			Description: "a 429 with no Retry-After header yields zero (unknown), never an invented wait",
 			Run:         checkRateLimitMissingRetryAfter},
 		{ID: "server_5xx", Category: CategoryProtocol,
-			Description: "a 503 is classified as provider-unavailable and marked retryable",
+			Description: "a 503 is classified as provider-unavailable, not as a rate limit, and marked retryable",
 			Run:         checkServer5xx},
 		{ID: "empty_output", Category: CategoryProtocol,
 			Description: "a message item with empty text is refused, not returned as an empty success",
@@ -66,13 +66,13 @@ func ProtocolConformanceChecks() []ConformanceCheck {
 			Description: "a connection that closes mid-body is reported as an error, not a short success",
 			Run:         checkTruncatedOutput},
 		{ID: "refused_output", Category: CategoryProtocol,
-			Description: "a content-filter refusal with no text is reported by name, not silently accepted",
+			Description: "an answer withheld by the content filter, with no text, is classified as a policy violation and not retried",
 			Run:         checkRefusedOutput},
 		{ID: "streaming_termination", Category: CategoryProtocol,
 			Description: "a stream that stops without a terminal event surfaces ErrStreamIncomplete, never a Done built from partial text",
 			Run:         checkStreamingTermination},
 		{ID: "credential_redaction", Category: CategoryProtocol,
-			Description: "the API key reaches the server but never appears in a returned error",
+			Description: "the API key reaches the server but is never printed in a returned error, even when the server echoes it in the response body",
 			Run:         checkCredentialRedaction},
 		{ID: "endpoint_override", Category: CategoryProtocol,
 			Description: "a caller-supplied BaseURL is honoured for the request, trailing slash and all",
@@ -344,10 +344,13 @@ func checkRefusedOutput(ctx context.Context, _ *LiveTarget) ConformanceOutcome {
 		if err == nil {
 			return failedOutcome("a content_filter refusal with no text returned success")
 		}
-		if !strings.Contains(err.Error(), "content_filter") {
-			return failedOutcome(fmt.Sprintf("err = %v, want it to name the refusal reason", err))
+		if kind := Classify(err); kind != types.KindPolicyViolation {
+			return failedOutcome(fmt.Sprintf("classified %s, want %s", kind, types.KindPolicyViolation))
 		}
-		return passedOutcome(fmt.Sprintf("refusal reported by name: %v", err))
+		if (&types.OperationError{Kind: Classify(err)}).Retryable() {
+			return failedOutcome("an answer withheld by the content filter was marked retryable")
+		}
+		return passedOutcome(fmt.Sprintf("withheld answer classified %s and not retried", types.KindPolicyViolation))
 	})
 }
 
@@ -418,11 +421,10 @@ func checkRateLimit(ctx context.Context, retryAfterHeader string, assert func(ti
 func checkServer5xx(ctx context.Context, _ *LiveTarget) ConformanceOutcome {
 	return runProtocolCheck(func() ConformanceOutcome {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 500, not 503: isRateLimited treats 503 as a rate limit (it
-			// carries the same Retry-After semantics a 429 does), so 500 is
-			// the status that actually exercises the generic 5xx path this
-			// check means to cover.
-			w.WriteHeader(http.StatusInternalServerError)
+			// The Retry-After a 503 usually carries is read, and the kind is
+			// still the provider being unavailable and not a rate limit.
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":{"message":"synthetic outage","type":"server_error"}}`))
 		}))
 		defer srv.Close()
@@ -430,7 +432,7 @@ func checkServer5xx(ctx context.Context, _ *LiveTarget) ConformanceOutcome {
 		provider := newProtocolProvider(panicTB{}, srv, "", 5*time.Second)
 		_, err := provider.Complete(ctx, CompletionRequest{Model: "gpt-5.6-mini"})
 		if err == nil {
-			return failedOutcome("a 500 returned success")
+			return failedOutcome("a 503 returned success")
 		}
 		if kind := Classify(err); kind != types.KindProviderUnavailable {
 			return failedOutcome(fmt.Sprintf("classified %s, want %s", kind, types.KindProviderUnavailable))
@@ -440,9 +442,9 @@ func checkServer5xx(ctx context.Context, _ *LiveTarget) ConformanceOutcome {
 			return failedOutcome("error does not carry an *APIError")
 		}
 		if !apiErr.Retryable() {
-			return failedOutcome("a 500 was not marked retryable")
+			return failedOutcome("a 503 was not marked retryable")
 		}
-		return passedOutcome("500 classified provider-unavailable and marked retryable")
+		return passedOutcome("503 classified provider-unavailable and marked retryable")
 	})
 }
 
@@ -502,10 +504,11 @@ func checkCredentialRedaction(ctx context.Context, _ *LiveTarget) ConformanceOut
 				sawAuthHeader = true
 			}
 			w.WriteHeader(http.StatusUnauthorized)
-			// Echo the header back in the body, the way a permissive proxy
-			// or a debug endpoint might -- worst case for this check, and
-			// the one APIError.Error()'s doc comment says never to print.
-			_, _ = fmt.Fprintf(w, `{"error":{"message":"invalid credential"}}`)
+			// Echo the credential back in a field of the body that is not the
+			// vendor's message, the way a permissive proxy or a debug endpoint
+			// might. The message is printed by design; the rest of the body is
+			// retained on the error and withheld from its string.
+			_, _ = fmt.Fprintf(w, `{"error":{"message":"invalid credential"},"echo":%q}`, "Bearer "+secret)
 		}))
 		defer srv.Close()
 
@@ -518,12 +521,6 @@ func checkCredentialRedaction(ctx context.Context, _ *LiveTarget) ConformanceOut
 			return failedOutcome("the server never saw the Authorization header -- this check proves nothing")
 		}
 
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			if strings.Contains(apiErr.Detail(), secret) {
-				return failedOutcome("the credential appeared in APIError.Detail()")
-			}
-		}
 		if strings.Contains(err.Error(), secret) {
 			return failedOutcome("the credential appeared in the returned error string")
 		}

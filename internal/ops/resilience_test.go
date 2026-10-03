@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,41 +209,6 @@ func TestCircuitBreakerKeysAreIndependent(t *testing.T) {
 	}
 }
 
-// TestDoReturnsCallersErrorUnchangedOnAllowedCall proves a refusal by the
-// breaker and a failure from the wrapped call are never confused: Do
-// surfaces fn's own error verbatim when the breaker allowed the call.
-func TestDoReturnsCallersErrorUnchangedOnAllowedCall(t *testing.T) {
-	clk := newBreakerClock()
-	b := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 5, Now: clk.Now})
-	sentinel := errors.New("boom")
-
-	_, err := Do(b, "ep", func() (int, error) { return 0, sentinel })
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("expected the wrapped call's own error, got %v", err)
-	}
-}
-
-// TestDoRefusesWithoutCallingFnWhenOpen proves a refused call never reaches
-// fn at all.
-func TestDoRefusesWithoutCallingFnWhenOpen(t *testing.T) {
-	clk := newBreakerClock()
-	b := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 1, Now: clk.Now})
-	report, _ := b.Allow("ep")
-	report(false) // opens it
-
-	called := false
-	_, err := Do(b, "ep", func() (int, error) {
-		called = true
-		return 0, nil
-	})
-	if called {
-		t.Fatal("fn was called despite the breaker being open")
-	}
-	if err == nil || errKind(t, err) != types.KindCircuitOpen {
-		t.Fatalf("expected KindCircuitOpen, got %v", err)
-	}
-}
-
 // TestBulkheadTryAcquireBoundsConcurrency proves TryAcquire refuses once the
 // configured limit is in use, and admits again after a release.
 func TestBulkheadTryAcquireBoundsConcurrency(t *testing.T) {
@@ -359,141 +323,6 @@ func TestBulkheadAcquireHonoursContextCancellation(t *testing.T) {
 	}
 }
 
-// TestIdempotencyStableLogicalIDAcrossAttempts is SC-004's headline
-// verification: a timeout followed by a retry reports one logical request
-// with two attempts, the first marked ambiguous.
-func TestIdempotencyStableLogicalIDAcrossAttempts(t *testing.T) {
-	tracker := NewIdempotencyTracker()
-
-	var calls int
-	result, logical, history, err := RunWithIdempotency(context.Background(), tracker, 3,
-		func(ctx context.Context, attempt AttemptRecord) (string, error) {
-			calls++
-			if calls == 1 {
-				return "", &types.OperationError{Kind: types.KindTimeout}
-			}
-			return "ok", nil
-		})
-
-	if err != nil {
-		t.Fatalf("unexpected final error: %v", err)
-	}
-	if result != "ok" {
-		t.Fatalf("result = %q, want ok", result)
-	}
-	if len(history) != 2 {
-		t.Fatalf("attempt history length = %d, want 2", len(history))
-	}
-	if history[0].Logical != logical || history[1].Logical != logical {
-		t.Fatal("both attempts must carry the same logical request ID")
-	}
-	if history[0].Attempt == history[1].Attempt {
-		t.Fatal("the two attempts must have distinct attempt IDs")
-	}
-	if !history[0].Ambiguous {
-		t.Fatal("the first (timed-out) attempt must be marked Ambiguous")
-	}
-	if history[1].Ambiguous {
-		t.Fatal("the second (successful) attempt must not be marked Ambiguous")
-	}
-	if history[0].Number != 1 || history[1].Number != 2 {
-		t.Fatalf("attempt numbers = %d, %d; want 1, 2", history[0].Number, history[1].Number)
-	}
-}
-
-// TestIdempotencyStopsOnTerminalError proves a non-retryable failure does
-// not spend further attempts.
-func TestIdempotencyStopsOnTerminalError(t *testing.T) {
-	tracker := NewIdempotencyTracker()
-	var calls int32
-
-	_, _, history, err := RunWithIdempotency(context.Background(), tracker, 5,
-		func(ctx context.Context, attempt AttemptRecord) (int, error) {
-			atomic.AddInt32(&calls, 1)
-			return 0, &types.OperationError{Kind: types.KindAuthentication}
-		})
-
-	if err == nil {
-		t.Fatal("expected the terminal error to be returned")
-	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Fatalf("calls = %d, want exactly 1 (authentication failure is not retryable)", got)
-	}
-	if len(history) != 1 {
-		t.Fatalf("history length = %d, want 1", len(history))
-	}
-	if history[0].Ambiguous {
-		t.Fatal("a non-timeout terminal failure must not be marked Ambiguous")
-	}
-}
-
-// TestIdempotencyDistinctLogicalRequestsGetDistinctIDs proves two separate
-// RunWithIdempotency calls never share a logical ID.
-func TestIdempotencyDistinctLogicalRequestsGetDistinctIDs(t *testing.T) {
-	tracker := NewIdempotencyTracker()
-	_, id1, _, _ := RunWithIdempotency(context.Background(), tracker, 1,
-		func(ctx context.Context, attempt AttemptRecord) (int, error) { return 0, nil })
-	_, id2, _, _ := RunWithIdempotency(context.Background(), tracker, 1,
-		func(ctx context.Context, attempt AttemptRecord) (int, error) { return 0, nil })
-
-	if id1 == id2 {
-		t.Fatal("two independent logical requests received the same ID")
-	}
-}
-
-// TestIdempotencyExhaustsMaxAttemptsOnPersistentRetryableFailure proves the
-// loop stops at maxAttempts rather than retrying forever, and reports every
-// attempt made.
-func TestIdempotencyExhaustsMaxAttemptsOnPersistentRetryableFailure(t *testing.T) {
-	tracker := NewIdempotencyTracker()
-	var calls int32
-
-	_, _, history, err := RunWithIdempotency(context.Background(), tracker, 4,
-		func(ctx context.Context, attempt AttemptRecord) (int, error) {
-			atomic.AddInt32(&calls, 1)
-			return 0, &types.OperationError{Kind: types.KindProviderUnavailable}
-		})
-
-	if err == nil {
-		t.Fatal("expected the persistent failure to be returned")
-	}
-	if got := atomic.LoadInt32(&calls); got != 4 {
-		t.Fatalf("calls = %d, want exactly maxAttempts=4", got)
-	}
-	if len(history) != 4 {
-		t.Fatalf("history length = %d, want 4", len(history))
-	}
-}
-
-// TestIdempotencyContextCanceledMidRunIsClassified proves a context that
-// ends between attempts is reported as a classified cancellation, itself
-// recorded as an attempt rather than silently truncating the history.
-func TestIdempotencyContextCanceledMidRunIsClassified(t *testing.T) {
-	tracker := NewIdempotencyTracker()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var calls int32
-	_, _, history, err := RunWithIdempotency(ctx, tracker, 5,
-		func(ctx context.Context, attempt AttemptRecord) (int, error) {
-			n := atomic.AddInt32(&calls, 1)
-			if n == 1 {
-				cancel()
-				return 0, &types.OperationError{Kind: types.KindProviderUnavailable}
-			}
-			return 0, nil
-		})
-
-	if err == nil {
-		t.Fatal("expected a cancellation error")
-	}
-	if errKind(t, err) != types.KindCanceled {
-		t.Fatalf("kind = %v, want KindCanceled", errKind(t, err))
-	}
-	if len(history) != 2 {
-		t.Fatalf("history length = %d, want 2 (the failing attempt plus the cancellation check)", len(history))
-	}
-}
-
 // A probe that reports after the breaker has already re-opened must still give
 // its half-open slot back.
 //
@@ -554,5 +383,112 @@ func TestAProbeReportingAfterAReopenReleasesItsSlot(t *testing.T) {
 	// And the bound still holds -- releasing slots must not have removed it.
 	if _, err := b.Allow(key); err == nil {
 		t.Error("a third probe was admitted against a bound of two")
+	}
+}
+
+// report can be called twice: the second call used to release a second slot,
+// one another probe was holding.
+func TestBreakerReportActsOnlyOnce(t *testing.T) {
+	clk := newBreakerClock()
+	b := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 1, OpenDuration: time.Second, HalfOpenMaxCalls: 2, SuccessThreshold: 2, Now: clk.Now})
+	failing, _ := b.Allow("ep")
+	failing(false)
+	clk.advance(2 * time.Second)
+
+	first, err := b.Allow("ep")
+	if err != nil {
+		t.Fatalf("first probe: %v", err)
+	}
+	second, err := b.Allow("ep")
+	if err != nil {
+		t.Fatalf("second probe: %v", err)
+	}
+	// Both slots are held; a third is refused.
+	if _, err := b.Allow("ep"); err == nil {
+		t.Fatal("a third probe was admitted with HalfOpenMaxCalls 2")
+	}
+	first(true)
+	first(true)
+	first(true)
+	// Only one slot came back, and one success was counted: the breaker is not
+	// closed (SuccessThreshold 2), and room for exactly one probe exists.
+	if b.State("ep") != CircuitHalfOpen {
+		t.Fatalf("state = %v, want half-open: a repeated report counted as more successes", b.State("ep"))
+	}
+	third, err := b.Allow("ep")
+	if err != nil {
+		t.Fatalf("a slot should be free: %v", err)
+	}
+	if _, err := b.Allow("ep"); err == nil {
+		t.Fatal("two slots came free from one probe reporting three times")
+	}
+	third(true)
+	second(true)
+}
+
+// The same holds for a call admitted while the breaker is closed: a failure
+// reported three times is one failure, so a threshold of two is not reached.
+func TestBreakerClosedStateReportActsOnlyOnce(t *testing.T) {
+	clk := newBreakerClock()
+	b := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 2, OpenDuration: time.Second, Now: clk.Now})
+	report, err := b.Allow("ep")
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	report(false)
+	report(false)
+	report(false)
+	if b.State("ep") != CircuitClosed {
+		t.Fatalf("state = %v: a repeated report counted as more than one failure", b.State("ep"))
+	}
+}
+
+// A call admitted while the breaker was closed, still running when it tripped
+// and half-opened, said nothing about recovery: its late success counted toward
+// closing the breaker with no probe having run.
+func TestBreakerLateReportFromAClosedCallDoesNotCloseAHalfOpenBreaker(t *testing.T) {
+	clk := newBreakerClock()
+	b := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 1, OpenDuration: time.Second, Now: clk.Now})
+	slow, err := b.Allow("ep") // admitted while closed, still running
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	failing, _ := b.Allow("ep")
+	failing(false)
+	if b.State("ep") != CircuitOpen {
+		t.Fatal("the breaker did not open")
+	}
+	clk.advance(2 * time.Second)
+	if b.State("ep") != CircuitHalfOpen {
+		t.Fatal("the breaker did not half-open")
+	}
+	// Half-open is entered by the first Allow that sees it.
+	probe, err := b.Allow("ep")
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+
+	slow(true)
+	if b.State("ep") != CircuitHalfOpen {
+		t.Fatalf("state = %v: a late success from a call that was not a probe closed the breaker", b.State("ep"))
+	}
+	probe(false)
+	if b.State("ep") != CircuitOpen {
+		t.Fatalf("state = %v after a failed probe, want open", b.State("ep"))
+	}
+	// And a late failure from a non-probe call does not re-open a half-open one.
+	b2 := NewCircuitBreaker(CircuitBreakerConfig{FailureThreshold: 1, OpenDuration: time.Second, Now: clk.Now})
+	late, _ := b2.Allow("k")
+	failing2, _ := b2.Allow("k")
+	failing2(false)
+	clk.advance(2 * time.Second)
+	probe2, _ := b2.Allow("k")
+	late(false)
+	if b2.State("k") != CircuitHalfOpen {
+		t.Fatalf("state = %v: a late failure from a non-probe call re-opened a half-open breaker", b2.State("k"))
+	}
+	probe2(true)
+	if b2.State("k") != CircuitClosed {
+		t.Fatalf("state = %v after a clean probe, want closed", b2.State("k"))
 	}
 }

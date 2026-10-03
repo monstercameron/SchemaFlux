@@ -7,6 +7,7 @@ import (
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/pricing"
 )
 
@@ -227,7 +228,7 @@ func TestLiveCerebrasReportsAnUnknownModel(t *testing.T) {
 	requireLiveCerebras(t)
 
 	// There is no per-call model override, so the global one is the seam.
-	t.Setenv("SCHEMAFLUX_MODEL", "no-such-model-9000")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "no-such-model-9000")
 
 	_, err := schemaflux.Extract[liveInvoice]("Invoice INV-1 from Acme, total $2.00.",
 		schemaflux.NewExtractOptions())

@@ -49,17 +49,22 @@ const documentWithoutTheFact = `A delivery note from Northwind Traders covering 
 //
 // trials is applied uniformly rather than tuned per case, because a per-case
 // trial count is a knob somebody will turn until the suite passes.
+//
+// The cases whose operation reports what a call cost come first. The four after
+// them (classification, choose, filter) cannot be priced, and Run stops at the
+// first trial it cannot price, so they are measured last, and only on a run
+// whose operations report their cost.
 func Cases(trials int) []Case {
 	return []Case{
 		extractionAccuracy(trials),
 		extractionHallucination(trials),
 		missingFieldHonesty(trials),
+		rankingIDCoverage(trials),
+		injectionResistance(trials),
 		classificationAccuracy(trials),
 		classificationAbstention(trials),
 		choosePrecision(trials),
 		filterRecall(trials),
-		rankingIDCoverage(trials),
-		injectionResistance(trials),
 	}
 }
 
@@ -76,6 +81,20 @@ func classifyOpts(ctx context.Context, categories []string) ops.ClassifyOptions 
 	opts := ops.NewClassifyOptions().WithCategories(categories)
 	opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
 	return opts
+}
+
+// abstentionKinds are the error kinds that mean an operation declined to answer
+// the way the question wanted: the answer was outside what was allowed, or fell
+// below the floor the caller set. An error of any other kind, or none, says
+// nothing about the model's judgement.
+var abstentionKinds = map[types.ErrorKind]bool{
+	types.KindInvariantViolation: true,
+}
+
+// abstained reports whether err is an operation refusing to answer, as
+// classified, and not a failure of the call.
+func abstained(err error) bool {
+	return abstentionKinds[types.KindOf(err)]
 }
 
 func timed(run func() (types.Meta, bool, error)) (Outcome, error) {
@@ -186,9 +205,16 @@ func classificationAbstention(trials int) Case {
 					"The weather has been unusually mild for the season",
 					classifyOpts(ctx, []string{"billing", "shipping", "account access"}))
 				if err != nil {
-					// A refusal IS the correct behaviour here, so this is the
-					// one case where an error is a pass rather than an outage.
-					return noEnvelope(), true, nil
+					// A refusal of the kind that means the operation declined
+					// the answer is the correct behaviour here, and passes. Any
+					// other error is not an abstention: a dead provider, a
+					// timeout or a rejected key would otherwise score a perfect
+					// rate on this case and count in its denominator. It is
+					// returned, and timed records it as Errored.
+					if abstained(err) {
+						return noEnvelope(), true, nil
+					}
+					return noEnvelope(), false, err
 				}
 				// Passing on the model's own confidence rather than on the
 				// label: every label is wrong for this input, so what is being

@@ -6,23 +6,6 @@ import (
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// SetTraceEnabled's explicit-true branch, mirroring the env-var coverage
-// TestGetTraceEnabledHonorsBothEnvNames already has for the fallback.
-func TestSetTraceEnabledExplicit(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_TRACE", "")
-	t.Setenv("SCHEMAFLUX_ENABLE_TRACING", "")
-	SetTraceEnabled(false)
-	if GetTraceEnabled() {
-		t.Fatal("GetTraceEnabled() = true before SetTraceEnabled(true)")
-	}
-
-	SetTraceEnabled(true)
-	if !GetTraceEnabled() {
-		t.Error("GetTraceEnabled() = false despite SetTraceEnabled(true)")
-	}
-	SetTraceEnabled(false) // restore
-}
-
 // GetTemperature's default branch: an unrecognised or unset Mode gets the
 // same balanced temperature as TransformMode, never a zero-value surprise.
 func TestGetTemperatureDefaultBranch(t *testing.T) {

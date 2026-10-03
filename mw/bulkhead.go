@@ -21,6 +21,16 @@ import (
 // limit is fixed at construction, matching the intent of
 // SchedulerLimits.PerProviderConcurrency: a bulkhead whose capacity moves
 // under callers already waiting on it is not a wall.
+//
+// The wall is per provider name and belongs to the Middleware this returns, not
+// to a Handler: the one Middleware applied to two providers with the same name
+// gives them one limit, and to two with different names gives each its own.
+//
+// Waiting callers are not served in the order they arrived. A slot that is
+// released wakes every caller waiting for one, and whichever takes the lock
+// first gets it, so under sustained load a caller can be passed over. The limit
+// is never exceeded and a cancelled caller leaves no slot taken; only the order
+// is unspecified.
 func Bulkhead(limit int, opts ...BulkheadOption) Middleware {
 	if limit <= 0 {
 		limit = 1

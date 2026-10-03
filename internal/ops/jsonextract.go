@@ -69,9 +69,11 @@ func fencedBlock(input string) (string, bool) {
 			// Unterminated fence: the model was cut off. Everything after the
 			// opening fence is the best available answer -- a truncated object
 			// still tells the repair loop what went wrong, where "no JSON
-			// found" does not.
+			// found" does not. The same rule decides whether the block is the
+			// payload as for a terminated one: a block labelled with another
+			// language is not, whatever it starts with.
 			content := strings.TrimSpace(body)
-			if info == "json" || looksLikeJSON(content) {
+			if info == "json" || (info == "" && looksLikeJSON(content)) {
 				return content, true
 			}
 			return "", false
@@ -82,8 +84,13 @@ func fencedBlock(input string) (string, bool) {
 			return content, true
 		}
 
-		// Not our block. Continue after this one's closing fence.
-		consumed := (start + 3) + len(info) + 1 + end + 3
+		// Not our block. Continue after this one's closing fence. The offset is
+		// counted over the line that was actually split off (newline, which is
+		// where the raw info string ended) and not over the trimmed info string,
+		// which is shorter by whatever space or carriage return was trimmed: the
+		// scan would then resume inside the block and read its closing fence as
+		// the opening of the next one.
+		consumed := (start + 3) + newline + 1 + end + 3
 		if consumed >= len(rest) {
 			return "", false
 		}

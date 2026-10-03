@@ -226,10 +226,12 @@ so an exporter failure is a failure in your telemetry stack, and the library
 will keep serving requests through it. Nothing here needs to be restarted to
 fix it.
 
-**Safe fallback.** Remove the observer (`telemetry.SetObserver(nil)`) to rule
-telemetry out as a cause. Note that an observer is called inline, so a slow
-sink slows the request path — that is the sink's responsibility and this is how
-you confirm it.
+**Safe fallback.** Remove the observer by calling the restore function that
+`otel.Install` (or `telemetry.AddObserver`) returned when you installed it, to
+rule telemetry out as a cause. Passing nil to `telemetry.SetObserver` removes
+nothing: installing is additive, and a nil observer installs nothing. Note that
+an observer is called inline, so a slow sink slows the request path — that is
+the sink's responsibility and this is how you confirm it.
 
 **Evidence.** Whether request latency moved when telemetry failed. If it did,
 the observer is blocking and that is a bug in the observer.

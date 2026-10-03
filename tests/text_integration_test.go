@@ -66,7 +66,7 @@ func TestIntegrationProviderErrorSurfaces(t *testing.T) {
 // The stack must actually send the prompt and honour the model tier. This is
 // the assertion that catches a request being built from the wrong options.
 func TestIntegrationRequestCarriesPromptAndModel(t *testing.T) {
-	provider := testfixtures.WithScriptedProvider(t, `{"text":"s","confidence":0.5}`, nil)
+	provider := testfixtures.WithScriptedProvider(t, `{"text":"s","key_points":[],"confidence":0.5}`, nil)
 
 	const marker = "UNIQUE-MARKER-STRING"
 	if _, err := schemaflux.SummarizeWithMetadata(marker, schemaflux.NewSummarizeOptions()); err != nil {

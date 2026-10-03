@@ -29,6 +29,7 @@ func nonZeroOpOptions() types.OpOptions {
 		Mode:            types.Strict,
 		Intelligence:    types.Quick,
 		Model:           "pinned-model",
+		Effort:          types.EffortLow,
 		WebSearch:       true,
 		ExactFields:     true,
 		CompleteFields:  true,
@@ -148,5 +149,88 @@ func TestEmbeddedMergeCarriesEveryEmbeddedField(t *testing.T) {
 			t.Errorf("mergeEmbeddedOpOptions changed %s: %v -> %v",
 				name, inValue.Field(i).Interface(), outValue.Field(i).Interface())
 		}
+	}
+}
+
+// applyDefaultsByReflection is what applyDefaults was before it named its
+// fields: the oracle the hand-written merge is held to.
+func applyDefaultsByReflection(opts ...types.OpOptions) types.OpOptions {
+	result := types.OpOptions{}
+	for _, opt := range opts {
+		incoming := reflect.ValueOf(opt)
+		merged := reflect.ValueOf(&result).Elem()
+		for i := 0; i < incoming.NumField(); i++ {
+			field := incoming.Field(i)
+			if !merged.Field(i).CanSet() || field.IsZero() {
+				continue
+			}
+			merged.Field(i).Set(field)
+		}
+	}
+	if result.Mode == types.ModeUnset {
+		result.Mode = types.TransformMode
+	}
+	if result.Intelligence == types.TierUnset {
+		result.Intelligence = types.Smart
+	}
+	return result
+}
+
+// Each field on its own, in a pair with every other, in either order, comes out
+// as the reflective merge gives it. With nineteen fields that is every case a
+// field can be mishandled in: dropped, copied when zero, or copied over a later
+// option's value.
+func TestApplyDefaultsAgreesWithTheReflectiveMergeOnEveryPairOfFields(t *testing.T) {
+	full := reflect.ValueOf(nonZeroOpOptions())
+	single := func(i int) types.OpOptions {
+		var one types.OpOptions
+		reflect.ValueOf(&one).Elem().Field(i).Set(full.Field(i))
+		return one
+	}
+	other := nonZeroOpOptions()
+	other.Steering, other.Model, other.RequestID, other.MaxOutputTokens = "other", "other-model", "req-2", 7
+	other.Threshold, other.SchemaName, other.CorrelationID = 0.9, "gadget", "corr-2"
+
+	for i := 0; i < full.NumField(); i++ {
+		name := full.Type().Field(i).Name
+		for j := 0; j < full.NumField(); j++ {
+			a, b := single(i), single(j)
+			if got, want := applyDefaults(a, b), applyDefaultsByReflection(a, b); !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s then %s: got %+v, want %+v", name, full.Type().Field(j).Name, got, want)
+			}
+		}
+		if got, want := applyDefaults(single(i), other), applyDefaultsByReflection(single(i), other); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s then everything: got %+v, want %+v", name, got, want)
+		}
+		if got, want := applyDefaults(other, single(i)), applyDefaultsByReflection(other, single(i)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("everything then %s: got %+v, want %+v", name, got, want)
+		}
+	}
+	if got, want := applyDefaults(), applyDefaultsByReflection(); !reflect.DeepEqual(got, want) {
+		t.Errorf("no options: got %+v, want %+v", got, want)
+	}
+}
+
+// What the merge costs, so that it cannot go back to walking the struct: the
+// reflective one allocated once for each option passed.
+func TestApplyDefaultsAllocationsStayWithinBudget(t *testing.T) {
+	full := nonZeroOpOptions()
+	one := types.OpOptions{Mode: types.Strict, Intelligence: types.Smart}
+	three := types.OpOptions{Context: context.Background(), RequestID: "req_0123456789abcdef", MaxOutputTokens: 4096}
+	cases := []struct {
+		name   string
+		run    func()
+		budget float64
+	}{
+		{"no options", func() { _ = applyDefaults() }, 0},
+		{"one option", func() { _ = applyDefaults(one) }, 0},
+		{"three options", func() { _ = applyDefaults(one, three, full) }, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := testing.AllocsPerRun(200, tc.run); got > tc.budget {
+				t.Errorf("%v allocations, budget %v", got, tc.budget)
+			}
+		})
 	}
 }

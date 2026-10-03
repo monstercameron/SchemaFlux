@@ -2,10 +2,7 @@ package ops
 
 // Coverage gaps in batch.go (ExtractBatch's opts-conversion branch,
 // extractMerged's provider-error branch, parseMergedResponse's parse/missing/
-// out-of-range branches, determineBestMode's "similar and small" branch,
-// areInputsSimilar's true/false branches) and pipeline.go's two example
-// builders (ExtractAndValidatePipeline, TransformAndFormatPipeline), which
-// had no test at all. These assert the documented contract -- a merged call's
+// out-of-range branches). These assert the documented contract -- a merged call's
 // provider failure lands on every item in the chunk as an error, not a zero
 // value counted as success; a malformed or short merged response is reported
 // per index, never silently dropped -- rather than the plumbing already
@@ -16,6 +13,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -23,21 +21,40 @@ import (
 // explicitly (rather than relying on NewExtractOptions()) must have those
 // options actually take effect, not be silently discarded.
 func TestExtractBatchHonoursExplicitOpOptions(t *testing.T) {
-	setupMockClient()
+	withNoDefaultProvider(t)
+	var model string
+	provider := &batchProvider{respond: func(_ context.Context, req llm.CompletionRequest) (string, error) {
+		model = req.Model
+		return `{"Name":"Ann","Age":30}`, nil
+	}}
 
 	inputs := []interface{}{"Ann is 30"}
-	batch := NewBatchProcessor(nil).WithMode(ParallelMode)
+	for _, mode := range []BatchMode{ParallelMode, MergedMode} {
+		model = ""
+		batch := NewBatchProcessor(provider).WithMode(mode)
+		if mode == MergedMode {
+			provider.respond = func(_ context.Context, req llm.CompletionRequest) (string, error) {
+				model = req.Model
+				return `[{"index":0,"data":{"Name":"Ann","Age":30}}]`, nil
+			}
+		}
 
-	results := ExtractBatch[Person](batch, inputs, types.OpOptions{
-		Intelligence: types.Smart,
-		Mode:         types.TransformMode,
-	})
+		results := ExtractBatch[Person](batch, inputs, types.OpOptions{
+			Intelligence: types.Smart,
+			Mode:         types.TransformMode,
+			Model:        "pinned-model-for-the-test",
+		})
 
-	if results.Metadata.TotalItems != 1 {
-		t.Fatalf("TotalItems = %d, want 1", results.Metadata.TotalItems)
-	}
-	if results.Errors[0] != nil {
-		t.Fatalf("unexpected error: %v", results.Errors[0])
+		if results.Metadata.TotalItems != 1 {
+			t.Fatalf("mode %v: TotalItems = %d, want 1", mode, results.Metadata.TotalItems)
+		}
+		if results.Errors[0] != nil {
+			t.Fatalf("mode %v: unexpected error: %v", mode, results.Errors[0])
+		}
+		// The model the caller pinned in the options is the one the request named.
+		if model != "pinned-model-for-the-test" {
+			t.Errorf("mode %v: the request named the model %q, want the one pinned in the options", mode, model)
+		}
 	}
 }
 
@@ -145,167 +162,5 @@ func TestParseMergedResponseBadItemDataIsPerIndexError(t *testing.T) {
 
 	if errs[0] == nil {
 		t.Fatal("expected an unmarshal error for index 0's malformed data")
-	}
-}
-
-// determineBestMode: between the "too small to bother" floor (areInputsSimilar
-// needs >=3) and the ">20 always merges" ceiling, similarity alone must be
-// enough to choose MergedMode.
-func TestDetermineBestModeChoosesMergedForSimilarMidSizedInput(t *testing.T) {
-	sb := NewSmartBatch(nil)
-	inputs := []interface{}{"one", "two", "three", "four"}
-
-	if got := sb.determineBestMode(inputs); got != MergedMode {
-		t.Errorf("determineBestMode(4 similar strings) = %v, want MergedMode", got)
-	}
-}
-
-// determineBestMode still prefers ParallelMode's error isolation for a small,
-// dissimilar input set.
-func TestDetermineBestModeChoosesParallelForDissimilarInput(t *testing.T) {
-	sb := NewSmartBatch(nil)
-	inputs := []interface{}{"a string", 42, 3.14}
-
-	if got := sb.determineBestMode(inputs); got != ParallelMode {
-		t.Errorf("determineBestMode(mixed types) = %v, want ParallelMode", got)
-	}
-}
-
-// areInputsSimilar: fewer than three items never counts as similar, however
-// alike they are -- there is nothing to benefit from merging.
-func TestAreInputsSimilarRequiresAtLeastThreeItems(t *testing.T) {
-	sb := NewSmartBatch(nil)
-	if sb.areInputsSimilar([]interface{}{"a", "b"}) {
-		t.Error("two items must never be reported similar")
-	}
-}
-
-// Three or more items of the same concrete type are similar.
-func TestAreInputsSimilarTrueForSameType(t *testing.T) {
-	sb := NewSmartBatch(nil)
-	if !sb.areInputsSimilar([]interface{}{"a", "b", "c"}) {
-		t.Error("three same-type items must be reported similar")
-	}
-}
-
-// A mixed-type slice is never similar, regardless of length.
-func TestAreInputsSimilarFalseForMixedTypes(t *testing.T) {
-	sb := NewSmartBatch(nil)
-	if sb.areInputsSimilar([]interface{}{"a", 1, "c"}) {
-		t.Error("mixed-type items must not be reported similar")
-	}
-}
-
-// --- pipeline.go: the two example pipeline builders, previously untested. ---
-
-// ExtractAndValidatePipeline chains Extract then Validate over one type; the
-// second step must only run against the first's typed output, and the
-// pipeline's Output must be the validated value itself, not an intermediate
-// representation.
-func TestExtractAndValidatePipelineRunsExtractThenValidate(t *testing.T) {
-	calls := 0
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, _, _ string, _ types.OpOptions) (string, error) {
-		calls++
-		if calls == 1 {
-			return `{"Name":"Ann","Age":30}`, nil
-		}
-		return `{"valid": true, "summary": "ok"}`, nil
-	})
-	defer func() { customLLMCaller = previous }()
-
-	p := ExtractAndValidatePipeline[Person]("Age must be at least 18")
-	result := p.Execute(context.Background(), "Ann, 30 years old")
-
-	if len(result.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", result.Errors)
-	}
-	if result.StepsExecuted != 2 {
-		t.Errorf("StepsExecuted = %d, want 2 (Extract, Validate)", result.StepsExecuted)
-	}
-	got, ok := result.Output.(Person)
-	if !ok {
-		t.Fatalf("Output type = %T, want Person", result.Output)
-	}
-	if got.Name != "Ann" || got.Age != 30 {
-		t.Errorf("Output = %+v, want the extracted Person to survive validation unchanged", got)
-	}
-}
-
-// A validation failure stops the pipeline (FailFast is the default) and is
-// reported as a step failure, not swallowed.
-func TestExtractAndValidatePipelineReportsValidationFailure(t *testing.T) {
-	calls := 0
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, _, _ string, _ types.OpOptions) (string, error) {
-		calls++
-		if calls == 1 {
-			return `{"Name":"Kid","Age":10}`, nil
-		}
-		return `{"valid": false, "errors": [{"field":"Age","severity":"error","message":"must be at least 18"}], "summary": "one error"}`, nil
-	})
-	defer func() { customLLMCaller = previous }()
-
-	p := ExtractAndValidatePipeline[Person]("Age must be at least 18")
-	result := p.Execute(context.Background(), "Kid, 10 years old")
-
-	if result.StepsFailed != 1 {
-		t.Errorf("StepsFailed = %d, want 1", result.StepsFailed)
-	}
-	if len(result.Errors) == 0 {
-		t.Error("expected the validation failure to be reported in Errors")
-	}
-}
-
-// TransformAndFormatPipeline chains Transform then Format across two types;
-// the final Output is Format's plain string, not the intermediate transformed
-// struct.
-func TestTransformAndFormatPipelineRunsTransformThenFormat(t *testing.T) {
-	type pfIn struct{ A string }
-	type pfOut struct{ B string }
-
-	calls := 0
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, _, _ string, _ types.OpOptions) (string, error) {
-		calls++
-		if calls == 1 {
-			return `{"B":"transformed"}`, nil
-		}
-		return "  formatted output  ", nil
-	})
-	defer func() { customLLMCaller = previous }()
-
-	p := TransformAndFormatPipeline[pfIn, pfOut]("a one-line summary")
-	result := p.Execute(context.Background(), pfIn{A: "hello"})
-
-	if len(result.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", result.Errors)
-	}
-	if result.StepsExecuted != 2 {
-		t.Errorf("StepsExecuted = %d, want 2 (Transform, Format)", result.StepsExecuted)
-	}
-	got, ok := result.Output.(string)
-	if !ok {
-		t.Fatalf("Output type = %T, want string", result.Output)
-	}
-	if got != "formatted output" {
-		t.Errorf("Output = %q, want the trimmed Format response", got)
-	}
-}
-
-// A Transform step given the wrong input type reports the type-assertion
-// failure from inside the pipeline step rather than panicking.
-func TestTransformAndFormatPipelineRejectsWrongInputType(t *testing.T) {
-	type pfIn struct{ A string }
-	type pfOut struct{ B string }
-
-	p := TransformAndFormatPipeline[pfIn, pfOut]("a one-line summary")
-	result := p.Execute(context.Background(), "not a pfIn")
-
-	if result.StepsFailed == 0 {
-		t.Fatal("expected the wrong-type input to fail the Transform step")
-	}
-	if len(result.Errors) == 0 {
-		t.Error("expected the type mismatch to be reported in Errors")
 	}
 }

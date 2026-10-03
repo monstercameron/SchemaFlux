@@ -170,3 +170,93 @@ func TestTheSchemaIdentityReachesTheResultMetadata(t *testing.T) {
 		t.Errorf("the identity is not in name/version@hash form: %s", want)
 	}
 }
+
+// ("a:b", "c") and ("a", "b:c") joined to the same key.
+func TestSchemaCacheKeyDoesNotConflateColonSeparatedParts(t *testing.T) {
+	descriptor := SchemaDescriptor{Name: "n", Version: "v1", Hash: "h", Dialect: "d"}
+	first := SchemaCacheKey("a:b", "c", descriptor)
+	second := SchemaCacheKey("a", "b:c", descriptor)
+	if first == second {
+		t.Fatalf("two different (operation, version) pairs gave one key: %q", first)
+	}
+	if got := SchemaCacheKey(`a\`, ":c", descriptor); got == SchemaCacheKey("a", `\:c`, descriptor) {
+		t.Errorf("a backslash and a colon conflated: %q", got)
+	}
+	// With only the colon escaped, a trailing backslash would be read as the
+	// escape of the separator: these two pairs joined to one key.
+	if a, b := SchemaCacheKey(`\`, ":a", descriptor), SchemaCacheKey(`:\`, "a", descriptor); a == b {
+		t.Errorf("two different (operation, version) pairs gave one key: %q", a)
+	}
+	// Parts without either character are unchanged, so existing keys hold.
+	if got := SchemaCacheKey("op", "v2", descriptor); got != "op:v2:n:v1:h:d" {
+		t.Errorf("a plain key changed: %q", got)
+	}
+	if got := SchemaCacheKey("", " ", SchemaDescriptor{}); got != "-:-:-:-:-:-" {
+		t.Errorf("blank parts = %q", got)
+	}
+}
+
+// schemaCacheKeyReference is the key as it was written when the escaping was
+// added, one strings.Replacer for each part. It is here to say what the key has
+// to be, so that making it cheaper cannot change it.
+func schemaCacheKeyReference(operation, operationVersion string, descriptor SchemaDescriptor) string {
+	parts := []string{operation, operationVersion, descriptor.Name, descriptor.Version, descriptor.Hash, descriptor.Dialect}
+	for i, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			parts[i] = "-"
+			continue
+		}
+		parts[i] = strings.NewReplacer(`\`, `\\`, ":", `\:`).Replace(part)
+	}
+	return strings.Join(parts, ":")
+}
+
+func TestSchemaCacheKeyIsWhatTheReplacerVersionWrote(t *testing.T) {
+	cases := []struct {
+		name       string
+		operation  string
+		version    string
+		descriptor SchemaDescriptor
+	}{
+		{"plain parts", "extract", "v1", SchemaDescriptor{Name: "Invoice", Version: "v1", Hash: "0123456789ab", Dialect: SchemaDialect}},
+		{"everything blank", "", "", SchemaDescriptor{}},
+		{"blank with whitespace", " \t", "\n", SchemaDescriptor{Name: "  "}},
+		{"a colon in the operation", "a:b", "c", SchemaDescriptor{Name: "n", Version: "v", Hash: "h", Dialect: "d"}},
+		{"a colon in the version", "a", "b:c", SchemaDescriptor{Name: "n", Version: "v", Hash: "h", Dialect: "d"}},
+		{"a backslash in the name", "op", "v", SchemaDescriptor{Name: `a\b`, Version: "v", Hash: "h", Dialect: "d"}},
+		{"a trailing backslash", `\`, ":a", SchemaDescriptor{Name: "n"}},
+		{"a backslash and a colon", `:\`, "a", SchemaDescriptor{Name: `\:\:`}},
+		{"only colons", ":::", ":", SchemaDescriptor{Name: ":", Version: "::", Hash: ":::", Dialect: ":"}},
+		{"spaces kept inside a part", " op ", "v 1", SchemaDescriptor{Name: "a b", Hash: "h"}},
+		{"non-ASCII text", "extrait\u00e9", "v\u2192", SchemaDescriptor{Name: "\u65e5\u672c", Hash: "h:\u00e9"}},
+		{"a long hash with an escape at the end", "extract", "v1", SchemaDescriptor{Name: "n", Version: "v1", Hash: strings.Repeat("ab", 40) + ":", Dialect: "d"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := schemaCacheKeyReference(tc.operation, tc.version, tc.descriptor)
+			if got := SchemaCacheKey(tc.operation, tc.version, tc.descriptor); got != want {
+				t.Errorf("SchemaCacheKey = %q, the replacer version wrote %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSchemaCacheKeyAllocationsStayWithinBudget(t *testing.T) {
+	plain := SchemaDescriptor{Name: "Invoice", Version: "v1", Hash: "0123456789ab", Dialect: SchemaDialect}
+	escaped := SchemaDescriptor{Name: `a:b\c`, Version: "v1", Hash: "0123456789ab", Dialect: SchemaDialect}
+
+	// One allocation, for the key itself. Before, 37 and 40 KB.
+	for _, tc := range []struct {
+		name       string
+		descriptor SchemaDescriptor
+		budget     float64
+	}{
+		{"nothing to escape", plain, 1},
+		{"a part to escape", escaped, 2},
+	} {
+		allocs := testing.AllocsPerRun(100, func() { _ = SchemaCacheKey("extract", extractPromptVersion, tc.descriptor) })
+		if allocs > tc.budget {
+			t.Errorf("%s: SchemaCacheKey makes %.0f allocations, over its budget of %.0f", tc.name, allocs, tc.budget)
+		}
+	}
+}

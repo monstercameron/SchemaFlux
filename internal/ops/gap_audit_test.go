@@ -237,36 +237,59 @@ func TestMergeAuditOptionsZeroUserLeavesDefaults(t *testing.T) {
 	}
 }
 
-// --- verify.go: the confidence floor is a real refusal, not a suggestion --
+// --- verify.go: the confidence floor is enforced, not a suggestion --
 
-// TestVerifyRefusesBelowConfiguredConfidenceFloor proves MinConfidence is
-// enforced against the model's own overall_confidence, not merely embedded
-// in the prompt as a polite request: verifyMockResponse reports
-// overall_confidence 0.6, and a MinConfidence above that must fail the call.
-func TestVerifyRefusesBelowConfiguredConfidenceFloor(t *testing.T) {
-	installVerifyResponse(t)
+const verifiedButUnsure = `{
+	"claims": [{"claim": "Water boils at 100C", "verdict": "verified", "confidence": 0.95, "reasoning": "a constant", "evidence": ["a reference table"]}],
+	"logic_issues": [], "consistency_issues": [],
+	"summary": "looks right", "overall_confidence": 0.6, "trust_score": 0.6
+}`
 
-	opts := NewVerifyOptions().WithMinConfidence(0.9)
-	_, err := Verify("some claims", opts)
-	if err == nil {
-		t.Fatal("expected Verify to refuse a result below the configured confidence floor")
+// TestVerifyDoesNotPassBelowTheConfiguredConfidenceFloor proves MinConfidence
+// is enforced against the model's own overall_confidence, not merely embedded
+// in the prompt as a polite request: a review that scores itself 0.6 does not
+// produce a verified verdict against a 0.9 floor.
+//
+// It used to fail the call, which also threw away what the review found. The
+// property kept is the one that matters: no pass below the floor (LX-028).
+func TestVerifyDoesNotPassBelowTheConfiguredConfidenceFloor(t *testing.T) {
+	withResponse(t, verifiedButUnsure)
+
+	result, err := Verify("some claims", NewVerifyOptions().WithMinConfidence(0.9))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.OverallVerdict == "verified" {
+		t.Fatal("a review that scored itself 0.6 produced a verified verdict against a 0.9 floor")
+	}
+	if result.Metadata["below_min_confidence"] != true || len(result.Claims) != 1 {
+		t.Fatalf("Metadata = %v, Claims = %+v", result.Metadata, result.Claims)
 	}
 }
 
-// TestVerifyWithModelRefusesBelowConfiguredConfidenceFloor is the same
-// refusal, checked through the wrapper: it must not manufacture a
-// JudgmentResult out of a verifyCore failure.
-func TestVerifyWithModelRefusesBelowConfiguredConfidenceFloor(t *testing.T) {
-	installVerifyResponse(t)
+// The same, through the wrapper: the verdict is not Pass.
+func TestVerifyWithModelDoesNotPassBelowTheConfiguredConfidenceFloor(t *testing.T) {
+	withResponse(t, verifiedButUnsure)
 
-	opts := NewVerifyOptions().WithMinConfidence(0.9)
-	judged, err := VerifyWithModel("some claims", opts)
-	if err == nil {
-		t.Fatal("expected VerifyWithModel to refuse a result below the configured confidence floor")
+	judged, err := VerifyWithModel("some claims", NewVerifyOptions().WithMinConfidence(0.9))
+	if err != nil {
+		t.Fatalf("VerifyWithModel: %v", err)
 	}
-	zero := types.JudgmentResult[any]{}
-	if judged.Verdict != zero.Verdict || len(judged.Issues) != 0 {
-		t.Fatalf("VerifyWithModel returned a non-zero result on failure: %+v", judged)
+	if judged.Verdict != types.VerdictUnknown {
+		t.Fatalf("Verdict = %v, want unknown for a review below the floor", judged.Verdict)
+	}
+}
+
+// A fault is kept whatever the review's confidence in itself.
+func TestVerifyKeepsAFaultFoundBelowTheFloor(t *testing.T) {
+	installVerifyResponse(t) // overall_confidence 0.6, one false claim
+
+	result, err := Verify("some claims", NewVerifyOptions().WithMinConfidence(0.9))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.OverallVerdict != "mixed" || len(result.Claims) != 2 {
+		t.Fatalf("OverallVerdict = %q, Claims = %+v", result.OverallVerdict, result.Claims)
 	}
 }
 

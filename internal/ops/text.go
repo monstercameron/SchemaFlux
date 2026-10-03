@@ -2,11 +2,11 @@ package ops
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"unicode"
 
 	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -80,7 +80,8 @@ type Expansion struct {
 	// Text is the expanded content
 	Text string `json:"text"`
 
-	// ExpansionRatio is output length / input length
+	// ExpansionRatio is output length / input length, measured in runes. It is
+	// zero when the input was empty, because there is no length to divide by.
 	ExpansionRatio float64 `json:"expansion_ratio"`
 
 	// AddedContent describes what was added
@@ -93,25 +94,13 @@ type Expansion struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-// Summarize creates a concise summary of the input text.
-// For metadata including key points and confidence, use SummarizeWithMetadata.
-func Summarize(input string, opts SummarizeOptions) (string, error) {
-	log := logger.GetLogger()
-	log.Debug("Starting summarize operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
-
-	// Validate options
-	if err := opts.Validate(); err != nil {
-		log.Error("Summarize operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return "", fmt.Errorf("invalid options: %w", err)
-	}
-
-	// Build summarization instructions
-	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), summarizeInstructions(opts))
-
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
-	defer cancel()
-
-	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
+// The fixed system prompts of the plain text operations. The buffered forms
+// (Summarize, Rewrite, Translate, Expand) and the streamed ones (StreamSummarize
+// and the rest) send the same prompt, so each pair reads it from here and cannot
+// drift; TestStreamingPromptsMatchTheBufferedOnes compares what reaches the
+// provider.
+const (
+	summarizeSystemPrompt = `You are a text summarization expert. Create concise summaries that preserve key information.
 
 Rules:
 - Maintain the most important points
@@ -119,7 +108,64 @@ Rules:
 - Preserve critical details and context
 - Keep the original tone when appropriate`
 
-	userPrompt := fmt.Sprintf("Summarize this text:\n%s", input)
+	rewriteSystemPrompt = `You are a text rewriting expert. Modify text while preserving its core meaning.
+
+Rules:
+- Maintain the original message and intent
+- Improve clarity and readability
+- Adapt style as requested
+- Fix grammar and spelling errors`
+
+	translateSystemPrompt = `You are a translation expert. Translate text accurately between languages.
+
+Rules:
+- Preserve meaning and nuance
+- Maintain appropriate formality level
+- Handle idioms and cultural references appropriately
+- Keep technical terms accurate`
+
+	expandSystemPrompt = `You are a content expansion expert. Elaborate on text with additional detail and context.
+
+Rules:
+- Add relevant details and examples
+- Maintain consistency with the original
+- Provide useful elaboration
+- Keep the expanded content coherent`
+)
+
+// Summarize creates a concise summary of the input text.
+// For metadata including key points and confidence, use SummarizeWithMetadata.
+//
+// TargetLength is a request and not a guarantee. It is written into the prompt
+// and this form returns the model's text as it came: it measures nothing, so a
+// caller who asked for 50 words can be given 400 and is told nothing. The
+// result form, SummarizeResult, is the one that checks. It refuses a summary
+// more than 20% over the target and reports the length that came back, whether
+// that is within the target, and the tolerance, in the Metadata of its Value:
+// "length_measured", "length_unit", "length_target", "length_within_target" and
+// "length_tolerance". They are present only when a TargetLength was set.
+func Summarize(input string, opts SummarizeOptions) (_ string, runErr error) {
+	defer observedPlain(&opts.CommonOptions, &opts.OpOptions, "summarize").end(&runErr)
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
+	log.Debug("Starting summarize operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
+
+	// Validate options
+	if err := opts.Validate(); err != nil {
+		log.Error("Summarize operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
+	}
+
+	// Build summarization instructions
+	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), summarizeInstructions(opts))
+
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
+	defer cancel()
+
+	systemPrompt := summarizeSystemPrompt
+
+	userPrompt := "Summarize this text:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -132,7 +178,11 @@ Rules:
 		}
 	}
 
-	result := strings.TrimSpace(response)
+	result, err := plainTextAnswer("summarize", response)
+	if err != nil {
+		log.Error("Summarize operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", err
+	}
 	log.Debug("Summarize operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
 
 	return result, nil
@@ -140,24 +190,42 @@ Rules:
 
 // SummarizeWithMetadata creates a summary with additional metadata including
 // compression ratio, key points extracted, and confidence score.
+//
+// When a TargetLength was set, the summary is measured in Go and the figures
+// are in Metadata: "length_measured" (counted in LengthUnit), "length_unit",
+// "length_target", "length_within_target" (measured is at most the target) and
+// "length_tolerance" (0.2). A summary more than the tolerance over the target
+// is an error, so a summary that is returned and is not within the target is
+// over it by no more than that. These are measurements made here, not claims
+// of the model.
+//
+// An answer without a text, with an empty text, or without a confidence on the
+// 0 to 1 scale is an error. When MaxCompression is set, Metadata also carries
+// "compression_max" and "compression_within_max" (CompressionRatio is at most
+// the maximum). That is a report and not a refusal: the prompt does not state
+// MaxCompression, so a model that was never told the ceiling is not refused for
+// exceeding it.
+//
 // Deprecated: use SummarizeResult, which returns the same Summary inside a
 // types.Result. The envelope keeps what the runtime measured apart from
 // what the model claimed, which the Metadata map on this shape cannot.
 // See OP-401.
 func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting summarize with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("SummarizeWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return Summary{}, fmt.Errorf("invalid options: %w", err)
+		return Summary{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build summarization instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), summarizeInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text summarization expert. Create concise summaries that preserve key information.
@@ -174,7 +242,7 @@ Rules:
 - "key_points": 3-7 main points extracted from the text
 - "confidence": A value from 0.0 to 1.0 indicating summary quality (1.0 = excellent)`
 
-	userPrompt := fmt.Sprintf("Summarize this text and provide metadata:\n%s", input)
+	userPrompt := "Summarize this text and provide metadata:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -187,21 +255,26 @@ Rules:
 		}
 	}
 
-	// Parse JSON response
+	// Parse the JSON response. The prompt asks for all three members, so an
+	// answer that leaves one out is refused by name, and a confidence of zero is
+	// the model saying zero. An empty list of key points is how it says there
+	// were none.
 	var parsed struct {
 		Text            string   `json:"text"`
 		KeyPoints       []string `json:"key_points"`
 		ModelConfidence float64  `json:"confidence"`
 	}
-	if err := ParseJSONStrict(response, &parsed); err != nil {
-		// No fallback verdict. The previous branch returned the raw response as
-		// the summary with a literal ModelConfidence of 0.7 and no KeyPoints, and a
-		// nil error -- so a caller reading the documented metadata silently got
-		// an invented number and an empty list. It also used json.Unmarshal
-		// directly, without the shared fence stripping, so any fenced response
-		// took this path.
+	if err := decodeAnswer("summarize", response, &parsed); err != nil {
+		// An answer that does not parse is an error. It is never returned as the
+		// summary with a made-up confidence.
 		log.Error("SummarizeWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return Summary{}, fmt.Errorf("summarize: could not parse the summary response: %w", err)
+	}
+
+	text, confidence, err := readTextAnswer("summarize", parsed.Text, parsed.ModelConfidence)
+	if err != nil {
+		log.Error("SummarizeWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return Summary{}, err
 	}
 
 	// TargetLength was requested in the prompt and never checked, so an
@@ -209,10 +282,10 @@ Rules:
 	// the model produced. The tolerance is deliberate: a summary asked for
 	// three sentences that comes back as four has done the job, and failing the
 	// call would be a worse answer than the one it gave.
-	if err := WithinLength(parsed.Text, opts.TargetLength, LengthUnit(opts.LengthUnit), summaryLengthTolerance); err != nil {
+	if err := WithinLength(text, opts.TargetLength, LengthUnit(opts.LengthUnit), summaryLengthTolerance); err != nil {
 		log.Error("SummarizeWithMetadata result is longer than requested",
 			"requestID", opts.CommonOptions.RequestID, "error", err)
-		return Summary{}, fmt.Errorf("summarize: %w", err)
+		return Summary{}, types.Wrap(types.KindInvariantViolation, "summarize", err)
 	}
 
 	// Runes, not bytes. A summary of Japanese text measured in bytes reports a
@@ -220,14 +293,24 @@ Rules:
 	// and the ratio is the number a caller tunes MaxCompression against.
 	compressionRatio := 0.0
 	if inputRunes := len([]rune(input)); inputRunes > 0 {
-		compressionRatio = float64(len([]rune(parsed.Text))) / float64(inputRunes)
+		compressionRatio = float64(len([]rune(text))) / float64(inputRunes)
+	}
+
+	metadata := dx12SummaryLength(text, opts)
+	if opts.MaxCompression > 0 && len(input) > 0 {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["compression_max"] = opts.MaxCompression
+		metadata["compression_within_max"] = compressionRatio <= opts.MaxCompression
 	}
 
 	result := Summary{
-		Text:             parsed.Text,
+		Text:             text,
 		CompressionRatio: compressionRatio,
 		KeyPoints:        parsed.KeyPoints,
-		ModelConfidence:  parsed.ModelConfidence,
+		ModelConfidence:  confidence,
+		Metadata:         metadata,
 	}
 
 	log.Debug("SummarizeWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "keyPoints", len(result.KeyPoints))
@@ -237,31 +320,28 @@ Rules:
 
 // Rewrite transforms text according to specified parameters.
 // For metadata including changes made and confidence, use RewriteWithMetadata.
-func Rewrite(input string, opts RewriteOptions) (string, error) {
-	log := logger.GetLogger()
+func Rewrite(input string, opts RewriteOptions) (_ string, runErr error) {
+	defer observedPlain(&opts.CommonOptions, &opts.OpOptions, "rewrite").end(&runErr)
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting rewrite operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("Rewrite operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return "", fmt.Errorf("invalid options: %w", err)
+		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build rewrite instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), rewriteInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
-	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
+	systemPrompt := rewriteSystemPrompt
 
-Rules:
-- Maintain the original message and intent
-- Improve clarity and readability
-- Adapt style as requested
-- Fix grammar and spelling errors`
-
-	userPrompt := fmt.Sprintf("Rewrite this text:\n%s", input)
+	userPrompt := "Rewrite this text:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -273,7 +353,11 @@ Rules:
 		}
 	}
 
-	result := strings.TrimSpace(response)
+	result, err := plainTextAnswer("rewrite", response)
+	if err != nil {
+		log.Error("Rewrite operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", err
+	}
 	if err := checkRewriteWordConstraints(result, opts); err != nil {
 		log.Error("Rewrite operation failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return "", err
@@ -285,24 +369,30 @@ Rules:
 
 // RewriteWithMetadata rewrites text with additional metadata including
 // what changes were made, the achieved tone, and confidence score.
+//
+// An answer without a text, with an empty text, or without a confidence on the
+// 0 to 1 scale is an error.
+//
 // Deprecated: use RewriteResult, which returns the same Rewritten inside a
 // types.Result. The envelope keeps what the runtime measured apart from
 // what the model claimed, which the Metadata map on this shape cannot.
 // See OP-401.
 func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting rewrite with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("RewriteWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return Rewritten{}, fmt.Errorf("invalid options: %w", err)
+		return Rewritten{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build rewrite instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), rewriteInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a text rewriting expert. Modify text while preserving its core meaning.
@@ -321,7 +411,7 @@ Rules:
 - "tone_achieved": The resulting tone of the rewritten text
 - "confidence": A value from 0.0 to 1.0 indicating rewrite quality`
 
-	userPrompt := fmt.Sprintf("Rewrite this text and provide metadata about the changes:\n%s", input)
+	userPrompt := "Rewrite this text and provide metadata about the changes:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -333,23 +423,30 @@ Rules:
 		}
 	}
 
-	// Parse JSON response
+	// Parse the JSON response. The prompt asks for all four members, so an answer
+	// that leaves one out is refused by name.
 	var parsed struct {
 		Text            string   `json:"text"`
 		ChangesMade     []string `json:"changes_made"`
 		ToneAchieved    string   `json:"tone_achieved"`
 		ModelConfidence float64  `json:"confidence"`
 	}
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if err := decodeAnswer("rewrite", response, &parsed); err != nil {
 		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return Rewritten{}, fmt.Errorf("rewrite: could not parse the rewrite response: %w", err)
 	}
 
+	text, confidence, err := readTextAnswer("rewrite", parsed.Text, parsed.ModelConfidence)
+	if err != nil {
+		log.Error("RewriteWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return Rewritten{}, err
+	}
+
 	result := Rewritten{
-		Text:            parsed.Text,
+		Text:            text,
 		ChangesMade:     parsed.ChangesMade,
 		ToneAchieved:    parsed.ToneAchieved,
-		ModelConfidence: parsed.ModelConfidence,
+		ModelConfidence: confidence,
 	}
 
 	if err := checkRewriteWordConstraints(result.Text, opts); err != nil {
@@ -364,31 +461,32 @@ Rules:
 
 // Translate converts text to a target language.
 // For metadata including detected source language and alternatives, use TranslateWithMetadata.
-func Translate(input string, opts TranslateOptions) (string, error) {
-	log := logger.GetLogger()
-	log.Debug("Starting translate operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input), "targetLang", opts.TargetLanguage)
+//
+// A reply with no text is an error. When a Glossary was given, a term that
+// occurs in the input has to appear in the translation as the translation the
+// glossary names for it, or the call is an error.
+func Translate(input string, opts TranslateOptions) (_ string, runErr error) {
+	defer observedPlain(&opts.CommonOptions, &opts.OpOptions, "translate").end(&runErr)
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
+	log.Debug("Starting translate operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("Translate operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return "", fmt.Errorf("invalid options: %w", err)
+		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build translation instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), translateInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
-	systemPrompt := `You are a translation expert. Translate text accurately between languages.
+	systemPrompt := translateSystemPrompt
 
-Rules:
-- Preserve meaning and nuance
-- Maintain appropriate formality level
-- Handle idioms and cultural references appropriately
-- Keep technical terms accurate`
-
-	userPrompt := fmt.Sprintf("Translate this text:\n%s", input)
+	userPrompt := "Translate this text:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -400,7 +498,15 @@ Rules:
 		}
 	}
 
-	result := strings.TrimSpace(response)
+	result, err := plainTextAnswer("translate", response)
+	if err != nil {
+		log.Error("Translate operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", err
+	}
+	if err := checkGlossaryApplied(input, result, opts.Glossary); err != nil {
+		log.Error("Translate operation ignored the glossary", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", err
+	}
 	log.Debug("Translate operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
 
 	return result, nil
@@ -408,24 +514,32 @@ Rules:
 
 // TranslateWithMetadata translates text with additional metadata including
 // detected source language, confidence, and alternative translations.
+//
+// An answer without a text, with an empty text, or without a confidence on the
+// 0 to 1 scale is an error. When a Glossary was given, a term that occurs in
+// the input has to appear in the translation as the translation the glossary
+// names for it, or the call is an error.
+//
 // Deprecated: use TranslateResult, which returns the same Translation inside a
 // types.Result. The envelope keeps what the runtime measured apart from
 // what the model claimed, which the Metadata map on this shape cannot.
 // See OP-401.
 func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, error) {
-	log := logger.GetLogger()
-	log.Debug("Starting translate with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input), "targetLang", opts.TargetLanguage)
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
+	log.Debug("Starting translate with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("TranslateWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return Translation{}, fmt.Errorf("invalid options: %w", err)
+		return Translation{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build translation instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), translateInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a translation expert. Translate text accurately between languages.
@@ -446,7 +560,7 @@ Rules:
 - "confidence": A value from 0.0 to 1.0 indicating translation accuracy
 - "alternatives": Alternate translations for ambiguous phrases (optional, can be empty array)`
 
-	userPrompt := fmt.Sprintf("Translate this text and provide metadata:\n%s", input)
+	userPrompt := "Translate this text and provide metadata:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -458,57 +572,70 @@ Rules:
 		}
 	}
 
-	// Parse JSON response
+	// Parse the JSON response. The prompt asks for the text, the detected language
+	// and the confidence every time, so an answer that leaves one out is refused
+	// by name. The alternatives are the one member the prompt says may be left
+	// out ("optional, can be empty array").
 	var parsed struct {
 		Text                   string                   `json:"text"`
 		SourceLanguageDetected string                   `json:"source_language_detected"`
 		ModelConfidence        float64                  `json:"confidence"`
-		Alternatives           []TranslationAlternative `json:"alternatives"`
+		Alternatives           []TranslationAlternative `json:"alternatives,omitempty"` // optional in the prompt
 	}
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if err := decodeAnswer("translate", response, &parsed); err != nil {
 		log.Error("TranslateWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return Translation{}, fmt.Errorf("translate: could not parse the translation response: %w", err)
 	}
 
+	text, confidence, err := readTextAnswer("translate", parsed.Text, parsed.ModelConfidence)
+	if err != nil {
+		log.Error("TranslateWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return Translation{}, err
+	}
+	if err := checkGlossaryApplied(input, text, opts.Glossary); err != nil {
+		log.Error("TranslateWithMetadata ignored the glossary", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return Translation{}, err
+	}
+
 	result := Translation{
-		Text:                   parsed.Text,
+		Text:                   text,
 		SourceLanguageDetected: parsed.SourceLanguageDetected,
-		ModelConfidence:        parsed.ModelConfidence,
+		ModelConfidence:        confidence,
 		Alternatives:           parsed.Alternatives,
 	}
 
-	log.Debug("TranslateWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "detectedLang", result.SourceLanguageDetected)
+	log.Debug("TranslateWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "detectedLanguage", result.SourceLanguageDetected != "")
 
 	return result, nil
 }
 
 // Expand elaborates on text with additional detail.
 // For metadata including expansion ratio and what was added, use ExpandWithMetadata.
-func Expand(input string, opts ExpandOptions) (string, error) {
-	log := logger.GetLogger()
+//
+// ExpansionFactor is a request and this form measures nothing: it returns the
+// model's text as it came. ExpandWithMetadata checks it.
+func Expand(input string, opts ExpandOptions) (_ string, runErr error) {
+	defer observedPlain(&opts.CommonOptions, &opts.OpOptions, "expand").end(&runErr)
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting expand operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input), "expansionFactor", opts.ExpansionFactor)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("Expand operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return "", fmt.Errorf("invalid options: %w", err)
+		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build expansion instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), expandInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
-	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.
+	systemPrompt := expandSystemPrompt
 
-Rules:
-- Add relevant details and examples
-- Maintain consistency with the original
-- Provide useful elaboration
-- Keep the expanded content coherent`
-
-	userPrompt := fmt.Sprintf("Expand on this text:\n%s", input)
+	userPrompt := "Expand on this text:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -520,7 +647,11 @@ Rules:
 		}
 	}
 
-	result := strings.TrimSpace(response)
+	result, err := plainTextAnswer("expand", response)
+	if err != nil {
+		log.Error("Expand operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return "", err
+	}
 	log.Debug("Expand operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
 
 	return result, nil
@@ -528,24 +659,35 @@ Rules:
 
 // ExpandWithMetadata expands text with additional metadata including
 // expansion ratio, what content was added, and confidence score.
+//
+// The ratio is the length of the expansion over the length of the input, both
+// counted in runes, and is zero for an empty input, which has nothing to be
+// measured against. An answer without a text, with an empty text, or without a
+// confidence on the 0 to 1 scale is an error. When an ExpansionFactor other
+// than the default was asked for, an expansion more than 20% short of it is an
+// error, and "expansion_factor", "expansion_reached_factor" and
+// "expansion_tolerance" are in Metadata.
+//
 // Deprecated: use ExpandResult, which returns the same Expansion inside a
 // types.Result. The envelope keeps what the runtime measured apart from
 // what the model claimed, which the Metadata map on this shape cannot.
 // See OP-401.
 func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting expand with metadata operation", "requestID", opts.CommonOptions.RequestID, "inputLength", len(input))
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("ExpandWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return Expansion{}, fmt.Errorf("invalid options: %w", err)
+		return Expansion{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Build expansion instructions
 	opt := textOperationOptions(opts.toOpOptions(), effectiveSteering(opts.CommonOptions, opts.OpOptions), expandInstructions(opts))
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From opt, not resolved a second time: that derived a second deadline and
+	// left the one inside opt running its timer unused.
+	ctx, cancel := operationContext(opt.Context, config.GetTimeout())
 	defer cancel()
 
 	systemPrompt := `You are a content expansion expert. Elaborate on text with additional detail and context.
@@ -562,7 +704,7 @@ Rules:
 - "added_content": List of what was added or elaborated upon
 - "confidence": A value from 0.0 to 1.0 indicating expansion quality`
 
-	userPrompt := fmt.Sprintf("Expand on this text and provide metadata about what you added:\n%s", input)
+	userPrompt := "Expand on this text and provide metadata about what you added:\n" + quotedText(input)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
@@ -574,29 +716,152 @@ Rules:
 		}
 	}
 
-	// Parse JSON response
+	// Parse the JSON response. The prompt asks for all three members, so an answer
+	// that leaves one out is refused by name.
 	var parsed struct {
 		Text            string   `json:"text"`
 		AddedContent    []string `json:"added_content"`
 		ModelConfidence float64  `json:"confidence"`
 	}
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if err := decodeAnswer("expand", response, &parsed); err != nil {
 		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
 		return Expansion{}, fmt.Errorf("expand: could not parse the expansion response: %w", err)
 	}
 
-	expansionRatio := float64(len(parsed.Text)) / float64(len(input))
+	text, confidence, err := readTextAnswer("expand", parsed.Text, parsed.ModelConfidence)
+	if err != nil {
+		log.Error("ExpandWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		return Expansion{}, err
+	}
+
+	// Runes, as Summarize counts them, and zero for an empty input: there is
+	// nothing to measure an expansion against, and dividing by zero gave +Inf,
+	// which json.Marshal then refuses to write.
+	expansionRatio := 0.0
+	inputRunes := len([]rune(input))
+	if inputRunes > 0 {
+		expansionRatio = float64(len([]rune(text))) / float64(inputRunes)
+	}
+
+	metadata, err := expansionFactorMetadata(opts, expansionRatio, inputRunes > 0)
+	if err != nil {
+		log.Error("ExpandWithMetadata result is shorter than the factor asked for",
+			"requestID", opts.CommonOptions.RequestID, "error", err)
+		return Expansion{}, err
+	}
 
 	result := Expansion{
-		Text:            parsed.Text,
+		Text:            text,
 		ExpansionRatio:  expansionRatio,
 		AddedContent:    parsed.AddedContent,
-		ModelConfidence: parsed.ModelConfidence,
+		ModelConfidence: confidence,
+		Metadata:        metadata,
 	}
 
 	log.Debug("ExpandWithMetadata operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result.Text), "expansionRatio", result.ExpansionRatio)
 
 	return result, nil
+}
+
+// The defaults of the options that the instruction builders leave out of a
+// prompt when they are unchanged. options.go states the same numbers in the
+// New*Options constructors; they are named here so that the prompt and the
+// constructor are not two separate guesses at one value.
+const (
+	defaultFormalityLevel     = 5
+	defaultCulturalAdaptation = 5
+	defaultTranslateFormality = "neutral"
+	defaultExpansionFactor    = 2.0
+)
+
+// expansionTolerance is how far under ExpansionFactor an expansion may land
+// before it is refused. It mirrors summaryLengthTolerance: the factor is a
+// target, and a model that expands by 2.5 when asked for 3 has done the job.
+const expansionTolerance = 0.2
+
+// plainTextAnswer trims the reply of a text operation that returns the text
+// itself and refuses an empty one. A reply with nothing in it was returned as a
+// successful empty summary, translation or rewrite.
+func plainTextAnswer(op, response string) (string, error) {
+	text := strings.TrimSpace(response)
+	if text == "" {
+		return "", types.Newf(types.KindMalformedOutput, op, "the model returned no text")
+	}
+	return text, nil
+}
+
+// readTextAnswer checks what the reader cannot see in the two fields every text
+// answer in JSON form carries: the reader has already refused an answer that
+// leaves either out, so what is left is the meaning. A text with nothing in it
+// is no summary, translation, rewrite or expansion, and the confidence is the
+// model's own claim and must be on the 0 to 1 scale it was asked for.
+func readTextAnswer(op string, text string, confidence float64) (string, float64, error) {
+	if strings.TrimSpace(text) == "" {
+		return "", 0, types.Newf(types.KindSchemaViolation, op, "text is empty")
+	}
+	if err := onScale(op, "the confidence", confidence); err != nil {
+		return "", 0, err
+	}
+	return text, confidence, nil
+}
+
+// checkGlossaryApplied holds a translation to the glossary it was given. A term
+// that occurs in the input has to come out as the translation the caller chose
+// for it; the model was asked to use the glossary and nothing looked.
+//
+// A term that is not in the input is not required, and the term is found as a
+// whole word while the translation is found as a substring: the target
+// language may inflect it or write it without spaces. The comparison is
+// case-insensitive. The term named in the error is the caller's own option
+// value, not the text that was translated.
+func checkGlossaryApplied(input, translated string, glossary map[string]string) error {
+	lowerOut := strings.ToLower(translated)
+	for _, term := range sortedKeys(glossary) {
+		want := strings.TrimSpace(glossary[term])
+		if strings.TrimSpace(term) == "" || want == "" {
+			continue
+		}
+		if !containsWholeWord(input, term) {
+			continue
+		}
+		if !strings.Contains(lowerOut, strings.ToLower(want)) {
+			return types.Newf(types.KindInvariantViolation, "translate",
+				"the translation does not use the glossary translation for %q, which is in the input", term)
+		}
+	}
+	return nil
+}
+
+// expansionFactorStated reports whether ExpandOptions.ExpansionFactor reached
+// the prompt, which is when it differs from the default.
+func expansionFactorStated(opts ExpandOptions) bool {
+	return math.Abs(opts.ExpansionFactor-defaultExpansionFactor) > 1e-9
+}
+
+// expansionFactorMetadata measures the expansion against ExpansionFactor and
+// refuses one that falls short of it by more than expansionTolerance. The
+// figures go in Metadata, as Summarize's length figures do: "expansion_factor",
+// "expansion_reached_factor" (the measured ratio is at least the factor) and
+// "expansion_tolerance". They are measurements made here, not claims of the
+// model.
+//
+// It returns nothing when the factor was not stated in the prompt, because the
+// model was not asked for one, and when the input was empty, because there is
+// no ratio to compare.
+func expansionFactorMetadata(opts ExpandOptions, ratio float64, measurable bool) (map[string]any, error) {
+	if !expansionFactorStated(opts) || !measurable {
+		return nil, nil
+	}
+	if ratio < opts.ExpansionFactor*(1-expansionTolerance)-1e-9 {
+		return nil, types.Newf(types.KindInvariantViolation, "expand",
+			"the expansion is %.2fx the input, below the %.1fx that was asked for (tolerance %.0f%%)",
+			ratio, opts.ExpansionFactor, expansionTolerance*100)
+	}
+	return map[string]any{
+		"expansion_factor":         opts.ExpansionFactor,
+		"expansion_reached_factor": ratio >= opts.ExpansionFactor,
+		"expansion_tolerance":      expansionTolerance,
+	}, nil
 }
 
 // summaryLengthTolerance is how far past TargetLength a summary may land before
@@ -669,7 +934,7 @@ func rewriteInstructions(opts RewriteOptions) []string {
 		instructions = append(instructions, fmt.Sprintf("Target tone: %s", opts.TargetTone))
 	}
 
-	if opts.FormalityLevel != 5 {
+	if opts.FormalityLevel != defaultFormalityLevel {
 		instructions = append(instructions, fmt.Sprintf("Formality level: %d/10", opts.FormalityLevel))
 	}
 
@@ -719,11 +984,11 @@ func translateInstructions(opts TranslateOptions) []string {
 		instructions = append(instructions, fmt.Sprintf("Use %s dialect", opts.Dialect))
 	}
 
-	if opts.Formality != "neutral" {
+	if opts.Formality != defaultTranslateFormality {
 		instructions = append(instructions, fmt.Sprintf("Formality: %s", opts.Formality))
 	}
 
-	if opts.CulturalAdaptation != 5 {
+	if opts.CulturalAdaptation != defaultCulturalAdaptation {
 		instructions = append(instructions, fmt.Sprintf("Cultural adaptation level: %d/10", opts.CulturalAdaptation))
 	}
 
@@ -732,9 +997,11 @@ func translateInstructions(opts TranslateOptions) []string {
 	}
 
 	if len(opts.Glossary) > 0 {
+		// Sorted: ranging over the map gave a differently ordered clause on
+		// every call, so no prefix cache could hit and no run was reproducible.
 		glossary := "Use glossary: "
-		for term, translation := range opts.Glossary {
-			glossary += fmt.Sprintf("%s=%s, ", term, translation)
+		for _, term := range sortedKeys(opts.Glossary) {
+			glossary += fmt.Sprintf("%s=%s, ", term, opts.Glossary[term])
 		}
 		instructions = append(instructions, strings.TrimSuffix(glossary, ", "))
 	}
@@ -751,7 +1018,7 @@ func translateInstructions(opts TranslateOptions) []string {
 func expandInstructions(opts ExpandOptions) []string {
 	var instructions []string
 
-	if opts.ExpansionFactor != 2.0 {
+	if expansionFactorStated(opts) {
 		instructions = append(instructions, fmt.Sprintf("Expand by %.1fx", opts.ExpansionFactor))
 	}
 
@@ -795,12 +1062,14 @@ func expandInstructions(opts ExpandOptions) []string {
 func checkRewriteWordConstraints(text string, opts RewriteOptions) error {
 	for _, word := range opts.AvoidWords {
 		if containsWholeWord(text, word) {
-			return fmt.Errorf("rewrite: the rewritten text contains %q, which AvoidWords ruled out", word)
+			return types.Newf(types.KindInvariantViolation, "rewrite",
+				"the rewritten text contains %q, which AvoidWords ruled out", word)
 		}
 	}
 	for _, word := range opts.IncludeWords {
 		if !containsWholeWord(text, word) {
-			return fmt.Errorf("rewrite: the rewritten text omits %q, which IncludeWords required", word)
+			return types.Newf(types.KindInvariantViolation, "rewrite",
+				"the rewritten text omits %q, which IncludeWords required", word)
 		}
 	}
 	return nil

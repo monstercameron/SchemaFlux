@@ -144,10 +144,10 @@ var (
 
 	emailPattern = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
 
-	// A candidate card number: 13 to 19 digits, optionally grouped. Whether it
-	// is really a card is decided by Luhn, not by the shape — which is how an
-	// unformatted PAN gets caught and an order number does not.
-	cardCandidatePattern = regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`)
+	// A card number is found by cardNumberSpans: 13 to 19 digits, optionally
+	// grouped, and whether it is really a card is decided by Luhn, not by the
+	// shape — which is how an unformatted PAN gets caught and an order number
+	// does not.
 
 	ibanPattern = regexp.MustCompile(`\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`)
 
@@ -194,19 +194,96 @@ func digitsOnly(text string) string {
 	return builder.String()
 }
 
-// containsCardNumber reports whether the text contains something that passes
-// Luhn at a card-number length.
-func containsCardNumber(text string) bool {
-	for _, candidate := range cardCandidatePattern.FindAllString(text, -1) {
-		if luhn(digitsOnly(candidate)) {
-			return true
+// cardRunPattern is a run of digit groups joined by a single space or hyphen: a
+// card number is one of these, and so is the year and invoice number written in
+// front of it.
+var cardRunPattern = regexp.MustCompile(`\b\d+(?:[ -]\d+)*\b`)
+
+// cardNumberSpans returns the byte range of every card number in the text, in
+// order, none overlapping.
+//
+// A card is a run of digit groups of 13 to 19 digits that passes Luhn. When the
+// whole run fails, the sub-runs that start and end on a group boundary are tried,
+// longest first, because a card is often written after another number: in
+// "Invoice 2024 4111 1111 1111 1111" the run is twenty digits and the card is its
+// last sixteen. The first version took the leftmost candidate of 13 to 19 digits,
+// which was "2024 4111 1111 1111", failed Luhn as a whole, and was passed over
+// with the real card consumed and left in the clear.
+//
+// Only group boundaries are tried, so a long unbroken number is still one
+// candidate, and an order number is not masked because some stretch of it
+// happens to pass.
+func cardNumberSpans(text string) [][2]int {
+	var spans [][2]int
+	for _, run := range cardRunPattern.FindAllStringIndex(text, -1) {
+		spans = append(spans, cardSpansInRun(text, run[0], run[1])...)
+	}
+	return spans
+}
+
+// cardSpansInRun finds the card numbers in text[start:end], one run of digit
+// groups.
+func cardSpansInRun(text string, start, end int) [][2]int {
+	// groups holds the byte range of each digit group.
+	var groups [][2]int
+	for at := start; at < end; {
+		next := at
+		for next < end && text[next] >= '0' && text[next] <= '9' {
+			next++
+		}
+		groups = append(groups, [2]int{at, next})
+		at = next + 1 // the separator
+	}
+
+	var spans [][2]int
+	for first := 0; first < len(groups); {
+		found := false
+		digits := 0
+		last := first
+		for ; last < len(groups); last++ {
+			digits += groups[last][1] - groups[last][0]
+			if digits > 19 {
+				break
+			}
+		}
+		// last is one past the longest span that can hold 19 digits; try the
+		// longest candidate first.
+		for stop := last - 1; stop >= first; stop-- {
+			candidate := text[groups[first][0]:groups[stop][1]]
+			if luhn(digitsOnly(candidate)) {
+				spans = append(spans, [2]int{groups[first][0], groups[stop][1]})
+				first = stop + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			first++
 		}
 	}
-	return false
+	return spans
+}
+
+// replaceCardNumbers replaces every card number in the text with what mask
+// returns for it.
+func replaceCardNumbers(text string, mask func(string) string) string {
+	spans := cardNumberSpans(text)
+	if len(spans) == 0 {
+		return text
+	}
+	var out strings.Builder
+	copied := 0
+	for _, span := range spans {
+		out.WriteString(text[copied:span[0]])
+		out.WriteString(mask(text[span[0]:span[1]]))
+		copied = span[1]
+	}
+	out.WriteString(text[copied:])
+	return out.String()
 }
 
 // categoryPatterns returns the detectors for a category. Card detection is not
-// a regex, so it is handled separately by containsCardNumber.
+// a regex, so it is handled separately.
 func categoryPatterns(category string) []*regexp.Regexp {
 	switch strings.ToLower(strings.TrimSpace(category)) {
 	case "pii":
@@ -229,31 +306,4 @@ func categoryUsesCardDetection(category string) bool {
 	default:
 		return false
 	}
-}
-
-// valueIsSensitive reports whether a string value contains data in any of the
-// named categories.
-func valueIsSensitive(value string, categories []string, custom []string) bool {
-	for _, category := range categories {
-		for _, pattern := range categoryPatterns(category) {
-			if pattern.MatchString(value) {
-				return true
-			}
-		}
-		if categoryUsesCardDetection(category) && containsCardNumber(value) {
-			return true
-		}
-	}
-
-	for _, raw := range custom {
-		pattern, err := regexp.Compile(raw)
-		if err != nil {
-			continue
-		}
-		if pattern.MatchString(value) {
-			return true
-		}
-	}
-
-	return false
 }

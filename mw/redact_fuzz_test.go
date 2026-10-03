@@ -19,16 +19,22 @@ import (
 // malformed UTF-8, and a very long input (this middleware runs on every
 // egress call, so pathological slowdown here is a production availability
 // concern, not just a correctness one).
+// privateKeyBodySeed stands for the base64 body of a private key in the seeds.
+const privateKeyBodySeed = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+
 func FuzzRedact(f *testing.F) {
 	seeds := []string{
 		"",
-		"sk-proj-abcdefghijklmnopqrstuvwxyz012345",                                          // secret-scan: allow
-		"sk-ant-abcdefghijklmnopqrstuvwxyz012345",                                           // secret-scan: allow
-		"AIzaSyAbcdefghijklmnopqrstuvwxyz0123456",                                           // secret-scan: allow
-		"AKIAABCDEFGHIJKLMNOP",                                                              // secret-scan: allow
-		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",                                          // secret-scan: allow
-		"xoxb-1234567890-abcdefghij",                                                        // secret-scan: allow
-		"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK...\n-----END RSA PRIVATE KEY-----", // secret-scan: allow
+		"sk-proj-abcdefghijklmnopqrstuvwxyz012345",                                                              // secret-scan: allow
+		"sk-ant-abcdefghijklmnopqrstuvwxyz012345",                                                               // secret-scan: allow
+		"AIzaSyAbcdefghijklmnopqrstuvwxyz0123456",                                                               // secret-scan: allow
+		"AKIAABCDEFGHIJKLMNOP",                                                                                  // secret-scan: allow
+		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",                                                              // secret-scan: allow
+		"xoxb-1234567890-abcdefghij",                                                                            // secret-scan: allow
+		"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK...\n-----END RSA PRIVATE KEY-----",                     // secret-scan: allow
+		"-----BEGIN PRIVATE KEY-----\n" + privateKeyBodySeed + "\n-----END PRIVATE KEY-----",                    // secret-scan: allow
+		"-----BEGIN OPENSSH PRIVATE KEY-----\n" + privateKeyBodySeed,                                            // a block with no END line // secret-scan: allow
+		"before -----BEGIN EC PRIVATE KEY-----\n" + privateKeyBodySeed + "\n-----END EC PRIVATE KEY----- after", // secret-scan: allow
 		"Authorization: Bearer abcdef0123456789",
 		"contact jane.doe@example.com about the invoice",
 		"two secrets: sk-proj-abcdefghijklmnopqrstuvwxyz and gh" + "p_abcdefghijklmnopqrstuvwxyz0123456789", // secret-scan: allow
@@ -42,10 +48,7 @@ func FuzzRedact(f *testing.F) {
 		f.Add(s)
 	}
 
-	provider := &redactingProvider{
-		patterns: builtinRedactPatterns,
-		marker:   defaultRedactMarker,
-	}
+	provider := RedactEgress()(nil).(*redactingProvider)
 
 	f.Fuzz(func(t *testing.T, input string) {
 		defer func() {
@@ -65,6 +68,13 @@ func FuzzRedact(f *testing.F) {
 			if entry.pattern.MatchString(out) {
 				t.Fatalf("redact(%q) = %q still matches pattern %q", input, out, entry.name)
 			}
+		}
+
+		// The key material of a private key goes with its header. The seed
+		// blocks carry a body the other properties cannot see: a header-only
+		// match leaves it behind and still satisfies the check above.
+		if strings.Contains(input, privateKeyBodySeed) && strings.Contains(out, privateKeyBodySeed) {
+			t.Fatalf("redact(%q) = %q left the key material in the text", input, out)
 		}
 	})
 }

@@ -466,6 +466,15 @@ func (r ArbitrateRequest[T]) Rules(rules ...string) ArbitrateRequest[T] {
 	return r.WithOptions(opts)
 }
 
+// IncludeReasoning asks for a reason with every evaluation, one for each
+// option on each rule. It is off unless set: the reasons are most of the
+// answer's length.
+func (r ArbitrateRequest[T]) IncludeReasoning(include bool) ArbitrateRequest[T] {
+	opts := r.opts
+	opts.IncludeReasoning = include
+	return r.WithOptions(opts)
+}
+
 func (r ArbitrateRequest[T]) Run(ctx ...context.Context) (ArbitrateResult[T], error) {
 	r.opts = r.optsWithRunContext(ctx)
 	if err := buildError(r.opts); err != nil {
@@ -612,6 +621,14 @@ func (r AuditRequest[T]) Policies(policies ...string) AuditRequest[T] {
 func (r AuditRequest[T]) Categories(categories ...string) AuditRequest[T] {
 	opts := r.opts
 	opts.Categories = append([]string(nil), categories...)
+	return r.WithOptions(opts)
+}
+
+// Shallow asks for the top level only. Nested structures are inspected
+// unless it is set.
+func (r AuditRequest[T]) Shallow(shallow bool) AuditRequest[T] {
+	opts := r.opts
+	opts.Shallow = shallow
 	return r.WithOptions(opts)
 }
 

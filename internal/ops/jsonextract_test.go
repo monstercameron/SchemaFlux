@@ -199,16 +199,16 @@ func TestExtractionErrorsCarryNoPayload(t *testing.T) {
 	}
 }
 
-// The strict parser sits on top of the same extraction, so a fenced body with
+// The caller reader sits on top of the same extraction, so a fenced body with
 // prose around it reaches the field-name check rather than failing before it.
-func TestParseJSONStrictSeesThroughFences(t *testing.T) {
+func TestDecodeCallerAnswerSeesThroughFences(t *testing.T) {
 	type verdict struct {
 		Valid bool `json:"valid"`
 	}
 
 	var ok verdict
-	if err := ParseJSONStrict("Here you go:\n```json\n{\"valid\":true}\n```", &ok); err != nil {
-		t.Fatalf("ParseJSONStrict = %v, want nil", err)
+	if err := decodeCallerAnswer("probe", "Here you go:\n```json\n{\"valid\":true}\n```", &ok); err != nil {
+		t.Fatalf("decodeCallerAnswer = %v, want nil", err)
 	}
 	if !ok.Valid {
 		t.Error("the value did not survive extraction")
@@ -216,29 +216,14 @@ func TestParseJSONStrictSeesThroughFences(t *testing.T) {
 
 	// And an answer about something else is still rejected, fenced or not.
 	var wrong verdict
-	if err := ParseJSONStrict("```json\n{\"temperature\":21}\n```", &wrong); err == nil {
-		t.Error("ParseJSONStrict accepted a body sharing no field with the target")
+	if err := decodeCallerAnswer("probe", "```json\n{\"temperature\":21}\n```", &wrong); err == nil {
+		t.Error("decodeCallerAnswer accepted a body sharing no field with the target")
 	}
 }
 
-// oldCleanJSON is the implementation this replaced, kept here as the witness.
-// It is not called by anything else.
-func oldCleanJSON(input string) string {
-	input = strings.TrimSpace(input)
-	if strings.HasPrefix(input, "```json") {
-		input = strings.TrimPrefix(input, "```json")
-		input = strings.TrimSuffix(input, "```")
-	} else if strings.HasPrefix(input, "```") {
-		input = strings.TrimPrefix(input, "```")
-		input = strings.TrimSuffix(input, "```")
-	}
-	return strings.TrimSpace(input)
-}
-
-// How much of the corpus the old strip actually handled. This is the argument
-// for A-003 stated as a number rather than a claim: if a future change makes
-// the new extractor no better than the old one, this fails.
-func TestTheOldStripHandledAlmostNoneOfIt(t *testing.T) {
+// Shapes that a prefix strip, which was all the extraction there used to be,
+// does not recover. extractJSON has to return valid JSON for every one.
+func TestExtractJSONRecoversEveryShapeAPrefixStripMisses(t *testing.T) {
 	corpus := []string{
 		"```json\n{\"name\":\"Ada\"}\n```",
 		"```\n{\"name\":\"Ada\"}\n```",
@@ -250,22 +235,65 @@ func TestTheOldStripHandledAlmostNoneOfIt(t *testing.T) {
 		"```python\nprint('hi')\n```\n\n```json\n{\"name\":\"Ada\"}\n```",
 	}
 
-	var oldOK, newOK int
 	for _, body := range corpus {
-		if json.Valid([]byte(oldCleanJSON(body))) {
-			oldOK++
-		}
-		if json.Valid([]byte(extractJSON(body))) {
-			newOK++
+		if got := extractJSON(body); !json.Valid([]byte(got)) {
+			t.Errorf("extractJSON(%q) = %q, which is not valid JSON", body, got)
 		}
 	}
+}
 
-	if newOK != len(corpus) {
-		t.Errorf("the new extractor recovered %d of %d", newOK, len(corpus))
+// The scan for the next fence resumed at an offset worked out from the trimmed
+// info string, so a non-JSON fence whose info line had trailing space or a
+// carriage return left the scan inside the block: its closing fence was read as
+// the opening of the next one, and the real JSON block was skipped.
+func TestFenceSkipUsesTheLineThatWasActuallyConsumed(t *testing.T) {
+	const payload = `{"a":1}`
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"three trailing spaces", "```text   \n[\"decoy\"]\n```\n```json\n" + payload + "\n```"},
+		{"a trailing carriage return", "```text\r\nhello\r\n```\r\n```json\r\n" + payload + "\r\n```"},
+		{"leading spaces on the info string", "```   text\nhello\n```\n```json\n" + payload + "\n```"},
+		{"many trailing spaces", "```text" + strings.Repeat(" ", 20) + "\n{\"decoy\": 1}\n```\n```json\n" + payload + "\n```"},
+		{"a tab and spaces", "```python \t \nd = {1: 2}\n```\n```json\n" + payload + "\n```"},
+		{"an upper-case info string", "```TEXT   \nhello\n```\n```json\n" + payload + "\n```"},
+		{"a brace inside the skipped block", "```text   \n{\"decoy\": true}\n```\n```json\n" + payload + "\n```"},
+		{"prose between the blocks", "```text   \nhello\n```\nAnd the answer:\n```json\n" + payload + "\n```"},
+		{"two skipped blocks", "```a   \nx\n```\n```b   \ny\n```\n```json\n" + payload + "\n```"},
+		{"one trailing space still works", "```text \nhello\n```\n```json\n" + payload + "\n```"},
+		{"a clean info string still works", "```python\nprint(1)\n```\n```json\n" + payload + "\n```"},
 	}
-	if oldOK >= newOK {
-		t.Errorf("the old strip recovered %d of %d and the new one %d; A-003 bought nothing",
-			oldOK, len(corpus), newOK)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractJSON(tc.body); got != payload {
+				t.Errorf("extractJSON = %q, want %q", got, payload)
+			}
+		})
 	}
-	t.Logf("old strip: %d/%d recovered; extractJSON: %d/%d", oldOK, len(corpus), newOK, len(corpus))
+}
+
+// An unterminated fence labelled with another language is not the payload, the
+// same as a terminated one; the truncated JSON fence still is.
+func TestAnUnterminatedFenceIsHeldToTheSameRuleAsATerminatedOne(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		isJSON bool
+	}{
+		{"an unterminated json fence", "```json\n{\"a\": 1, \"b\":", true},
+		{"an unterminated unlabelled fence with an object", "```\n{\"a\": 1, \"b\":", true},
+		{"an unterminated fence of another language that starts with a brace", "```javascript\n{ const x = 1;", false},
+		{"an unterminated python fence", "```python\n{'a': 1}", false},
+		{"an unterminated fence with an array", "```\n[1, 2,", true},
+		{"an unterminated unlabelled fence with prose", "```\nnot json at all", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content, found := fencedBlock(tc.body)
+			if found != tc.isJSON {
+				t.Errorf("fencedBlock found = %v (%q), want %v", found, content, tc.isJSON)
+			}
+		})
+	}
 }

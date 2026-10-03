@@ -3,63 +3,40 @@ package semantic
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/ops"
+	"github.com/monstercameron/schemaflux/internal/testfixtures"
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// scriptedProvider is a minimal fake llm.Provider for driving corpus.go's
-// case builders deterministically. It exists instead of schemafluxtest.Provider
-// because these tests need to plant an exact pass/fail answer per call (a
-// fixed, known "hallucinated" or "off-list" reply), not a scripted sequence
-// installed process-globally -- ops.WithProvider scopes a provider to one
-// context, which is what lets each subtest below run independently with its
-// own answer with no shared, order-sensitive global state.
-//
-// It never touches a network: Complete returns exactly what the test
-// configured, or exactly the error the test configured.
-type scriptedProvider struct {
-	reply string
-	err   error
-}
-
-func (p *scriptedProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	if p.err != nil {
-		return llm.CompletionResponse{}, p.err
-	}
-	return llm.CompletionResponse{
-		Content:      p.reply,
-		Model:        req.Model,
-		Provider:     "local",
-		FinishReason: "stop",
-	}, nil
-}
-
-// Name returns "local", the provider name this library reserves for an
-// in-process double (see schemafluxtest.Provider.As's doc comment) -- any
-// other name has no built-in model mapping and every call fails before it
-// ever reaches Complete.
-func (p *scriptedProvider) Name() string { return "local" }
-
-func (p *scriptedProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
-
-// RetryPolicy returns no retries: a scripted answer is deterministic, so
-// there is nothing a retry would change, and a nonzero backoff here would
-// only slow the suite down for no benefit.
-func (p *scriptedProvider) RetryPolicy() (int, time.Duration) { return 0, 0 }
+// The cases are driven with the shared scripted provider of
+// internal/testfixtures, scoped to one context with ops.WithProvider: that is what
+// lets each subtest below run independently with its own answer and no shared,
+// order-sensitive global state. It never touches a network, and it is named
+// "local", the provider name this library reserves for an in-process double --
+// any other name has no built-in model mapping and every call fails before it
+// reaches the provider.
 
 func ctxWithReply(t *testing.T, reply string) context.Context {
 	t.Helper()
-	t.Setenv("SCHEMAFLUX_LLM_MAX_RETRIES", "0")
-	return ops.WithProvider(context.Background(), &scriptedProvider{reply: reply})
+	configtest.Setenv(t, "SCHEMAFLUX_LLM_MAX_RETRIES", "0")
+	return ops.WithProvider(context.Background(), testfixtures.NewScripted(reply))
+}
+
+// ctxWithFailure is a context whose provider fails every call with err.
+func ctxWithFailure(t *testing.T, err error) context.Context {
+	t.Helper()
+	configtest.Setenv(t, "SCHEMAFLUX_LLM_MAX_RETRIES", "0")
+	return ops.WithProvider(context.Background(), testfixtures.NewFailing(err))
 }
 
 func ctxWithProviderError(t *testing.T) context.Context {
 	t.Helper()
-	t.Setenv("SCHEMAFLUX_LLM_MAX_RETRIES", "0")
-	return ops.WithProvider(context.Background(), &scriptedProvider{err: errors.New("scripted provider failure")})
+	return ctxWithFailure(t, errors.New("scripted provider failure"))
 }
 
 // runCase drives one trial of a Case and fails the test if the harness
@@ -183,20 +160,42 @@ func TestClassificationAbstention(t *testing.T) {
 		}
 	})
 
-	// A refusal (provider/parse error) IS the correct behaviour for this
-	// case -- corpus.go's own comment says so -- so this is the one case in
-	// the corpus where a provider error must produce Passed=true, not
-	// Errored=true, and it deserves its own assertion because it is the
-	// exception to every other case's error handling in this file.
-	t.Run("passes on an outright refusal", func(t *testing.T) {
-		outcome := runCase(t, c, ctxWithProviderError(t))
+	// A refusal passes, and only a refusal: an operation that declines to answer,
+	// classified as such. Any other failure is an outage, counted as one. A dead
+	// provider used to score a perfect rate on this case.
+	t.Run("passes on a classified refusal", func(t *testing.T) {
+		refusal := types.Newf(types.KindInvariantViolation, "classify", "the answer is outside the allowed categories")
+		outcome := runCase(t, c, ctxWithFailure(t, refusal))
 		if outcome.Errored {
-			t.Error("classificationAbstention counted a refusal as Errored; it should count as Passed")
+			t.Error("classificationAbstention counted a classified refusal as Errored; it should count as Passed")
 		}
 		if !outcome.Passed {
 			t.Errorf("outcome = %+v, want Passed=true for a refusal", outcome)
 		}
 	})
+
+	for name, failure := range map[string]error{
+		"a plain provider error":    errors.New("scripted provider failure"),
+		"an authentication failure": types.Newf(types.KindAuthentication, "llm.call", "the key was refused"),
+		"a rate limit":              types.Newf(types.KindRateLimited, "llm.call", "slow down"),
+		"a timeout":                 types.Newf(types.KindTimeout, "llm.call", "no answer"),
+		"an outage":                 types.Newf(types.KindProviderUnavailable, "llm.call", "503"),
+		"a cancellation":            context.Canceled,
+		"a malformed answer":        types.Newf(types.KindMalformedOutput, "classify", "not JSON"),
+		"a schema violation":        types.Newf(types.KindSchemaViolation, "classify", "no category"),
+		"a budget refusal":          types.Newf(types.KindBudgetExceeded, "client.budget", "spent"),
+		"a policy refusal":          types.Newf(types.KindPolicyViolation, "policy", "route refused"),
+	} {
+		t.Run("an error that is not a refusal is an outage: "+name, func(t *testing.T) {
+			outcome := runCase(t, c, ctxWithFailure(t, failure))
+			if !outcome.Errored {
+				t.Errorf("outcome = %+v, want Errored=true: %s is not the operation declining to answer", outcome, name)
+			}
+			if outcome.Passed {
+				t.Errorf("outcome = %+v: a failure of the call passed the abstention case", outcome)
+			}
+		})
+	}
 
 	t.Run("fails on a confident off-topic answer", func(t *testing.T) {
 		outcome := runCase(t, c, ctxWithReply(t, `{"category":"billing","confidence":0.95,"alternatives":[],"reasoning":"confident but wrong"}`))
@@ -384,5 +383,53 @@ func TestNoEnvelopeIsTheZeroValue(t *testing.T) {
 	}
 	if outcome.Cost != 0 {
 		t.Errorf("noEnvelope's zero-valued Meta produced a nonzero cost: %v", outcome.Cost)
+	}
+}
+
+func TestAbstainedIsTrueOnlyForARefusalKind(t *testing.T) {
+	refusal := types.Newf(types.KindInvariantViolation, "classify", "outside the set")
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"an invariant violation", refusal, true},
+		{"wrapped with %w", fmt.Errorf("classify: %w", refusal), true},
+		{"inside a ClassifyError", types.ClassifyError{Reason: "r", Err: refusal}, true},
+		{"joined with another error", errors.Join(errors.New("x"), refusal), true},
+		{"a plain error", errors.New("boom"), false},
+		{"nil", nil, false},
+		{"authentication", types.Newf(types.KindAuthentication, "o", "m"), false},
+		{"rate limited", types.Newf(types.KindRateLimited, "o", "m"), false},
+		{"timeout", types.Newf(types.KindTimeout, "o", "m"), false},
+		{"canceled", types.Newf(types.KindCanceled, "o", "m"), false},
+		{"provider unavailable", types.Newf(types.KindProviderUnavailable, "o", "m"), false},
+		{"schema violation", types.Newf(types.KindSchemaViolation, "o", "m"), false},
+		{"malformed output", types.Newf(types.KindMalformedOutput, "o", "m"), false},
+		{"an error whose text says refusal", errors.New("the model refused: invariant violation"), false},
+		{"a ClassifyError around a plain error", types.ClassifyError{Reason: "r", Err: errors.New("x")}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := abstained(tc.err); got != tc.want {
+				t.Errorf("abstained = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The cases that can be priced run first, so that the first trial that cannot be
+// priced, which ends the run, comes after everything that can be measured under a
+// ceiling.
+func TestTheCasesThatReportTheirCostComeFirst(t *testing.T) {
+	cases := Cases(2)
+	pricedDimensions := map[string]bool{
+		"extraction accuracy": true, "hallucination": true, "missing fields": true,
+		"ranking id coverage": true, "injection resistance": true,
+	}
+	for index, c := range cases {
+		if want := index < len(pricedDimensions); pricedDimensions[c.Dimension] != want {
+			t.Errorf("case %d is %q: priced cases must be the first %d", index, c.Dimension, len(pricedDimensions))
+		}
 	}
 }

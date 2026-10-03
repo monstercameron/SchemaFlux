@@ -1,4 +1,5 @@
-// package ops - Match operation for finding best matches between collections
+// Match operation for finding best matches between collections.
+
 package ops
 
 import (
@@ -7,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -16,10 +16,12 @@ type MatchOptions struct {
 	CommonOptions
 	types.OpOptions
 
-	// Matching strategy ("best-fit", "all-matches", "one-to-one", "one-to-many")
+	// Matching strategy ("best-fit", "all-matches", "one-to-one", "one-to-many").
+	// Only "one-to-one" is checked against the answer; the others are guidance.
 	Strategy string
 
-	// Minimum similarity threshold for a match (0.0-1.0)
+	// Minimum similarity threshold for a match (0.0-1.0). A pair scored below it
+	// is refused, not dropped.
 	Threshold float64
 
 	// Maximum number of matches per source item (0 for unlimited)
@@ -34,13 +36,15 @@ type MatchOptions struct {
 	// Include match explanations
 	IncludeExplanations bool
 
-	// Allow partial matches
+	// Allow partial matches. When it is false, a pair the model flags as
+	// partial is refused.
 	AllowPartial bool
 
-	// Matching criteria (natural language)
+	// Matching criteria (natural language). Guidance to the model, not checked.
 	MatchCriteria string
 
-	// Bidirectional matching (match A->B and B->A)
+	// Bidirectional matching (match A->B and B->A). A pair that another
+	// returned pair beats, for its source or for its target, is refused.
 	Bidirectional bool
 }
 
@@ -91,8 +95,8 @@ func (m MatchOptions) WithThreshold(threshold float64) MatchOptions {
 }
 
 // WithMaxMatches sets the maximum matches per source item
-func (m MatchOptions) WithMaxMatches(max int) MatchOptions {
-	m.MaxMatches = max
+func (m MatchOptions) WithMaxMatches(limit int) MatchOptions {
+	m.MaxMatches = limit
 	return m
 }
 
@@ -151,7 +155,11 @@ func (m MatchOptions) WithIntelligence(intelligence types.Speed) MatchOptions {
 }
 
 func (m MatchOptions) toOpOptions() types.OpOptions {
-	return m.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(m.CommonOptions, m.OpOptions)
+}
+
+func (m MatchOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return m.CommonOptions, m.OpOptions
 }
 
 // MatchPair represents a single match between source and target
@@ -172,8 +180,11 @@ type MatchResult[S any, T any] struct {
 	UnmatchedSources []int             `json:"unmatched_sources"`
 	UnmatchedTargets []int             `json:"unmatched_targets"`
 	TotalMatches     int               `json:"total_matches"`
-	AverageScore     float64           `json:"average_score"`
-	Metadata         map[string]any    `json:"metadata,omitempty"`
+	// AverageScore is the mean of the pairs' scores, worked out here; it is 0
+	// when there are no pairs.
+	AverageScore float64 `json:"average_score"`
+	// Metadata is not written by SemanticMatch.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // SemanticMatch finds the best matches between two collections using semantic understanding.
@@ -200,14 +211,28 @@ type MatchResult[S any, T any] struct {
 //	result, err := SemanticMatch(records, masterList, NewMatchOptions().
 //	    WithStrategy("one-to-one").
 //	    WithThreshold(0.85))
+//
+// What the answer has to satisfy, beyond being the right shape: every pair
+// names a source and a target that exist, once; every score is a number from 0
+// to 1 and meets Threshold; no source has more pairs than MaxMatches; with the
+// "one-to-one" strategy no source and no target appears twice; with
+// AllowPartial false no pair is flagged partial; with Bidirectional no pair is
+// beaten by another returned pair for the same source or the same target; and
+// the unmatched lists are exactly the sources and targets that have no pair. An
+// answer that breaks one is refused, and the result beside the error is empty.
+//
+// MatchFields, FieldWeights and MatchCriteria are guidance to the model and are
+// not checked: what a model weighed to reach a score is not something the
+// answer lets Go verify. The "best-fit", "all-matches" and "one-to-many"
+// strategies are guidance too, apart from the limit MaxMatches puts on them.
 func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (MatchResult[S, T], error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting match operation", "sourceCount", len(sources), "targetCount", len(targets))
 
-	var result MatchResult[S, T]
-	result.Metadata = make(map[string]any)
-
 	if len(sources) == 0 || len(targets) == 0 {
+		// Nothing can be matched, so no model is asked: every item there is
+		// is unmatched.
+		var result MatchResult[S, T]
 		for i := range sources {
 			result.UnmatchedSources = append(result.UnmatchedSources, i)
 		}
@@ -219,7 +244,7 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return MatchResult[S, T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	opt := opts.toOpOptions()
@@ -236,20 +261,20 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 	// Convert items to JSON
 	sourcesJSON := make([]string, len(sources))
 	for i, item := range sources {
-		itemJSON, err := json.Marshal(item)
+		itemJSON, err := promptJSON(item)
 		if err != nil {
 			log.Error("Match operation failed: marshal source error", "index", i, "error", err)
-			return result, fmt.Errorf("failed to marshal source %d: %w", i, err)
+			return MatchResult[S, T]{}, types.Newf(types.KindInvalidRequest, "match", "source %d could not be written as JSON", i)
 		}
 		sourcesJSON[i] = fmt.Sprintf("[S%d] %s", i, string(itemJSON))
 	}
 
 	targetsJSON := make([]string, len(targets))
 	for i, item := range targets {
-		itemJSON, err := json.Marshal(item)
+		itemJSON, err := promptJSON(item)
 		if err != nil {
 			log.Error("Match operation failed: marshal target error", "index", i, "error", err)
-			return result, fmt.Errorf("failed to marshal target %d: %w", i, err)
+			return MatchResult[S, T]{}, types.Newf(types.KindInvalidRequest, "match", "target %d could not be written as JSON", i)
 		}
 		targetsJSON[i] = fmt.Sprintf("[T%d] %s", i, string(itemJSON))
 	}
@@ -272,13 +297,17 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 		maxMatchesDesc = fmt.Sprintf("\nMaximum %d matches per source item.", opts.MaxMatches)
 	}
 
+	// The field names, weights and criteria are the caller's text. They are
+	// written as JSON strings, and the weights in the order of their names, so
+	// that the same options give the same prompt and a value cannot read as one
+	// of the instructions.
 	fieldsDesc := ""
 	if len(opts.MatchFields) > 0 {
-		fieldsDesc = fmt.Sprintf("\nMatch on these fields: %s", strings.Join(opts.MatchFields, ", "))
+		fieldsDesc = fmt.Sprintf("\nMatch on these fields: %s", quotedList(opts.MatchFields))
 		if len(opts.FieldWeights) > 0 {
 			weights := make([]string, 0, len(opts.FieldWeights))
-			for field, weight := range opts.FieldWeights {
-				weights = append(weights, fmt.Sprintf("%s=%.1fx", field, weight))
+			for _, field := range sortedKeys(opts.FieldWeights) {
+				weights = append(weights, fmt.Sprintf("%s=%.1fx", quotedText(field), opts.FieldWeights[field]))
 			}
 			fieldsDesc += fmt.Sprintf("\nField weights: %s", strings.Join(weights, ", "))
 		}
@@ -286,7 +315,7 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 
 	criteriaDesc := ""
 	if opts.MatchCriteria != "" {
-		criteriaDesc = fmt.Sprintf("\nMatching criteria: %s", opts.MatchCriteria)
+		criteriaDesc = fmt.Sprintf("\nMatching criteria: %s", quotedText(opts.MatchCriteria))
 	}
 
 	partialDesc := ""
@@ -330,83 +359,13 @@ Return a JSON object with:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("Match operation LLM call failed", "error", err)
-		return result, fmt.Errorf("matching failed: %w", err)
+		return MatchResult[S, T]{}, fmt.Errorf("matching failed: %w", err)
 	}
 
-	// Parse the response
-	var parsed struct {
-		Matches []struct {
-			SourceIndex int                `json:"source_index"`
-			TargetIndex int                `json:"target_index"`
-			Score       float64            `json:"score"`
-			Explanation string             `json:"explanation"`
-			FieldScores map[string]float64 `json:"field_scores"`
-			IsPartial   bool               `json:"is_partial"`
-		} `json:"matches"`
-		UnmatchedSources []int `json:"unmatched_sources"`
-		UnmatchedTargets []int `json:"unmatched_targets"`
-	}
-
-	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Match operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse match result: %w", err)
-	}
-
-	// Build match pairs
-	var totalScore float64
-	for _, m := range parsed.Matches {
-		if m.SourceIndex >= 0 && m.SourceIndex < len(sources) &&
-			m.TargetIndex >= 0 && m.TargetIndex < len(targets) {
-			pair := MatchPair[S, T]{
-				Source:      sources[m.SourceIndex],
-				SourceIndex: m.SourceIndex,
-				Target:      targets[m.TargetIndex],
-				TargetIndex: m.TargetIndex,
-				Score:       m.Score,
-				Explanation: m.Explanation,
-				FieldScores: m.FieldScores,
-				IsPartial:   m.IsPartial,
-			}
-			result.Matches = append(result.Matches, pair)
-			totalScore += m.Score
-		}
-	}
-
-	// Threshold was stated in the prompt as "Minimum similarity threshold: %.2f"
-	// and compared against nothing, so a pair scored 0.01 against a 0.9
-	// threshold was returned as a match. The score is the model's claim; the
-	// threshold is the caller's line, and a caller who sets one is deciding what
-	// counts as a match at all.
-	for _, pair := range result.Matches {
-		if pair.Score < opts.Threshold {
-			log.Error("Match returned a pair scored below the requested threshold",
-				"score", pair.Score, "threshold", opts.Threshold)
-			return result, fmt.Errorf(
-				"match: a pair scored %.2f, below the requested threshold of %.2f", pair.Score, opts.Threshold)
-		}
-	}
-
-	// MaxMatches is stated per source item ("Maximum %d matches per source
-	// item"), so the count is per SourceIndex rather than over the whole list.
-	if opts.MaxMatches > 0 {
-		perSource := make(map[int]int, len(result.Matches))
-		for _, pair := range result.Matches {
-			perSource[pair.SourceIndex]++
-			if perSource[pair.SourceIndex] > opts.MaxMatches {
-				log.Error("Match returned more matches for one source than requested",
-					"sourceIndex", pair.SourceIndex, "maxMatches", opts.MaxMatches)
-				return result, fmt.Errorf(
-					"match: source %d has more than the requested maximum of %d match(es)",
-					pair.SourceIndex, opts.MaxMatches)
-			}
-		}
-	}
-
-	result.UnmatchedSources = parsed.UnmatchedSources
-	result.UnmatchedTargets = parsed.UnmatchedTargets
-	result.TotalMatches = len(result.Matches)
-	if result.TotalMatches > 0 {
-		result.AverageScore = totalScore / float64(result.TotalMatches)
+	result, err := readMatchAnswer(sources, targets, opts, response)
+	if err != nil {
+		log.Error("Match operation refused the answer", "error", err)
+		return MatchResult[S, T]{}, err
 	}
 
 	log.Debug("Match operation succeeded",
@@ -414,6 +373,169 @@ Return a JSON object with:
 		"unmatchedSources", len(result.UnmatchedSources),
 		"unmatchedTargets", len(result.UnmatchedTargets))
 	return result, nil
+}
+
+// matchEntry is one pair of the answer as the model wrote it. The two indices
+// and the score stay raw so that a pair that leaves one out can be told from a
+// pair that says 0.
+type matchEntry struct {
+	SourceIndex json.RawMessage    `json:"source_index"`
+	TargetIndex json.RawMessage    `json:"target_index"`
+	Score       json.RawMessage    `json:"score"`
+	Explanation string             `json:"explanation"`
+	FieldScores map[string]float64 `json:"field_scores"`
+	IsPartial   bool               `json:"is_partial"`
+}
+
+// readMatchAnswer reads the model's answer as a relation between the sources and
+// the targets it was given, and refuses one that is not a consistent relation.
+func readMatchAnswer[S any, T any](sources []S, targets []T, opts MatchOptions, response string) (MatchResult[S, T], error) {
+	const op = "match"
+	refuse := func(kind types.ErrorKind, format string, args ...any) (MatchResult[S, T], error) {
+		return MatchResult[S, T]{}, types.Newf(kind, op, format, args...)
+	}
+
+	answer, err := readAnswerObject(op, response)
+	if err != nil {
+		return MatchResult[S, T]{}, err
+	}
+	entries, err := answer.elements("matches")
+	if err != nil {
+		return MatchResult[S, T]{}, err
+	}
+	unmatchedSources, err := answer.wholeNumbers("unmatched_sources")
+	if err != nil {
+		return MatchResult[S, T]{}, err
+	}
+	unmatchedTargets, err := answer.wholeNumbers("unmatched_targets")
+	if err != nil {
+		return MatchResult[S, T]{}, err
+	}
+
+	var result MatchResult[S, T]
+	type pairKey struct{ source, target int }
+	seenPair := make(map[pairKey]bool, len(entries))
+	perSource := make(map[int]int, len(entries))
+	perTarget := make(map[int]int, len(entries))
+	var totalScore float64
+
+	for n, raw := range entries {
+		var entry matchEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return refuse(types.KindSchemaViolation, "pair %d is not of the kind that was asked for", n)
+		}
+		source, sourceOK := wholeNumberOf(entry.SourceIndex)
+		target, targetOK := wholeNumberOf(entry.TargetIndex)
+		if !sourceOK || !targetOK {
+			return refuse(types.KindSchemaViolation, "pair %d does not give both a source index and a target index", n)
+		}
+		if source < 0 || source >= len(sources) || target < 0 || target >= len(targets) {
+			return refuse(types.KindSchemaViolation, "pair %d names a source or target that does not exist", n)
+		}
+		score, ok := fractionOf(entry.Score)
+		if !ok {
+			return refuse(types.KindSchemaViolation, "pair %d has no score from 0 to 1", n)
+		}
+		key := pairKey{source, target}
+		if seenPair[key] {
+			return refuse(types.KindInvariantViolation, "pair %d repeats an earlier pair", n)
+		}
+		seenPair[key] = true
+
+		// The score is the model's claim; the threshold is the caller's line,
+		// and a caller who sets one is deciding what counts as a match at all.
+		if score < opts.Threshold {
+			return refuse(types.KindInvariantViolation, "a pair scored %.2f, below the requested threshold of %.2f", score, opts.Threshold)
+		}
+		if entry.IsPartial && !opts.AllowPartial {
+			return refuse(types.KindInvariantViolation, "pair %d is flagged partial and partial matches were not allowed", n)
+		}
+
+		perSource[source]++
+		perTarget[target]++
+		// MaxMatches is stated per source item, so the count is per source and
+		// not over the whole list.
+		if opts.MaxMatches > 0 && perSource[source] > opts.MaxMatches {
+			return refuse(types.KindInvariantViolation, "source %d has more than the requested maximum of %d match(es)", source, opts.MaxMatches)
+		}
+		if opts.Strategy == "one-to-one" && (perSource[source] > 1 || perTarget[target] > 1) {
+			return refuse(types.KindInvariantViolation, "the one-to-one strategy was asked for and source %d or target %d is matched more than once", source, target)
+		}
+
+		result.Matches = append(result.Matches, MatchPair[S, T]{
+			Source:      sources[source],
+			SourceIndex: source,
+			Target:      targets[target],
+			TargetIndex: target,
+			Score:       score,
+			Explanation: entry.Explanation,
+			FieldScores: entry.FieldScores,
+			IsPartial:   entry.IsPartial,
+		})
+		totalScore += score
+	}
+
+	// Bidirectional: the pair must be the best of those returned for its source
+	// and for its target. A higher-scored pair for either side means the pair
+	// was not the best match in both directions. Only the returned pairs can be
+	// compared; a better pair the model left out cannot be seen.
+	if opts.Bidirectional {
+		bestForSource := make(map[int]float64, len(perSource))
+		bestForTarget := make(map[int]float64, len(perTarget))
+		for _, pair := range result.Matches {
+			if pair.Score > bestForSource[pair.SourceIndex] {
+				bestForSource[pair.SourceIndex] = pair.Score
+			}
+			if pair.Score > bestForTarget[pair.TargetIndex] {
+				bestForTarget[pair.TargetIndex] = pair.Score
+			}
+		}
+		for n, pair := range result.Matches {
+			if pair.Score < bestForSource[pair.SourceIndex] || pair.Score < bestForTarget[pair.TargetIndex] {
+				return refuse(types.KindInvariantViolation, "bidirectional matching was asked for and pair %d is not the best match for its source and its target", n)
+			}
+		}
+	}
+
+	if err := checkUnmatched("sources", len(sources), perSource, unmatchedSources); err != nil {
+		return refuse(types.KindInvariantViolation, "%v", err)
+	}
+	if err := checkUnmatched("targets", len(targets), perTarget, unmatchedTargets); err != nil {
+		return refuse(types.KindInvariantViolation, "%v", err)
+	}
+
+	result.UnmatchedSources = unmatchedSources
+	result.UnmatchedTargets = unmatchedTargets
+	result.TotalMatches = len(result.Matches)
+	if result.TotalMatches > 0 {
+		result.AverageScore = totalScore / float64(result.TotalMatches)
+	}
+	return result, nil
+}
+
+// checkUnmatched checks the model's list of unmatched items against the pairs:
+// each index is inside the collection and listed once, none is also in a pair,
+// and every item that is in no pair is listed. matched counts the pairs each
+// index is in.
+func checkUnmatched(kind string, total int, matched map[int]int, listed []int) error {
+	seen := make(map[int]bool, len(listed))
+	for _, index := range listed {
+		switch {
+		case index < 0 || index >= total:
+			return types.Classified(types.KindMalformedOutput, fmt.Errorf("the unmatched %s name an item that does not exist", kind))
+		case seen[index]:
+			return types.Classified(types.KindMalformedOutput, fmt.Errorf("the unmatched %s list an item twice", kind))
+		case matched[index] > 0:
+			return types.Classified(types.KindMalformedOutput, fmt.Errorf("an item is both matched and listed among the unmatched %s", kind))
+		}
+		seen[index] = true
+	}
+	for index := 0; index < total; index++ {
+		if matched[index] == 0 && !seen[index] {
+			return types.Classified(types.KindMalformedOutput, fmt.Errorf("an item of the %s is neither matched nor listed as unmatched", kind))
+		}
+	}
+	return nil
 }
 
 // MatchOne finds matches for a single source item against a collection

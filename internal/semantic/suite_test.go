@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -118,6 +120,63 @@ func TestASingleTrialCaseIsRefused(t *testing.T) {
 	}
 }
 
+// A suite is validated whole before any paid case runs. A bad case after a good
+// one used to be found only when the loop reached it, with the good one already
+// paid for.
+func TestASuiteIsValidatedWholeBeforeAnyTrialRuns(t *testing.T) {
+	good := func(provider *plantedProvider) Case {
+		return Case{Name: "good", Dimension: "extraction", Trials: 5, Run: provider.trial}
+	}
+	cases := []struct {
+		name string
+		bad  Case
+		want string
+	}{
+		{"one trial", Case{Name: "one shot", Dimension: "d", Trials: 1, Run: func(context.Context) (Outcome, error) { return Outcome{}, nil }}, "one shot"},
+		{"zero trials", Case{Name: "none", Dimension: "d", Trials: 0, Run: func(context.Context) (Outcome, error) { return Outcome{}, nil }}, "none"},
+		{"negative trials", Case{Name: "negative", Dimension: "d", Trials: -4, Run: func(context.Context) (Outcome, error) { return Outcome{}, nil }}, "negative"},
+		{"no Run", Case{Name: "no run", Dimension: "d", Trials: 5}, "no run"},
+		{"no name", Case{Dimension: "d", Trials: 5, Run: func(context.Context) (Outcome, error) { return Outcome{}, nil }}, "name"},
+		{"no dimension", Case{Name: "no dimension", Trials: 5, Run: func(context.Context) (Outcome, error) { return Outcome{}, nil }}, "no dimension"},
+	}
+	for _, tc := range cases {
+		for position, label := range []string{"after a good case", "before a good case", "between good cases"} {
+			t.Run(tc.name+" "+label, func(t *testing.T) {
+				provider := &plantedProvider{priced: true, cost: 0.01}
+				var suite []Case
+				switch position {
+				case 0:
+					suite = []Case{good(provider), tc.bad}
+				case 1:
+					suite = []Case{tc.bad, good(provider)}
+				default:
+					suite = []Case{good(provider), tc.bad, good(provider)}
+				}
+
+				report, err := Run(context.Background(), suite, 100)
+				if err == nil {
+					t.Fatal("a suite with a bad case was run")
+				}
+				if provider.calls != 0 {
+					t.Errorf("%d trial(s) ran before the bad case was found; a suite is validated whole first", provider.calls)
+				}
+				if report.SpentUSD != 0 || len(report.Dimensions) != 0 {
+					t.Errorf("the refused suite reports spend or measurements: %+v", report)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("the error does not say which case was refused: %v", err)
+				}
+			})
+		}
+	}
+
+	t.Run("an empty suite", func(t *testing.T) {
+		if _, err := Run(context.Background(), nil, 100); err == nil {
+			t.Error("an empty suite was accepted")
+		}
+	})
+}
+
 // The spend rule, which is the one that costs real money to get wrong.
 func TestTheCeilingStopsTheRunAndKeepsWhatItMeasured(t *testing.T) {
 	// Each trial costs 1.0 against a ceiling of 5.0, so the run must stop
@@ -163,8 +222,9 @@ func TestAZeroCeilingRunsNothing(t *testing.T) {
 
 // An unpriced model reports a cost of zero. Treating that as "this trial was
 // free" would silently disable the ceiling — the single most expensive bug this
-// package could contain.
-func TestAnUnpricedTrialMakesTheTotalAFloorAndNotATotal(t *testing.T) {
+// package could contain. The trial's spend is unknown, so the run stops there:
+// it used to run all ten against a ceiling of five, and every case after it.
+func TestAnUnpricedTrialStopsTheRunBecauseItsSpendIsUnknown(t *testing.T) {
 	provider := &plantedProvider{cost: 0, priced: false}
 
 	report, err := Run(context.Background(), []Case{{
@@ -174,11 +234,83 @@ func TestAnUnpricedTrialMakesTheTotalAFloorAndNotATotal(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
+	if provider.calls != 1 {
+		t.Errorf("%d trials ran; the first one that could not be priced should have ended the run", provider.calls)
+	}
+	if !report.Stopped || !errors.Is(report.StopReason, ErrSpendUnknown) {
+		t.Errorf("Stopped = %v, StopReason = %v, want a stop for ErrSpendUnknown", report.Stopped, report.StopReason)
+	}
+	if report.UnpricedTrials != 1 {
+		t.Errorf("UnpricedTrials = %d, want 1", report.UnpricedTrials)
+	}
 	if report.Dimensions[0].CostKnown {
 		t.Error("an unpriced trial was reported as a known cost")
 	}
 	if !report.CostPartial {
 		t.Error("the report does not say its cost is partial")
+	}
+	if report.Dimensions[0].Passed.Trials != 1 {
+		t.Errorf("the trial that was paid for is not in the report: %+v", report.Dimensions[0].Passed)
+	}
+}
+
+// What was measured before the first unpriced trial is kept and priced, and the
+// cases after the stop never run.
+func TestAnUnpricedCaseAfterPricedOnesKeepsTheirMeasurementsAndSkipsTheRest(t *testing.T) {
+	priced := &plantedProvider{cost: 0.5, priced: true}
+	unpriced := &plantedProvider{priced: false}
+	never := &plantedProvider{cost: 0.5, priced: true}
+
+	report, err := Run(context.Background(), []Case{
+		{Name: "priced", Dimension: "first", Trials: 4, Run: priced.trial},
+		{Name: "unpriced", Dimension: "second", Trials: 4, Run: unpriced.trial},
+		{Name: "after", Dimension: "third", Trials: 4, Run: never.trial},
+	}, 100)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if priced.calls != 4 || unpriced.calls != 1 || never.calls != 0 {
+		t.Errorf("trials run: %d, %d, %d; want 4, 1, 0", priced.calls, unpriced.calls, never.calls)
+	}
+	if report.SpentUSD != 2.0 {
+		t.Errorf("SpentUSD = %v, want 2.0 from the priced trials", report.SpentUSD)
+	}
+	if len(report.Dimensions) != 2 || report.Dimensions[0].TotalCost != 2.0 || !report.Dimensions[0].CostKnown {
+		t.Errorf("the priced dimension was not kept intact: %+v", report.Dimensions)
+	}
+}
+
+// A figure the ceiling cannot add is not a price.
+func TestACostThatIsNegativeOrNotANumberIsNotAPrice(t *testing.T) {
+	for _, cost := range []float64{-1, -0.0001, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		t.Run(strconv.FormatFloat(cost, 'g', -1, 64), func(t *testing.T) {
+			provider := &plantedProvider{cost: cost, priced: true}
+			report, err := Run(context.Background(), []Case{{Name: "odd", Dimension: "d", Trials: 5, Run: provider.trial}}, 10)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if provider.calls != 1 || !errors.Is(report.StopReason, ErrSpendUnknown) {
+				t.Errorf("%d trials ran, StopReason = %v; a cost of %v should end the run as unknown spend", provider.calls, report.StopReason, cost)
+			}
+			if report.SpentUSD != 0 || math.IsNaN(report.SpentUSD) {
+				t.Errorf("SpentUSD = %v; the odd figure was added to the total", report.SpentUSD)
+			}
+		})
+	}
+}
+
+func TestACeilingThatIsNotAFinitePositiveNumberRunsNothing(t *testing.T) {
+	for _, ceiling := range []float64{0, -1, -0.01, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		t.Run(strconv.FormatFloat(ceiling, 'g', -1, 64), func(t *testing.T) {
+			provider := &plantedProvider{cost: 1, priced: true}
+			_, err := Run(context.Background(), []Case{{Name: "any", Dimension: "d", Trials: 10, Run: provider.trial}}, ceiling)
+			if !errors.Is(err, ErrNoBudget) {
+				t.Errorf("err = %v, want ErrNoBudget", err)
+			}
+			if provider.calls != 0 {
+				t.Errorf("the provider was called %d time(s) under a ceiling of %v", provider.calls, ceiling)
+			}
+		})
 	}
 }
 
@@ -241,6 +373,33 @@ func TestTheGateRefusesWithoutBothSwitches(t *testing.T) {
 		}
 	})
 
+	// "inf" is a plausible way to write "no limit", and NaN and infinity both
+	// parse without an error. Neither can be reached or crossed by a comparison,
+	// so either would have run the suite with no ceiling at all.
+	for _, raw := range []string{"inf", "Inf", "+Inf", "-Inf", "Infinity", "+infinity", "NaN", "nan", "1e999", "-1e999", "-5", "-0", "0.0", " "} {
+		t.Run("budget "+raw, func(t *testing.T) {
+			t.Setenv("SCHEMAFLUX_LIVE_TESTS", "1")
+			t.Setenv("SCHEMAFLUX_SEMANTIC_BUDGET_USD", raw)
+			budget, err := Gate()
+			if !errors.Is(err, ErrNoBudget) {
+				t.Errorf("Gate() = %v, %v for a budget of %q; want ErrNoBudget", budget, err, raw)
+			}
+			if budget != 0 {
+				t.Errorf("a refusal came with a ceiling of %v", budget)
+			}
+		})
+	}
+
+	t.Run("the live flag must be exactly 1", func(t *testing.T) {
+		for _, flag := range []string{"true", "0", "yes", " 1", "1 "} {
+			t.Setenv("SCHEMAFLUX_LIVE_TESTS", flag)
+			t.Setenv("SCHEMAFLUX_SEMANTIC_BUDGET_USD", "5")
+			if _, err := Gate(); !errors.Is(err, ErrLiveDisabled) {
+				t.Errorf("flag %q: err = %v, want ErrLiveDisabled", flag, err)
+			}
+		}
+	})
+
 	t.Run("both present", func(t *testing.T) {
 		t.Setenv("SCHEMAFLUX_LIVE_TESTS", "1")
 		t.Setenv("SCHEMAFLUX_SEMANTIC_BUDGET_USD", "2.50")
@@ -275,5 +434,33 @@ func TestLatencyPercentilesAreMeasuredValuesAndNotInterpolations(t *testing.T) {
 	}
 	if p50 > p95 {
 		t.Errorf("p50 %v exceeds p95 %v", p50, p95)
+	}
+}
+
+func TestPricedAcceptsOnlyAFiniteNonNegativeFigureTheCaseSaidWasPriced(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome Outcome
+		want    bool
+	}{
+		{"priced and positive", Outcome{Priced: true, Cost: 0.5}, true},
+		{"priced and zero, which is a free model", Outcome{Priced: true, Cost: 0}, true},
+		{"priced and tiny", Outcome{Priced: true, Cost: 1e-12}, true},
+		{"priced and large", Outcome{Priced: true, Cost: 1e9}, true},
+		{"not priced", Outcome{Priced: false, Cost: 0.5}, false},
+		{"not priced and zero", Outcome{}, false},
+		{"priced and negative", Outcome{Priced: true, Cost: -0.01}, false},
+		{"priced and negative zero", Outcome{Priced: true, Cost: math.Copysign(0, -1)}, true},
+		{"priced and NaN", Outcome{Priced: true, Cost: math.NaN()}, false},
+		{"priced and positive infinity", Outcome{Priced: true, Cost: math.Inf(1)}, false},
+		{"priced and negative infinity", Outcome{Priced: true, Cost: math.Inf(-1)}, false},
+		{"errored and priced", Outcome{Errored: true, Priced: true, Cost: 1}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := priced(tc.outcome); got != tc.want {
+				t.Errorf("priced(%+v) = %v, want %v", tc.outcome, got, tc.want)
+			}
+		})
 	}
 }

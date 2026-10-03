@@ -20,7 +20,7 @@ import (
 //
 // Regenerate deliberately:
 //
-//	SCHEMAFLUX_UPDATE_API=1 go test . -run TestPublicAPISurface
+//	SCHEMAFLUX_UPDATE_API=1 go test ./tests/ -run TestPublicAPISurface
 //
 // An environment variable rather than a flag, because `go test` parses its own
 // flags first and an unknown one fails the run before the test sees it.
@@ -52,7 +52,7 @@ func TestPublicAPISurface(t *testing.T) {
 		strings.Split(strings.TrimSpace(current), "\n")); diff != "" {
 		t.Errorf("the exported API surface changed:\n%s\n\n"+
 			"If this was intended, record it in TODOS.md and regenerate:\n"+
-			"    SCHEMAFLUX_UPDATE_API=1 go test . -run TestPublicAPISurface", diff)
+			"    SCHEMAFLUX_UPDATE_API=1 go test ./tests/ -run TestPublicAPISurface", diff)
 	}
 }
 

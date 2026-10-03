@@ -1,4 +1,3 @@
-// package ops - Cluster operation for grouping similar items semantically
 package ops
 
 import (
@@ -6,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -144,18 +142,23 @@ func (c ClusterOptions) WithIntelligence(intelligence types.Speed) ClusterOption
 }
 
 func (c ClusterOptions) toOpOptions() types.OpOptions {
-	return c.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
+}
+
+func (c ClusterOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return c.CommonOptions, c.OpOptions
 }
 
 // ClusterInfo contains information about a single cluster
 type ClusterInfo[T any] struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Items       []T      `json:"items"`
-	Indices     []int    `json:"indices"`
-	Centroid    string   `json:"centroid,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
-	Size        int      `json:"size"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Items       []T    `json:"items"`
+	Indices     []int  `json:"indices"`
+	// Centroid is never filled in: nothing computes one.
+	Centroid string   `json:"centroid,omitempty"`
+	Keywords []string `json:"keywords,omitempty"`
+	Size     int      `json:"size"`
 }
 
 // ClusterResult contains the results of clustering
@@ -165,12 +168,25 @@ type ClusterResult[T any] struct {
 	OutlierIndices []int            `json:"outlier_indices,omitempty"`
 	TotalItems     int              `json:"total_items"`
 	NumClusters    int              `json:"num_clusters"`
-	Quality        float64          `json:"quality,omitempty"`
-	Metadata       map[string]any   `json:"metadata,omitempty"`
+
+	// Quality is the model's own claim about how good its grouping is, from 0
+	// to 1. It is not a measurement and is not calibrated; the answer is
+	// refused when it is missing or off that scale. It is zero when no model was
+	// asked: for an input of fewer than two items.
+	Quality float64 `json:"quality,omitempty"`
+
+	// Metadata is an empty map today: nothing is recorded in it.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // Cluster groups similar items semantically without predefined categories.
 // Uses LLM to understand semantic similarity and create meaningful groupings.
+//
+// The options are checked first, whatever the number of items. The answer is
+// held to the partition and to MinClusterSize, MaxClusterSize and, when
+// IncludeOutliers is false, to having no outliers. NumClusters,
+// SimilarityThreshold and NamingStrategy are hints to the model and are not
+// checked against the answer.
 //
 // Type parameter T specifies the type of items to cluster.
 //
@@ -188,31 +204,36 @@ type ClusterResult[T any] struct {
 //	result, err := Cluster(customers, NewClusterOptions().
 //	    WithClusterBy("purchasing behavior and preferences"))
 func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting cluster operation", "itemCount", len(items))
 
-	var result ClusterResult[T]
-	result.TotalItems = len(items)
-	result.Metadata = make(map[string]any)
+	// What was asked for is checked whether or not anything will be asked of a
+	// model. The shortcuts below came first, so a negative NumClusters and a
+	// naming strategy nobody knows were accepted with one item and refused with
+	// two.
+	if err := opts.Validate(); err != nil {
+		return ClusterResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
+	}
 
 	if len(items) == 0 {
-		return result, nil
+		return ClusterResult[T]{Metadata: make(map[string]any)}, nil
 	}
 
+	// One item is its own cluster and no model is asked. The cluster is named
+	// "Single Item", Quality stays zero because nothing measured or claimed one,
+	// and NumClusters is not consulted: there is nothing to divide.
 	if len(items) == 1 {
-		result.Clusters = []ClusterInfo[T]{{
-			Name:    "Single Item",
-			Items:   items,
-			Indices: []int{0},
-			Size:    1,
-		}}
-		result.NumClusters = 1
-		return result, nil
-	}
-
-	// Validate options
-	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return ClusterResult[T]{
+			Clusters: []ClusterInfo[T]{{
+				Name:    "Single Item",
+				Items:   items,
+				Indices: []int{0},
+				Size:    1,
+			}},
+			TotalItems:  1,
+			NumClusters: 1,
+			Metadata:    make(map[string]any),
+		}, nil
 	}
 
 	opt := opts.toOpOptions()
@@ -225,6 +246,12 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 	var cancel context.CancelFunc
 	ctx, cancel = operationContext(ctx, 0)
 	defer cancel()
+
+	// refuse turns an answer down in this library's words. It names counts and
+	// positions and repeats nothing the model wrote.
+	refuse := func(kind types.ErrorKind, format string, args ...any) (ClusterResult[T], error) {
+		return ClusterResult[T]{}, types.Newf(kind, "cluster", format, args...)
+	}
 
 	// CI-008. The items used to be sent as `[0] {...}` lines joined by
 	// newlines, which is prose: the indices the answer has to refer to were
@@ -241,29 +268,32 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 	// it silently clusters the wrong item.
 	indexedItems := make([]map[string]any, len(items))
 	for i, item := range items {
-		if _, err := json.Marshal(item); err != nil {
-			log.Error("Cluster operation failed: marshal error", "itemIndex", i, "error", err)
-			return result, fmt.Errorf("failed to marshal item %d: %w", i, err)
-		}
 		indexedItems[i] = map[string]any{"index": i, "item": item}
 	}
 
 	itemsJSON, err := json.Marshal(indexedItems)
 	if err != nil {
 		log.Error("Cluster operation failed: marshal error", "error", err)
-		return result, fmt.Errorf("failed to marshal items: %w", err)
+		return refuse(types.KindInvalidRequest, "the items could not be written as JSON")
 	}
 
-	clusterConstraint := ""
+	var clusterConstraint string
 	if opts.NumClusters > 0 {
 		clusterConstraint = fmt.Sprintf("Create exactly %d clusters.", opts.NumClusters)
 	} else {
 		clusterConstraint = fmt.Sprintf("Automatically determine the optimal number of clusters (minimum cluster size: %d).", opts.MinClusterSize)
 	}
 
+	// The caller's own words are written as a JSON string, so that a ClusterBy
+	// that reads like an instruction of its own stays a quoted value inside the
+	// sentence.
 	clusterCriteria := "semantic similarity"
 	if opts.ClusterBy != "" {
-		clusterCriteria = opts.ClusterBy
+		quoted, quoteErr := promptJSON(opts.ClusterBy)
+		if quoteErr != nil {
+			return refuse(types.KindInvalidRequest, "ClusterBy could not be written as JSON")
+		}
+		clusterCriteria = string(quoted)
 	}
 
 	sizeLimit := ""
@@ -276,11 +306,9 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 		descriptionNote = "\nGive every cluster a description saying what its members have in common."
 	}
 
-	outlierHandling := ""
+	outlierHandling := "Force all items into the nearest cluster, even if not a perfect fit."
 	if opts.IncludeOutliers {
 		outlierHandling = "Place items that don't fit well into any cluster in an 'outliers' group."
-	} else {
-		outlierHandling = "Force all items into the nearest cluster, even if not a perfect fit."
 	}
 
 	systemPrompt := fmt.Sprintf(`You are an expert at semantic clustering. Group the items based on %s.%s%s
@@ -311,14 +339,17 @@ Return a JSON object with:
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Error("Cluster operation LLM call failed", "error", err)
-		return result, fmt.Errorf("clustering failed: %w", err)
+		return ClusterResult[T]{}, fmt.Errorf("clustering failed: %w", err)
 	}
 
-	// Parse the response
+	// Parse the response. Every member the prompt shows is required, so an
+	// answer that leaves one out is refused by name. The description is the one
+	// exception: it is asked for only when GenerateDescriptions is set, and
+	// otherwise the prompt tells the model to leave it empty.
 	var parsed struct {
 		Clusters []struct {
 			Name        string   `json:"name"`
-			Description string   `json:"description"`
+			Description string   `json:"description,omitempty"`
 			Indices     []int    `json:"indices"`
 			Keywords    []string `json:"keywords"`
 		} `json:"clusters"`
@@ -326,9 +357,18 @@ Return a JSON object with:
 		Quality        float64 `json:"quality"`
 	}
 
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if err := decodeAnswer("cluster", response, &parsed); err != nil {
 		log.Error("Cluster operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse clustering result: %w", err)
+		return ClusterResult[T]{}, err
+	}
+
+	// IncludeOutliers=false tells the model to place every item in a cluster, so
+	// an answer that sets some aside has not done what was asked. It used to be
+	// accepted, and an answer that set every item aside came back as a success
+	// with no clusters at all.
+	if !opts.IncludeOutliers && len(parsed.OutlierIndices) > 0 {
+		return refuse(types.KindInvariantViolation,
+			"the response sets %d items aside as outliers, and outliers were not allowed", len(parsed.OutlierIndices))
 	}
 
 	// A clustering is a partition: every input in exactly one group, no index
@@ -346,7 +386,7 @@ Return a JSON object with:
 
 	if err := CoversExactlyOnce(len(items), groups); err != nil {
 		log.Error("Cluster operation failed: the clusters do not partition the input", "error", err)
-		return result, fmt.Errorf("clustering failed: %w", err)
+		return refuse(types.KindInvariantViolation, "%s", err.Error())
 	}
 
 	// The size limits, checked against the answer rather than only asked for.
@@ -362,30 +402,40 @@ Return a JSON object with:
 	// a cluster the model chose to form, and a single outlier is the normal
 	// case; applying a minimum to them would reject correct answers.
 	//
-	// NumClusters is deliberately NOT enforced. Its own doc calls it a "Target
-	// number of clusters (0 for auto-detection)", and a target is a hint --
-	// refusing an answer that found four natural groups when three were
-	// suggested would be the library overriding the judgement it asked for.
+	// NumClusters, SimilarityThreshold and NamingStrategy are deliberately NOT
+	// enforced. They are hints to the model: NumClusters is documented as a
+	// "Target number of clusters (0 for auto-detection)", and refusing an answer
+	// that found four natural groups when three were suggested would be the
+	// library overriding the judgement it asked for; the threshold has nothing
+	// in the answer to be measured against; a naming strategy is a style of name.
 	// Recorded here so the next reader knows the omission was a decision.
 	for _, c := range parsed.Clusters {
 		size := len(c.Indices)
-		if opts.MinClusterSize > 0 && size < opts.MinClusterSize {
+		if size < opts.MinClusterSize {
 			log.Error("Cluster operation failed: a cluster is below the minimum size",
 				"size", size, "minimum", opts.MinClusterSize)
-			return result, fmt.Errorf(
-				"clustering failed: a cluster holds %d item(s) and MinClusterSize is %d",
-				size, opts.MinClusterSize)
+			return refuse(types.KindInvariantViolation,
+				"a cluster holds %d item(s) and MinClusterSize is %d", size, opts.MinClusterSize)
 		}
 		if opts.MaxClusterSize > 0 && size > opts.MaxClusterSize {
 			log.Error("Cluster operation failed: a cluster is above the maximum size",
 				"size", size, "maximum", opts.MaxClusterSize)
-			return result, fmt.Errorf(
-				"clustering failed: a cluster holds %d item(s) and MaxClusterSize is %d",
-				size, opts.MaxClusterSize)
+			return refuse(types.KindInvariantViolation,
+				"a cluster holds %d item(s) and MaxClusterSize is %d", size, opts.MaxClusterSize)
 		}
 	}
 
-	// Build cluster result
+	if scaleErr := onScale("cluster", "the quality", parsed.Quality); scaleErr != nil {
+		return ClusterResult[T]{}, scaleErr
+	}
+
+	// Build cluster result. The partition check above has shown every index is
+	// in range, and Size is derived from the items placed rather than reported.
+	result := ClusterResult[T]{
+		TotalItems: len(items),
+		Quality:    parsed.Quality,
+		Metadata:   make(map[string]any),
+	}
 	for _, c := range parsed.Clusters {
 		cluster := ClusterInfo[T]{
 			Name:        c.Name,
@@ -393,19 +443,9 @@ Return a JSON object with:
 			Indices:     c.Indices,
 			Keywords:    c.Keywords,
 			Items:       make([]T, 0, len(c.Indices)),
-			// Size counts the items in the cluster, not the indices the model
-			// claimed. It used to count the raw indices including out-of-range
-			// ones, so Size and Items disagreed exactly when the model
-			// misbehaved -- the one case a caller checking Size needed them to
-			// agree. The partition check above now rejects that response
-			// outright, and Size is derived rather than reported.
-			Size: 0,
 		}
-
 		for _, idx := range c.Indices {
-			if idx >= 0 && idx < len(items) {
-				cluster.Items = append(cluster.Items, items[idx])
-			}
+			cluster.Items = append(cluster.Items, items[idx])
 		}
 		cluster.Size = len(cluster.Items)
 
@@ -414,14 +454,11 @@ Return a JSON object with:
 
 	// Handle outliers
 	for _, idx := range parsed.OutlierIndices {
-		if idx >= 0 && idx < len(items) {
-			result.Outliers = append(result.Outliers, items[idx])
-			result.OutlierIndices = append(result.OutlierIndices, idx)
-		}
+		result.Outliers = append(result.Outliers, items[idx])
+		result.OutlierIndices = append(result.OutlierIndices, idx)
 	}
 
 	result.NumClusters = len(result.Clusters)
-	result.Quality = parsed.Quality
 
 	log.Debug("Cluster operation succeeded", "numClusters", result.NumClusters, "outlierCount", len(result.Outliers))
 	return result, nil

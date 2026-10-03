@@ -116,7 +116,6 @@ func main() {
 		},
 		Categories:   []string{"security", "compliance", "pci-dss"},
 		Threshold:    0.5,
-		Deep:         true,
 		Intelligence: types.Smart,
 	})
 	if err != nil {

@@ -2,6 +2,7 @@ package schemafluxtest
 
 import (
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/ops"
 )
 
 // TestingT is the part of *testing.T this package uses. It is an interface so
@@ -45,12 +46,14 @@ func Install(t TestingT, provider *Provider) func() {
 	client := schemaflux.NewClient("schemafluxtest-not-a-real-key").WithProviderInstance(provider)
 	schemaflux.SetDefaultClient(client)
 
+	// SetDefaultClient repoints the operations' provider only when the client
+	// it is given holds one. A previous client with none (built without a key,
+	// say) would leave the double as the provider every operation reads, so the
+	// provider is cleared first and the previous client's own is set over it
+	// when it has one.
 	restore := func() {
-		if previous != nil {
-			schemaflux.SetDefaultClient(previous)
-			return
-		}
-		schemaflux.SetDefaultClient(nil)
+		ops.SetDefaultProvider(nil)
+		schemaflux.SetDefaultClient(previous)
 	}
 	t.Cleanup(restore)
 

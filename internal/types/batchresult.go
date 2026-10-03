@@ -2,22 +2,19 @@ package types
 
 import "fmt"
 
-// PL-008: partial success and failure policies.
+// Plural runs that report what happened to each item.
 //
-// (`[]T, error`) cannot express "7 of 10 succeeded, here is which and why".
-// A caller reading a shorter slice with no error is reading success, not a
-// partial result -- nothing distinguishes "asked for 7" from "3 were
-// silently dropped". BatchResult is what this task's Verify line requires
-// instead: a value that names every item's status, and whose only route to
-// a plain []Out (Values) hands back a bool the caller must read alongside
-// it. A caller who ignores the bool still gets an honestly-short slice, not
-// a padded one -- but the bool is what stands between this type and the
-// exact failure mode PL-008 exists to remove.
+// A bare `([]T, error)` cannot express "7 of 10 succeeded, here is which and
+// why": a caller reading a shorter slice with no error is reading success, not a
+// partial result, and nothing distinguishes "asked for 7" from "3 were silently
+// dropped". BatchResult names every item's status, and its only route to a plain
+// []Out (Values) hands back a bool the caller must read alongside it. A caller
+// who ignores the bool still gets an honestly short slice, not a padded one, but
+// the bool is what stands between this type and the failure it exists to remove.
 //
-// PL-013 (per-item metrics) is layered on the same type: BatchMetrics is
-// computed from a BatchResult's own ItemResults, because the numbers PL-013
-// asks for (valid-item ratio, cost per accepted item) are meaningless
-// without the same per-item accounting PL-008 already has to keep.
+// BatchMetrics is computed from a BatchResult's own items, because the numbers it
+// reports (valid-item ratio, cost per accepted item) are meaningless without the
+// same per-item accounting.
 
 // ItemStatus is one item's terminal state in a plural run.
 type ItemStatus uint8
@@ -34,12 +31,14 @@ const (
 	// ItemFailed: the item was attempted and did not produce a usable value.
 	ItemFailed
 
-	// ItemCancelled: never attempted, because the policy running the batch
-	// stopped dispatching new items after an earlier item's terminal
-	// failure (PolicyFailFast). Distinct from ItemFailed on purpose --
-	// nothing about this item's own input or a provider's answer to it was
-	// ever found wrong, so folding it into "failed" would blame the item
-	// for a policy decision that had nothing to do with it.
+	// ItemCancelled: not finished, because the run was stopped: the policy
+	// running the batch stopped dispatching new items after an earlier item's
+	// terminal failure (PolicyFailFast), or the context of the call ended. It is
+	// the same status under every policy and in both engines. Distinct from
+	// ItemFailed on purpose: nothing about this item's own input or a
+	// provider's answer to it was ever found wrong, so folding it into
+	// "failed" would blame the item for a decision that had nothing to do with
+	// it, and a caller's own cancellation would count as the items' failures.
 	ItemCancelled
 )
 
@@ -60,9 +59,8 @@ func (s ItemStatus) String() string {
 // ItemResult is one input's outcome from a plural run.
 type ItemResult[Out any] struct {
 	// Index is the item's position in the caller's input slice -- the
-	// caller's order, never a response's, the same rule PL-003's id
-	// protocol already enforces within a single chunk, carried up to the
-	// whole batch.
+	// caller's order, never a response's, the same rule the id protocol
+	// already enforces within a single chunk, carried up to the whole batch.
 	Index int
 
 	Status ItemStatus
@@ -73,25 +71,32 @@ type ItemResult[Out any] struct {
 	// nowhere.
 	Value Out
 
-	// Attempts is every provider call spent on this item, across the
-	// initial pass and any retry pass a policy ran for it.
+	// Attempts is how many requests were made for this item: for an item run
+	// alone, the provider requests it cost, across the first pass and any retry
+	// pass. For an item that went through a batched pass it counts the batched
+	// requests that carried it, one for each, and the provider requests of the
+	// call of its own it was sent after them. A batched request carries several
+	// items and is counted once for each of them, so the sum of every item's
+	// Attempts is not the number of requests the run made: BatchResult.Total
+	// .Attempts, and BatchMetrics.Requests, are.
 	Attempts int
 
 	// Repairs is the subset of Attempts that were repairs rather than fresh
-	// tries -- PL-013's repair count, read straight from the same envelope
-	// every other operation already reports through (types.Meta.Repairs).
+	// tries, read straight from the same envelope every other operation
+	// already reports through (Meta.Repairs).
 	Repairs int
 
 	// Cost is this item's own provider spend, summed across every attempt.
-	// Cost.Priced follows the same discipline as CostEstimate.Priced: false
-	// means unknown, not free.
+	// For an item of a batched pass it is an even share of what the pass cost,
+	// which is an attribution and not a measurement: the measured figure is
+	// BatchResult.Total. Cost.Priced follows the same discipline as
+	// CostEstimate.Priced: false means unknown, not free.
 	Cost CostInfo
 
-	// Mode names how this item ran. PL-008 is delivered as an item-level
-	// engine -- see RunOpManyPartial's doc comment in internal/ops/partial.go
-	// -- so this is "atomic" for everything RunOpManyPartial produces today.
-	// The field exists now so a future MDSP-chunk-aware partial engine
-	// (PL-009) can report "mdsp" per item without changing this type.
+	// Mode names how this item ran: "atomic" for an item sent alone by the
+	// one-call-per-item engine, "mdsp" for one answered from a batched
+	// response (ExecutionShape's own string for that shape), and
+	// ModeAtomicFallback for one the batched passes did not resolve.
 	Mode string
 
 	// Err explains a non-succeeded item. Nil for ItemSucceeded. Never the
@@ -100,17 +105,14 @@ type ItemResult[Out any] struct {
 	Err error
 }
 
-// ModeAtomicFallback is the ItemResult.Mode value PL-009's progressive
-// recovery cascade (internal/ops/recover.go) uses for an item that no MDSP
+// ModeAtomicFallback is the ItemResult.Mode value of an item that no batched
 // pass resolved and that was recovered instead by one isolated atomic call
-// over just that item -- set whether or not that atomic call itself
-// succeeded, since "it reached the fallback stage" and "the fallback stage
-// worked" are different facts and BatchMetrics needs the first one even when
-// the second is false. The paired value for an item resolved from a batched
-// response is "mdsp" (ExecutionShape.String() for ShapeMDSP, reused rather
-// than a second literal that could drift from it -- see
-// RunOpBatchResult's Meta.Strategy in batchprotocol.go, which sets the
-// identical string).
+// over just that item -- set whether or not that atomic call itself succeeded,
+// since "it reached the fallback stage" and "the fallback stage worked" are
+// different facts and BatchMetrics needs the first one even when the second is
+// false. The paired value for an item resolved from a batched response is "mdsp"
+// (ExecutionShape.String() for ShapeMDSP, which is also the Strategy a batched
+// call reports in its Meta).
 const ModeAtomicFallback = "atomic_fallback"
 
 // modeMDSP mirrors ExecutionShape's own "mdsp" string without importing the
@@ -125,10 +127,10 @@ type BatchSummary struct {
 	Failed    int
 	Cancelled int
 
-	// Policy is the policy that actually ran: the caller's own, or the one
-	// DefaultPolicyFor resolved when the caller left it PolicyUnspecified.
-	// Recorded here so a stored BatchResult can be read without also
-	// keeping the call that produced it.
+	// Policy is the policy that actually ran: the caller's own, or
+	// PolicyCollectFailures when the caller left it PolicyUnspecified. Recorded
+	// here so a stored BatchResult can be read without also keeping the call that
+	// produced it.
 	Policy BatchPolicy
 
 	// PolicyReason explains Policy when it was resolved rather than
@@ -145,22 +147,47 @@ type BatchResult[Out any] struct {
 	Items   []ItemResult[Out]
 	Summary BatchSummary
 
-	// Ledger is PL-014's post-execution decision ledger: every adaptive
-	// choice this run made -- a chunk size held, grown, or halved; an
-	// isolate pass; an atomic fallback -- with the reason each one
-	// happened, in order. Its zero value (an empty DecisionLedger) is
-	// correct and honest for an engine that makes no adaptive decisions:
-	// RunOpManyPartial dispatches one call per item unconditionally, so it
-	// leaves this empty rather than fabricating entries for decisions that
-	// were never made. RunOpManyRecover (PL-009's cascade,
-	// internal/ops/recover.go) is where this is populated for real.
+	// Total is what the whole run spent, summed over every request it made: the
+	// batched passes, every item's own calls, the retries and the repairs. It is
+	// measured, from the same call records a single call reports through, and so
+	// it is the figure to reconcile a bill against, where ItemResult.Cost is an
+	// attribution. Total.Elapsed is the time the whole call took on the clock,
+	// not a sum, since requests that ran together add up to more than the time
+	// that passed (Total.Timing is the sum). Total.RequestedContract is the level
+	// the run was planned to deliver and Total.DeliveredContract the weakest level
+	// any item that succeeded was delivered at. It is the zero Meta for a run that
+	// sent nothing.
+	Total Meta
+
+	// Ledger is the post-execution decision ledger: every adaptive choice this
+	// run made -- a chunk size held, grown, or halved; each batched request that
+	// asked about items again, with how many; an atomic fallback -- with the
+	// reason each one happened, in order. It says how many requests a chunk took
+	// and why, which is what a caller asking why a run took more requests than its
+	// plan estimated needs. Its zero value (an empty DecisionLedger) is correct
+	// and honest for an engine that makes no adaptive decisions: the engine that
+	// dispatches one call per item unconditionally leaves this empty rather than
+	// fabricating entries for decisions that were never made. The recovering
+	// engine is where it is populated. It holds counts and names, never a
+	// caller's data or a model's text.
 	Ledger DecisionLedger
 }
 
 // Complete reports whether every item succeeded -- no failures, no
-// cancellations.
+// cancellations. It reads both records a result keeps, the summary's counts and
+// the items themselves, and is true only when neither says otherwise: a result
+// assembled with a summary that lags its items does not report itself complete
+// beside a non-empty Failures().
 func (r BatchResult[Out]) Complete() bool {
-	return r.Summary.Failed == 0 && r.Summary.Cancelled == 0
+	if r.Summary.Failed != 0 || r.Summary.Cancelled != 0 {
+		return false
+	}
+	for _, item := range r.Items {
+		if item.Status != ItemSucceeded {
+			return false
+		}
+	}
+	return true
 }
 
 // Values returns the succeeded items' values, in input order, and whether
@@ -169,7 +196,9 @@ func (r BatchResult[Out]) Complete() bool {
 // which is the one thing a bare `([]T, error)` return cannot say when error
 // is nil and the slice is short.
 func (r BatchResult[Out]) Values() ([]Out, bool) {
-	values := make([]Out, 0, r.Summary.Succeeded)
+	// Sized from the items, not from the summary: a summary with a negative
+	// count panicked here.
+	values := make([]Out, 0, len(r.Items))
 	for _, item := range r.Items {
 		if item.Status == ItemSucceeded {
 			values = append(values, item.Value)
@@ -178,9 +207,8 @@ func (r BatchResult[Out]) Values() ([]Out, bool) {
 	return values, r.Complete()
 }
 
-// Failures returns every item that did not succeed, in input order --
-// PL-008's "a partial result must say which items succeeded and which did
-// not", the "which did not" half.
+// Failures returns every item that did not succeed, in input order: the "which
+// did not" half of a partial result.
 func (r BatchResult[Out]) Failures() []ItemResult[Out] {
 	var failures []ItemResult[Out]
 	for _, item := range r.Items {
@@ -204,33 +232,31 @@ func (r BatchResult[Out]) String() string {
 	return s
 }
 
-// BatchMetrics is PL-013's per-item measurement: the numbers that say
-// whether a batch strategy is working, because an HTTP 200 hides omissions
+// BatchMetrics is the per-item measurement of a plural run: the numbers that
+// say whether a batch strategy is working, because an HTTP 200 hides omissions
 // and invalid output the same way a shorter slice hides a partial result.
 //
-// It is computed here, from a BatchResult's own ItemResults, rather than
-// tracked separately during a run -- a second accounting pass kept in sync
-// by hand with the one RunOpManyPartial already keeps is exactly the "two
-// execution paths that could drift" AGENTS.md warns against, so Metrics is
-// a pure derivation instead.
+// It is computed here, from a BatchResult's own items, rather than tracked
+// separately during a run: a second accounting kept in sync by hand with the one
+// the engines already keep is exactly the two execution paths that could drift,
+// so Metrics is a pure derivation. It reads the items and not the summary, which
+// is a second record of the same counts that a result can be assembled with
+// wrong.
 //
-// What this delivery measures: valid-item ratio, total attempts, total
-// repairs, cost per accepted item, omissions, and atomic-fallback counts --
-// all read from data RunOpManyPartial or RunOpManyRecover (PL-009,
-// internal/ops/recover.go) already collects per item. Omissions and
-// AtomicFallbacks are zero for every BatchResult RunOpManyPartial produces,
-// honestly: RunOpManyPartial dispatches one call per item unconditionally,
-// so there is no chunk-level omission or fallback event for it to have
-// produced -- Mode is "atomic" for everything it reports (see
-// RunOpManyPartial's own doc comment, internal/ops/partial.go), which never
-// matches ModeAtomicFallback and whose Attempts already starts at 1, so
-// neither counter can be nonzero by construction. A BatchResult from
-// RunOpManyRecover is where these two numbers are real.
+// It measures valid-item ratio, total attempts, total repairs, cost per accepted
+// item, omissions, and atomic-fallback counts, all read from data the engines
+// collect per item. Omissions and AtomicFallbacks are zero for every BatchResult
+// of the one-call-per-item engine, honestly: it dispatches one call per item
+// unconditionally, so there is no chunk-level omission or fallback event for it
+// to have produced -- Mode is "atomic" for everything it reports, which never
+// matches ModeAtomicFallback and whose Attempts already starts at 1, so neither
+// counter can be nonzero by construction. A BatchResult from the recovering
+// engine is where these two numbers are real.
 type BatchMetrics struct {
 	Total int
 
-	// ValidItemRatio is Succeeded / Total -- the ratio PL-013 names first,
-	// since it answers "did this batch work" without reading anything else.
+	// ValidItemRatio is Succeeded / Total -- the ratio named first, since it
+	// answers "did this batch work" without reading anything else.
 	// Zero when Total is zero.
 	ValidItemRatio float64
 
@@ -239,9 +265,16 @@ type BatchMetrics struct {
 	Cancelled int
 
 	// TotalAttempts and TotalRepairs sum every item's own count, across
-	// every pass a policy ran (including PL-008's retry pass).
+	// every pass a policy ran (including the retry pass). TotalAttempts is a sum
+	// of the items' Attempts, which counts a batched request once for every item
+	// it carried: it is not the number of requests the run made, and not what a
+	// bill is reconciled against. Requests is.
 	TotalAttempts int
 	TotalRepairs  int
+
+	// Requests is how many provider requests the whole run made, as measured:
+	// BatchResult.Total.Attempts. Zero for a run that sent nothing.
+	Requests int
 
 	// AcceptedCost sums Cost.TotalCost over succeeded items only. A failed
 	// item's provider call was still paid for, but produced nothing usable
@@ -253,45 +286,43 @@ type BatchMetrics struct {
 	FailedCost   float64
 
 	// CostPriced reports whether any item in the batch carried a priced
-	// cost. False means unknown, not free -- PR-002's rule, carried into
+	// cost. False means unknown, not free: unknown cost stays unknown through
 	// per-item accounting. A caller must check this (and Succeeded > 0)
 	// before reading CostPerAcceptedItem.
 	CostPriced bool
 	Currency   string
 
-	// CostPerAcceptedItem is AcceptedCost / Succeeded -- PL-013's own
-	// phrase, "the number that actually says whether a batch strategy is
-	// working". Zero and meaningless when Succeeded is zero or CostPriced
-	// is false.
+	// CostPerAcceptedItem is AcceptedCost / Succeeded, "the number that
+	// actually says whether a batch strategy is working". Zero and meaningless
+	// when Succeeded is zero or CostPriced is false.
 	CostPerAcceptedItem float64
 
 	// CostQuality says what CostPerAcceptedItem is worth, reusing
-	// types.PricingQuality (OB-003) rather than the plain CostPriced bool
-	// alone. A bool can only say known/unknown; it cannot say that a known
-	// figure was assembled from a projection rather than the provider's own
-	// reported usage. PricingUnknown whenever CostPerAcceptedItem itself is
-	// meaningless -- CostPriced is false, or every priced item in the batch
-	// failed, leaving nothing priced to divide into AcceptedCost. Otherwise
-	// the weakest quality among the succeeded, priced items that make up
-	// AcceptedCost: PricingEstimated if any of them is an estimate (a plan
-	// made before the call, or a provider that answered with no usage --
-	// EstimateCost's own marking, pricing/pricing.go), else the quality
-	// those items share (PricingExact or PricingFree; in practice uniform
-	// within one batch, since every item runs the same op against the same
-	// model's rate card). A caller reading CostPerAcceptedItem alongside
-	// CostQuality can tell a number backed entirely by reported usage from
-	// one where at least one accepted item's spend is a guess, instead of a
-	// single average that would look identical either way.
+	// PricingQuality rather than the plain CostPriced bool alone. A bool can
+	// only say known/unknown; it cannot say that a known figure was assembled
+	// from a projection rather than the provider's own reported usage.
+	// PricingUnknown whenever CostPerAcceptedItem itself is meaningless --
+	// CostPriced is false, or every priced item in the batch failed, leaving
+	// nothing priced to divide into AcceptedCost. Otherwise the weakest quality
+	// among the succeeded, priced items that make up AcceptedCost:
+	// PricingEstimated if any of them is an estimate (a plan made before the
+	// call, or a provider that answered with no usage), else the quality those
+	// items share (PricingExact or PricingFree; in practice uniform within one
+	// batch, since every item runs the same op against the same model's rate
+	// card). A caller reading CostPerAcceptedItem alongside CostQuality can tell
+	// a number backed entirely by reported usage from one where at least one
+	// accepted item's spend is a guess, instead of a single average that would
+	// look identical either way.
 	CostQuality PricingQuality
 
-	// Omissions counts items that were not resolved by the very first MDSP
+	// Omissions counts items that were not resolved by the very first batched
 	// pass that asked about them: an item whose final Mode is "mdsp" but
 	// whose Attempts is greater than one (it took an isolate pass to
 	// resolve), plus every item whose final Mode is ModeAtomicFallback
-	// (every one of those was omitted by at least one MDSP pass before
-	// falling back). PL-013's own phrase for why this matters: "HTTP 200
-	// hides omissions" -- a batch that succeeds overall can still have paid
-	// for a chunk response that dropped items nobody would otherwise see.
+	// (every one of those was omitted by at least one batched pass before
+	// falling back). It matters because an HTTP 200 hides omissions: a batch
+	// that succeeds overall can still have paid for a chunk response that
+	// dropped items nobody would otherwise see.
 	Omissions int
 
 	// AtomicFallbacks counts items whose final Mode is ModeAtomicFallback --
@@ -302,14 +333,27 @@ type BatchMetrics struct {
 	AtomicFallbacks int
 }
 
-// Metrics computes PL-013's per-item measurement from r's own ItemResults.
+// Metrics computes the per-item measurement from r's own items. Total is the
+// number of items, and Succeeded, Failed and Cancelled are counted from their
+// statuses; the summary is not read, so a result whose summary lies does not
+// make its measurement lie. An item with no status counts in Total and in no
+// outcome.
 func (r BatchResult[Out]) Metrics() BatchMetrics {
 	m := BatchMetrics{
-		Total:       r.Summary.Total,
-		Succeeded:   r.Summary.Succeeded,
-		Failed:      r.Summary.Failed,
-		Cancelled:   r.Summary.Cancelled,
+		Total:       len(r.Items),
 		CostQuality: PricingUnknown,
+		Requests:    r.Total.Attempts,
+	}
+
+	for _, item := range r.Items {
+		switch item.Status {
+		case ItemSucceeded:
+			m.Succeeded++
+		case ItemFailed:
+			m.Failed++
+		case ItemCancelled:
+			m.Cancelled++
+		}
 	}
 	if m.Total > 0 {
 		m.ValidItemRatio = float64(m.Succeeded) / float64(m.Total)
@@ -338,9 +382,15 @@ func (r BatchResult[Out]) Metrics() BatchMetrics {
 		}
 		m.AcceptedCost += item.Cost.TotalCost
 		switch {
-		case m.CostQuality == PricingUnknown:
-			// First succeeded, priced item seen: adopt its quality outright.
+		case m.CostQuality == PricingUnknown && item.Cost.Quality.Known():
+			// First succeeded, priced item with a known quality: adopt it. An
+			// item whose engine did not set one says nothing about the figure,
+			// and adopting its empty quality would keep a later one out.
 			m.CostQuality = item.Cost.Quality
+		case m.CostQuality == PricingFree && item.Cost.Quality == PricingExact:
+			// A batch with both free and exact items has real spend in its
+			// average: the exact figure is what the average is worth.
+			m.CostQuality = PricingExact
 		case item.Cost.Quality == PricingEstimated:
 			// PricingEstimated is the weakest quality a priced figure can
 			// carry (see CostQuality's own doc comment) -- once any accepted
@@ -357,19 +407,21 @@ func (r BatchResult[Out]) Metrics() BatchMetrics {
 	return m
 }
 
-// BatchPolicy is PL-008's five partial-success and failure policies. Each
-// defines scheduling (does the run keep going after a failure), cancellation
-// (does it stop work already in flight), retry (does it spend extra calls on
-// a failed item), and return behaviour (does the call itself report an
-// error, or only the BatchResult).
+// BatchPolicy is the partial-success and failure policies of the
+// one-call-per-item engine. Each defines scheduling (does the run keep going
+// after a failure), cancellation (does it stop work already in flight), retry
+// (does it spend extra calls on a failed item), and return behaviour (does the
+// call itself report an error, or only the BatchResult).
 type BatchPolicy uint8
 
 const (
-	// PolicyUnspecified: the caller stated no policy. RunOpManyPartial
-	// resolves it through DefaultPolicyFor(len(items)) and records the
-	// resolution in BatchSummary.Policy/PolicyReason, so a returned result
-	// never leaves PolicyUnspecified in place -- an unresolved policy on a
-	// finished result would be as dishonest as an unexplained partial one.
+	// PolicyUnspecified: the caller stated no policy. RunOpManyPartial runs it
+	// as PolicyCollectFailures, whatever the number of items, and records that in
+	// BatchSummary.Policy and PolicyReason, so a returned result never leaves
+	// PolicyUnspecified in place -- an unresolved policy on a finished result
+	// would be as dishonest as an unexplained partial one. It used to resolve to
+	// one policy up to twenty items and another above, which made a call return an
+	// error at 20 items and a result with failures in it at 21.
 	PolicyUnspecified BatchPolicy = iota
 
 	// PolicyFailFast: stop dispatching new items the instant one fails
@@ -387,20 +439,18 @@ const (
 	PolicyCollectFailures
 
 	// PolicyRetryFailedItems: run every item once, then retry -- isolated,
-	// only the items still failed, exactly PL-009's "a valid item is never
-	// replayed because a sibling failed" applied at item granularity -- up
-	// to a bounded number of additional attempts. If any item is still
-	// failed once retries are exhausted, the call reports an error: this
-	// policy's contract is "get everything, spending retries to do it",
-	// and returning success quietly after the retry budget did not work
+	// only the items still failed, so a valid item is never replayed because a
+	// sibling failed -- up to a bounded number of additional attempts. If any
+	// item is still failed once retries are exhausted, the call reports an
+	// error: this policy's contract is "get everything, spending retries to do
+	// it", and returning success quietly after the retry budget did not work
 	// would hide that it did not work.
 	PolicyRetryFailedItems
 
 	// PolicyRetryThenCollect: identical scheduling and retry behaviour to
 	// PolicyRetryFailedItems, but never fails the call -- whatever is still
 	// failed after retries is reported the same way PolicyCollectFailures
-	// reports it. This is the policy DefaultPolicyFor selects for a long
-	// batch: a caller running hundreds of items does not want the whole
+	// reports it: a caller running hundreds of items does not want the whole
 	// call to error out because two of them, even after retrying, did not
 	// come back.
 	PolicyRetryThenCollect
@@ -432,25 +482,4 @@ func (p BatchPolicy) String() string {
 	default:
 		return "unspecified"
 	}
-}
-
-// LongBatchThreshold is DefaultPolicyFor's cutover point between
-// PolicyFailFast (a small batch, where a caller is more likely watching and
-// a fast stop wastes the least) and PolicyRetryThenCollect (the task's
-// stated default for a long batch, where restarting hundreds of items over
-// a couple of stragglers costs more than reporting them and moving on).
-const LongBatchThreshold = 20
-
-// DefaultPolicyFor resolves PolicyUnspecified into a concrete policy given
-// how many items are being run, and says why -- so a caller inspecting a
-// finished BatchResult can tell a deliberate choice from a fallback.
-func DefaultPolicyFor(itemCount int) (policy BatchPolicy, reason string) {
-	if itemCount > LongBatchThreshold {
-		return PolicyRetryThenCollect, fmt.Sprintf(
-			"no policy specified; %d items exceeds the long-batch threshold (%d), defaulting to retry-then-collect",
-			itemCount, LongBatchThreshold)
-	}
-	return PolicyFailFast, fmt.Sprintf(
-		"no policy specified; %d items is at or below the long-batch threshold (%d), defaulting to fail-fast",
-		itemCount, LongBatchThreshold)
 }

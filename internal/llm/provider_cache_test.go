@@ -18,7 +18,7 @@ func captureOpenAIRequest(t *testing.T) (*httptest.Server, *map[string]any) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+		_, _ = w.Write([]byte(`{"status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
 	}))
 	t.Cleanup(server.Close)
 	return server, &captured
@@ -29,22 +29,29 @@ func captureOpenAIRequest(t *testing.T) (*httptest.Server, *map[string]any) {
 // prompt_cache_key. Before this field existed, the Responses request had no
 // way to hint which backend replica already held the request's stable
 // prefix, so a repeat request could route to a cold one and pay full price.
+//
+// The key here used to be 88 characters and the assertion was that it reached
+// the wire verbatim. The live API refuses a key over 64 ("string too long"), so
+// that test was asserting a request that cannot succeed (LX-002). A key within
+// the limit is still sent unchanged; what happens to a longer one is covered by
+// TestOpenAIResponsesBoundsALongPromptCacheKeyOnTheWire.
 func TestOpenAIResponsesSendsPromptCacheKey(t *testing.T) {
 	server, captured := captureOpenAIRequest(t)
 	provider := newTestOpenAIProvider(t, server.URL)
 
+	const key = "-:gpt-5.6-luna:deadbeefcafe:strict:json"
 	if _, err := provider.Complete(context.Background(), CompletionRequest{
 		Model:          "gpt-5.6-luna",
 		SystemPrompt:   "be terse",
 		UserPrompt:     "hello",
-		PromptCacheKey: "extract:v1:Person:v1:abc123:json-schema-2020-12-strict:gpt-5.6-luna:deadbeef:strict:json",
+		PromptCacheKey: key,
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
 	got, _ := (*captured)["prompt_cache_key"].(string)
-	if got != "extract:v1:Person:v1:abc123:json-schema-2020-12-strict:gpt-5.6-luna:deadbeef:strict:json" {
-		t.Fatalf("prompt_cache_key = %q, want the key to reach the request verbatim", got)
+	if got != key {
+		t.Fatalf("prompt_cache_key = %q, want a key within the limit to reach the request verbatim", got)
 	}
 }
 
@@ -105,7 +112,7 @@ func captureAnthropicRequest(t *testing.T) (*httptest.Server, *map[string]any) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write([]byte(`{"stop_reason": "end_turn", "content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	t.Cleanup(server.Close)
 	return server, &captured

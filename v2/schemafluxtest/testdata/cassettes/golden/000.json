@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "provider": "golden",
+  "request": {
+    "model": "gold-1",
+    "system": "Sort the ticket.",
+    "user": "I want a refund.",
+    "temperature": 0.2,
+    "max_tokens": 300,
+    "format": "json",
+    "schema_name": "Ticket",
+    "schema": "sha256:a2c799262a3ce3c19ef5cdd983bf3d12b43ab3c426227091b909dcb7054738c0",
+    "effort": "low",
+    "effort_preferred": true
+  },
+  "response": {
+    "content": "<p>Refund & reply</p>",
+    "usage": {
+      "input": 10,
+      "output": 4,
+      "total": 14,
+      "cached": 2,
+      "cache_write": 1,
+      "reasoning": 3
+    },
+    "model": "gold-1",
+    "provider": "gateway",
+    "upstream": "gold-host",
+    "finish_reason": "stop",
+    "service_tier": "flex",
+    "cached": true,
+    "hedged": true
+  }
+}

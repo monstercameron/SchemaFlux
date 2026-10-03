@@ -35,8 +35,17 @@ func Classify(err error) types.ErrorKind {
 		return types.KindTimeout
 	}
 
+	// A RateLimitError is the type that carries Retry-After, and it carries it for
+	// a 503 as well as a 429. The kind is the status's, so that a 503 is the
+	// provider being unavailable here as it is for an APIError below; a status
+	// that was not recorded is read as the rate limit the type is named for.
 	var rateLimit *RateLimitError
 	if errors.As(err, &rateLimit) {
+		if rateLimit.APIError != nil {
+			if kind := kindForStatus(rateLimit.StatusCode); kind != types.KindUnknown {
+				return kind
+			}
+		}
 		return types.KindRateLimited
 	}
 
@@ -91,7 +100,10 @@ func kindForStatus(status int) types.ErrorKind {
 // retry classifier, after a 500 whose body happened to contain
 // "invalid_request_error" was classified permanent and cost the caller every
 // retry they were entitled to -- so this only matches phrases this library
-// itself produces, never a vendor's prose.
+// itself produces, never a vendor's prose. The budget phrase is the sentence of
+// pricing.ErrBudgetExceeded, not the word: a vendor's own explanation, such as
+// Anthropic's "max_tokens must be greater than thinking.budget_tokens", is not
+// the caller's spend limit.
 func kindFromText(message string) types.ErrorKind {
 	lowered := strings.ToLower(message)
 
@@ -104,7 +116,7 @@ func kindFromText(message string) types.ErrorKind {
 		return types.KindTimeout
 	case strings.Contains(lowered, "context canceled"):
 		return types.KindCanceled
-	case strings.Contains(lowered, "budget"):
+	case strings.Contains(lowered, "cost budget exceeded"):
 		return types.KindBudgetExceeded
 	}
 
@@ -115,7 +127,9 @@ func kindFromText(message string) types.ErrorKind {
 // but which cannot be used.
 //
 // A 200 is not a logical success: a truncated body arrives with the same status
-// as a complete one, and the finish reason is the only thing that says so.
+// as a complete one, and the finish reason is the only thing that says so. A
+// reply with no text is a malformed output unless it carries tool calls, which
+// are its answer.
 func ClassifyCompletion(resp CompletionResponse) types.ErrorKind {
 	switch strings.ToLower(resp.FinishReason) {
 	// "max_output_tokens" is the Responses API's actual incomplete reason and
@@ -131,7 +145,10 @@ func ClassifyCompletion(resp CompletionResponse) types.ErrorKind {
 		return types.KindPolicyViolation
 	}
 
-	if strings.TrimSpace(resp.Content) == "" {
+	// A reply that asks for tools has no text to read, and is complete: the model
+	// answered by naming the calls it wants made. Truncation and a content filter
+	// are decided above, so a call that was cut off is not mistaken for one.
+	if strings.TrimSpace(resp.Content) == "" && len(resp.ToolCalls) == 0 {
 		return types.KindMalformedOutput
 	}
 	return types.KindUnknown

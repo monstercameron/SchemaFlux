@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"math/rand/v2"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -131,35 +132,122 @@ func providerFromContext(ctx context.Context) llm.Provider {
 // WithProvider over the package-level default -- see providerContextKey's
 // comment for why the per-call path has to win.
 func callLLM(ctx context.Context, systemPrompt, userPrompt string, opts types.OpOptions) (string, error) {
-	// IN-004: a client's own snapshot wins over everything process-wide, and is
-	// consulted before the narrower WithProvider seam so that a client which set
-	// both does not get whichever one this function happened to read first.
-	if p := ExecProvider(ctx); p != nil {
-		return CallLLM(ctx, p, systemPrompt, userPrompt, opts)
+	// Checked here as well as in CallLLM because the test caller hook below
+	// does not go through CallLLM.
+	if err := contextOver(ctx); err != nil {
+		return "", err
 	}
-	if p := providerFromContext(ctx); p != nil {
-		return CallLLM(ctx, p, systemPrompt, userPrompt, opts)
+	if err := checkCallOptions(opts); err != nil {
+		return "", err
 	}
 
-	caller, provider := currentHooks()
+	// The client the call runs on is fixed here, before anything reads it: a
+	// default replaced while the call is in flight must not give it the
+	// provider of one reader and the budget of the next.
+	ctx, _ = PinExec(ctx)
 
-	// Use custom caller if set (for testing)
+	provider, caller, err := routeFor(ctx)
+	if err != nil {
+		return "", err
+	}
+	// Use custom caller if set (for testing). It answers before the provider
+	// the same lookup names for planning.
 	if caller != nil {
 		return caller(ctx, systemPrompt, userPrompt, opts)
-	}
-
-	if provider == nil {
-		// Name the way out. "no LLM provider configured" is true but leaves the
-		// caller nowhere to go, and it is what they see when Init returned an
-		// error they discarded.
-		return "", ErrNoProvider
 	}
 	return CallLLM(ctx, provider, systemPrompt, userPrompt, opts)
 }
 
-// CallLLM executes an LLM request using the provided provider
-func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPrompt string, opts types.OpOptions) (string, error) {
-	log := logger.GetLogger()
+// noProvider is what a call gets when nothing names a provider for it. It has
+// the sentinel's text, and errors.Is still matches ErrNoProvider; the kind is
+// configuration, because the way out is the caller's own: Init, or the
+// environment.
+var noProvider = types.Classified(types.KindConfiguration, ErrNoProvider)
+
+// routeFor is the one place that decides which provider a call under ctx goes
+// to. It returns the provider, or the test caller hook, or the reason there is
+// neither.
+//
+// The order is, first to last: the provider on the snapshot the context
+// carries, or on the default snapshot when it carries none (IN-004: a client's
+// own snapshot wins over everything process-wide, and over the narrower
+// WithProvider seam, so a client that set both does not get whichever one this
+// function happened to read first); the snapshot's own reason for having no
+// provider; the provider WithProvider attached; the process-wide caller hook
+// and then the process-wide default provider; and last noProvider.
+//
+// The snapshot's reason comes before the three process-level routes because a
+// client that cannot make a call has said so, and a provider that happens to be
+// on the context, or a hook or default left in the process by something else
+// that is linked into the program, would otherwise answer for it: the caller
+// would get answers from a provider they did not configure, and never learn the
+// client's own configuration was wrong.
+//
+// When the hook is set it answers the call, and the process-wide provider is
+// returned beside it so that planning, which asks only which route a call
+// would take, reads the same provider it always did.
+func routeFor(ctx context.Context) (provider llm.Provider, caller LLMCaller, err error) {
+	cfg := execConfigFrom(ctx)
+	if cfg != nil && cfg.Provider != nil {
+		return cfg.Provider, nil, nil
+	}
+	if cfg != nil && cfg.Err != nil {
+		return nil, nil, cfg.Err
+	}
+	if p := providerFromContext(ctx); p != nil {
+		return p, nil, nil
+	}
+	caller, provider = currentHooks()
+	if caller != nil || provider != nil {
+		return provider, caller, nil
+	}
+	// Name the way out. "no LLM provider configured" is true but leaves the
+	// caller nowhere to go, and it is what they see when Init returned an
+	// error they discarded.
+	return nil, nil, noProvider
+}
+
+// CallLLM executes an LLM request using the provided provider.
+//
+// OB-006: this is also where a buffered request is emitted to the installed
+// observers (a streamed one is emitted by runStream). Every provider reaches
+// the model through here -- the package default, a client's own instance, one
+// attached to the context by WithProvider, and anything a caller handed to
+// RegisterProvider or RegisterProviderFactory -- so observing at this one site
+// is what makes a caller's own transport as visible to a host's tracing as the
+// providers this repository ships.
+//
+// The observed unit is the whole logical request, not one attempt: retries
+// are reported as OperationResult.Attempts and as a note for each, rather than
+// as extra requests, so a host does not count a retried request several times
+// in its own latency figures. Whether the answer was then usable is not this
+// unit's to say: that is the outcome of the operation the request serves
+// (observeOperation).
+//
+// What it does not observe as a request, deliberately: the pre-flight
+// refusals above the emission point -- a context that is already over, no
+// model mapping, an exhausted budget, a trust-boundary violation. Nothing was
+// attempted on those paths, and a request reporting zero attempts and zero
+// duration for a request that never existed is a reader's problem rather than
+// a reader's information. They still return classified errors to the caller,
+// and the operation they were made for reports them.
+func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPrompt string, opts types.OpOptions) (answer string, callErr error) {
+	// LX-061. A context that is already cancelled or past its deadline sends
+	// nothing. Whether a provider notices a dead context is up to the provider,
+	// and one that does not would be sent a request, and billed for it, on
+	// behalf of a caller who had already stopped waiting.
+	if err := contextOver(ctx); err != nil {
+		return "", err
+	}
+	if err := checkCallOptions(opts); err != nil {
+		return "", err
+	}
+
+	// Pinned for the same reason as in callLLM: this is also an entry, for the
+	// callers that name their provider themselves.
+	ctx, _ = PinExec(ctx)
+
+	log := loggerFor(ctx)
 
 	// Determine model. An empty result means the provider has no mapping and is
 	// not OpenAI, so there is no defensible default: sending an OpenAI model ID
@@ -172,35 +260,14 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// catalogue -- this library does not have one, and refusing a model it has
 	// simply never heard of would make every newly released model unusable
 	// until somebody updated a list here.
-	model := opts.Model
-	if model == "" {
-		model = config.GetModel(opts.Intelligence, provider.Name())
-	}
-	if model == "" {
-		return "", fmt.Errorf(
-			"no default model for provider %q; set SCHEMAFLUX_MODEL, or SCHEMAFLUX_MODEL_SMART / _FAST / _QUICK. Providers with a built-in mapping: %s",
-			provider.Name(), strings.Join(config.KnownProviders(), ", "))
-	}
-
-	// Budgets are checked before the request, not after the invoice. With
-	// enforcement off -- the default -- this always allows the call and the
-	// alert callback does the talking.
 	//
-	// IN-004: a client's own ledger replaces the process-wide one entirely
-	// rather than being checked in addition to it. Checking both would mean a
-	// client could be refused by a budget belonging to a different tenant, which
-	// is the multi-tenancy failure this seam exists to remove -- and a client
-	// that declared its own ceiling has said what it wants enforced.
-	if budget := ExecBudget(ctx); budget != nil {
-		if err := budget.Check(); err != nil {
-			log.Error("Refusing the request: client budget exhausted",
-				"provider", provider.Name(), "model", model, "error", err)
-			return "", err
-		}
-	} else if err := pricing.CheckBudget(); err != nil {
-		log.Error("Refusing the request: budget exhausted",
-			"provider", provider.Name(), "model", model, "error", err)
-		return "", err
+	// A client can name the model for all of its calls, which takes the place
+	// of the tier's mapping and gives way to a pin on the call (resolveModel).
+	model := resolveModel(ctx, opts, provider)
+	if model == "" {
+		// Classified, and it says what to do with a client as well as with
+		// the environment (DX-020).
+		return "", config.NoDefaultModelError(provider.Name())
 	}
 
 	// The tier ceiling is only the default. A caller who set
@@ -239,7 +306,9 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// and made a MapReduce return nothing. The ordering is a real trade-off
 	// and this is the side of it that does not break the format everything
 	// else already agreed on.
-	stableSystemPrompt := strengthenSystemPrompt(systemPrompt, responseFormat)
+	//
+	// A decision declines the reinforcement block on the context (LAT-004).
+	stableSystemPrompt := dec12StrengthenSystemPrompt(ctx, systemPrompt, responseFormat)
 
 	// TC-001: the caller's steering must never end up inside the segment
 	// this library sends as system policy. applySteering (below) always
@@ -249,21 +318,83 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// though it were fixed policy.
 	if err := verifyTrustBoundary(stableSystemPrompt, opts.Steering); err != nil {
 		log.Error("Refusing the request: trust boundary violated",
-			"provider", provider.Name(), "error", err)
+			"provider", provider.Name(), "error", loggedError(err))
 		return "", err
 	}
 
+	// LX-105: the caller's reasoning effort, or failing that the operation's
+	// preference, marked as one.
+	effort, effortPreferred := requestEffort(ctx, opts)
+
 	req := llm.CompletionRequest{
-		Model:          model,
-		SystemPrompt:   stableSystemPrompt,
-		UserPrompt:     applySteering(userPrompt, opts.Steering),
-		Temperature:    float64(temperature),
-		MaxTokens:      maxTokens,
-		ResponseFormat: responseFormat,
-		JSONSchema:     opts.JSONSchema,
-		SchemaName:     opts.SchemaName,
-		PromptCacheKey: promptCacheKeyFor(opts, model, responseFormat, stableSystemPrompt),
-		WebSearch:      opts.WebSearch,
+		Model:                    model,
+		SystemPrompt:             stableSystemPrompt,
+		UserPrompt:               applySteering(userPrompt, opts.Steering),
+		Temperature:              float64(temperature),
+		MaxTokens:                maxTokens,
+		ResponseFormat:           responseFormat,
+		JSONSchema:               opts.JSONSchema,
+		SchemaName:               opts.SchemaName,
+		PromptCacheKey:           promptCacheKeyFor(opts, model, responseFormat, stableSystemPrompt),
+		WebSearch:                opts.WebSearch,
+		ReasoningEffort:          effort,
+		ReasoningEffortPreferred: effortPreferred,
+		// LX-100: what the operation is deciding, typed, when it is deciding
+		// something. A generating provider does not read it.
+		Decision: requestDecision(ctx),
+	}
+
+	resp, err := callRequest(ctx, provider, req, opts)
+	if err != nil {
+		return "", err
+	}
+	// An operation declares no tools. The calls of a reply are the caller's to
+	// run, and this function returns text only, so a reply that holds some is
+	// refused here rather than answered with the calls left out.
+	if len(resp.ToolCalls) > 0 {
+		return "", errToolCallsForAnOperation
+	}
+	return resp.Content, nil
+}
+
+// callRequest sends one request through everything a call has: the client's data
+// policy and budget before it, the scheduler, the retries, the observers and the
+// call record, and it returns the whole answer. CallLLM is the entry of an
+// operation, which wants the text; the entry of a conversation's turn (CallTurn)
+// wants the tool calls as well, and has to get them through the same path rather
+// than a copy of it.
+//
+// req is complete, with its model resolved, and ctx is the context its entry
+// pinned. opts is what the call record and the observers say about the call: the
+// request is built from it by the entry, and nothing here reads it to change the
+// request. An error comes with an empty response.
+func callRequest(ctx context.Context, provider llm.Provider, req llm.CompletionRequest, opts types.OpOptions) (_ llm.CompletionResponse, callErr error) {
+	log := loggerFor(ctx)
+	model := req.Model
+	responseFormat := req.ResponseFormat
+	maxTokens := req.MaxTokens
+
+	// Budgets are checked before the request, not after the invoice. With
+	// enforcement off -- the default -- this always allows the call and the
+	// alert callback does the talking.
+	//
+	// IN-004: a client's own ledger replaces the process-wide one entirely
+	// rather than being checked in addition to it. Checking both would mean a
+	// client could be refused by a budget belonging to a different tenant, which
+	// is the multi-tenancy failure this seam exists to remove -- and a client
+	// that declared its own ceiling has said what it wants enforced.
+	//
+	// LX-126: the client's data policy comes first. A route the policy forbids
+	// is not sent to, whatever the budget says, and nothing is charged for it.
+	if err := checkDataPolicy(ctx, provider, model); err != nil {
+		log.Error("Refusing the request: the client's data policy does not allow this route",
+			"provider", provider.Name(), "model", model, "error", loggedError(err))
+		return llm.CompletionResponse{}, err
+	}
+	if err := checkBudgetFor(ctx, provider, model); err != nil {
+		log.Error("Refusing the request: budget exhausted",
+			"provider", provider.Name(), "model", model, "error", loggedError(err))
+		return llm.CompletionResponse{}, err
 	}
 
 	start := time.Now()
@@ -273,18 +404,29 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	opts.RequestID = requestID
 	opts.CorrelationID = correlationID
 
-	log.Debug("LLM request started",
-		"requestID", requestID,
-		"correlationID", correlationID,
-		"provider", provider.Name(),
-		"model", model,
-		"responseFormat", responseFormat,
-		"maxTokens", maxTokens,
-		"mode", opts.Mode.String(),
-		"intelligence", opts.Intelligence.String(),
-	)
+	// The arguments of a log call are boxed before the call checks the level,
+	// which was eight allocations for a line that is off by default.
+	if log.Enabled(ctx, slog.LevelDebug) {
+		log.Debug("LLM request started",
+			"requestID", requestID,
+			"correlationID", correlationID,
+			"provider", provider.Name(),
+			"model", model,
+			"responseFormat", responseFormat,
+			"maxTokens", maxTokens,
+			"mode", opts.Mode.String(),
+			"intelligence", opts.Intelligence.String(),
+		)
+	}
 
 	maxRetries, retryBackoff := provider.RetryPolicy()
+	// A client that names its own retries decides over the provider's: positive
+	// is how many, negative is none. Zero leaves the provider's policy.
+	if n := execRetries(ctx); n > 0 {
+		maxRetries = n
+	} else if n < 0 {
+		maxRetries = 0
+	}
 	// Negative means "not configured, use the global default". Zero means the
 	// caller asked for no retries and gets none: the previous `<= 0` test made
 	// Client.WithRetries(0) -- which is documented as the retry ceiling and
@@ -297,6 +439,11 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		retryBackoff = config.GetLLMRetryBackoff()
 	}
 
+	// The count is held to a ceiling before one is added to it: a count at the
+	// top of the integers wrapped to a negative number of attempts, the loop
+	// below never ran, and the empty response it had not received was read as an
+	// answer that did not parse.
+	maxRetries = min(maxRetries, MaxRetries)
 	attempts := maxRetries + 1
 	var (
 		resp llm.CompletionResponse
@@ -305,6 +452,87 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		// envelope reports and what the bill reflects. Without it a request
 		// that succeeded on its third try reported one attempt.
 		providerCalls int
+	)
+
+	// The observer's start event for the request, and a deferred finish that
+	// fires on every exit below -- the success, the exhausted-retry failure,
+	// the cancelled-during-backoff failure, and a panic alike. A defer rather
+	// than a call at each return because the next return added to this
+	// function would otherwise be the one that silently drops its span, and a
+	// trace missing exactly the failures is worse than no trace.
+	//
+	// ctx is reassigned from the observer's return: an observer that opened a
+	// span puts it there, which is what puts every provider call below inside
+	// it. The finish reaches the observers this start called, whatever is
+	// installed by then (telemetry.ObserveOperationEnd).
+	startEvent := telemetry.OperationEvent{
+		Operation:      operationNameFor(ctx, opts),
+		Provider:       provider.Name(),
+		Model:          model,
+		RequestID:      requestID,
+		CorrelationID:  correlationID,
+		Mode:           opts.Mode.String(),
+		Intelligence:   opts.Intelligence.String(),
+		SchemaName:     opts.SchemaName,
+		ResponseFormat: responseFormat,
+		Repair:         isRepairRequest(ctx),
+	}
+	ctx = observeStart(ctx, startEvent)
+
+	// providerElapsed accumulates only the time inside provider.Complete, so
+	// the finish event can report the provider's share of the wall clock
+	// apart from this function's own backoff.
+	var providerElapsed time.Duration
+	// answered is whether the last attempt got an answer from the provider,
+	// usable or not. returned is set before the return that hands the answer
+	// back: a function that leaves with neither it nor an error is unwinding
+	// from a panic, in the provider or in this library.
+	var answered, returned bool
+	// refused holds the answers of this request that were produced, paid for
+	// and refused, so its finish can report what every answered attempt used
+	// (observe.go).
+	var refused refusedAnswers
+	// Provider and Model are deliberately NOT seeded from the start event.
+	// They mean "what answered", and on a failure nothing did -- seeding them
+	// with what was *asked* would report a provider that never responded as
+	// the one that did, which is the library-reporting-success-while-wrong
+	// shape one field down. What was asked for is on the start event, where it
+	// is true.
+	finish := telemetry.OperationResult{Operation: startEvent.Operation}
+	defer func() {
+		finish.Duration = time.Since(start)
+		finish.ProviderDuration = providerElapsed
+		finish.Attempts = providerCalls
+		switch {
+		case callErr != nil:
+			// The kind, from the one place allowed to decide what a failure
+			// is (classify.go). Never callErr.Error(): a provider's message
+			// quotes the request back, and an observer's output is an export.
+			finish.ErrorKind = requestErrorKind(callErr, answered, resp)
+		case !returned:
+			// A panic. It is not recovered here: the request is reported as
+			// failed and the panic goes on to whoever it was going to. It
+			// used to be reported as a success, since there was no error.
+			finish.ErrorKind = telemetry.ErrorKindInternal
+		}
+		if finish.ErrorKind != "" {
+			// A request that failed is counted too, by its kind. The request
+			// counter held only the requests that were answered.
+			telemetry.RecordLLMFailure(startEvent.Provider, model, opts.Mode, opts.Intelligence, finish.ErrorKind)
+		}
+		if callErr != nil && refused.any() {
+			// Every answer this request got was refused, and each was paid for.
+			finish.Usage = refused.usage
+		}
+		observeEnd(ctx, finish)
+	}()
+
+	// timing is where this call's time went: the wait for a slot before each
+	// attempt, and what the provider reports of its HTTP call for each attempt
+	// that got an answer. timed is whether anything was measured at all.
+	var (
+		timing types.Timing
+		timed  bool
 	)
 
 	// prevWait threads the decorrelated-jitter sequence across this one call's
@@ -317,9 +545,99 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	prevWait := retryBackoff
 
 	for attempt := 1; attempt <= attempts; attempt++ {
-		providerCalls++
-		resp, err = provider.Complete(ctx, req)
+		// A retry is not sent on a context that ended while the last attempt
+		// was in flight or during the wait: the wait below can return on its
+		// timer when the timer and the context are both ready.
+		if attempt > 1 {
+			if over := contextOver(ctx); over != nil {
+				publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
+				return llm.CompletionResponse{}, over
+			}
+			// The attempt that was thrown away has been charged, so the budget
+			// can have run out since the check that let this call start.
+			if spent := checkBudget(ctx); spent != nil {
+				log.Error("Refusing the retry: budget exhausted",
+					"provider", provider.Name(), "model", model, "attempt", attempt, "error", loggedError(spent))
+				publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
+				return llm.CompletionResponse{}, spent
+			}
+		}
+		// LX-126: each attempt takes a slot in the client's scheduler, when
+		// it has one, and gives it back when the attempt ends, so the wait
+		// before a retry holds nothing.
+		var admitted bool
+		asked := time.Now()
+		resp, admitted, err = throughScheduler(ctx, provider, req, func(runCtx context.Context) (llm.CompletionResponse, error) {
+			// With a scheduler, the time from asking for a slot to being given
+			// one. With none this is the cost of a function call.
+			if ExecScheduler(ctx) != nil {
+				timing.Queued += time.Since(asked)
+				timed = true
+			}
+			providerCalls++
+			attemptStart := time.Now()
+			answer, callErr := provider.Complete(runCtx, req)
+			// Measured around the provider call only, so the backoff this
+			// loop adds between attempts, and the wait for a slot, stay out
+			// of the provider's figure.
+			providerElapsed += time.Since(attemptStart)
+			return answer, callErr
+		})
+		if !admitted {
+			// The scheduler's own answer: no room, closed, or the caller gave
+			// up waiting. Nothing was sent, and it is not retried: a caller
+			// who bounded the queue asked for exactly this refusal.
+			log.Error("LLM request was not admitted by the client's scheduler",
+				"requestID", requestID,
+				"correlationID", correlationID,
+				"provider", provider.Name(),
+				"model", model,
+				"attempt", attempt,
+				"error", loggedError(err),
+			)
+			publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
+			return llm.CompletionResponse{}, err
+		}
+		answered = err == nil
+		if answered {
+			// A provider responded on this attempt, whatever the response
+			// turns out to be worth, and the finish event says what it said of
+			// itself: who answered, how generation stopped and what was used.
+			// Recorded before anything can refuse the answer, so a truncation
+			// or an answer from a route the client's policy forbids still
+			// reports the facts that diagnose it, beside the error kind. Only
+			// what the provider itself said: an empty field means the provider
+			// named nothing, not that this library forgot to look.
+			finish.FinishReason = resp.FinishReason
+			finish.Usage = resp.Usage
+			if resp.Provider != "" {
+				finish.Provider = resp.Provider
+			}
+			if resp.Model != "" {
+				finish.Model = resp.Model
+			}
+		}
 		if err == nil {
+			// LX-126: who answered. A provider that routes onward can send the
+			// request to a provider the client's policy does not allow, and
+			// the answer is where that shows. It is charged, since it was
+			// produced, and it is not retried: the next attempt would go the
+			// same way.
+			if policyErr := checkAnswerRoute(ctx, provider, model, resp); policyErr != nil {
+				log.Error("Refusing the answer: it came from a provider the client's data policy does not allow",
+					"requestID", requestID,
+					"correlationID", correlationID,
+					"provider", provider.Name(),
+					"model", model,
+					"error", loggedError(policyErr),
+				)
+				chargeBudget(ctx, provider, model, resp)
+				trackRefusedAnswer(provider, model, resp, requestID, correlationID)
+				publishRefusedAttempt(ctx, provider, model, resp, requestID, correlationID)
+				publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
+				return llm.CompletionResponse{}, policyErr
+			}
+
 			// A truncated body arrives with the same 200 status as a complete
 			// one, and the finish reason is the only thing that says so. This has
 			// to run before resp.Content reaches ParseJSON: caught here it is a
@@ -335,7 +653,13 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			// (validateLLMCompletion / TestCallLLMRetriesEmptyContent). Folding
 			// it into this check would make an empty-content retry stop
 			// retrying with no task asking for that change.
-			if kind := llm.ClassifyCompletion(resp); kind == types.KindOutputTruncated {
+			//
+			// LX-100: a decision provider answers typed and writes no content.
+			// Its answers are written here in the form the decision reader
+			// takes, before anything asks whether there is content.
+			if typedErr := typedAnswerContent(req, &resp); typedErr != nil {
+				err = typedErr
+			} else if kind := llm.ClassifyCompletion(resp); kind == types.KindOutputTruncated {
 				truncatedProvider := resp.Provider
 				if truncatedProvider == "" {
 					truncatedProvider = provider.Name()
@@ -353,6 +677,16 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			} else if validationErr := validateLLMCompletion(resp); validationErr != nil {
 				err = validationErr
 			}
+			// An answer that was produced and then refused here still cost
+			// what it cost, to the client's ledger and to the process-wide one.
+			if err != nil {
+				chargeBudget(ctx, provider, model, resp)
+				trackRefusedAnswer(provider, model, resp, requestID, correlationID)
+				publishRefusedAttempt(ctx, provider, model, resp, requestID, correlationID)
+				if telemetry.HasObserver() {
+					refused.add(provider.Name(), model, resp)
+				}
+			}
 		}
 
 		if err == nil {
@@ -369,10 +703,10 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 				"attempt", attempt,
 				"maxAttempts", attempts,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"error", err,
+				"error", loggedError(err),
 			)
 			publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
-			return "", err
+			return llm.CompletionResponse{}, classifiedProviderFailure(withKindOfTheAnswer(emptyBecauseOfTheFinish(err, answered, resp), answered, resp), provider.Name(), model, requestID)
 		}
 
 		delay := nextRetryDelay(err, retryBackoff, prevWait, maxComputedRetryDelay, retryRandFloat)
@@ -386,12 +720,20 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			"attempt", attempt,
 			"nextAttempt", attempt+1,
 			"backoff_ms", delay.Milliseconds(),
-			"error", err,
+			"error", loggedError(err),
 		)
+		// The retry, to the observers of this request: which attempt failed,
+		// the kind of failure and the wait, never the error's text.
+		telemetry.ObserveOperationNote(ctx, telemetry.Note{
+			Name:      telemetry.NoteRetry,
+			Attempt:   attempt,
+			ErrorKind: requestErrorKind(err, answered, resp),
+			Wait:      delay,
+		})
 
 		if sleepErr := waitForRetry(ctx, delay); sleepErr != nil {
 			publishFailedCall(ctx, provider, model, opts, start, providerCalls, requestID, correlationID)
-			return "", sleepErr
+			return llm.CompletionResponse{}, sleepErr
 		}
 	}
 
@@ -406,16 +748,14 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	}
 
 	usage := resp.Usage
-	noteCacheReads(req.PromptCacheKey, usage)
-	cost := pricing.CalculateCost(&usage, actualModel, actualProvider)
+	noteCacheReads(log, req.PromptCacheKey, usage)
+	cost := pricing.CalculateCostLogged(log, &usage, actualModel, actualProvider)
 
 	// IN-004: a client's ledger records what its own calls cost. The `priced`
 	// flag is passed through rather than letting a zero speak for itself --
 	// an unpriced model reports zero, and a ledger that accumulates those keeps
 	// reporting a spend of nothing while real money is being spent.
-	if budget := ExecBudget(ctx); budget != nil && cost != nil {
-		budget.Record(cost.TotalCost, cost.Priced)
-	}
+	chargeBudget(ctx, provider, model, resp)
 
 	metadata := &types.ResultMetadata{
 		RequestID:     requestID,
@@ -435,8 +775,13 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 		Provider:       actualProvider,
 		Mode:           opts.Mode,
 		Intelligence:   opts.Intelligence,
+		Timing:         callTiming(timing, timed, resp),
 		TokenUsage:     &usage,
 		CostInfo:       cost,
+		CacheHit:       resp.Cached,
+		Hedged:         resp.Hedged,
+		ServiceTier:    resp.ServiceTier,
+		FinishReason:   resp.FinishReason,
 		Custom: map[string]any{
 			"response_format": responseFormat,
 			// Which contract produced this answer. A stored result that cannot
@@ -445,6 +790,10 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 			"schema_id": opts.SchemaID,
 		},
 	}
+	// LX-100: how a decision was answered, on the record and for the operation
+	// that asked: typed or as JSON, and whether a decision provider was asked
+	// first.
+	noteDecisionAnswer(ctx, resp, metadata)
 
 	// Publish the record for whoever wants an envelope. The alternative was to
 	// change the return type of every operation at once; this lets Result[T]
@@ -454,22 +803,43 @@ func CallLLM(ctx context.Context, provider llm.Provider, systemPrompt, userPromp
 	// the two drift.
 	publishCallRecord(ctx, metadata)
 
-	pricing.TrackCost(cost, metadata)
+	// What actually answered, which the start event could not know. The model
+	// a provider serves a request with is not always the one it was asked for,
+	// and a host reconciling cost against a span needs the served one. The
+	// finish reason is the provider's own enum, and is the only thing that
+	// distinguishes a complete answer from a truncated one. The cost is that
+	// of this answer, the one that was accepted.
+	finish.Provider = actualProvider
+	finish.Model = actualModel
+	finish.FinishReason = resp.FinishReason
+	finish.Usage, finish.Cost = refused.plus(usage, cost)
+	returned = true
+
+	// A cache hit was not bought, and the process-wide ledger is a record of
+	// what was.
+	if !resp.Cached {
+		pricing.TrackCost(cost, metadata)
+	}
 	telemetry.RecordLLMMetrics(metadata)
 
-	log.Info("LLM request completed",
-		"requestID", requestID,
-		"correlationID", correlationID,
-		"provider", actualProvider,
-		"model", actualModel,
-		"responseFormat", responseFormat,
-		"duration_ms", metadata.Duration.Milliseconds(),
-		"tokens_total", usage.TotalTokens,
-		"cost_usd", cost.TotalCost,
-		"finishReason", resp.FinishReason,
-	)
+	// A request that went well is a debug line, and is not built, or written
+	// to standard error under the logger's lock, before the answer is returned
+	// unless somebody asked for it.
+	if log.Enabled(ctx, slog.LevelDebug) {
+		log.Debug("LLM request completed",
+			"requestID", requestID,
+			"correlationID", correlationID,
+			"provider", actualProvider,
+			"model", actualModel,
+			"responseFormat", responseFormat,
+			"duration_ms", metadata.Duration.Milliseconds(),
+			"tokens_total", usage.TotalTokens,
+			"cost_usd", cost.TotalCost,
+			"finishReason", resp.FinishReason,
+		)
+	}
 
-	return resp.Content, nil
+	return resp, nil
 }
 
 // promptCacheKeyFor builds the identity sent to the provider as its
@@ -525,9 +895,29 @@ func promptCacheKeyFor(opts types.OpOptions, model, responseFormat, stableSystem
 	return strings.Join(parts, ":")
 }
 
+// errEmptyCompletion is the refusal of an answer that carries no content. It
+// is a malformed output, and it is still retried: isRetryableLLMError reads it
+// before it asks the taxonomy, which would call a malformed output permanent.
+var errEmptyCompletion = types.Classified(types.KindMalformedOutput, errors.New("provider returned empty completion content"))
+
+// errToolCallsForAnOperation is the refusal of a reply to an operation's request
+// that asks for tools. An operation declares none, so a provider that answers
+// with a call has broken its contract (the providers of this library refuse such
+// a reply themselves). It is a malformed output, and it is not retried: the same
+// request would be answered the same way.
+var errToolCallsForAnOperation = types.Classified(types.KindMalformedOutput, errors.New("provider answered with tool calls to a request that declared no tools"))
+
+// validateLLMCompletion refuses a reply that says nothing. A reply that asks for
+// tools is an answer whatever its text: a model that wants a tool run answers
+// with the call and no words, and that reply used to be refused as empty and sent
+// again, paid for each time. The calls were checked against the tools the request
+// declared, and their ids and arguments, by the provider that read them.
 func validateLLMCompletion(resp llm.CompletionResponse) error {
+	if len(resp.ToolCalls) > 0 {
+		return nil
+	}
 	if strings.TrimSpace(resp.Content) == "" {
-		return fmt.Errorf("provider returned empty completion content")
+		return errEmptyCompletion
 	}
 	return nil
 }
@@ -565,6 +955,14 @@ func isRetryableLLMError(err error) bool {
 	// response, not a transport failure), so it stays a direct sentinel check.
 	if errors.Is(err, llm.ErrNoMessageOutput) {
 		return false
+	}
+
+	// An answer with no content is deterministic for a provider that sent
+	// nothing and a transient fault for one that dropped it, and this has always
+	// been tried again. It has a kind now, and the kind says a repeat is not
+	// worth making, so it is decided here before the taxonomy is asked.
+	if errors.Is(err, errEmptyCompletion) {
+		return true
 	}
 
 	kind := llm.Classify(err)
@@ -657,13 +1055,43 @@ func decorrelatedJitter(base, prev, maxDelay time.Duration, randFloat func() flo
 // concurrent use, so this needs no lock of its own.
 var retryRandFloat = rand.Float64
 
+// checkCallOptions refuses options no request can be made under, before one is
+// made. A Threshold that is not a number is one: every comparison with NaN is
+// false, so it passes any range check and then orders nothing, and an infinite
+// one is no confidence. The options reach a call from operations that validate
+// them and from callers that pass a bare types.OpOptions, so the check is made
+// where both arrive.
+func checkCallOptions(opts types.OpOptions) error {
+	if math.IsNaN(opts.Threshold) || math.IsInf(opts.Threshold, 0) {
+		return types.Newf(types.KindConfiguration, "llm.call", "Threshold has to be a number from 0 to 1, and is not a finite number")
+	}
+	return nil
+}
+
+// contextOver reports a context that is already cancelled or past its deadline
+// as a classified error, and nil for a live or nil context. The cause is kept,
+// so errors.Is(err, context.Canceled) and context.DeadlineExceeded still hold.
+func contextOver(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	cause := ctx.Err()
+	if cause == nil {
+		return nil
+	}
+	return &types.OperationError{Kind: llm.Classify(cause), Op: "llm.call", Cause: cause}
+}
+
+// waitForRetry waits out a backoff, or returns the classified reason the
+// context ended first. It returned the bare context error, so a call cancelled
+// during a backoff was the one failure of this function with no kind.
 func waitForRetry(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return contextOver(ctx)
 	case <-timer.C:
 		return nil
 	}
@@ -744,18 +1172,17 @@ func inferResponseFormat(systemPrompt string) string {
 // for a non-JSON request, 6 lines and about 110 for a JSON one, on every call.
 // A caller who has measured their own prompts and found it unnecessary can now
 // stop paying for it.
-const promptReinforcementEnvVar = "SCHEMAFLUX_PROMPT_REINFORCEMENT"
+const promptReinforcementEnvVar = config.PromptReinforcementVariable
 
 // promptReinforcementEnabled reports whether the reinforcement block is added.
 // Anything but an explicit "0"/"false"/"off" leaves it on, because turning it
 // off by accident changes behaviour silently.
+//
+// The variable is read once, by the first call that needs it
+// (config.ReloadEnvironment reads it again). It was read on every call, and on
+// Windows a read of the environment allocates twice.
 func promptReinforcementEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(promptReinforcementEnvVar))) {
-	case "0", "false", "off", "no":
-		return false
-	default:
-		return true
-	}
+	return config.PromptReinforcementEnabled()
 }
 
 // strengthenSystemPrompt assembles the system/policy prompt every operation
@@ -772,8 +1199,11 @@ func promptReinforcementEnabled() bool {
 // produced, so a hypothetical future edit that adds an untrusted segment
 // here fails loudly (BuildSystemPrompt refuses it) rather than silently
 // changing what gets sent.
-func strengthenSystemPrompt(systemPrompt, responseFormat string) string {
-	if !promptReinforcementEnabled() {
+//
+// The environment switch turns the block off for every call of the process, and
+// a client's own setting (ExecConfig.OmitReinforcement) for the calls it makes.
+func strengthenSystemPrompt(ctx context.Context, systemPrompt, responseFormat string) string {
+	if !promptReinforcementEnabled() || execOmitReinforcement(ctx) {
 		return strings.TrimSpace(systemPrompt)
 	}
 
@@ -839,14 +1269,44 @@ func operationContext(caller context.Context, timeout time.Duration) (context.Co
 	// The default is a floor for callers who expressed no opinion, not a
 	// ceiling on callers who did. A caller who wants both states the shorter
 	// one, which is what a deadline already means.
+	//
+	// The client a call runs on is fixed here, by the operation that starts it,
+	// whether or not the caller bounded it, so that everything the operation
+	// reads is read from one client.
+	caller, _ = PinExec(caller)
 	if _, alreadyBounded := caller.Deadline(); alreadyBounded {
 		return context.WithCancel(caller)
 	}
-	if timeout <= 0 {
+	// A client that names a Timeout binds every operation whatever the call
+	// site passed, and the default applies to the callers that name none.
+	if client := execTimeout(caller); client > 0 {
+		timeout = client
+	} else if timeout <= 0 {
 		timeout = config.GetTimeout()
 	}
 	return context.WithTimeout(caller, timeout)
 }
+
+// clientDeadline gives a call the client's deadline on the paths that derive
+// none of their own (Extract and the operation runners, which read the context
+// they were given). It returns ctx and a no-op when the snapshot names no
+// Timeout or ctx already has a deadline, and allocates nothing then.
+func clientDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return ctx, noCancel
+	}
+	if _, alreadyBounded := ctx.Deadline(); alreadyBounded {
+		return ctx, noCancel
+	}
+	client := execTimeout(ctx)
+	if client <= 0 {
+		return ctx, noCancel
+	}
+	return context.WithTimeout(ctx, client)
+}
+
+// noCancel is the cancel function of a deadline that was not made.
+func noCancel() {}
 
 // CA-006's diagnostic half.
 //
@@ -875,11 +1335,31 @@ var (
 	cacheReadWarned = map[string]bool{}
 )
 
-func noteCacheReads(cacheKey string, usage types.TokenUsage) {
+func noteCacheReads(log *logger.Logger, cacheKey string, usage types.TokenUsage) {
 	if cacheKey == "" {
 		return
 	}
 
+	calls, warn := countCacheRead(cacheKey, usage)
+	if !warn {
+		return
+	}
+
+	// Written after the lock is released: a log sink that is slow held every
+	// call's cache bookkeeping up behind it. The key, not the prompt: the prompt
+	// is built from the caller's data and this is a log line. It goes to the
+	// logger of the call that made it due, so that a client that discards, or
+	// logs elsewhere, is not written about on the process logger.
+	log.Warn(
+		"prompt cache is reporting no cached tokens for a prefix that keeps repeating",
+		"cacheKey", cacheKey,
+		"calls", calls,
+		"likelyCause", "the stable prefix may be below the provider's minimum cacheable length, or something per-call is still inside it")
+}
+
+// countCacheRead records one call under the lock and reports how many calls
+// the key has had and whether the diagnostic is due.
+func countCacheRead(cacheKey string, usage types.TokenUsage) (calls int, warn bool) {
 	cacheReadMu.Lock()
 	defer cacheReadMu.Unlock()
 
@@ -892,22 +1372,16 @@ func noteCacheReads(cacheKey string, usage types.TokenUsage) {
 		// It is working. Forget the key rather than keep counting it.
 		delete(cacheReadCounts, cacheKey)
 		delete(cacheReadWarned, cacheKey)
-		return
+		return 0, false
 	}
 
 	cacheReadCounts[cacheKey]++
-	if cacheReadCounts[cacheKey] < cacheReadWarnAfter || cacheReadWarned[cacheKey] {
-		return
+	calls = cacheReadCounts[cacheKey]
+	if calls < cacheReadWarnAfter || cacheReadWarned[cacheKey] {
+		return calls, false
 	}
 	cacheReadWarned[cacheKey] = true
-
-	// The key, not the prompt: the prompt is built from the caller's data and
-	// this is a log line.
-	logger.GetLogger().Warn(
-		"prompt cache is reporting no cached tokens for a prefix that keeps repeating",
-		"cacheKey", cacheKey,
-		"calls", cacheReadCounts[cacheKey],
-		"likelyCause", "the stable prefix may be below the provider's minimum cacheable length, or something per-call is still inside it")
+	return calls, true
 }
 
 // resetCacheReadTracking exists for tests, which would otherwise leak counts
@@ -954,5 +1428,238 @@ func publishFailedCall(ctx context.Context, provider llm.Provider, model string,
 		Provider:     provider.Name(),
 		Mode:         opts.Mode,
 		Intelligence: opts.Intelligence,
+	})
+}
+
+// callTiming is where a call's time went, for its record: what was measured
+// while waiting for a slot, with what the provider measured of the answer that
+// was accepted. It is nil when neither measured anything, so that a record
+// with no timing is not read as a call that took no time.
+//
+// An attempt that was thrown away is in the call's Duration and not here: the
+// provider's timing comes back with a response, and a failed attempt has none.
+// So for a call that was retried, Duration is longer than the network time by
+// the failed attempts and the pauses between them, and Timing.Outside counts
+// them as outside the network.
+//
+// The timing of a response that is marked cached is ignored. A cache answers
+// from memory, and one that replays the timing of the call that filled it (the
+// library's own did, until it was found out) reports the original call's
+// network time for a hit that took microseconds. The wait for a slot is still
+// this call's own and is kept. A provider that timed a call and did not say
+// how many is taken to have timed one.
+func callTiming(queued types.Timing, timed bool, resp llm.CompletionResponse) *types.Timing {
+	answer := resp.Timing
+	if resp.Cached {
+		answer = types.Timing{}
+	}
+	if !timed && !answer.Measured() {
+		return nil
+	}
+	total := answer
+	if total.Calls == 0 && total.Network > 0 {
+		total.Calls = 1
+	}
+	total.Queued += queued.Queued
+	return &total
+}
+
+// chargeBudget records what one response cost against the client's own budget,
+// when the context carries one.
+//
+// It is called for every response a provider produced, whether or not the
+// answer could be used: a truncated answer is tokens generated and billed. The
+// buffered path recorded only the answer it accepted, so the attempts it threw
+// away, and a request that ended in one, cost the client nothing on its own
+// ledger.
+//
+// A response that reports no usage is recorded as spend of unknown size. It was
+// recorded as priced at zero, which is the one thing it is known not to be: a
+// ledger that takes "no figure" for "no cost" goes on reporting a spend of
+// nothing while money is spent.
+//
+// A response served from a cache is not recorded at all: no provider was called
+// for it. The cache zeroes its usage, which would otherwise read as unknown
+// spend and turn a client's total into a floor for a call that cost nothing.
+func chargeBudget(ctx context.Context, provider llm.Provider, model string, resp llm.CompletionResponse) {
+	budget := ExecBudget(ctx)
+	if budget == nil || resp.Cached {
+		return
+	}
+	usage := resp.Usage
+	if !reportsUsage(usage) {
+		budget.Record(0, false)
+		return
+	}
+	actualModel := resp.Model
+	if actualModel == "" {
+		actualModel = model
+	}
+	actualProvider := resp.Provider
+	if actualProvider == "" {
+		actualProvider = provider.Name()
+	}
+	if cost := pricing.CalculateCostLogged(loggerFor(ctx), &usage, actualModel, actualProvider); cost != nil {
+		budget.Record(cost.TotalCost, cost.Priced)
+	}
+}
+
+// checkBudget asks whichever budget governs this call whether it may proceed.
+//
+// IN-004: a client's own ledger replaces the process-wide one entirely rather
+// than being checked in addition to it. Checking both would mean a client
+// could be refused by a budget belonging to a different tenant, which is the
+// multi-tenancy failure this seam exists to remove -- and a client that
+// declared its own ceiling has said what it wants enforced. A ledger that was
+// told to keep the process ceiling (ClientBudget.KeepProcessCeiling) is checked
+// first and then the process-wide ceiling as well, so a budget given only to
+// count lifts nothing that the process set.
+func checkBudget(ctx context.Context) error {
+	if budget := ExecBudget(ctx); budget != nil {
+		if err := budget.Check(); err != nil {
+			return err
+		}
+		if kept, ok := budget.(interface{ keepsProcess() bool }); !ok || !kept.keepsProcess() {
+			return nil
+		}
+	}
+	err := pricing.CheckBudget()
+	if err != nil && types.KindOf(err) == types.KindUnknown {
+		// The process budget's refusal is a plain error beside its sentinel;
+		// it is a spent budget whatever builds it.
+		return types.Classified(types.KindBudgetExceeded, err)
+	}
+	return err
+}
+
+// checkBudgetFor is checkBudget for a request that is about to be sent to model:
+// it also refuses the request when the client's ledger has a ceiling and the
+// model has no price. The spend of such a call is not known, so the ceiling could
+// not hold it, and a ceiling that does not bind is the failure the ledger exists
+// to prevent. The message names the model, cut to the length a log holds one to,
+// and never a value of the caller's.
+func checkBudgetFor(ctx context.Context, provider llm.Provider, model string) error {
+	if err := checkBudget(ctx); err != nil {
+		return err
+	}
+	budget, ok := ExecBudget(ctx).(interface{ refusesUnpricedCalls() bool })
+	if !ok || !budget.refusesUnpricedCalls() {
+		return nil
+	}
+	if cost := pricing.CalculateCostLogged(loggerFor(ctx), &types.TokenUsage{}, model, provider.Name()); cost != nil && cost.Priced {
+		return nil
+	}
+	return types.Newf(types.KindBudgetExceeded, "client.budget",
+		"the model %q has no price, so a call to it cannot be held to the spend ceiling; register a price for it, or allow unpriced calls on the Budget",
+		types.Bound(model, types.MaxModelName))
+}
+
+// emptyBecauseOfTheFinish gives an answer that was refused for carrying no
+// content the kind its finish reason names, when the finish says why it is
+// empty: an answer withheld by the provider's content filter is a policy
+// violation, which is what it was called before the empty answer had a kind of
+// its own, and not a malformed output; it is marked as a refusal, since the
+// kind alone does not tell it from a data policy that forbids the route. The
+// retry decision is made before this, on the error as it was.
+func emptyBecauseOfTheFinish(err error, answered bool, resp llm.CompletionResponse) error {
+	if err == nil || !answered || !errors.Is(err, errEmptyCompletion) {
+		return err
+	}
+	if kind := llm.ClassifyCompletion(resp); kind != types.KindUnknown && kind != types.KindMalformedOutput {
+		return classifiedByTheFinish(kind, err)
+	}
+	return err
+}
+
+// withKindIfNone gives err the kind when nothing in its chain has one. An error
+// that has a kind is returned as it is, so what errors.Is and types.KindOf
+// answer for it today is not changed by a kind chosen here; its text and its
+// chain are err's own.
+func withKindIfNone(kind types.ErrorKind, err error) error {
+	if err == nil || types.KindOf(err) != types.KindUnknown {
+		return err
+	}
+	return types.Classified(kind, err)
+}
+
+// classifiedProviderFailure gives the error a provider's request ended in a
+// kind when it has none, with the route it failed on. The provider's own error
+// is an *llm.APIError, a rate limit, a network error, a context error or a
+// plain one, and all of them leave here with a kind: what llm.Classify makes
+// of them, or an unavailable provider for what it does not know. An error that
+// has a kind is returned as it is. The text and the chain are the error's own.
+func classifiedProviderFailure(err error, provider, model, requestID string) error {
+	if err == nil || types.KindOf(err) != types.KindUnknown {
+		return err
+	}
+	kind := llm.Classify(err)
+	if kind == types.KindUnknown {
+		kind = types.KindProviderUnavailable
+	}
+	retryAfter, _ := llm.RetryAfterFrom(err)
+	return types.ClassifiedCall(kind, err, provider, model, requestID, retryAfter)
+}
+
+// publishRefusedAttempt puts what an answer that was produced and refused cost
+// into the call's record, so that the usage and cost of a call reconcile with
+// the ledgers it was charged to (chargeBudget, trackRefusedAnswer). The record
+// is marked UsageOnly: it counts no attempt, since the record of the request
+// it belonged to does, and it carries no identity. A cached answer cost
+// nothing, and one that reports no usage has no figure to add.
+func publishRefusedAttempt(ctx context.Context, provider llm.Provider, model string,
+	resp llm.CompletionResponse, requestID, correlationID string) {
+
+	usage := resp.Usage
+	if resp.Cached || !reportsUsage(usage) {
+		return
+	}
+	actualModel := resp.Model
+	if actualModel == "" {
+		actualModel = model
+	}
+	actualProvider := resp.Provider
+	if actualProvider == "" {
+		actualProvider = provider.Name()
+	}
+	publishCallRecord(ctx, &types.ResultMetadata{
+		UsageOnly:     true,
+		RequestID:     requestID,
+		CorrelationID: correlationID,
+		Model:         actualModel,
+		Provider:      actualProvider,
+		TokenUsage:    &usage,
+		CostInfo:      pricing.CalculateCostLogged(loggerFor(ctx), &usage, actualModel, actualProvider),
+		FinishReason:  resp.FinishReason,
+		ServiceTier:   resp.ServiceTier,
+	})
+}
+
+// trackRefusedAnswer tells the process-wide ledger what an answer cost when the
+// answer was produced and then refused: a truncated one, or an attempt thrown
+// away before a retry. Only the accepted answer was tracked, so for a caller
+// with no client budget these cost nothing on any ledger. An answer that
+// reports no usage has no figure to add and is not tracked.
+func trackRefusedAnswer(provider llm.Provider, model string, resp llm.CompletionResponse, requestID, correlationID string) {
+	usage := resp.Usage
+	if resp.Cached || !reportsUsage(usage) {
+		return
+	}
+	actualModel := resp.Model
+	if actualModel == "" {
+		actualModel = model
+	}
+	actualProvider := resp.Provider
+	if actualProvider == "" {
+		actualProvider = provider.Name()
+	}
+	cost := pricing.CalculateCost(&usage, actualModel, actualProvider)
+	pricing.TrackCost(cost, &types.ResultMetadata{
+		RequestID:     requestID,
+		CorrelationID: correlationID,
+		EndTime:       time.Now(),
+		Model:         actualModel,
+		Provider:      actualProvider,
+		TokenUsage:    &usage,
+		Custom:        map[string]any{"refused": true},
 	})
 }

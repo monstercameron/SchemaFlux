@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// RC-005: load and chaos coverage for RunOpManyPartial (partial.go) -- large
+// Load and chaos coverage for RunOpManyPartial (partial.go) -- large
 // item streams, a provider that is both slow and bursts 429s, and
 // cancellation mid-stream -- driven through the real retry classifier
 // (llm.Classify / isRetryableLLMError, llm_helper.go) rather than a second
@@ -25,7 +26,7 @@ import (
 // loadProvider's delays are small (single-digit milliseconds) so these stay
 // fast enough for the ordinary suite; the point is exercising the mechanism
 // under real concurrency and real (if brief) waits, not measuring a
-// throughput number -- RC-005's own text is explicit that the outcome
+// throughput number -- the outcome
 // metrics are cost and latency per valid item, not calls per second, and
 // this file invents neither.
 
@@ -33,7 +34,7 @@ import (
 // items are already distinct strings, so the prompt is the item), with a
 // per-call delay for simulating a slow provider and a per-key countdown of
 // 429s for simulating a rate-limit burst that eventually clears -- both
-// axes RC-005 names and neither of which schemafluxtest.Provider (a
+// axes this file adds and neither of which schemafluxtest.Provider (a
 // different package's fake, over a different Provider interface -- see the
 // doc comment on why it is not reused here) or partial_test.go's
 // keyedProvider currently expose.
@@ -123,7 +124,7 @@ func (p *loadProvider) callCountFor(prompt string) int {
 // and that the permanent failures are still reported individually rather
 // than one provider hiccup poisoning the whole batch.
 func TestLoadRunOpManyPartialLargeStreamSlowProviderWithRateLimitBursts(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	before := chaosSettledGoroutines()
 
 	const n = 600
@@ -205,7 +206,7 @@ func TestLoadRunOpManyPartialLargeStreamSlowProviderWithRateLimitBursts(t *testi
 // cancellation, never silently missing -- and that the run returns promptly
 // rather than waiting out every in-flight item's own timeout.
 func TestLoadRunOpManyPartialCancellationStormMidStream(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	before := chaosSettledGoroutines()
 
 	const n = 400
@@ -234,12 +235,13 @@ func TestLoadRunOpManyPartialCancellationStormMidStream(t *testing.T) {
 	if result.Summary.Total != n {
 		t.Fatalf("Summary.Total = %d, want %d", result.Summary.Total, n)
 	}
-	if result.Summary.Succeeded+result.Summary.Failed != n {
-		t.Fatalf("succeeded(%d)+failed(%d) = %d, want %d -- some item vanished under cancellation",
-			result.Summary.Succeeded, result.Summary.Failed, result.Summary.Succeeded+result.Summary.Failed, n)
+	ended := result.Summary.Failed + result.Summary.Cancelled
+	if result.Summary.Succeeded+ended != n {
+		t.Fatalf("succeeded(%d)+failed(%d)+cancelled(%d) = %d, want %d -- some item vanished under cancellation",
+			result.Summary.Succeeded, result.Summary.Failed, result.Summary.Cancelled, result.Summary.Succeeded+ended, n)
 	}
-	if result.Summary.Failed == 0 {
-		t.Fatal("nothing failed -- the deadline never actually interrupted the stream, so this proves nothing")
+	if result.Summary.Cancelled == 0 || result.Summary.Failed != 0 {
+		t.Fatalf("Summary = %+v, want the items the deadline cut off cancelled and none failed -- or the deadline never interrupted the stream, which proves nothing", result.Summary)
 	}
 	for _, f := range result.Failures() {
 		if f.Err == nil {
@@ -263,7 +265,7 @@ func TestLoadRunOpManyPartialCancellationStormMidStream(t *testing.T) {
 // shared closure capturing the wrong loop variable or slice would produce
 // under real concurrency but not in a single-caller test.
 func TestLoadRunOpManyPartialManyConcurrentBatchesDoNotCrossContaminate(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	const batches = 24
 	const itemsPerBatch = 40

@@ -2,9 +2,22 @@ package requesttracking
 
 import (
 	"context"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// reloadEnvironment makes GetConfig read the environment again the next time it
+// needs it. The package reads it once, so a test that changes a variable has to
+// say so; a program does the same with config.ReloadEnvironment.
+func reloadEnvironment() {
+	configMu.Lock()
+	defer configMu.Unlock()
+	configured = false
+	configuredCfg = Config{}
+	forgetEnvironmentConfig()
+}
 
 // resetConfig restores the package's configured/default state after a test
 // that calls Configure, so tests in this file (and tracking_test.go, which
@@ -14,12 +27,8 @@ import (
 // waiting to happen.
 func resetConfig(t *testing.T) {
 	t.Helper()
-	t.Cleanup(func() {
-		configMu.Lock()
-		configured = false
-		configuredCfg = Config{}
-		configMu.Unlock()
-	})
+	reloadEnvironment()
+	t.Cleanup(reloadEnvironment)
 }
 
 func TestDefaultConfig_Defaults(t *testing.T) {
@@ -189,10 +198,9 @@ func TestExtract_NilCarrierReturnsContextUnchanged(t *testing.T) {
 	}
 }
 
-// TestExtract_MalformedCarrier drives the malformed-carrier cases the task
-// calls out explicitly: headers with surrounding whitespace, headers using
-// the wrong case or a header name the config was not set to read, and an
-// entirely empty carrier. Extract must produce empty metadata rather than
+// TestExtract_MalformedCarrier drives the malformed-carrier cases: headers with
+// surrounding whitespace, headers in another case or under a name the config was
+// not set to read, and an entirely empty carrier. Extract must produce empty metadata rather than
 // panicking or picking up a value from the wrong key.
 func TestExtract_MalformedCarrier(t *testing.T) {
 	resetConfig(t)
@@ -214,9 +222,9 @@ func TestExtract_MalformedCarrier(t *testing.T) {
 			Metadata{},
 		},
 		{
-			"wrong case header name is not read (map keys are exact)",
-			map[string]string{"x-request-id": "req-1"},
-			Metadata{},
+			"a header name in another case is read: an http.Header carries X-Request-Id",
+			map[string]string{"x-request-id": "req-1", "X-Correlation-Id": "corr-1"},
+			Metadata{RequestID: "req-1", CorrelationID: "corr-1"},
 		},
 		{
 			"unrelated keys are ignored",
@@ -339,11 +347,19 @@ func TestGenerateRequestID_EveryStrategy(t *testing.T) {
 		}
 	})
 
-	t.Run("uuid produces a nonempty id", func(t *testing.T) {
+	t.Run("uuid produces a version 4 uuid", func(t *testing.T) {
 		Configure(Config{Enabled: true, RequestIDStrategy: IDStrategyUUID, CorrelationIDStrategy: CorrelationStrategyNone})
-		meta := Resolve(context.Background(), "", "")
-		if meta.RequestID == "" || !strings.HasPrefix(meta.RequestID, "req_") {
-			t.Errorf("RequestID = %q, want a req_-prefixed id", meta.RequestID)
+		uuidShape := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+		seen := map[string]bool{}
+		for i := 0; i < 20; i++ {
+			meta := Resolve(context.Background(), "", "")
+			if !uuidShape.MatchString(meta.RequestID) {
+				t.Fatalf("RequestID = %q, want a version 4 UUID", meta.RequestID)
+			}
+			seen[meta.RequestID] = true
+		}
+		if len(seen) != 20 {
+			t.Errorf("20 UUIDs gave %d distinct values", len(seen))
 		}
 	})
 
@@ -516,25 +532,79 @@ func TestGenerateTimestampID_UniqueAcrossCalls(t *testing.T) {
 	}
 }
 
-func TestEnvEnabled(t *testing.T) {
+// The source in effect is the newest install nobody has removed, whatever
+// order the removals run in and however often one is called. A removal used to
+// put back whatever was installed when its own install was made, so one that
+// ran late, or twice, brought back a source that had already been removed.
+func TestSetTraceIDSourceRemovalsComposeInAnyOrder(t *testing.T) {
 	cases := []struct {
-		raw  string
-		want bool
+		name  string
+		order []int  // the removals run, by install position; a position may repeat
+		want  string // the trace id in effect afterwards; "" is the default
 	}{
-		{"1", true},
-		{"true", true},
-		{"TRUE", true},
-		{"yes", true},
-		{"on", true},
-		{"  true  ", true},
-		{"0", false},
-		{"false", false},
-		{"", false},
-		{"maybe", false},
+		{"last in first out", []int{2, 1, 0}, ""},
+		{"first in first out", []int{0, 1, 2}, ""},
+		{"middle first", []int{1, 2, 0}, ""},
+		{"only the last", []int{2}, "t1"},
+		{"only the first", []int{0}, "t2"},
+		{"only the middle", []int{1}, "t2"},
+		{"last and middle", []int{2, 1}, "t0"},
+		{"first and last", []int{0, 2}, "t1"},
+		{"the last removed again after everything", []int{2, 1, 0, 2}, ""},
+		{"the middle removed again after everything", []int{2, 1, 0, 1}, ""},
+		{"the first removed twice", []int{0, 0}, "t2"},
+		{"the last, the first, then the last again", []int{2, 0, 2}, "t1"},
 	}
 	for _, tc := range cases {
-		if got := envEnabled(tc.raw); got != tc.want {
-			t.Errorf("envEnabled(%q) = %v, want %v", tc.raw, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			resetConfig(t)
+			Configure(Config{Enabled: true, RequestIDStrategy: IDStrategyTrace, CorrelationIDStrategy: CorrelationStrategyNone})
+
+			var removes []func()
+			for _, id := range []string{"t0", "t1", "t2"} {
+				removes = append(removes, SetTraceIDSource(func(context.Context) string { return id }))
+			}
+			t.Cleanup(func() {
+				for _, remove := range removes {
+					remove()
+				}
+			})
+
+			for _, index := range tc.order {
+				removes[index]()
+			}
+
+			got := currentTraceID(context.Background())
+			if got != tc.want {
+				t.Errorf("the source in effect answers %q, want %q", got, tc.want)
+			}
+			if tc.want != "" {
+				if id := Resolve(context.Background(), "", "").RequestID; id != tc.want {
+					t.Errorf("a request id resolved as %q, want the trace id %q", id, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Installs and removals from several goroutines leave the default in place
+// once every removal has run.
+func TestSetTraceIDSourceConcurrentInstallsLeaveNothingBehind(t *testing.T) {
+	var workers sync.WaitGroup
+	for range 16 {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for range 200 {
+				remove := SetTraceIDSource(func(context.Context) string { return "installed" })
+				_ = currentTraceID(context.Background())
+				remove()
+			}
+		}()
+	}
+	workers.Wait()
+
+	if got := currentTraceID(context.Background()); got != "" {
+		t.Errorf("after every removal ran the source still answers %q", got)
 	}
 }

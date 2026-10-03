@@ -9,7 +9,7 @@ import (
 
 // TestOpenAIEmbedRateLimited proves a 429 from the embeddings endpoint is
 // reported through the same RateLimitError path Complete uses, carrying the
-// Retry-After the server sent -- Embed's isRateLimited branch was untested.
+// Retry-After the server sent -- Embed's Retry-After branch was untested.
 func TestOpenAIEmbedRateLimited(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "3")

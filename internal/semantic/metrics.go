@@ -31,18 +31,28 @@ type Proportion struct {
 	Trials    int
 }
 
+// valid reports whether the counts can be counts of one measurement: neither is
+// negative, and no more trials succeeded than ran. A Proportion that is not valid
+// measured nothing, and every derived number of it is NaN, as for no trials: a
+// rate above 1 and an interval built from the square root of a negative would
+// otherwise read as findings.
+func (p Proportion) valid() bool {
+	return p.Successes >= 0 && p.Trials >= 0 && p.Successes <= p.Trials
+}
+
 // Rate is the point estimate. It is NaN for zero trials rather than zero: no
 // trials is not a rate of nothing, it is the absence of a measurement, and a
-// zero here would read as total failure.
+// zero here would read as total failure. It is NaN for counts that cannot be
+// a measurement, for the same reason.
 func (p Proportion) Rate() float64 {
-	if p.Trials == 0 {
+	if p.Trials == 0 || !p.valid() {
 		return math.NaN()
 	}
 	return float64(p.Successes) / float64(p.Trials)
 }
 
 // Known reports whether anything was measured at all.
-func (p Proportion) Known() bool { return p.Trials > 0 }
+func (p Proportion) Known() bool { return p.Trials > 0 && p.valid() }
 
 // Interval returns the Wilson score interval at roughly 95% confidence.
 //
@@ -53,9 +63,10 @@ func (p Proportion) Known() bool { return p.Trials > 0 }
 // precisely the regions a passing quality suite lives in. Wilson stays inside
 // [0, 1] and stays honest about small samples.
 //
-// Returns (NaN, NaN) with no trials, for the same reason Rate does.
+// Returns (NaN, NaN) with no trials, or counts that cannot be a measurement, for
+// the same reason Rate does.
 func (p Proportion) Interval() (low, high float64) {
-	if p.Trials == 0 {
+	if p.Trials == 0 || !p.valid() {
 		return math.NaN(), math.NaN()
 	}
 
@@ -120,21 +131,37 @@ func (p Proportion) Regressed(baseline Proportion, tolerance float64) bool {
 	return high < baseline.Rate()-tolerance
 }
 
-// NeededTrials reports roughly how many trials it would take for a measurement
-// at rate `expected` to clear `threshold` under MeetsAtLeast.
+// maxTrialsConsidered is the largest sample size NeededTrials and TrialsNeeded
+// look at. Past it the answer is "more than this", and a number of trials that
+// large is not a plan anybody can run against a paid model.
+const maxTrialsConsidered = 65536
+
+// TrialsNeeded reports roughly how many trials it would take for a measurement
+// at rate `expected` to clear `threshold` under MeetsAtLeast, and whether any
+// number of them would.
 //
 // It exists so that a suite reporting "not enough evidence" can say what would
 // be enough, rather than leaving somebody to add trials by trial and error. It
 // is an estimate of a sample size, not a measurement of anything, which is why
 // it is named for what it is.
 //
-// Returns 0 when the expected rate is at or below the threshold, because no
-// number of trials makes a genuinely worse model pass.
-func NeededTrials(expected, threshold float64) int {
-	if expected <= threshold {
-		return 0
+// It is not reachable, and returns (0, false), in three different situations:
+// the expected rate is at or below the threshold, so no number of trials makes a
+// genuinely worse model pass; the rate is so close above the threshold that it
+// takes more than 65,536 trials; or an argument is not a number between 0 and 1.
+func TrialsNeeded(expected, threshold float64) (trials int, reachable bool) {
+	// NaN is refused here and not left to the search: converting a NaN to a count
+	// is implementation-defined, and on a platform where it gives 0 a threshold of
+	// zero would be cleared by it.
+	for _, value := range []float64{expected, threshold} {
+		if math.IsNaN(value) || value < 0 || value > 1 {
+			return 0, false
+		}
 	}
-	for n := 1; n <= 100000; n *= 2 {
+	if expected <= threshold {
+		return 0, false
+	}
+	for n := 1; n <= maxTrialsConsidered; n *= 2 {
 		candidate := Proportion{Successes: int(math.Round(expected * float64(n))), Trials: n}
 		if candidate.MeetsAtLeast(threshold) {
 			// Narrow down within the last doubling rather than reporting the
@@ -142,11 +169,20 @@ func NeededTrials(expected, threshold float64) int {
 			for exact := n / 2; exact <= n; exact++ {
 				try := Proportion{Successes: int(math.Round(expected * float64(exact))), Trials: exact}
 				if try.MeetsAtLeast(threshold) {
-					return exact
+					return exact, true
 				}
 			}
-			return n
+			return n, true
 		}
 	}
-	return 0
+	return 0, false
+}
+
+// NeededTrials is TrialsNeeded without the second answer: it returns 0 when no
+// number of trials would do, which is also what it returns for a rate at or
+// below the threshold and for one that needs more than 65,536. Use TrialsNeeded
+// to tell the cases apart.
+func NeededTrials(expected, threshold float64) int {
+	trials, _ := TrialsNeeded(expected, threshold)
+	return trials
 }

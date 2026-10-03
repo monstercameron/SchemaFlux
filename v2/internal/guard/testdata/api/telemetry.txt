@@ -1,0 +1,21 @@
+type Event struct{Scope Scope; Operation string; Provider string; Model string; RequestID string; CorrelationID string; Mode schemaflux.Mode; Tier schemaflux.Tier; SchemaName string; ResponseFormat string; Repair bool; Stream bool}
+type Metric struct{Name string; Value float64; Tags map[string]string; Timestamp time.Time}
+type Note struct{Name string; Attempt int; Kind schemaflux.Kind; Wait time.Duration}
+const NoteHedge untyped string
+type NoteObserver interface{Noted(ctx context.Context, n Note)}
+const NoteRetry untyped string
+type Observer interface{Finished(ctx context.Context, r Result); Started(ctx context.Context, e Event) context.Context}
+func RegisterObserver(o Observer) (restore func())
+func RegisterSink(s Sink) (remove func())
+type Result struct{Scope Scope; Operation string; Duration time.Duration; ProviderDuration time.Duration; Usage schemaflux.Usage; Cost schemaflux.Cost; Attempts int; Provider string; Model string; FinishReason string; Cached bool; AskedFirst string; AskedFirstModel string; Escalated string; Requests int; Items int; Succeeded int; Failed int; Cancelled int; Kind schemaflux.Kind}
+type Scope uint8
+method (Scope).String() string
+const ScopeOperation Scope
+const ScopeRequest Scope
+func SetSpanIDSources(traceID func(context.Context) string, spanID func(context.Context) string) (restore func())
+type Sink interface{Record(m Metric)}
+type Snapshot struct{Name string; Tags map[string]string; Count int64; Sum float64; Min float64; Max float64; LastValue float64; UpdatedAt time.Time}
+method (Snapshot).Average() float64
+func Snapshots() []Snapshot
+func SpanID(ctx context.Context) string
+func TraceID(ctx context.Context) string

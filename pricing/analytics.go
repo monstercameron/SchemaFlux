@@ -4,7 +4,11 @@ import "time"
 
 // CostSummary aggregates request, token, and cost data for a time range.
 type CostSummary struct {
-	RequestCount            int
+	RequestCount int
+	// UnpricedRequests counts the requests in the range whose cost was not
+	// priced. They add nothing to TotalCost or the averages derived from it, so
+	// when this is not zero the figures are a floor.
+	UnpricedRequests        int
 	TotalCost               float64
 	AverageCostPerRequest   float64
 	TotalPromptTokens       int
@@ -25,16 +29,15 @@ type CostSummary struct {
 
 // GetRequestCosts returns the request-level cost history for a time range.
 func GetRequestCosts(since time.Time, filters map[string]string) []CostRecord {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-
-	records := make([]CostRecord, 0, costCount)
-	forEachCostRecord(func(record CostRecord) {
+	snapshot := costRecordsSnapshot()
+	records := make([]CostRecord, 0, len(snapshot))
+	for _, held := range snapshot {
+		record := *held
 		if record.Timestamp.Before(since) || !matchesFilters(record, filters) {
-			return
+			continue
 		}
 		records = append(records, cloneCostRecord(record))
-	})
+	}
 
 	return records
 }
@@ -42,21 +45,21 @@ func GetRequestCosts(since time.Time, filters map[string]string) []CostRecord {
 // GetRequestCost returns a single request-level cost record by request ID.
 func GetRequestCost(requestID string) (CostRecord, bool) {
 	costMutex.RLock()
-	defer costMutex.RUnlock()
-
 	slot, ok := costIndex[requestID]
-	if !ok || slot >= len(costHistory) {
+	var held *CostRecord
+	if ok && slot < len(costHistory) {
+		held = costHistory[slot]
+	}
+	costMutex.RUnlock()
+
+	if held == nil {
 		return CostRecord{}, false
 	}
-
-	return cloneCostRecord(costHistory[slot]), true
+	return cloneCostRecord(*held), true
 }
 
 // GetCostSummary returns aggregate totals and averages for a time range.
 func GetCostSummary(since time.Time, filters map[string]string) CostSummary {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-
 	var summary CostSummary
 
 	forEachCostRecord(func(record CostRecord) {
@@ -65,6 +68,9 @@ func GetCostSummary(since time.Time, filters map[string]string) CostSummary {
 		}
 
 		summary.RequestCount++
+		if !record.Cost.Priced {
+			summary.UnpricedRequests++
+		}
 		summary.TotalCost += record.Cost.TotalCost
 		summary.TotalPromptTokens += record.TokenUsage.PromptTokens
 		summary.TotalCompletionTokens += record.TokenUsage.CompletionTokens
@@ -107,6 +113,7 @@ func ResetCostTracking() {
 	defer costMutex.Unlock()
 
 	totalCosts = nil
+	unpricedCalls = nil
 	costHistory = nil
 	costIndex = nil
 	costStart = 0
@@ -119,7 +126,14 @@ func ResetCostTracking() {
 
 func cloneCostRecord(record CostRecord) CostRecord {
 	cloned := record
-	if len(record.Tags) > 0 {
+	cloned.pairs, cloned.hasPairs = nil, false
+	switch {
+	case record.hasPairs:
+		cloned.Tags = make(map[string]string, len(record.pairs))
+		for _, pair := range record.pairs {
+			cloned.Tags[pair.key] = pair.value
+		}
+	case len(record.Tags) > 0:
 		cloned.Tags = make(map[string]string, len(record.Tags))
 		for key, value := range record.Tags {
 			cloned.Tags[key] = value

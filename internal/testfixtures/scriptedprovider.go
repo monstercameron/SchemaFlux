@@ -14,6 +14,7 @@ package testfixtures
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,18 +32,26 @@ type ScriptedProvider struct {
 	// repair loop to see a second answer.
 	bodies []string
 
-	// requests records what the stack actually sent.
+	// requests records what the stack actually sent. Several operations call
+	// the provider from more than one goroutine (Sort's scoring fallback, the
+	// batch operations), so the record is guarded: it was a bare append, which
+	// is a data race under any of them.
+	mu       sync.Mutex
 	requests []schemaflux.CompletionRequest
 }
 
 func (p *ScriptedProvider) Complete(_ context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+	p.mu.Lock()
 	p.requests = append(p.requests, req)
+	call := len(p.requests) - 1
+	p.mu.Unlock()
+
 	if p.err != nil {
 		return schemaflux.CompletionResponse{}, p.err
 	}
 	body := p.body
 	if len(p.bodies) > 0 {
-		index := len(p.requests) - 1
+		index := call
 		if index >= len(p.bodies) {
 			index = len(p.bodies) - 1
 		}
@@ -69,24 +78,42 @@ func (p *ScriptedProvider) RetryPolicy() (int, time.Duration)                 { 
 // Requests returns what the stack actually sent, in order. Tests assert against
 // this rather than against a prompt they constructed themselves, which would
 // only prove the test can build a string.
-func (p *ScriptedProvider) Requests() []schemaflux.CompletionRequest { return p.requests }
+func (p *ScriptedProvider) Requests() []schemaflux.CompletionRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]schemaflux.CompletionRequest(nil), p.requests...)
+}
+
+// install makes provider the process default for the rest of the test, and puts
+// the default back when the test ends. Installing it left the scripted provider in
+// place for every test that ran after, so a test that expected no provider, or the
+// previous one, found this one.
+//
+// What is restored is the default client's provider, or no provider when there is
+// no default client, which is what a test that installs nothing starts from.
+func install(t *testing.T, provider schemaflux.Provider) {
+	t.Helper()
+	previous := schemaflux.GetDefaultClient()
+	t.Cleanup(func() { schemaflux.SetDefaultClient(previous) })
+	schemaflux.NewClient("test-key").WithProviderInstance(provider)
+}
 
 // WithScriptedProviderReplies installs a provider that answers with a different
 // body per call, so a test can exercise the repair loop — one unusable answer,
-// then a good one.
+// then a good one. It is the process default until the test ends.
 func WithScriptedProviderReplies(t *testing.T, bodies ...string) *ScriptedProvider {
 	t.Helper()
 	provider := &ScriptedProvider{bodies: bodies}
-	schemaflux.NewClient("test-key").WithProviderInstance(provider)
+	install(t, provider)
 	return provider
 }
 
 // WithScriptedProvider installs a provider that answers with one body, or fails
-// with err.
+// with err. It is the process default until the test ends.
 func WithScriptedProvider(t *testing.T, body string, err error) *ScriptedProvider {
 	t.Helper()
 	provider := &ScriptedProvider{body: body, err: err}
-	schemaflux.NewClient("test-key").WithProviderInstance(provider)
+	install(t, provider)
 	return provider
 }
 

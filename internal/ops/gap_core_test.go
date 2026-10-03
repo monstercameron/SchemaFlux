@@ -13,8 +13,7 @@ import (
 // This file closes coverage gaps left after an earlier pass took the rest of
 // internal/ops to 95%+: options.go's validation/merge logic (the WithX
 // setters themselves are already swept by optionsetters_test.go),
-// schemaevolution.go's naming functions, strictdecode.go's error-shaping
-// helpers, resilience.go's CircuitState.String, and text.go's per-operation
+// strictdecode.go's error-shaping helpers, resilience.go's CircuitState.String, and text.go's per-operation
 // instruction builders. All of these are pure Go -- no provider, no network.
 
 // --- options.go: CommonOptions.WithSteering's three branches -----------
@@ -225,51 +224,6 @@ func TestFilterOptionsValidateRejectsALockedLimitViolation(t *testing.T) {
 	}
 }
 
-// --- schemaevolution.go: SchemaChange.String and jsonKindOf --------------
-
-func TestSchemaChangeStringNamesEveryValue(t *testing.T) {
-	cases := map[SchemaChange]string{
-		SchemaUnchanged:   "unchanged",
-		SchemaCompatible:  "compatible",
-		SchemaNewContract: "new contract version",
-		SchemaBreaking:    "breaking",
-		SchemaChange(99):  "unknown",
-	}
-	for change, want := range cases {
-		if got := change.String(); got != want {
-			t.Errorf("SchemaChange(%d).String() = %q, want %q", change, got, want)
-		}
-	}
-}
-
-func TestJSONKindOfCoversEveryReflectKind(t *testing.T) {
-	type nested struct{ X int }
-	cases := []struct {
-		name string
-		typ  reflect.Type
-		want string
-	}{
-		{"string", reflect.TypeOf(""), "string"},
-		{"bool", reflect.TypeOf(true), "boolean"},
-		{"int", reflect.TypeOf(0), "integer"},
-		{"uint", reflect.TypeOf(uint(0)), "integer"},
-		{"float64", reflect.TypeOf(0.0), "number"},
-		{"slice of string", reflect.TypeOf([]string{}), "array of string"},
-		{"array of int", reflect.TypeOf([3]int{}), "array of integer"},
-		{"map", reflect.TypeOf(map[string]int{}), "object"},
-		{"struct", reflect.TypeOf(nested{}), "object"},
-		{"pointer to string", reflect.TypeOf(new(string)), "string"},
-		{"chan (default/unknown kind)", reflect.TypeOf(make(chan int)), "chan"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := jsonKindOf(tc.typ); got != tc.want {
-				t.Errorf("jsonKindOf(%v) = %q, want %q", tc.typ, got, tc.want)
-			}
-		})
-	}
-}
-
 // --- strictdecode.go: describeDecodeFailure and secondJSONValue ---------
 
 // TestDescribeDecodeFailureNamesTheFieldNotTheValue proves the message names
@@ -461,33 +415,6 @@ func TestTypeSupportStringNamesEveryValue(t *testing.T) {
 }
 
 // --- procedural.go: Workflow.SetState/GetState -----------------------------
-
-// TestWorkflowSetStateStoresAValueGetStateRetrieves proves the pair round
-// trips a value, and that an unset key reports ok=false rather than a zero
-// value indistinguishable from "the key exists and is nil".
-func TestWorkflowSetStateStoresAValueGetStateRetrieves(t *testing.T) {
-	w := NewWorkflow("test-workflow")
-
-	if _, ok := w.GetState("missing"); ok {
-		t.Fatal("GetState reported ok=true for a key that was never set")
-	}
-
-	w.SetState("count", 42)
-	got, ok := w.GetState("count")
-	if !ok {
-		t.Fatal("GetState did not find a key SetState just wrote")
-	}
-	if got != 42 {
-		t.Errorf("GetState(\"count\") = %v, want 42", got)
-	}
-
-	// A second SetState on the same key overwrites rather than accumulating.
-	w.SetState("count", 43)
-	got, _ = w.GetState("count")
-	if got != 43 {
-		t.Errorf("GetState(\"count\") after overwrite = %v, want 43", got)
-	}
-}
 
 // stringsContainsAll is a tiny local helper so this file does not depend on
 // strings.Contains's import placement in other test files.

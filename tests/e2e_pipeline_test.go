@@ -9,6 +9,7 @@ import (
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/testfixtures"
 )
@@ -89,7 +90,7 @@ var errStageFailed = errors.New("stage provider failed")
 // that the mechanism WORKS when used, which had never been exercised outside the
 // package that implements it.
 func TestAPipelineCarriesLineageAcrossStages(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &stagedProvider{bodies: []string{
 		`{"number":"INV-4417","vendor":"Northwind"}`,
@@ -136,7 +137,7 @@ func TestAPipelineCarriesLineageAcrossStages(t *testing.T) {
 // test cannot show: a budget that only refuses the call that exceeded it has
 // already spent the money.
 func TestAClientBudgetSpansEveryStageOfAPipeline(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &stagedProvider{bodies: []string{
 		`{"number":"INV-1","vendor":"A"}`,
@@ -176,7 +177,7 @@ func TestAClientBudgetSpansEveryStageOfAPipeline(t *testing.T) {
 // A failure in a later stage must not damage what earlier stages produced. A
 // caller holding stage one's result should still be able to use it.
 func TestAFailureLateInAPipelineLeavesEarlierResultsIntact(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &stagedProvider{
 		bodies: []string{`{"number":"INV-4417","vendor":"Northwind"}`},
@@ -215,7 +216,7 @@ func TestAFailureLateInAPipelineLeavesEarlierResultsIntact(t *testing.T) {
 // runs several calls per client concurrently, which is where a shared global
 // would actually show up.
 func TestTwoClientsRunConcurrentPipelinesWithoutInterference(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	alpha := testfixtures.NewNamed("alpha")
 	beta := testfixtures.NewNamed("beta")

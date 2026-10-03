@@ -252,8 +252,10 @@ func main() {
 	claimResult, err := schemaflux.Arbitrate[InsuranceClaim](claims, schemaflux.ArbitrateOptions{
 		Rules:           claimRules,
 		RequireAllRules: true,
-		Intelligence:    types.Smart,
-		Steering:        "Approve claims that pass all rules. Deny otherwise.",
+		// The reason for each failed rule is printed below.
+		IncludeReasoning: true,
+		Intelligence:     types.Smart,
+		Steering:         "Approve claims that pass all rules. Deny otherwise.",
 	})
 	if err != nil {
 		fmt.Printf("Claim arbitration failed: %v\n", err)
@@ -271,6 +273,8 @@ func main() {
 			for _, r := range eval.RuleResults {
 				if !r.Passed {
 					fmt.Printf("    ✗ %s\n", r.Rule)
+					// Empty unless the arbitration asked for a reason with
+					// every evaluation (IncludeReasoning).
 					if r.Reasoning != "" {
 						fmt.Printf("      → %s\n", r.Reasoning)
 					}

@@ -2,14 +2,13 @@ package ops
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/telemetry"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -35,15 +34,24 @@ type CompleteOptions struct {
 	// types.OpOptions.Context -- a context.Context, for cancellation. Two
 	// different things reachable through the same selector, one of which
 	// carries a deadline and one of which is prompt material. The collision
-	// produced a compile error when X-01 threaded cancellation through, which
-	// is more warning than a caller reading the field list ever got. X-06.
+	// produced a compile error when cancellation was threaded through, which
+	// is more warning than a caller reading the field list ever got.
 	Background []string
 
-	MaxLength     int      // Maximum length of completion
-	StopSequences []string // Sequences that stop generation
-	Temperature   float32  // Creativity level (0.0-2.0)
-	TopP          float32  // Nucleus sampling (0.0-1.0)
-	TopK          int      // Top-k sampling
+	MaxLength int // Maximum length of completion, in characters
+
+	// StopSequences end the completion: the text is cut at the earliest place
+	// in it where any of them occurs, and the sequence itself is dropped. An
+	// empty sequence matches everywhere and is ignored.
+	StopSequences []string
+
+	// Temperature, TopP and TopK are checked by Validate and recorded in the
+	// result's Metadata. They are not sent to the model: the provider interface
+	// carries no sampling settings, so setting them changes nothing about the
+	// completion. They stay until the options are redesigned.
+	Temperature float32 // Creativity level (0.0-2.0)
+	TopP        float32 // Nucleus sampling (0.0-1.0)
+	TopK        int     // Top-k sampling
 }
 
 // NewCompleteOptions creates CompleteOptions with defaults
@@ -112,16 +120,18 @@ func (opts CompleteOptions) WithMode(mode types.Mode) CompleteOptions {
 // Validate validates CompleteOptions
 func (opts CompleteOptions) Validate() error {
 	if opts.MaxLength <= 0 {
-		return fmt.Errorf("MaxLength must be positive")
+		return errors.New("MaxLength must be positive")
 	}
-	if opts.Temperature < 0 || opts.Temperature > 2.0 {
+	// Written as the range that is allowed rather than the ranges that are
+	// not, so a NaN, which is neither below nor above anything, is refused.
+	if !(opts.Temperature >= 0 && opts.Temperature <= 2.0) {
 		return errors.New("temperature must be between 0.0 and 2.0")
 	}
-	if opts.TopP <= 0 || opts.TopP > 1.0 {
-		return fmt.Errorf("TopP must be between 0.0 and 1.0")
+	if !(opts.TopP > 0 && opts.TopP <= 1.0) {
+		return errors.New("TopP must be between 0.0 and 1.0")
 	}
 	if opts.TopK <= 0 {
-		return fmt.Errorf("TopK must be positive")
+		return errors.New("TopK must be positive")
 	}
 	return nil
 }
@@ -143,9 +153,13 @@ func Complete(ctx context.Context, partialText string, opts CompleteOptions) (Co
 }
 
 func completeImpl(ctx context.Context, partialText string, opts CompleteOptions) (CompleteResult, error) {
-	logger := telemetry.GetLogger()
+	if ctx == nil {
+		ctx = opts.OpOptions.Context
+	}
+	logger := loggerFor(ctx)
 	logger.Debug("Starting complete operation", "requestID", opts.RequestID, "partialLength", len(partialText))
 
+	// Every return that carries an error carries the zero result with it.
 	result := CompleteResult{
 		Original: partialText,
 		Metadata: make(map[string]any),
@@ -154,21 +168,20 @@ func completeImpl(ctx context.Context, partialText string, opts CompleteOptions)
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		logger.Error("Complete operation validation failed", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("invalid options: %w", err)
+		return CompleteResult{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Validate input
 	if strings.TrimSpace(partialText) == "" {
 		logger.Error("Complete operation failed: empty input", "requestID", opts.RequestID)
-		return result, fmt.Errorf("partial text cannot be empty")
+		return CompleteResult{}, types.Classified(types.KindConfiguration, errors.New("partial text cannot be empty"))
 	}
 
-	// Use provided context or create one with timeout
-	if ctx == nil {
-		var cancel context.CancelFunc
-		ctx, cancel = operationContext(opts.OpOptions.Context, 30*time.Second)
-		defer cancel()
-	}
+	// The default deadline applies to every caller who set none. It was
+	// applied only when ctx was nil, so a caller who passed any context, which
+	// includes every call made through a Client, ran with no timeout.
+	ctx, cancel := operationContext(ctx, 30*time.Second)
+	defer cancel()
 
 	// Build prompt
 	systemPrompt := buildCompleteSystemPrompt(opts)
@@ -179,17 +192,29 @@ func completeImpl(ctx context.Context, partialText string, opts CompleteOptions)
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
 		logger.Error("Complete operation LLM call failed", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("completion failed: %w", err)
+		return CompleteResult{}, fmt.Errorf("completion failed: %w", err)
 	}
 
 	// Process response
 	completedText := processCompletionResponse(response, partialText, opts)
 
-	result.Text = completedText
-	result.Length = len(completedText) - len(partialText)
+	// A completion that adds nothing is not a completion. The model returned
+	// nothing, or only the text it was given, or only a stop sequence, and
+	// reporting that as a success left the caller holding their own input
+	// under a nil error.
+	if completedText == partialText {
+		logger.Error("Complete operation failed: the model added no text", "requestID", opts.RequestID)
+		return CompleteResult{}, types.Newf(types.KindMalformedOutput, "complete", "the model's answer added no text to the input")
+	}
 
-	// Add metadata
-	result.Metadata["model"] = "llm-completion"
+	result.Text = completedText
+	// Characters, as MaxLength is: a byte difference reported 3 per Japanese
+	// character.
+	result.Length = runeLen(completedText) - runeLen(partialText)
+
+	// Add metadata. The model that answered is not recorded here: this layer is
+	// not told which one it was, and a constant standing in for it was worse
+	// than no entry.
 	result.Metadata["temperature"] = opts.Temperature
 	result.Metadata["max_length"] = opts.MaxLength
 	result.Metadata["context_messages"] = len(opts.Background)
@@ -216,9 +241,13 @@ func buildCompleteSystemPrompt(opts CompleteOptions) string {
 		prompt += "Use the provided context to understand the conversation flow and maintain coherence.\n"
 	}
 
-	if len(opts.StopSequences) > 0 {
-		prompt += fmt.Sprintf("Stop generation when you encounter any of these sequences: %s\n",
-			strings.Join(opts.StopSequences, ", "))
+	// The sequences are the caller's text, written as a JSON list so that one of
+	// them cannot read as an instruction. An empty one is left out: it matches
+	// everywhere and is ignored when the answer is cut.
+	if stops := nonEmptyStopSequences(opts.StopSequences); len(stops) > 0 {
+		// A list of strings always encodes.
+		quoted, _ := promptJSON(stops)
+		prompt += fmt.Sprintf("Stop generation when you encounter any of these sequences: %s\n", quoted)
 	}
 
 	prompt += fmt.Sprintf("Limit your completion to approximately %d characters.\n", opts.MaxLength)
@@ -234,13 +263,15 @@ func buildCompleteUserPrompt(partialText string, opts CompleteOptions) string {
 	// Add context if provided
 	if len(opts.Background) > 0 {
 		prompt += "Context:\n"
-		for i, ctx := range opts.Background {
-			prompt += fmt.Sprintf("%d. %s\n", i+1, ctx)
+		for i, note := range opts.Background {
+			quoted, _ := promptJSON(note)
+			prompt += fmt.Sprintf("%d. %s\n", i+1, quoted)
 		}
 		prompt += "\n"
 	}
 
-	prompt += fmt.Sprintf("Complete this text: %s", partialText)
+	quotedText, _ := promptJSON(partialText)
+	prompt += fmt.Sprintf("Complete this text: %s", quotedText)
 
 	return prompt
 }
@@ -256,12 +287,12 @@ func processCompletionResponse(response, originalText string, opts CompleteOptio
 		response = strings.TrimSpace(response)
 	}
 
-	// Apply stop sequences
-	for _, stopSeq := range opts.StopSequences {
-		if idx := strings.Index(response, stopSeq); idx != -1 {
-			response = response[:idx]
-			break
-		}
+	// Cut at the earliest place any stop sequence occurs. Taking the first one in
+	// the caller's list that occurs at all cut "xAyB" at "B" when the sequences
+	// were ["B", "A"], leaving the "A" in the text. An empty sequence is found at
+	// offset 0 and wiped the whole completion, so those are skipped.
+	if cut := earliestStop(response, opts.StopSequences); cut >= 0 {
+		response = response[:cut]
 	}
 
 	// Combine original with completion
@@ -282,6 +313,29 @@ func processCompletionResponse(response, originalText string, opts CompleteOptio
 	completedText = truncateAtWord(completedText, maxTotalLength, runeLen(originalText))
 
 	return completedText
+}
+
+// nonEmptyStopSequences is the stop sequences that can match anything.
+func nonEmptyStopSequences(sequences []string) []string {
+	var kept []string
+	for _, sequence := range sequences {
+		if sequence != "" {
+			kept = append(kept, sequence)
+		}
+	}
+	return kept
+}
+
+// earliestStop is the byte offset at which the text first contains any of the
+// sequences, or -1 when it contains none. Empty sequences are not considered.
+func earliestStop(text string, sequences []string) int {
+	earliest := -1
+	for _, sequence := range nonEmptyStopSequences(sequences) {
+		if index := strings.Index(text, sequence); index >= 0 && (earliest < 0 || index < earliest) {
+			earliest = index
+		}
+	}
+	return earliest
 }
 
 // CompleteFieldResult contains the result of completing a field in a struct
@@ -351,6 +405,18 @@ func (opts CompleteFieldOptions) WithMode(mode types.Mode) CompleteFieldOptions 
 // CompleteField completes a specific string field in a struct and returns a new copy
 // with the completed field. The struct context is used to inform the completion.
 //
+// The copy is made with reflection and is shallow: every other field of the
+// struct, exported or not and whatever its json tag says, comes back exactly as
+// it was given, and slices and maps in it are shared with the original rather
+// than duplicated. The field to complete has to be an exported string field of
+// the struct itself or one promoted from an embedded struct.
+//
+// The other fields are shown to the model as context in the names and the form
+// encoding/json gives them, and a field the type tags `json:"-"` is not shown,
+// since it is not serialised and what is not serialised is not sent to a
+// provider. The field being completed is sent whatever its tag, because the
+// caller named it.
+//
 // Example:
 //
 //	type BlogPost struct {
@@ -358,21 +424,18 @@ func (opts CompleteFieldOptions) WithMode(mode types.Mode) CompleteFieldOptions 
 //	    Body  string `json:"body"`
 //	}
 //	post := BlogPost{Title: "AI in Healthcare", Body: "Artificial intelligence is transforming"}
-//	result, err := CompleteField[BlogPost](post, NewCompleteFieldOptions("Body"))
+//	result, err := CompleteField[BlogPost](ctx, post, NewCompleteFieldOptions("Body"))
 //	// result.Data.Body now contains the completed text
 func CompleteField[T any](ctx context.Context, data T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
-	logger := telemetry.GetLogger()
-	logger.Debug("Starting complete field operation", "requestID", opts.RequestID, "field", opts.FieldName)
-
-	result := CompleteFieldResult[T]{
-		Data:     data,
-		Field:    opts.FieldName,
-		Metadata: make(map[string]any),
+	if ctx == nil {
+		ctx = opts.OpOptions.Context
 	}
+	logger := loggerFor(ctx)
+	logger.Debug("Starting complete field operation", "requestID", opts.RequestID)
 
 	// Validate field name
 	if opts.FieldName == "" {
-		return result, fmt.Errorf("field name is required")
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, errors.New("field name is required"))
 	}
 
 	// Get the value using reflection
@@ -381,23 +444,37 @@ func CompleteField[T any](ctx context.Context, data T, opts CompleteFieldOptions
 		val = val.Elem()
 	}
 	if val.Kind() != reflect.Struct {
-		return result, fmt.Errorf("data must be a struct, got %T", data)
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("data must be a struct, got %T", data))
 	}
 
-	// Find the field
-	field := val.FieldByName(opts.FieldName)
-	if !field.IsValid() {
-		return result, fmt.Errorf("field %q not found in struct", opts.FieldName)
+	// Find the field. It has to be one the copy below can set, which is checked
+	// now rather than after the model has been paid for.
+	structField, ok := val.Type().FieldByName(opts.FieldName)
+	if !ok {
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("field %q not found in struct", opts.FieldName))
+	}
+	if !structField.IsExported() {
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("field %q is not exported, so it cannot be completed", opts.FieldName))
+	}
+	field, err := val.FieldByIndexErr(structField.Index)
+	if err != nil {
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("field %q cannot be read: it is promoted through an embedded pointer that is nil", opts.FieldName))
 	}
 	if field.Kind() != reflect.String {
-		return result, fmt.Errorf("field %q must be a string, got %s", opts.FieldName, field.Kind())
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("field %q must be a string, got %s", opts.FieldName, field.Kind()))
 	}
 
 	originalValue := field.String()
-	result.Original = originalValue
+
+	result := CompleteFieldResult[T]{
+		Data:     data,
+		Field:    opts.FieldName,
+		Original: originalValue,
+		Metadata: make(map[string]any),
+	}
 
 	if strings.TrimSpace(originalValue) == "" {
-		return result, fmt.Errorf("field %q is empty, nothing to complete", opts.FieldName)
+		return CompleteFieldResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("field %q is empty, nothing to complete", opts.FieldName))
 	}
 
 	// Build context from other fields in the struct
@@ -411,43 +488,73 @@ func CompleteField[T any](ctx context.Context, data T, opts CompleteFieldOptions
 	completeResult, err := completeImpl(ctx, originalValue, opts.CompleteOptions)
 	if err != nil {
 		logger.Error("Complete field operation failed", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("failed to complete field: %w", err)
+		return CompleteFieldResult[T]{}, fmt.Errorf("failed to complete field: %w", err)
 	}
 
+	// Create a new copy of the struct with the completed field
+	newData, err := copyWithUpdatedField(data, opts.FieldName, completeResult.Text)
+	if err != nil {
+		logger.Error("Failed to update struct field", "requestID", opts.RequestID, "error", err)
+		return CompleteFieldResult[T]{}, fmt.Errorf("failed to update field: %w", err)
+	}
+
+	result.Data = newData
 	result.Completed = completeResult.Text
 	result.Length = completeResult.Length
 	result.ModelConfidence = completeResult.ModelConfidence
 	result.Metadata = completeResult.Metadata
 	result.Metadata["field"] = opts.FieldName
 
-	// Create a new copy of the struct with the completed field
-	newData, err := copyWithUpdatedField(data, opts.FieldName, completeResult.Text)
-	if err != nil {
-		logger.Error("Failed to update struct field", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("failed to update field: %w", err)
-	}
-	result.Data = newData
-
-	logger.Debug("Complete field operation succeeded", "requestID", opts.RequestID, "field", opts.FieldName, "length", result.Length)
+	logger.Debug("Complete field operation succeeded", "requestID", opts.RequestID, "length", result.Length)
 
 	return result, nil
 }
 
-// buildStructContext extracts context from other fields in the struct
+// buildStructContext describes the fields of a struct other than the one being
+// completed, as "name: value" lines for the model. A field holding nothing,
+// which for a number or a bool is its zero value and for a string is an empty
+// or blank one, is left out; a string that happens to read "0" or "false" is a
+// value and is kept. A nil pointer is left out and a pointer to a scalar is
+// written as the scalar, not as an address.
+//
+// The fields are the ones encoding/json writes (jsonMembers), named as it names
+// them, so that the model reads the names the data is written under and a
+// field the type says is not serialised, `json:"-"`, is not sent to a provider
+// under any name. The fields of an embedded struct are listed as encoding/json
+// lists them. A value that is not text is written as JSON, so that what a
+// struct or a map holds is shown as it is written and a field of it that JSON
+// leaves out is left out here too; one JSON cannot write is not shown.
 func buildStructContext(val reflect.Value, excludeField string) []string {
-	var context []string
+	var lines []string
 
-	typ := val.Type()
-	for i := 0; i < val.NumField(); i++ {
-		field := typ.Field(i)
-		if field.Name == excludeField {
+	// The field being completed is named by its Go name, as FieldByName finds it.
+	var excluded []int
+	if field, found := val.Type().FieldByName(excludeField); found {
+		excluded = field.Index
+	}
+
+	for _, member := range jsonMembers(val.Type()) {
+		if excluded != nil && slices.Equal(member.index, excluded) {
 			continue
 		}
-
-		fieldVal := val.Field(i)
-
-		// Only include exported string fields with content
-		if !field.IsExported() {
+		if !member.field.IsExported() {
+			continue
+		}
+		// A member promoted through an embedded pointer that is nil has no value.
+		fieldVal, err := val.FieldByIndexErr(member.index)
+		if err != nil {
+			continue
+		}
+		if fieldVal.Kind() == reflect.Ptr || fieldVal.Kind() == reflect.Interface {
+			if fieldVal.IsNil() {
+				continue
+			}
+			fieldVal = fieldVal.Elem()
+			if fieldVal.Kind() == reflect.Ptr {
+				continue
+			}
+		}
+		if !fieldVal.CanInterface() {
 			continue
 		}
 
@@ -458,81 +565,94 @@ func buildStructContext(val reflect.Value, excludeField string) []string {
 		case reflect.Slice:
 			if fieldVal.Len() > 0 {
 				// For slices, try to get a summary
-				items := make([]string, 0, fieldVal.Len())
+				items := make([]string, 0, min(fieldVal.Len(), 5))
 				for j := 0; j < fieldVal.Len() && j < 5; j++ {
-					items = append(items, fmt.Sprintf("%v", fieldVal.Index(j).Interface()))
+					if text, shown := structContextText(fieldVal.Index(j)); shown {
+						items = append(items, text)
+					}
 				}
 				fieldStr = strings.Join(items, ", ")
-				if fieldVal.Len() > 5 {
+				if fieldStr != "" && fieldVal.Len() > 5 {
 					fieldStr += fmt.Sprintf(" (and %d more)", fieldVal.Len()-5)
 				}
 			}
 		default:
-			fieldStr = fmt.Sprintf("%v", fieldVal.Interface())
+			if fieldVal.IsZero() {
+				continue
+			}
+			fieldStr, _ = structContextText(fieldVal)
 		}
 
-		if strings.TrimSpace(fieldStr) != "" && fieldStr != "0" && fieldStr != "false" {
-			// Use json tag if available for cleaner context
-			jsonTag := field.Tag.Get("json")
-			if jsonTag != "" {
-				jsonTag = strings.Split(jsonTag, ",")[0]
-			} else {
-				jsonTag = field.Name
-			}
-			context = append(context, fmt.Sprintf("%s: %s", jsonTag, fieldStr))
+		if strings.TrimSpace(fieldStr) == "" {
+			continue
 		}
+		lines = append(lines, fmt.Sprintf("%s: %s", member.name, fieldStr))
 	}
 
-	return context
+	return lines
 }
 
-// copyWithUpdatedField creates a copy of the struct with the specified field updated
+// structContextText is how one value is written in a line of context: a string
+// as it is, and anything else as the JSON it is written as. It reports false
+// for a value JSON cannot write, which is not shown.
+func structContextText(value reflect.Value) (string, bool) {
+	if !value.IsValid() || !value.CanInterface() {
+		return "", false
+	}
+	if value.Kind() == reflect.String {
+		return value.String(), true
+	}
+	written, err := promptJSON(value.Interface())
+	if err != nil {
+		return "", false
+	}
+	return string(written), true
+}
+
+// copyWithUpdatedField returns a copy of the struct, or of the struct a pointer
+// points to, with one string field set. The copy is made by assignment, so a
+// field the JSON encoding would have lost (an unexported one, a `json:"-"` one,
+// an int64 above 2^53) is carried over untouched, and the target is found by its
+// Go name, so a tag such as `json:",omitempty"` cannot send the new value to a
+// key that is not the field's. The copy is shallow.
 func copyWithUpdatedField[T any](data T, fieldName, newValue string) (T, error) {
-	var result T
+	var zero T
 
-	// Marshal to JSON
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		return result, fmt.Errorf("failed to marshal struct: %w", err)
-	}
-
-	// Unmarshal to map for modification
-	var dataMap map[string]any
-	if err := json.Unmarshal(jsonBytes, &dataMap); err != nil {
-		return result, fmt.Errorf("failed to unmarshal to map: %w", err)
-	}
-
-	// Find the JSON key for the field
-	val := reflect.ValueOf(data)
-	if val.Kind() == reflect.Ptr {
-		val = val.Elem()
-	}
-	typ := val.Type()
-
-	jsonKey := fieldName
-	for i := 0; i < typ.NumField(); i++ {
-		if typ.Field(i).Name == fieldName {
-			tag := typ.Field(i).Tag.Get("json")
-			if tag != "" {
-				jsonKey = strings.Split(tag, ",")[0]
-			}
-			break
+	source := reflect.ValueOf(data)
+	isPointer := source.Kind() == reflect.Ptr
+	if isPointer {
+		if source.IsNil() {
+			return zero, types.Classified(types.KindConfiguration, errors.New("data is a nil pointer"))
 		}
+		source = source.Elem()
+	}
+	if source.Kind() != reflect.Struct {
+		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("data must be a struct, got %T", data))
 	}
 
-	// Update the field
-	dataMap[jsonKey] = newValue
+	structField, ok := source.Type().FieldByName(fieldName)
+	if !ok || !structField.IsExported() {
+		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("field %q is not an exported field of the struct", fieldName))
+	}
 
-	// Marshal back
-	updatedBytes, err := json.Marshal(dataMap)
+	duplicate := reflect.New(source.Type())
+	duplicate.Elem().Set(source)
+	target, err := duplicate.Elem().FieldByIndexErr(structField.Index)
 	if err != nil {
-		return result, fmt.Errorf("failed to marshal updated map: %w", err)
+		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("field %q is promoted through an embedded pointer that is nil", fieldName))
 	}
-
-	// Unmarshal to result
-	if err := json.Unmarshal(updatedBytes, &result); err != nil {
-		return result, fmt.Errorf("failed to unmarshal to struct: %w", err)
+	if target.Kind() != reflect.String || !target.CanSet() {
+		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("field %q cannot be set", fieldName))
 	}
+	target.SetString(newValue)
 
-	return result, nil
+	var copied any = duplicate.Elem().Interface()
+	if isPointer {
+		copied = duplicate.Interface()
+	}
+	typed, ok := copied.(T)
+	if !ok {
+		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("the copy is not a %T", data))
+	}
+	return typed, nil
 }

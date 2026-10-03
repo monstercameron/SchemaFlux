@@ -100,7 +100,7 @@ func TestTheRemainingAnalysisAndExtendedEntrypointsReachTheProvider(t *testing.T
 		return err
 	})
 
-	reaches(t, "Annotating", `{"annotations":[]}`, func(ctx context.Context) error {
+	reaches(t, "Annotating", `{"annotations":[],"summary":{}}`, func(ctx context.Context) error {
 		_, err := Annotating(reachTarget{Name: "x"}).Context(ctx).Run()
 		return err
 	})

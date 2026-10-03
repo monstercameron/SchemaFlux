@@ -46,7 +46,7 @@ func TestNormalize_UnmarshalableInputRefusesBeforeCallingProvider(t *testing.T) 
 	calls := 0
 	installNormalizeCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
 		calls++
-		return `{"normalized":{},"changes":[],"total_changes":0}`, nil
+		return `{"normalized":{},"changes":[],"warnings":[]}`, nil
 	})
 
 	_, err := Normalize(unmarshalableNormalizeInput{C: make(chan int)}, NewNormalizeOptions())
@@ -162,7 +162,7 @@ func TestNormalize_SuccessComputesChangedFieldsFromValueDiff(t *testing.T) {
 // NormalizeText's success path formats the normalized value as text.
 func TestNormalizeText_Success(t *testing.T) {
 	installNormalizeCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
-		return `{"normalized":"hello world","changes":[],"total_changes":0}`, nil
+		return `{"normalized":"hello world","changes":[],"warnings":[]}`, nil
 	})
 
 	got, err := NormalizeText("hello   world", NewNormalizeOptions())
@@ -424,5 +424,94 @@ func TestNormalizeOptionsValidate_RejectsOutOfRangeThreshold(t *testing.T) {
 	opts.CommonOptions.Threshold = 1.5
 	if err := opts.Validate(); err == nil {
 		t.Fatal("Validate accepted a threshold outside [0,1]")
+	}
+}
+
+// Two literals that are the same text are the same number, and nothing needs
+// parsing to say so. Almost every number in an answer comes back as the text it
+// went in as, so parsing both sides into rationals first was the largest cost of
+// the numeric check (about 500 of the 1,360 allocations for twelve fields).
+func TestSameExactValueOfIdenticalTextAllocatesNothing(t *testing.T) {
+	for _, literal := range []string{"0", "7", "-3", "1284.50", "0.000001", "90071992547409910", "1e3", "-2.5E-4", "12345678901234567890.123456789"} {
+		t.Run(literal, func(t *testing.T) {
+			if !sameExactValue(literal, literal) {
+				t.Fatalf("sameExactValue(%q, %q) = false", literal, literal)
+			}
+			if allocs := testing.AllocsPerRun(100, func() { _ = sameExactValue(literal, literal) }); allocs != 0 {
+				t.Errorf("comparing %q with itself makes %.0f allocations, want none", literal, allocs)
+			}
+		})
+	}
+}
+
+// The shortcut changes nothing about the answer: every pair gets the result the
+// rational comparison gives.
+func TestSameExactValueAnswersAsTheRationalComparisonDoes(t *testing.T) {
+	cases := []struct {
+		before, after string
+		want          bool
+	}{
+		{"1", "1", true},
+		{"1284.50", "1284.50", true},
+		{"1284.50", "1284.5", true},
+		{"1e2", "100", true},
+		{"0", "-0", true},
+		{"0.10", "0.1", true},
+		{"1", "2", false},
+		{"0.1", "0.10000000000000001", false},
+		{"90071992547409910", "90071992547409920", false},
+		{"1284.57", "1284.5699462890625", false},
+		{"-1", "1", false},
+		{"not-a-number", "not-a-number", true},
+		{"not-a-number", "1", true},
+		{"1", "not-a-number", true},
+		{"", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.before+" against "+tc.after, func(t *testing.T) {
+			if got := sameExactValue(tc.before, tc.after); got != tc.want {
+				t.Errorf("sameExactValue(%q, %q) = %v, want %v", tc.before, tc.after, got, tc.want)
+			}
+			if got := sameExactValue(tc.after, tc.before); got != tc.want {
+				t.Errorf("sameExactValue(%q, %q) = %v, want %v", tc.after, tc.before, got, tc.want)
+			}
+		})
+	}
+}
+
+// The numeric check of an answer whose numbers all came back as they went in.
+// It reads the answer and the decoded value written out again side by side
+// (numbersAgree), so the one allocation it makes is the text json.Marshal
+// returns, and each budget is that plus two: 3. On Go 1.27.1 the check made 1
+// allocation for each of these answers. Before it read them side by side it
+// decoded both texts into `any`, which made 62 and 1,791 allocations on Go
+// 1.26.3 and 76 and 2,093 on Go 1.27.1, where encoding/json's Decoder is built
+// on encoding/json/v2 and costs more to set up and to fill an `any` from; parsing
+// every number into a rational made 92 and 2,812 on 1.26.3.
+func TestNumericFidelityAllocationsStayWithinBudget(t *testing.T) {
+	budgets := map[string]float64{"record_200B": 3, "list_5KB": 3}
+	checked := 0
+	for _, answer := range benchAnswers() {
+		budget, ok := budgets[answer.name]
+		if !ok {
+			continue
+		}
+		checked++
+		decoded := answer.target()
+		if err := json.Unmarshal([]byte(answer.body), decoded); err != nil {
+			t.Fatal(err)
+		}
+		check := func() {
+			if err := CheckNumericFidelity(answer.body, decoded); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check()
+		if allocs := testing.AllocsPerRun(20, check); allocs > budget {
+			t.Errorf("CheckNumericFidelity of %s makes %.0f allocations, over its budget of %.0f", answer.name, allocs, budget)
+		}
+	}
+	if checked != len(budgets) {
+		t.Errorf("%d of the %d answers with a budget were found", checked, len(budgets))
 	}
 }

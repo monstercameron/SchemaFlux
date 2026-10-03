@@ -1,0 +1,76 @@
+type Algebra uint8
+method (Algebra).String() string
+const AlgebraGraph Algebra
+const AlgebraHierarchical Algebra
+const AlgebraIndependent Algebra
+const AlgebraPartition Algebra
+const AlgebraPermutation Algebra
+const AlgebraSequential Algebra
+const AlgebraSubset Algebra
+type Batch[In any, Out any] struct{Class BatchClass; Kind Algebra; Encode func(items []In, opts Options) (system string, user string, err error); Merge func(body string, items []In) ([]Out, error); GlobalValidate func(items []In, outputs []Out) error; Instructions string; Item func(raw json.RawMessage) (Out, error)}
+const BatchAggregate BatchClass
+type BatchClass uint8
+method (BatchClass).String() string
+const BatchItemwise BatchClass
+const BatchNone BatchClass
+const BatchUnspecified BatchClass
+type CapabilitySnapshot struct{Provider string; Model string; MaxOutputTokens int; ContextTokens int}
+func Catalog() []Entry
+type Category uint8
+method (Category).String() string
+const CategoryClassify Category
+const CategoryExtract Category
+const CategoryGenerate Category
+const CategoryOrder Category
+const CategoryReview Category
+const CategorySelect Category
+const CategoryTransform Category
+const CategoryValidate Category
+type ChunkPlan struct{ItemCount int; BoundingRule string}
+type Contract[Out any] struct{SchemaName string; Decode func(body string) (Out, error); Invariants []func(Out) error; Normalize func(Out) Out}
+type CostEstimate struct{Priced bool; EstimatedCost float64; Currency string; PricingSource string; EstimatedPromptTokens int; EstimatedCompletionTokens int}
+type Coverage struct{Offered int; Answered int; Missing int; Duplicate int; Unknown int}
+method (Coverage).Complete() bool
+method (Coverage).OK() bool
+method (Coverage).String() string
+type Descriptor[In any, Out any] struct{ID ID; Semantics Semantics; Contract Contract[Out]; Batch Batch[In, Out]; Policy Policy; BuildPrompt func(input In, opts Options) (system string, user string)}
+type Entry struct{Name string; Category Category; Stability Stability}
+type ID struct{Name string; Version string}
+method (ID).String() string
+type Item[Out any] struct{}
+method (Item[Out]).Value() (Out, error)
+func Lookup(name string) (Entry, bool)
+func Must[In, Out any](d Descriptor[In, Out]) Descriptor[In, Out]
+func New[In, Out any](d Descriptor[In, Out]) (Descriptor[In, Out], error)
+type Options struct{embedded schemaflux.Options; JSONSchema map[string]any; SchemaName string; ResponseFormat string}
+type OversizedItem struct{Index int; Bound string}
+type Plan struct{Operation ID; InputShape string; ItemCount int; Eligible bool; IneligibleReason string; IneligibleKind schemaflux.Kind; ShapeForced bool; Shape Shape; ShapeReason string; Alternatives []alternative; Chunks []ChunkPlan; OversizedItems []OversizedItem; MaxCalls int; EstimatedCost CostEstimate; Policy PolicySnapshot; Capability CapabilitySnapshot; EstimatorVersion string; PolicyDigest string; CapabilityDigest string}
+method (Plan).Digest() string
+method (Plan).Explain() string
+method (Plan).Serialize() ([]byte, error)
+type PlanOptions struct{embedded Options; Force Shape; ForceReason string; Budget float64; MaxItemsPerCall int}
+type Policy struct{RepairAttempts int}
+type PolicySnapshot struct{Mode schemaflux.Mode; Tier schemaflux.Tier; MaxOutputTokens int; HasSteering bool; ResponseFormat string}
+func Preflight[In, Out any](ctx context.Context, d Descriptor[In, Out], items []In, opts ...PlanOptions) (Plan, error)
+func PreflightStages[T any](ctx context.Context, datum T, stages []Stage[T], opts ...Options) (Plan, []Plan, error)
+func Run[In, Out any](ctx context.Context, d Descriptor[In, Out], input In, opts ...Options) (Out, error)
+func RunBatch[In, Out any](ctx context.Context, d Descriptor[In, Out], items []In, opts ...Options) ([]Out, error)
+func RunEach[In, Out any](ctx context.Context, d Descriptor[In, Out], items []In, opts ...PlanOptions) ([]Item[Out], error)
+func RunMany[In, Out any](ctx context.Context, d Descriptor[In, Out], items []In, opts ...PlanOptions) ([]Out, error)
+func RunStages[T any](ctx context.Context, datum T, stages []Stage[T], opts ...Options) (T, error)
+type Semantics struct{Category Category; InferencePermitted bool; PreservesIdentity bool; PreservesOrder bool; Stability Stability}
+type Shape uint8
+method (Shape).MarshalText() ([]byte, error)
+method (Shape).String() string
+const ShapeAtomic Shape
+const ShapeBatched Shape
+const ShapeGlobal Shape
+const ShapeSplit Shape
+const ShapeUnspecified Shape
+type Stability uint8
+method (Stability).String() string
+const StabilityExperimental Stability
+const StabilityStable Stability
+const StabilityUnspecified Stability
+type Stage[T any] struct{Name string; Descriptor Descriptor[T, T]; Check func(datum T) (settled T, level schemaflux.ContractLevel, ok bool); Require schemaflux.ContractLevel}
+func WithParents(ctx context.Context, resultIDs ...string) context.Context

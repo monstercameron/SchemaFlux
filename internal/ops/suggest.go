@@ -2,11 +2,12 @@ package ops
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -161,16 +162,19 @@ func (opts SuggestOptions) WithCategories(categories []string) SuggestOptions {
 //	suggestions, err := Suggest[ConfigOption](currentConfig,
 //	    NewSuggestOptions().WithDomain("data-processing"))
 func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting suggest operation", "requestID", opts.CommonOptions.RequestID, "inputType", fmt.Sprintf("%T", input), "topN", opts.TopN)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
 		log.Error("Suggest operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return nil, fmt.Errorf("invalid options: %w", err)
+		return nil, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
-	opOptions := opts.toOpOptions()
+	// Both halves of the options, as every other operation reads them. The
+	// promoted CommonOptions method read only that half, so a Context, Model or
+	// Intelligence set on the embedded OpOptions was ignored.
+	opOptions := mergeEmbeddedOpOptions(opts.CommonOptions, opts.OpOptions)
 
 	// Build suggestion instructions
 	var instructions []string
@@ -204,19 +208,20 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 	instructions = append(instructions, fmt.Sprintf("Return top %d suggestions", opts.TopN))
 
 	steering := strings.Join(instructions, ". ")
-	if opts.CommonOptions.Steering != "" {
-		steering = opts.CommonOptions.Steering + ". " + steering
+	if callerSteering := effectiveSteering(opts.CommonOptions, opts.OpOptions); callerSteering != "" {
+		steering = callerSteering + ". " + steering
 	}
 	opOptions.Steering = steering
 
-	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
+	// From the options built above, so the deadline inside them is the one in use.
+	ctx, cancel := operationContext(opOptions.Context, config.GetTimeout())
 	defer cancel()
 
 	// Marshal input for LLM
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		log.Error("Suggest operation marshal failed", "requestID", opts.CommonOptions.RequestID, "error", err)
-		return nil, fmt.Errorf("failed to marshal input: %w", err)
+		return nil, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
 	systemPrompt := `You are an expert suggestion engine. Generate contextually relevant suggestions based on the provided input and requirements.
@@ -239,139 +244,177 @@ Rules:
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
-	// Clean up markdown code blocks from response
-	response = strings.TrimSpace(response)
-	response = strings.TrimPrefix(response, "```json")
-	response = strings.TrimPrefix(response, "```")
-	response = strings.TrimSuffix(response, "```")
-	response = strings.TrimSpace(response)
-
-	// Parse the response - try direct array first.
-	//
-	// The accumulator is declared per attempt on purpose. It used to be one
-	// slice shared by every branch below, and encoding/json PARTIALLY POPULATES
-	// a slice before returning an error: decoding `[{"name":"a"},{"text":"b"}]`
-	// into []string appends two zero-value strings and then fails. The failure
-	// was handled, the two empties were not, and the object-extraction branch
-	// further down appended to the same slice -- so a caller asking for two
-	// suggestions received ["", "", "a", "b"], and suggestions[0] was empty.
-	var suggestions []T
-	if err := ParseJSONStrict(response, &suggestions); err == nil {
-		// Successfully parsed as array
-		// Silent truncation was the anti-pattern AtMost's own doc comment names:
-		// it "turns a model that ignored the instruction into a result that
-		// looks obedient". A caller asking for three and getting seven should
-		// find out, rather than receiving a plausible three with no sign that
-		// the ranking they are about to trust was cut down locally.
-		if err := AtMost(suggestions, opts.TopN); err != nil {
-			log.Error("Suggest returned more suggestions than requested",
-				"requestID", opts.CommonOptions.RequestID, "error", err)
-			return nil, fmt.Errorf("suggest: %w", err)
-		}
-		log.Debug("Suggest operation succeeded", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))
-		return suggestions, nil
+	suggestions, err := decodeSuggestions[T](response)
+	if err != nil {
+		// The response body is deliberately not logged. It is derived from the
+		// caller's input, and AGENTS.md forbids putting the caller's payload in a
+		// log line -- a 200-character prefix is still the caller's data. The length
+		// and the request ID are enough to correlate with a diagnostic capture,
+		// which is the mechanism that exists for looking at bodies.
+		log.Error("Suggest operation parse failed",
+			"requestID", opts.CommonOptions.RequestID, "responseBytes", len(response), "error", err)
+		return nil, err
 	}
 
-	// Try to extract from a structured response with "suggestions" key
-	var result struct {
-		Suggestions []T `json:"suggestions"`
+	// Silent truncation was the anti-pattern AtMost's own doc comment names: it
+	// "turns a model that ignored the instruction into a result that looks
+	// obedient". A caller asking for three and getting seven should find out,
+	// rather than receiving a plausible three with no sign that the ranking
+	// they are about to trust was cut down locally.
+	if err := AtMost(suggestions, opts.TopN); err != nil {
+		log.Error("Suggest returned more suggestions than requested",
+			"requestID", opts.CommonOptions.RequestID, "error", err)
+		return nil, types.Newf(types.KindInvariantViolation, "suggest", "%s", err.Error())
 	}
-	if err := ParseJSONStrict(response, &result); err == nil && len(result.Suggestions) > 0 {
-		suggestions = result.Suggestions
-		if err := AtMost(suggestions, opts.TopN); err != nil {
-			log.Error("Suggest returned more suggestions than requested",
-				"requestID", opts.CommonOptions.RequestID, "error", err)
-			return nil, fmt.Errorf("suggest: %w", err)
-		}
-		log.Debug("Suggest operation succeeded", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))
-		return suggestions, nil
-	}
-
-	// If T is string, try to extract strings from array of objects.
-	//
-	// extracted, not `suggestions`: see the note on the first attempt above. A
-	// failed decode there can have left partial zero values behind, and
-	// appending to it produced empty suggestions ahead of the real ones.
-	var extracted []T
-	var rawArray []map[string]any
-	if err := ParseJSONStrict(response, &rawArray); err == nil {
-		for _, item := range rawArray {
-			// Try common field names for suggestions
-			for _, key := range []string{"suggestion", "text", "content", "name", "value", "description"} {
-				if val, ok := item[key]; ok {
-					if str, ok := val.(string); ok {
-						var t T
-						// Check if T is string
-						if _, ok := any(t).(string); ok {
-							extracted = append(extracted, any(str).(T))
-							break
-						}
-					}
-				}
-			}
-		}
-		if len(extracted) > 0 {
-			if err := AtMost(extracted, opts.TopN); err != nil {
-				log.Error("Suggest returned more suggestions than requested",
-					"requestID", opts.CommonOptions.RequestID, "error", err)
-				return nil, fmt.Errorf("suggest: %w", err)
-			}
-			log.Debug("Suggest operation succeeded (extracted)", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(extracted))
-			return extracted, nil
-		}
-	}
-
-	// Accept a single suggestion object as a one-item result.
-	var singleObject map[string]any
-	if err := ParseJSONStrict(response, &singleObject); err == nil && len(singleObject) > 0 {
-		var t T
-		if _, ok := any(t).(string); ok {
-			for _, key := range []string{"suggestion", "text", "content", "name", "value", "description"} {
-				if val, ok := singleObject[key]; ok {
-					if str, ok := val.(string); ok && strings.TrimSpace(str) != "" {
-						return []T{any(str).(T)}, nil
-					}
-				}
-			}
-		}
-
-		if bytes, err := json.Marshal(singleObject); err == nil {
-			var parsed T
-			if err := json.Unmarshal(bytes, &parsed); err == nil {
-				return []T{parsed}, nil
-			}
-		}
-	}
-
-	// The response body is deliberately not logged. It is derived from the
-	// caller's input, and AGENTS.md forbids putting the caller's payload in a
-	// log line -- a 200-character prefix is still the caller's data. The length
-	// and the request ID are enough to correlate with a diagnostic capture,
-	// which is the mechanism that exists for looking at bodies.
-	log.Error("Suggest operation parse failed",
-		"requestID", opts.CommonOptions.RequestID, "responseBytes", len(response))
-	return nil, fmt.Errorf("failed to parse suggestions from response")
+	log.Debug("Suggest operation succeeded", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))
+	return suggestions, nil
 }
 
-// SuggestWithResult provides detailed suggestion results with scores and reasons
-func SuggestWithResult[T any](input any, opts SuggestOptions) (SuggestResult[T], error) {
-	result := SuggestResult[T]{
-		Metadata: make(map[string]any),
+// suggestionTextKeys are the keys a string suggestion may be found under when
+// the model answers with objects instead of strings.
+var suggestionTextKeys = []string{"suggestion", "text", "content", "name", "value", "description"}
+
+// decodeSuggestions reads the model's answer as a list of suggestions of type T.
+//
+// Four shapes are accepted: an array of suggestions, an object whose
+// "suggestions" key holds one, an array of objects from which a string is taken
+// (T a string), and a single suggestion object. Every element has to be a
+// usable suggestion, and an answer that holds none is refused: an error object,
+// an empty list, an object that shares no field with T, null, and a blank
+// string. It used to decode with json.Unmarshal and no further check, so for a
+// struct T each of those came back as one zero-valued suggestion and a nil
+// error.
+//
+// Nothing is returned beside an error. The decoding is element by element into
+// a fresh value, so a failed decode cannot leave partly filled values behind.
+func decodeSuggestions[T any](response string) ([]T, error) {
+	refuse := func(format string, args ...any) ([]T, error) {
+		return nil, types.Newf(types.KindSchemaViolation, "suggest", format, args...)
 	}
 
-	// Enable scores and reasons if not already set
-	opts.IncludeScores = opts.IncludeScores || opts.Ranked
-	opts.IncludeReasons = opts.IncludeReasons || true
+	body := cleanJSON(response)
+	var top any
+	if err := json.Unmarshal([]byte(body), &top); err != nil {
+		return nil, types.Newf(types.KindMalformedOutput, "suggest", "the response is not JSON")
+	}
 
+	switch typed := top.(type) {
+	case []any:
+		var raw []json.RawMessage
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			return refuse("the response is not a list of suggestions")
+		}
+		return decodeSuggestionList[T](raw)
+
+	case map[string]any:
+		if _, wrapped := typed["suggestions"]; wrapped {
+			var wrapper struct {
+				Suggestions []json.RawMessage `json:"suggestions"`
+			}
+			if err := json.Unmarshal([]byte(body), &wrapper); err != nil {
+				return refuse("the suggestions key does not hold a list")
+			}
+			return decodeSuggestionList[T](wrapper.Suggestions)
+		}
+		one, detail, ok := decodeSuggestion[T](json.RawMessage(body))
+		if !ok {
+			return refuse("the response is an object that holds no suggestion%s", detail)
+		}
+		return []T{one}, nil
+	}
+	return refuse("the response is not a list of suggestions")
+}
+
+// decodeSuggestionList decodes each element of a list and refuses the list if
+// it is empty or any element is not a usable suggestion.
+func decodeSuggestionList[T any](raw []json.RawMessage) ([]T, error) {
+	if len(raw) == 0 {
+		return nil, types.Newf(types.KindSchemaViolation, "suggest", "the response holds no suggestions")
+	}
+	out := make([]T, 0, len(raw))
+	for i, element := range raw {
+		suggestion, detail, ok := decodeSuggestion[T](element)
+		if !ok {
+			return nil, types.Newf(types.KindSchemaViolation, "suggest", "suggestion %d is not usable%s", i, detail)
+		}
+		out = append(out, suggestion)
+	}
+	return out, nil
+}
+
+// decodeSuggestion decodes one suggestion. It reports false for null, for a
+// blank string, for an object that shares no field with a struct T, for an
+// object that leaves out a member T requires, and for anything that does not fit
+// T. When it can say which member, detail names it, in the library's own words
+// and led by ": ", and is empty otherwise.
+func decodeSuggestion[T any](raw json.RawMessage) (suggestion T, detail string, ok bool) {
+	var zero, value T
+	if text := strings.TrimSpace(string(raw)); text == "" || text == "null" {
+		return zero, "", false
+	}
+
+	switch target := any(&value).(type) {
+	case *string:
+		// A string answer is a JSON string, or an object holding one under a
+		// key such as "text".
+		var plain string
+		if err := json.Unmarshal(raw, &plain); err == nil {
+			if strings.TrimSpace(plain) == "" {
+				return zero, "", false
+			}
+			*target = plain
+			return value, "", true
+		}
+		var object map[string]any
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return zero, "", false
+		}
+		for _, key := range suggestionTextKeys {
+			if text, found := object[key].(string); found && strings.TrimSpace(text) != "" {
+				*target = text
+				return value, "", true
+			}
+		}
+		return zero, "", false
+	}
+
+	if len(jsonKeyNames(reflect.TypeOf(&value))) > 0 {
+		// A struct, or a pointer to one. It is the caller's type, so a member the
+		// suggestion leaves out is the zero value and what a field has to carry is
+		// not decided here; the suggestion has to be about the type, which is to
+		// say share at least one member with it, or it would be one suggestion
+		// with every field empty.
+		if err := decodeCallerAnswer("suggest", string(raw), &value); err != nil {
+			var refusal *types.OperationError
+			if errors.As(err, &refusal) && refusal.Message != "" {
+				return zero, ": " + refusal.Message, false
+			}
+			return zero, "", false
+		}
+		return value, "", true
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return zero, "", false
+	}
+	return value, "", true
+}
+
+// SuggestWithResult returns the suggestions in a SuggestResult.
+//
+// Only Suggestions is filled. Scores and Reasons are never read from the answer
+// (the model is told to answer with a list of suggestions and nothing else, and
+// nothing parses anything beside that), and Metadata is an empty map. An empty
+// Scores means that none was read, not that none was asked for: IncludeScores
+// and IncludeReasons add a sentence to the prompt and are not read back. This
+// form used to switch both on, which asked the model for scores and reasons it
+// was then not able to return.
+func SuggestWithResult[T any](input any, opts SuggestOptions) (SuggestResult[T], error) {
 	suggestions, err := Suggest[T](input, opts)
 	if err != nil {
-		return result, err
+		return SuggestResult[T]{}, err
 	}
-
-	result.Suggestions = suggestions
-
-	// For now, return basic result - full implementation would parse scores/reasons from LLM
-	// This would require more sophisticated prompt engineering and response parsing
-
-	return result, nil
+	return SuggestResult[T]{
+		Suggestions: suggestions,
+		Metadata:    make(map[string]any),
+	}, nil
 }

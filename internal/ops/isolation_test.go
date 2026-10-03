@@ -2,12 +2,14 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -92,7 +94,7 @@ func (p *namedProvider) callCount() int {
 // construction and schemafluxtest.Install make); doing that for B after A
 // exists is exactly the sequence that used to repoint A.
 func TestSequentialClientsDoNotRepointEachOther(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	providerA := &namedProvider{name: "provider-a"}
 	providerB := &namedProvider{name: "provider-b"}
@@ -123,7 +125,7 @@ func TestSequentialClientsDoNotRepointEachOther(t *testing.T) {
 // is modelled there) so this also covers TI-008's Revised line, which adds
 // "budgets" explicitly alongside "providers" to what must not cross over.
 func TestConcurrentProvidersDoNotCrossContaminate(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	providerA := &namedProvider{name: "provider-a", budget: 5}
 	providerB := &namedProvider{name: "provider-b", budget: 50}
@@ -195,7 +197,7 @@ func TestConcurrentProvidersDoNotCrossContaminate(t *testing.T) {
 // inside a test that also used schemafluxtest.Install could be silently
 // overridden by the test hook instead of the other way around.
 func TestContextProviderOutranksTheTestCaller(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	originalCaller, originalProvider := currentHooks()
 	t.Cleanup(func() {
@@ -225,7 +227,7 @@ func TestContextProviderOutranksTheTestCaller(t *testing.T) {
 // this guards: the global default, or ErrNoProvider, would silently stop
 // being reachable through a context that "attached" a nil provider.
 func TestWithProviderNilLeavesContextUnchanged(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	ctx := WithProvider(context.Background(), nil)
 	if got := providerFromContext(ctx); got != nil {
@@ -240,7 +242,7 @@ func TestWithProviderNilLeavesContextUnchanged(t *testing.T) {
 	setLLMCaller(nil)
 	SetDefaultProvider(nil)
 
-	if _, err := callLLM(ctx, "system", "user", types.OpOptions{}); err != ErrNoProvider {
+	if _, err := callLLM(ctx, "system", "user", types.OpOptions{}); !errors.Is(err, ErrNoProvider) {
 		t.Errorf("callLLM with a nil-attached context and no global = %v, want ErrNoProvider", err)
 	}
 }

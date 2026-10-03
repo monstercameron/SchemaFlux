@@ -1,7 +1,6 @@
 package ops
 
 import (
-	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -58,42 +57,4 @@ func truncateAtWord(text string, limit, keep int) string {
 		return truncated[:lastSpace]
 	}
 	return truncated
-}
-
-// runeSlice returns the runes of text from start to end, both counted in
-// characters. It reports an error rather than panicking or silently clamping,
-// because the offsets it is given come from a model.
-func runeSlice(text string, start, end int) (string, error) {
-	total := utf8.RuneCountInString(text)
-
-	switch {
-	case start < 0 || end < 0:
-		return "", fmt.Errorf("negative offset: [%d:%d]", start, end)
-	case start > end:
-		return "", fmt.Errorf("inverted range: [%d:%d]", start, end)
-	case end > total:
-		return "", fmt.Errorf("range [%d:%d] exceeds the text, which is %d characters", start, end, total)
-	}
-
-	if start == end {
-		return "", nil
-	}
-
-	startByte, endByte := -1, len(text)
-	count := 0
-	for offset := range text {
-		if count == start {
-			startByte = offset
-		}
-		if count == end {
-			endByte = offset
-			break
-		}
-		count++
-	}
-	if startByte < 0 {
-		startByte = len(text)
-	}
-
-	return text[startByte:endByte], nil
 }

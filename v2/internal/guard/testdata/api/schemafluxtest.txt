@@ -1,0 +1,81 @@
+type Cassette struct{Provider string; Request CassetteRequest; Response *CassetteResponse; Failure *CassetteFailure}
+method (*Cassette).UnmarshalJSON(data []byte) error
+method (Cassette).MarshalJSON() ([]byte, error)
+type CassetteFailure struct{Kind schemaflux.Kind; Status int; RetryAfter time.Duration}
+method (CassetteFailure).MarshalJSON() ([]byte, error)
+type CassetteRequest struct{Model string; System string; User string; Temperature float64; MaxTokens int; Format string; SchemaName string; Schema string; Effort schemaflux.Effort; EffortPreferred bool; WebSearch bool; Decision *schemaflux.Decision; Messages int; Tools []string}
+method (CassetteRequest).MarshalJSON() ([]byte, error)
+type CassetteResponse struct{Content string; Usage schemaflux.Usage; Model string; Provider string; Upstream string; FinishReason string; ServiceTier string; Cached bool; Hedged bool; Answers []schemaflux.DecisionAnswer; Escalation *schemaflux.DecisionEscalation; ToolCalls []CassetteToolCall}
+method (CassetteResponse).MarshalJSON() ([]byte, error)
+type CassetteToolCall struct{ID string; Name string; Arguments string}
+method (CassetteToolCall).MarshalJSON() ([]byte, error)
+func Chose(label string, probability ...float64) schemaflux.DecisionAnswer
+type Decider struct{}
+method (*Decider).Calls() int
+method (*Decider).Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error)
+method (*Decider).DecisionLimits() schemaflux.DecisionLimits
+method (*Decider).Fail(err error)
+method (*Decider).FailThen(failures int, err error)
+method (*Decider).Last() schemaflux.Request
+method (*Decider).ModelFor(tier schemaflux.Tier) string
+method (*Decider).Name() string
+method (*Decider).Reply(answers ...schemaflux.DecisionAnswer)
+method (*Decider).Requests() []schemaflux.Request
+method (*Decider).Reset()
+method (*Decider).Respond(f func(call int, decision schemaflux.Decision) ([]schemaflux.DecisionAnswer, error))
+method (*Decider).RetryPolicy() (retries int, backoff time.Duration)
+method (*Decider).SetLimits(l schemaflux.DecisionLimits)
+method (*Decider).SetName(name string)
+method (*Decider).SetUsage(u schemaflux.Usage)
+func Install(t testing.TB, p schemaflux.Provider)
+func Level(n int, probability ...float64) schemaflux.DecisionAnswer
+type Logs struct{}
+method (*Logs).Enabled(context.Context, slog.Level) bool
+method (*Logs).Entries() []slog.Record
+method (*Logs).Handle(ctx context.Context, r slog.Record) error
+method (*Logs).Logger() *slog.Logger
+method (*Logs).Reset()
+method (*Logs).WithAttrs(attrs []slog.Attr) slog.Handler
+method (*Logs).WithGroup(name string) slog.Handler
+func NewDecider(answers ...schemaflux.DecisionAnswer) *Decider
+func No(probability ...float64) schemaflux.DecisionAnswer
+type Player struct{}
+method (*Player).Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error)
+method (*Player).Lenient()
+method (*Player).ModelFor(tier schemaflux.Tier) string
+method (*Player).Name() string
+method (*Player).Remaining() int
+method (*Player).RetryPolicy() (retries int, backoff time.Duration)
+method (*Player).Stream(ctx context.Context, req schemaflux.Request) iter.Seq2[schemaflux.Chunk, error]
+type Provider struct{}
+method (*Provider).Calls() int
+method (*Provider).Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error)
+method (*Provider).Delay(d time.Duration)
+method (*Provider).Fail(err error)
+method (*Provider).FailThen(failures int, err error, body string)
+method (*Provider).Last() schemaflux.Request
+method (*Provider).ModelFor(tier schemaflux.Tier) string
+method (*Provider).Name() string
+method (*Provider).Reply(bodies ...string)
+method (*Provider).ReplyWhen(about string, bodies ...string)
+method (*Provider).Requests() []schemaflux.Request
+method (*Provider).Reset()
+method (*Provider).Respond(f func(call int, req schemaflux.Request) (schemaflux.Response, error))
+method (*Provider).RespondContext(f func(ctx context.Context, call int, req schemaflux.Request) (schemaflux.Response, error))
+method (*Provider).RetryPolicy() (retries int, backoff time.Duration)
+method (*Provider).SetName(name string)
+method (*Provider).SetUsage(u schemaflux.Usage)
+method (*Provider).Shape()
+method (*Provider).Stream(ctx context.Context, req schemaflux.Request) iter.Seq2[schemaflux.Chunk, error]
+func Record(inner schemaflux.Provider, dir string) *Tape
+func Replay(dir string) (*Player, error)
+func ReplayFrom(cassettes ...Cassette) *Player
+type Tape struct{}
+method (*Tape).Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error)
+method (*Tape).Name() string
+method (*Tape).Recorded() []Cassette
+method (*Tape).Save() error
+method (*Tape).Stream(ctx context.Context, req schemaflux.Request) iter.Seq2[schemaflux.Chunk, error]
+method (*Tape).Unwrap() schemaflux.Provider
+func Wait(ctx context.Context, d time.Duration) error
+func Yes(probability ...float64) schemaflux.DecisionAnswer

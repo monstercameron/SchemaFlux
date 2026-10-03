@@ -1,0 +1,29 @@
+type BreakerOptions struct{Failures int; Successes int; HalfOpenCalls int; OpenFor time.Duration; PerModel bool}
+func Budget(limit float64, opts ...BudgetOptions) Middleware
+type BudgetOptions struct{Cost func(usage schemaflux.Usage, model string, provider string) schemaflux.Cost; AllowUnpriced bool}
+func Bulkhead(limit int, opts ...BulkheadOptions) Middleware
+type BulkheadOptions struct{Reject bool}
+func Cache(opts ...CacheOptions) Middleware
+type CacheEvent struct{Hit bool; Coalesced bool; Key string; Tenant string; DataPolicy string; Bypassed bool}
+type CacheOptions struct{TTL time.Duration; Store CacheStore; OnEvent func(CacheEvent)}
+type CachePartition struct{Tenant string; DataPolicy string}
+type CacheStore interface{Get(ctx context.Context, key string) (schemaflux.Response, bool); Set(ctx context.Context, key string, resp schemaflux.Response, ttl time.Duration)}
+type Capabilities struct{NativeJSONSchema bool}
+func Chain(base schemaflux.Provider, mws ...Middleware) schemaflux.Provider
+func CircuitBreaker(opts ...BreakerOptions) Middleware
+type DecisionOptions struct{Floor float64; Model string; NoFailover bool}
+func Decisions(generator schemaflux.Provider, decider schemaflux.Provider, options DecisionOptions) schemaflux.Provider
+func Fallback(alternates []Route, opts ...FallbackOptions) Middleware
+type FallbackOptions struct{On []schemaflux.Kind; AllowSchemaDegradation bool; Primary Capabilities}
+func Func(name string, complete func(context.Context, schemaflux.Request) (schemaflux.Response, error)) schemaflux.Provider
+func Hedge(after time.Duration) Middleware
+type Middleware func(next schemaflux.Provider) schemaflux.Provider
+func RateLimit(n int, per time.Duration, opts ...RateLimitOptions) Middleware
+type RateLimitOptions struct{Burst int; Reject bool}
+func Redact(opts ...RedactOptions) Middleware
+type RedactOptions struct{NoBuiltins bool; Patterns map[string]*regexp.Regexp; Marker string; Func func(string) string}
+func Retry(opts ...RetryOptions) Middleware
+type RetryOptions struct{Retries int; BaseDelay time.Duration; MaxDelay time.Duration}
+type Route struct{Provider schemaflux.Provider; Capabilities Capabilities; Model string}
+func WithCachePartition(ctx context.Context, p CachePartition) context.Context
+func Wrap(next schemaflux.Provider, complete func(ctx context.Context, req schemaflux.Request, next schemaflux.Provider) (schemaflux.Response, error)) schemaflux.Provider

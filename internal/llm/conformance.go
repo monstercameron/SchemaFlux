@@ -259,6 +259,7 @@ func (r *ConformanceReport) Label() ConformanceLabel {
 		return ConformanceLabelUnrated
 	}
 
+	protocolRan := false
 	protocolAllPassed := true
 	modelRan := false
 	modelAllPassed := true
@@ -270,6 +271,7 @@ func (r *ConformanceReport) Label() ConformanceLabel {
 		}
 		switch check.Category {
 		case CategoryProtocol:
+			protocolRan = true
 			if !outcome.Passed {
 				protocolAllPassed = false
 			}
@@ -284,7 +286,10 @@ func (r *ConformanceReport) Label() ConformanceLabel {
 		}
 	}
 
-	if !protocolAllPassed {
+	// Conformant and above say the protocol checks passed. A report with none in
+	// it, one made from the model checks alone, has nothing that passed, and "every
+	// check that ran passed" is true of an empty set.
+	if !protocolRan || !protocolAllPassed {
 		return ConformanceLabelIntegrated
 	}
 	if !modelRan || !modelAllPassed {
@@ -315,7 +320,11 @@ func (r *ConformanceReport) Capabilities() ProviderCapabilities {
 			continue
 		}
 		outcome, ok := r.Results[check.ID]
-		if !ok || outcome.Skipped {
+		// A check that did not pass has measured nothing: it failed to run, or the
+		// request it sent was not answered. Its Supported is the zero value, and
+		// recording it would publish "does not support" for a route that was never
+		// found to lack the capability.
+		if !ok || outcome.Skipped || !outcome.Passed {
 			continue
 		}
 		caps.Supports[check.Capability] = outcome.Supported
@@ -341,12 +350,12 @@ func (r *ConformanceReport) ConflictsWithRegistry() []string {
 	}
 
 	var conflicts []string
-	for cap, observedValue := range observed.Supports {
-		if !declared.HasDeclared(cap) {
+	for capability, observedValue := range observed.Supports {
+		if !declared.HasDeclared(capability) {
 			continue
 		}
-		if declared.Has(cap) != observedValue {
-			conflicts = append(conflicts, fmt.Sprintf("%s: registry says %v, suite observed %v", cap, declared.Has(cap), observedValue))
+		if declared.Has(capability) != observedValue {
+			conflicts = append(conflicts, fmt.Sprintf("%s: registry says %v, suite observed %v", capability, declared.Has(capability), observedValue))
 		}
 	}
 	sort.Strings(conflicts)
@@ -354,8 +363,7 @@ func (r *ConformanceReport) ConflictsWithRegistry() []string {
 }
 
 // Publish writes r's observed CategoryModel capabilities into the shared
-// capability registry via RegisterCapabilities, which is the whole point of
-// CP-003: a conformance run's findings become the data CP-001's negotiation
+// capability registry, which is the whole point of CP-003: a conformance run's findings become the data CP-001's negotiation
 // consults, not a line in a test log the next person has to transcribe by
 // hand. It does nothing (and returns false) for a report with no
 // CategoryModel results at all -- a purely protocol run has nothing to
@@ -367,7 +375,13 @@ func (r *ConformanceReport) Publish() bool {
 	if len(caps.Supports) == 0 {
 		return false
 	}
-	RegisterCapabilities(caps)
+	// A report observes capabilities. It knows nothing of where a route runs
+	// or what it keeps, nor of its context window or its usage reporting, so what
+	// it observed is merged into what the route has declared and the rest is kept
+	// (see publishObserved). Replacing the entry took a declared region and
+	// retention away, and a route a client's data policy allowed stopped being
+	// allowed after a conformance run.
+	publishObserved(caps)
 	return true
 }
 

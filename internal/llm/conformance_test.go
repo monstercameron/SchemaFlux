@@ -190,6 +190,26 @@ func TestConformanceReportLabelHandCheckedMatrix(t *testing.T) {
 			want:    ConformanceLabelConformant,
 		},
 		{
+			// A report made from the model checks alone has no protocol check that
+			// passed, and "every protocol check passed" is true of an empty set.
+			name:    "model checks only, no protocol check in the report, is integrated",
+			checks:  []ConformanceCheck{modelCheck},
+			results: map[string]ConformanceOutcome{"m1": {Passed: true, Supported: true, Detail: "ok"}},
+			want:    ConformanceLabelIntegrated,
+		},
+		{
+			name:    "model check skipped and no protocol check is integrated",
+			checks:  []ConformanceCheck{modelCheck},
+			results: map[string]ConformanceOutcome{"m1": skippedOutcome("no live target")},
+			want:    ConformanceLabelIntegrated,
+		},
+		{
+			name:    "a skipped protocol check is not one that passed",
+			checks:  []ConformanceCheck{protoCheck, modelCheck},
+			results: map[string]ConformanceOutcome{"p1": skippedOutcome("not run"), "m1": {Passed: true, Supported: true}},
+			want:    ConformanceLabelIntegrated,
+		},
+		{
 			name:    "protocol and model both pass, no registry entry, is production-supported",
 			checks:  []ConformanceCheck{protoCheck, modelCheck},
 			results: map[string]ConformanceOutcome{"p1": passedOutcome("ok"), "m1": {Passed: true, Supported: true, Detail: "ok"}},

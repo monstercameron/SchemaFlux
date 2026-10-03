@@ -61,10 +61,10 @@ func TestIntegrationClassifyRefusesACategoryItWasNotOffered(t *testing.T) {
 		WithMinConfidence(0)
 
 	for _, body := range []string{
-		`{"category":"sales","confidence":0.99}`,
-		`{"category":"billings","confidence":0.99}`,
-		`{"category":"","confidence":0.99}`,
-		`{"category":"I think this is billing","confidence":0.99}`,
+		`{"category":"sales","confidence":0.99,"reasoning":"r"}`,
+		`{"category":"billings","confidence":0.99,"reasoning":"r"}`,
+		`{"category":"","confidence":0.99,"reasoning":"r"}`,
+		`{"category":"I think this is billing","confidence":0.99,"reasoning":"r"}`,
 	} {
 		testfixtures.WithScriptedProvider(t, body, nil)
 
@@ -77,7 +77,7 @@ func TestIntegrationClassifyRefusesACategoryItWasNotOffered(t *testing.T) {
 // Case is normalised rather than rejected, because a caller comparing against
 // their own constants needs "Billing" and "billing" to be one answer.
 func TestIntegrationClassifyNormalisesCase(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"category":"BILLING","confidence":0.99}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"category":"BILLING","confidence":0.99,"reasoning":"r"}`, nil)
 
 	result, err := schemaflux.Classify[string, string]("my card was declined",
 		schemaflux.NewClassifyOptions().
@@ -91,19 +91,28 @@ func TestIntegrationClassifyNormalisesCase(t *testing.T) {
 	}
 }
 
-// Verify's floor defaults to 0.7 and was prompt-only too.
+// Verify's floor defaults to 0.7 and was prompt-only too. It is enforced on the
+// word it protects: a review the model scored at 0.3 does not come back
+// verified. It used to fail the call; it now reports the claim as not verified
+// and keeps what was found (LX-028).
 func TestIntegrationVerifyEnforcesItsConfidenceFloor(t *testing.T) {
-	testfixtures.WithScriptedProvider(t,
-		`{"overall_verdict":"verified","overall_confidence":0.3,"trust_score":0.3,"summary":"weak"}`, nil)
+	const claims = `"claims":[{"claim":"the sky is blue","verdict":"verified","confidence":0.95,"evidence":["direct observation"],"reasoning":"observed"}],"logic_issues":[],"consistency_issues":[]`
 
-	if _, err := schemaflux.Verify("the sky is green", schemaflux.NewVerifyOptions()); err == nil {
-		t.Error("Verify accepted a verification the model scored at 0.3 against its 0.7 default floor")
+	testfixtures.WithScriptedProvider(t, `{`+claims+`,"overall_confidence":0.3,"trust_score":0.3,"summary":"weak"}`, nil)
+	weak, err := schemaflux.Verify("the sky is blue", schemaflux.NewVerifyOptions())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if weak.OverallVerdict == "verified" {
+		t.Error("Verify reported verified for a review the model scored at 0.3 against its 0.7 default floor")
+	}
+	if len(weak.Claims) != 1 {
+		t.Errorf("the findings of a low-confidence review were discarded: %+v", weak.Claims)
 	}
 
-	testfixtures.WithScriptedProvider(t,
-		`{"overall_verdict":"verified","overall_confidence":0.9,"trust_score":0.9,"summary":"strong"}`, nil)
-
-	if _, err := schemaflux.Verify("the sky is blue", schemaflux.NewVerifyOptions()); err != nil {
-		t.Errorf("Verify = %v, want nil for a confident verification", err)
+	testfixtures.WithScriptedProvider(t, `{`+claims+`,"overall_confidence":0.9,"trust_score":0.9,"summary":"strong"}`, nil)
+	strong, err := schemaflux.Verify("the sky is blue", schemaflux.NewVerifyOptions())
+	if err != nil || strong.OverallVerdict != "verified" {
+		t.Errorf("OverallVerdict = %q, err = %v; want verified for a confident review", strong.OverallVerdict, err)
 	}
 }

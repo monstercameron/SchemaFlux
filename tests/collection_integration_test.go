@@ -381,19 +381,19 @@ func TestIntegrationClusterRequiresAPartition(t *testing.T) {
 	}{
 		{
 			"an item in two clusters",
-			`{"clusters":[{"name":"a","indices":[0,1]},{"name":"b","indices":[1,2]}],"outlier_indices":[],"quality":0.9}`,
+			`{"clusters":[{"name":"a","indices":[0,1],"keywords":[]},{"name":"b","indices":[1,2],"keywords":[]}],"outlier_indices":[],"quality":0.9}`,
 		},
 		{
 			"an item in no cluster",
-			`{"clusters":[{"name":"a","indices":[0]},{"name":"b","indices":[1]}],"outlier_indices":[],"quality":0.9}`,
+			`{"clusters":[{"name":"a","indices":[0],"keywords":[]},{"name":"b","indices":[1],"keywords":[]}],"outlier_indices":[],"quality":0.9}`,
 		},
 		{
 			"an index past the end",
-			`{"clusters":[{"name":"a","indices":[0,1,2,7]}],"outlier_indices":[],"quality":0.9}`,
+			`{"clusters":[{"name":"a","indices":[0,1,2,7],"keywords":[]}],"outlier_indices":[],"quality":0.9}`,
 		},
 		{
 			"a negative index",
-			`{"clusters":[{"name":"a","indices":[0,1,2,-1]}],"outlier_indices":[],"quality":0.9}`,
+			`{"clusters":[{"name":"a","indices":[0,1,2,-1],"keywords":[]}],"outlier_indices":[],"quality":0.9}`,
 		},
 	}
 
@@ -414,7 +414,7 @@ func TestIntegrationClusterRequiresAPartition(t *testing.T) {
 func TestIntegrationClusterAcceptsAPartitionAndSizeAgrees(t *testing.T) {
 	lines := invoiceLines()
 	testfixtures.WithScriptedProvider(t,
-		`{"clusters":[{"name":"cheap","indices":[0,2]}],"outlier_indices":[1],"quality":0.8}`, nil)
+		`{"clusters":[{"name":"cheap","indices":[0,2],"keywords":[]}],"outlier_indices":[1],"quality":0.8}`, nil)
 
 	result, err := schemaflux.Cluster(lines, schemaflux.NewClusterOptions())
 	if err != nil {

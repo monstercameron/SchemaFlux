@@ -3,6 +3,7 @@ package ops
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/mail"
 	"net/url"
 	"regexp"
@@ -46,6 +47,19 @@ func resolveDeterministicRule(expression string) (deterministicRule, bool) {
 	name = strings.TrimSpace(name)
 	argument = strings.TrimSpace(argument)
 
+	// These rules take no argument. An expression that names one and goes on
+	// ("email: must be a company address", "required: when status is active")
+	// states a condition this layer does not check, and reducing it to the plain
+	// rule dropped the condition: when every rule resolved there was no model
+	// call at all, and the stricter requirement passed unchecked. It is natural
+	// language, so it goes to the model.
+	switch name {
+	case "email", "url", "uuid", "iso3166", "iso3166-alpha2", "country", "nonempty", "required":
+		if argument != "" {
+			return deterministicRule{}, false
+		}
+	}
+
 	switch name {
 	case "email":
 		return deterministicRule{"must be a valid email address", func(value any) string {
@@ -53,7 +67,13 @@ func resolveDeterministicRule(expression string) (deterministicRule, bool) {
 			if !ok {
 				return "must be a string containing an email address"
 			}
-			if _, err := mail.ParseAddress(text); err != nil {
+			// ParseAddress also accepts "Ada <ada@example.com>" and a host with
+			// no dot; a field holding an address is the bare address.
+			addr, err := mail.ParseAddress(text)
+			if err != nil || addr.Address != text {
+				return "is not a valid email address"
+			}
+			if _, domain, found := strings.Cut(addr.Address, "@"); !found || !strings.Contains(domain, ".") {
 				return "is not a valid email address"
 			}
 			return ""
@@ -90,6 +110,9 @@ func resolveDeterministicRule(expression string) (deterministicRule, bool) {
 			if !isoAlpha2Pattern.MatchString(text) {
 				return "is not an ISO 3166-1 alpha-2 country code (two uppercase letters)"
 			}
+			if _, assigned := isoAlpha2Codes[text]; !assigned {
+				return "is not an assigned ISO 3166-1 alpha-2 country code"
+			}
 			return ""
 		}}, true
 
@@ -111,19 +134,19 @@ func resolveDeterministicRule(expression string) (deterministicRule, bool) {
 		}}, true
 
 	case "min", "gte":
-		return numericRule(raw, argument, func(value, bound float64) bool { return value >= bound },
+		return numericRule(argument, func(value, bound float64) bool { return value >= bound },
 			"must be at least %s", "is below the minimum of %s")
 
 	case "max", "lte":
-		return numericRule(raw, argument, func(value, bound float64) bool { return value <= bound },
+		return numericRule(argument, func(value, bound float64) bool { return value <= bound },
 			"must be at most %s", "is above the maximum of %s")
 
 	case "minlen":
-		return lengthRule(raw, argument, func(length, bound int) bool { return length >= bound },
+		return lengthRule(argument, func(length, bound int) bool { return length >= bound },
 			"must be at least %s characters", "is shorter than %s characters")
 
 	case "maxlen":
-		return lengthRule(raw, argument, func(length, bound int) bool { return length <= bound },
+		return lengthRule(argument, func(length, bound int) bool { return length <= bound },
 			"must be at most %s characters", "is longer than %s characters")
 
 	case "oneof":
@@ -173,9 +196,27 @@ var (
 	isoAlpha2Pattern = regexp.MustCompile(`^[A-Z]{2}$`)
 )
 
-func numericRule(raw, argument string, accept func(value, bound float64) bool, describe, complain string) (deterministicRule, bool) {
+// isoAlpha2Codes is the set of assigned ISO 3166-1 alpha-2 codes. Two capital
+// letters were accepted, so "ZZ" and "XX" passed a rule described as ISO
+// 3166-1 alpha-2.
+var isoAlpha2Codes = func() map[string]struct{} {
+	const assigned = "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ " +
+		"CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR " +
+		"GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP " +
+		"KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ " +
+		"NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW " +
+		"SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ " +
+		"UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW"
+	codes := map[string]struct{}{}
+	for _, code := range strings.Fields(assigned) {
+		codes[code] = struct{}{}
+	}
+	return codes
+}()
+
+func numericRule(argument string, accept func(value, bound float64) bool, describe, complain string) (deterministicRule, bool) {
 	bound, err := strconv.ParseFloat(argument, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(bound) || math.IsInf(bound, 0) {
 		return deterministicRule{}, false
 	}
 	return deterministicRule{
@@ -192,7 +233,7 @@ func numericRule(raw, argument string, accept func(value, bound float64) bool, d
 		}}, true
 }
 
-func lengthRule(raw, argument string, accept func(length, bound int) bool, describe, complain string) (deterministicRule, bool) {
+func lengthRule(argument string, accept func(length, bound int) bool, describe, complain string) (deterministicRule, bool) {
 	bound, err := strconv.Atoi(argument)
 	if err != nil {
 		return deterministicRule{}, false
@@ -205,29 +246,36 @@ func lengthRule(raw, argument string, accept func(length, bound int) bool, descr
 				return "must be a string"
 			}
 			// Runes, because a length limit is about characters.
-			if !accept(len([]rune(text)), bound) {
+			if !accept(runeLen(text), bound) {
 				return fmt.Sprintf(complain, argument)
 			}
 			return ""
 		}}, true
 }
 
+// finite reports whether a number is neither NaN nor infinite. "Infinity" and
+// "inf" parse as floats, and +Inf is at least 18 and -Inf is at most 100, so a
+// bound was satisfied by a value that is not a number a person could have.
+func finite(number float64) bool {
+	return !math.IsNaN(number) && !math.IsInf(number, 0)
+}
+
 func toFloat(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:
-		return typed, true
+		return typed, finite(typed)
 	case float32:
-		return float64(typed), true
+		return float64(typed), finite(float64(typed))
 	case int:
 		return float64(typed), true
 	case int64:
 		return float64(typed), true
 	case json.Number:
 		number, err := typed.Float64()
-		return number, err == nil
+		return number, err == nil && finite(number)
 	case string:
 		number, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
-		return number, err == nil
+		return number, err == nil && finite(number)
 	}
 	return 0, false
 }

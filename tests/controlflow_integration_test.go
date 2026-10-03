@@ -41,8 +41,8 @@ func TestIntegrationDecideDoesNotDefaultToTheFirstBranch(t *testing.T) {
 		{"error_page", "<html><body>502 Bad Gateway</body></html>", nil, false},
 		{"truncated_json", `{"selected": 1`, nil, false},
 		{"array_not_object", `[{"selected":1}]`, nil, false},
-		{"index_too_high", `{"selected":9}`, nil, false},
-		{"index_negative", `{"selected":-2}`, nil, false},
+		{"index_too_high", `{"selected":9,"explanation":"x","confidence":0.9}`, nil, false},
+		{"index_negative", `{"selected":-2,"explanation":"x","confidence":0.9}`, nil, false},
 	}
 
 	for _, tc := range cases {

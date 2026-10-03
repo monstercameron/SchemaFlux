@@ -11,15 +11,18 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/requesttracking"
 	"github.com/monstercameron/schemaflux/internal/telemetry"
 	"github.com/monstercameron/schemaflux/internal/types"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
@@ -198,6 +201,10 @@ func TestClientProviderSelection(t *testing.T) {
 // the package hands out one shared default client.
 func TestClientBuilderIsConcurrencySafe(t *testing.T) {
 	client := NewClient("k")
+	// The workers leave debug on or off by whichever ran last. A client that
+	// still holds the shared logger at debug would keep every later test's
+	// WithDebug(false) from restoring a level.
+	t.Cleanup(func() { client.WithDebug(false) })
 
 	var wg sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
@@ -383,11 +390,12 @@ func TestLoggerLevelRoundTrips(t *testing.T) {
 }
 
 // A nil logger reports a usable level rather than panicking, because Level is
-// called from WithDebug on a client a caller may have built oddly.
-func TestNilLoggerReportsInfo(t *testing.T) {
+// called from WithDebug on a client a caller may have built oddly. The level it
+// reports is the default one, warn, which is what a logger nobody configured has.
+func TestNilLoggerReportsTheDefaultLevel(t *testing.T) {
 	var logger *telemetry.Logger
-	if got := logger.Level(); got != telemetry.InfoLevel {
-		t.Errorf("(*Logger)(nil).Level() = %v, want info", got)
+	if got := logger.Level(); got != telemetry.WarnLevel {
+		t.Errorf("(*Logger)(nil).Level() = %v, want warn", got)
 	}
 }
 
@@ -401,7 +409,9 @@ func clearCredentialEnv(t *testing.T) {
 		"SCHEMAFLUX_API_KEY", "SCHEMAFLUX_OPENAI_API_KEY", "OPENAI_API_KEY", "OPENAI",
 		"SCHEMAFLUX_PROVIDER", "SCHEMAFLUX_TIMEOUT", "SCHEMAFLUX_DEBUG",
 	} {
-		t.Setenv(name, "")
+		// Through configtest: the timeout and the debug switch are read once and
+		// kept, so clearing them has to make the library read them again.
+		configtest.Setenv(t, name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatalf("unset %s: %v", name, err)
 		}
@@ -483,25 +493,38 @@ func TestProcessEnvironmentWinsOverEnvFile(t *testing.T) {
 }
 
 // The credential resolution chain must be honoured in order, and any one of the
-// accepted spellings must work on its own.
+// accepted spellings must work on its own. The key a provider sends is read from
+// the Authorization header of a request, which is the only place the key it was
+// really built with can be seen.
 func TestCredentialResolutionOrder(t *testing.T) {
 	cases := []struct {
 		name string
 		set  map[string]string
+		want string
 	}{
-		{"schemaflux_generic", map[string]string{"SCHEMAFLUX_API_KEY": "k"}},
-		{"schemaflux_openai", map[string]string{"SCHEMAFLUX_OPENAI_API_KEY": "k"}},
-		{"openai_api_key", map[string]string{"OPENAI_API_KEY": "k"}},
-		{"bare_openai", map[string]string{"OPENAI": "k"}},
+		{"schemaflux_generic", map[string]string{"SCHEMAFLUX_API_KEY": "k"}, "Bearer k"},
+		{"schemaflux_openai", map[string]string{"SCHEMAFLUX_OPENAI_API_KEY": "k"}, "Bearer k"},
+		{"openai_api_key", map[string]string{"OPENAI_API_KEY": "k"}, "Bearer k"},
+		{"bare_openai", map[string]string{"OPENAI": "k"}, "Bearer k"},
 		{"provider_specific_wins", map[string]string{
 			"SCHEMAFLUX_OPENAI_API_KEY": "specific",
 			"OPENAI":                    "generic",
-		}},
+		}, "Bearer specific"},
+		{"provider_specific_beats_the_generic_variable", map[string]string{
+			"OPENAI_API_KEY":     "specific",
+			"SCHEMAFLUX_API_KEY": "generic",
+		}, "Bearer specific"},
+		{"order_among_provider_variables", map[string]string{
+			"SCHEMAFLUX_OPENAI_API_KEY": "first",
+			"OPENAI_API_KEY":            "second",
+			"OPENAI":                    "third",
+		}, "Bearer first"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			clearCredentialEnv(t)
+			server, seen := authorizationServer(t)
+			tuningEnvironment(t, server.URL)
 			for name, value := range tc.set {
 				t.Setenv(name, value)
 			}
@@ -511,20 +534,36 @@ func TestCredentialResolutionOrder(t *testing.T) {
 			if GetDefaultClient() == nil {
 				t.Fatal("expected a client")
 			}
+			if _, err := extractThrough(GetDefaultClient().WithRetries(0)); err == nil {
+				t.Fatal("a server that answers 400 produced a result")
+			}
+			if got := seen(); len(got) != 1 || got[0] != tc.want {
+				t.Errorf("the server saw Authorization %q, want exactly [%s]", got, tc.want)
+			}
 		})
 	}
 }
 
-// An explicit key argument beats the environment entirely.
+// An explicit key argument beats the environment entirely, the provider's own
+// variables included. The test used to assert only that a client existed, so it
+// could not tell the argument from the environment.
 func TestExplicitKeyArgumentWins(t *testing.T) {
-	clearCredentialEnv(t)
+	server, seen := authorizationServer(t)
+	tuningEnvironment(t, server.URL)
 	t.Setenv("SCHEMAFLUX_API_KEY", "from-env")
+	t.Setenv("OPENAI_API_KEY", "from-the-provider-variable")
 
 	if err := Init("from-argument"); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	if GetDefaultClient() == nil {
 		t.Fatal("expected a client")
+	}
+	if _, err := extractThrough(GetDefaultClient().WithRetries(0)); err == nil {
+		t.Fatal("a server that answers 400 produced a result")
+	}
+	if got := seen(); len(got) != 1 || got[0] != "Bearer from-argument" {
+		t.Errorf("the server saw Authorization %q, want the argument's key", got)
 	}
 }
 
@@ -574,59 +613,22 @@ func TestInitWithEnvAppliesNonCredentialValues(t *testing.T) {
 	if got := os.Getenv("SCHEMAFLUX_TIMEOUT"); got != "12s" {
 		t.Errorf("SCHEMAFLUX_TIMEOUT = %q, want the fixture value 12s", got)
 	}
+	// And it reached the client that InitWithEnv built, not only the environment.
+	if got := GetDefaultClient().timeout; got != 12*time.Second {
+		t.Errorf("the default client's timeout is %v, want the fixture's 12s", got)
+	}
 }
 
 // --- from client_isolation_test.go ---
 
-// TI-002 / IN-004 / TI-008, exercised through the exported API rather than
-// internal/ops directly.
-//
-// namedFakeProvider mirrors internal/ops's isolation_test.go fake: it stamps
-// its own name into the answer and counts calls, so a test can tell WHICH
-// provider actually answered rather than assuming it from which client made
-// the call.
-type namedFakeProvider struct {
-	name string
-
-	mu    sync.Mutex
-	calls int
-}
-
-func (p *namedFakeProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	p.mu.Lock()
-	p.calls++
-	p.mu.Unlock()
-	return llm.CompletionResponse{
-		Content:      fmt.Sprintf("answered by %s", p.name),
-		Provider:     p.name,
-		Model:        "fake-model",
-		FinishReason: "stop",
-	}, nil
-}
-func (p *namedFakeProvider) Name() string                               { return p.name }
-func (p *namedFakeProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
-func (p *namedFakeProvider) RetryPolicy() (int, time.Duration)          { return 0, time.Millisecond }
-func (p *namedFakeProvider) callCount() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.calls
-}
-
-// The simpler statement of the same bug (TI-002's task body): build client A,
-// build client B, and A's own operation must still reach A's provider.
-//
-// Watched failing before Context/ops.WithProvider existed: with
-// Format's opts.Context carrying nothing, both calls fell through to
-// GetDefaultClient()'s package-level provider, which is whichever of A or B
-// was constructed (or WithProviderInstance'd) last -- see
-// internal/ops/isolation_test.go's header comment for the exact failure
-// recorded when the same underlying check was disabled.
+// clearModelOverrides removes every variable that names a model, so a test starts
+// from an environment in which a provider's own mapping decides.
 func clearModelOverrides(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"SCHEMAFLUX_MODEL", "SCHEMAFLUX_MODEL_SMART", "SCHEMAFLUX_MODEL_FAST", "SCHEMAFLUX_MODEL_QUICK",
 	} {
-		t.Setenv(name, "")
+		configtest.Setenv(t, name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatalf("unset %s: %v", name, err)
 		}
@@ -680,7 +682,7 @@ func TestMappedProvidersConstructWithoutError(t *testing.T) {
 // private gateway is a supported configuration.
 func TestModelOverrideClearsTheConstructionError(t *testing.T) {
 	clearModelOverrides(t)
-	t.Setenv("SCHEMAFLUX_MODEL", "my-local-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "my-local-model")
 
 	client := NewClient("test-key").WithProvider("qwen")
 	if err := client.Err(); err != nil {
@@ -779,7 +781,7 @@ func TestInitSucceedsWithAModelOverride(t *testing.T) {
 	clearModelOverrides(t)
 	t.Setenv("SCHEMAFLUX_API_KEY", "test-key")
 	t.Setenv("SCHEMAFLUX_PROVIDER", "qwen")
-	t.Setenv("SCHEMAFLUX_MODEL", "qwen-max")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "qwen-max")
 
 	if err := Init(""); err != nil {
 		t.Fatalf("Init = %v, want nil once the model is named", err)
@@ -858,7 +860,7 @@ type isolationTarget struct {
 }
 
 func TestTwoClientsReachTheirOwnProvidersConcurrently(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	first := &namedProvider{name: "alpha"}
 	second := &namedProvider{name: "beta"}
@@ -898,7 +900,7 @@ func TestTwoClientsReachTheirOwnProvidersConcurrently(t *testing.T) {
 // exhausting its allowance must not stop the other, which is exactly what a
 // single process-wide budget did.
 func TestOneClientsExhaustedBudgetDoesNotStopAnother(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	poor := NewClient("key-poor").WithBudget(0.0001)
 	rich := NewClient("key-rich").WithBudget(1000)
@@ -1071,7 +1073,7 @@ func TestALedgerUnderConcurrentRecordsTotalsExactly(t *testing.T) {
 // above cannot make -- they check the ledger, this checks that the call path
 // consults it.
 func TestAnExhaustedClientBudgetRefusesARealCallWhileAnotherClientProceeds(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	poorProvider := &namedProvider{name: "alpha"}
 	richProvider := &namedProvider{name: "beta"}
@@ -1274,17 +1276,20 @@ func TestCollectionOptionTypesExposeCommonBuilders(t *testing.T) {
 
 func nonZeroProviderConfig() llm.ProviderConfig {
 	return llm.ProviderConfig{
-		APIKey:         "sk-override",
-		BaseURL:        "https://override.example.com/v1",
-		OrgID:          "org-override",
-		Timeout:        11 * time.Second,
-		MaxRetries:     7,
-		RetryBackoff:   3 * time.Second,
-		Debug:          true,
-		ExtraHeaders:   map[string]string{"X-Override": "yes"},
-		Store:          true,
-		HTTPClient:     &http.Client{Timeout: 13 * time.Second},
-		EndpointPolicy: &types.EndpointPolicy{},
+		APIKey:          "sk-override",
+		BaseURL:         "https://override.example.com/v1",
+		OrgID:           "org-override",
+		Models:          [3]string{"smart-override", "fast-override", "quick-override"},
+		Timeout:         11 * time.Second,
+		MaxRetries:      7,
+		RetryBackoff:    3 * time.Second,
+		Debug:           true,
+		ExtraHeaders:    map[string]string{"X-Override": "yes"},
+		Store:           true,
+		OmitTemperature: true,
+		ServiceTier:     "priority",
+		HTTPClient:      &http.Client{Timeout: 13 * time.Second},
+		EndpointPolicy:  &types.EndpointPolicy{},
 	}
 }
 
@@ -1379,6 +1384,11 @@ func TestAnEmptyOverrideKeepsTheClientsOwnSettings(t *testing.T) {
 	if got.RetryBackoff != 2*time.Second {
 		t.Errorf("RetryBackoff = %v; an empty override erased the client's own setting", got.RetryBackoff)
 	}
+
+	// The provider the client holds says the same: that is what a call uses.
+	if retries, backoff := client.provider.RetryPolicy(); retries != 5 || backoff != 2*time.Second {
+		t.Errorf("the installed provider retries %d times with a backoff of %v, want 5 and 2s", retries, backoff)
+	}
 }
 
 // ExtraHeaders is copied rather than aliased, so a caller mutating their own
@@ -1392,4 +1402,207 @@ func TestExtraHeadersAreCopiedNotAliased(t *testing.T) {
 	if got.ExtraHeaders["X-Tenant"] != "acme" {
 		t.Error("mutating the caller's header map changed the config after the fact; the map was aliased, not copied")
 	}
+}
+
+// --- the decision providers ---
+
+// The tables that map a provider's name to its variables name the decision
+// providers too. They had no rows, so WithProvider("jev") read only
+// SCHEMAFLUX_API_KEY and never TypeSafe's own variable.
+func TestProviderVariableTablesNameTheDecisionProviders(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		keys     []string
+		urls     []string
+	}{
+		{"jev", "jev", []string{"SCHEMAFLUX_TYPESAFE_API_KEY", "TYPESAFE_API_KEY"}, []string{"SCHEMAFLUX_TYPESAFE_BASE_URL", "TYPESAFE_BASE_URL"}},
+		{"jev in capitals", "JEV", []string{"SCHEMAFLUX_TYPESAFE_API_KEY", "TYPESAFE_API_KEY"}, []string{"SCHEMAFLUX_TYPESAFE_BASE_URL", "TYPESAFE_BASE_URL"}},
+		{"jev with space", "  jev ", []string{"SCHEMAFLUX_TYPESAFE_API_KEY", "TYPESAFE_API_KEY"}, []string{"SCHEMAFLUX_TYPESAFE_BASE_URL", "TYPESAFE_BASE_URL"}},
+		{"jev-openrouter", "jev-openrouter", []string{"SCHEMAFLUX_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"}, []string{"SCHEMAFLUX_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"}},
+		{"jev-litellm", "jev-litellm", []string{"SCHEMAFLUX_LITELLM_API_KEY", "LITELLM_API_KEY"}, []string{"SCHEMAFLUX_LITELLM_BASE_URL", "LITELLM_BASE_URL"}},
+		{"jev-litellm in capitals", "Jev-LiteLLM", []string{"SCHEMAFLUX_LITELLM_API_KEY", "LITELLM_API_KEY"}, []string{"SCHEMAFLUX_LITELLM_BASE_URL", "LITELLM_BASE_URL"}},
+		// What was there is where it was.
+		{"openai", "openai", []string{"SCHEMAFLUX_OPENAI_API_KEY", "OPENAI_API_KEY", "OPENAI"}, []string{"SCHEMAFLUX_OPENAI_BASE_URL", "OPENAI_BASE_URL"}},
+		{"openrouter", "openrouter", []string{"SCHEMAFLUX_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"}, []string{"SCHEMAFLUX_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"}},
+		{"cerebras", "cerebras", []string{"SCHEMAFLUX_CEREBRAS_API_KEY", "CEREBRAS_API_KEY", "CEREBRAS"}, []string{"SCHEMAFLUX_CEREBRAS_BASE_URL", "CEREBRAS_BASE_URL"}},
+		{"qwen", "qwen", []string{"SCHEMAFLUX_QWEN_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY"}, []string{"SCHEMAFLUX_QWEN_BASE_URL", "QWEN_BASE_URL", "DASHSCOPE_BASE_URL"}},
+		// A name with no row of its own has the shared key and no base URL.
+		{"another name", "my-gateway", []string{"SCHEMAFLUX_API_KEY"}, nil},
+		{"the name of a decision provider that is not one", "jev-other", []string{"SCHEMAFLUX_API_KEY"}, nil},
+		{"no name", "", []string{"SCHEMAFLUX_API_KEY"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := providerAPIKeyEnvVars(tc.provider); !reflect.DeepEqual(got, tc.keys) {
+				t.Errorf("providerAPIKeyEnvVars(%q) = %v, want %v", tc.provider, got, tc.keys)
+			}
+			if got := providerBaseURLEnvVars(tc.provider); !reflect.DeepEqual(got, tc.urls) {
+				t.Errorf("providerBaseURLEnvVars(%q) = %v, want %v", tc.provider, got, tc.urls)
+			}
+		})
+	}
+
+	t.Run("a caller cannot change the table by editing what it was handed", func(t *testing.T) {
+		keys := providerAPIKeyEnvVars("jev")
+		keys[0] = "EDITED"
+		urls := providerBaseURLEnvVars("jev")
+		urls[0] = "EDITED"
+		if got := providerAPIKeyEnvVars("jev")[0]; got != "SCHEMAFLUX_TYPESAFE_API_KEY" {
+			t.Errorf("the key table now starts with %q", got)
+		}
+		if got := providerBaseURLEnvVars("jev")[0]; got != "SCHEMAFLUX_TYPESAFE_BASE_URL" {
+			t.Errorf("the base URL table now starts with %q", got)
+		}
+		if llm.SystemOneTypeSafe.KeyVariables[0] != "SCHEMAFLUX_TYPESAFE_API_KEY" || llm.SystemOneTypeSafe.BaseURLVariables[0] != "SCHEMAFLUX_TYPESAFE_BASE_URL" {
+			t.Error("the preset itself was edited through the table")
+		}
+	})
+}
+
+// The environment reader and the model table are in internal/config, which the
+// presets' package imports and so cannot read them. This holds the two to each
+// other: a preset whose variables or model change fails here until the rows do.
+func TestEnvironmentReaderAndModelTableAgreeWithThePresets(t *testing.T) {
+	for _, preset := range []llm.SystemOnePreset{llm.SystemOneTypeSafe, llm.SystemOneOpenRouter, llm.SystemOneLiteLLM} {
+		t.Run(preset.Name, func(t *testing.T) {
+			if got := providerAPIKeyEnvVars(preset.Name); !reflect.DeepEqual(got, preset.KeyVariables) {
+				t.Errorf("the client's key variables are %v, the preset's are %v", got, preset.KeyVariables)
+			}
+			if got := providerBaseURLEnvVars(preset.Name); !reflect.DeepEqual(got, preset.BaseURLVariables) {
+				t.Errorf("the client's base URL variables are %v, the preset's are %v", got, preset.BaseURLVariables)
+			}
+
+			// Each variable, set on its own, is read as this provider's key or URL, and
+			// the first of a row wins.
+			for i, name := range preset.KeyVariables {
+				env := config.Read(func(variable string) (string, bool) { return "key-from-" + variable, variable == name })
+				if got := env.Keys[preset.Name]; got != "key-from-"+name {
+					t.Errorf("with only %s set (variable %d of the row) the reader's key is %q", name, i+1, got)
+				}
+			}
+			for _, name := range preset.BaseURLVariables {
+				env := config.Read(func(variable string) (string, bool) { return "https://" + variable + ".example.test", variable == name })
+				if got := env.BaseURLs[preset.Name]; got != "https://"+name+".example.test" {
+					t.Errorf("with only %s set the reader's base URL is %q", name, got)
+				}
+			}
+			all := config.Read(func(variable string) (string, bool) { return "key-from-" + variable, true })
+			if got := all.Keys[preset.Name]; got != "key-from-"+preset.KeyVariables[0] {
+				t.Errorf("with every variable set the reader's key is %q, want the first of the preset's", got)
+			}
+			shared := config.Read(func(variable string) (string, bool) { return "shared", variable == "SCHEMAFLUX_API_KEY" })
+			if got := shared.Keys[preset.Name]; got != "shared" {
+				t.Errorf("with only the shared key set the reader's key is %q", got)
+			}
+
+			for _, tier := range []types.Speed{types.Smart, types.Fast, types.Quick} {
+				if got := config.BuiltInModel(preset.Name, tier); got != preset.Model {
+					t.Errorf("the model table names %q at tier %v, the preset sends %q", got, tier, preset.Model)
+				}
+			}
+			if !config.HasModelMapping(preset.Name) {
+				t.Error("the model table has no row")
+			}
+		})
+	}
+}
+
+// decisionEndpoint stands in for a System One endpoint on loopback and records
+// how it was reached.
+type decisionEndpoint struct {
+	*httptest.Server
+	mu     sync.Mutex
+	paths  []string
+	auth   []string
+	models []string
+}
+
+func newDecisionEndpoint(t *testing.T) *decisionEndpoint {
+	t.Helper()
+	endpoint := &decisionEndpoint{}
+	endpoint.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		endpoint.mu.Lock()
+		endpoint.paths = append(endpoint.paths, r.URL.Path)
+		endpoint.auth = append(endpoint.auth, r.Header.Get("Authorization"))
+		endpoint.models = append(endpoint.models, body.Model)
+		endpoint.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"answers":{"q1":{"type":"noul","noul":0.97}},"model":"jev-1.13.0","usage":{"input_tokens":120,"output_tokens":5}}`)
+	}))
+	t.Cleanup(endpoint.Close)
+	return endpoint
+}
+
+// A decision provider used alone needs no WithModel, and reads its own variables
+// before the shared one.
+func TestADecisionProviderUsedAloneResolvesItsKeyItsURLAndItsModel(t *testing.T) {
+	cases := []struct {
+		provider  string
+		keyVar    string
+		urlVar    string
+		wantPath  string
+		wantModel string
+	}{
+		{"jev", "TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "/v1/systemone", "jev-latest"},
+		{"jev", "SCHEMAFLUX_TYPESAFE_API_KEY", "SCHEMAFLUX_TYPESAFE_BASE_URL", "/v1/systemone", "jev-latest"},
+		{"jev-openrouter", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "/v1/systemone", "~typesafe/jev-latest"},
+		{"jev-litellm", "LITELLM_API_KEY", "LITELLM_BASE_URL", "/typesafe/v1/systemone", "jev-latest"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider+" from "+tc.keyVar, func(t *testing.T) {
+			clearModelOverrides(t)
+			endpoint := newDecisionEndpoint(t)
+			configtest.Setenv(t, "SCHEMAFLUX_API_KEY", "shared-key-that-must-not-win")
+			configtest.Setenv(t, tc.keyVar, "the-providers-own-key")
+			configtest.Setenv(t, tc.urlVar, endpoint.URL)
+
+			client := NewClient("").WithProvider(tc.provider)
+			if err := client.Err(); err != nil {
+				t.Fatalf("Err() = %v: a decision provider has a model of its own", err)
+			}
+			ctx := client.Context(context.Background())
+			got, err := ops.Is(ctx, "Please refund my order.", "Is the customer asking for a refund?")
+			if err != nil || !got {
+				t.Fatalf("Is = %v, %v, want true from the decider", got, err)
+			}
+
+			endpoint.mu.Lock()
+			defer endpoint.mu.Unlock()
+			if len(endpoint.paths) != 1 {
+				t.Fatalf("%d requests reached the endpoint, want one", len(endpoint.paths))
+			}
+			if endpoint.paths[0] != tc.wantPath || endpoint.models[0] != tc.wantModel {
+				t.Errorf("the request went to %s asking for %q, want %s and %q", endpoint.paths[0], endpoint.models[0], tc.wantPath, tc.wantModel)
+			}
+			if endpoint.auth[0] != "Bearer the-providers-own-key" {
+				t.Errorf("the request carried a key that is not the provider's own")
+			}
+		})
+	}
+
+	t.Run("the shared key serves when the provider's own is not set", func(t *testing.T) {
+		clearModelOverrides(t)
+		endpoint := newDecisionEndpoint(t)
+		configtest.Setenv(t, "SCHEMAFLUX_API_KEY", "the-shared-key")
+		for _, name := range []string{"SCHEMAFLUX_TYPESAFE_API_KEY", "TYPESAFE_API_KEY"} {
+			configtest.Setenv(t, name, "")
+		}
+		configtest.Setenv(t, "TYPESAFE_BASE_URL", endpoint.URL)
+
+		client := NewClient("").WithProvider("jev")
+		if _, err := ops.Is(client.Context(context.Background()), "Please refund my order.", "Is the customer asking for a refund?"); err != nil {
+			t.Fatalf("Is: %v", err)
+		}
+		endpoint.mu.Lock()
+		defer endpoint.mu.Unlock()
+		if len(endpoint.auth) != 1 || endpoint.auth[0] != "Bearer the-shared-key" {
+			t.Errorf("the request did not carry the shared key")
+		}
+	})
 }

@@ -151,14 +151,13 @@ func capturePrompts(t *testing.T, run func()) []string {
 	t.Helper()
 
 	var prompts []string
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, system, user string, opts types.OpOptions) (string, error) {
+	restore := replaceLLMCaller(func(_ context.Context, system, user string, opts types.OpOptions) (string, error) {
 		// Steering is applied inside callLLM, after this hook, so it has to be
 		// read from the options or the witness sees none of it.
 		prompts = append(prompts, strings.Join([]string{system, user, opts.Steering}, "\x00"))
 		return "{}", nil
 	})
-	defer func() { customLLMCaller = previous }()
+	defer restore()
 
 	run()
 	return prompts
@@ -206,7 +205,21 @@ func TestPromptsAreByteIdenticalAcrossRuns(t *testing.T) {
 			_, _ = Normalize(record{}, NewNormalizeOptions().WithCanonicalMappings(rules))
 		}},
 		{"project_mappings", func() {
-			_, _ = Project[record, record](record{}, ProjectOptions{Mappings: rules})
+			// Project refuses a mapping whose key is not a field of the
+			// input, before any call, so the input has a field for every key.
+			type numbered struct {
+				One   string `json:"one"`
+				Two   string `json:"two"`
+				Three string `json:"three"`
+				Four  string `json:"four"`
+				Five  string `json:"five"`
+				Six   string `json:"six"`
+				Seven string `json:"seven"`
+				Eight string `json:"eight"`
+				Nine  string `json:"nine"`
+				Ten   string `json:"ten"`
+			}
+			_, _ = Project[numbered, record](numbered{}, ProjectOptions{Mappings: rules})
 		}},
 		{"classify_category_descriptions", func() {
 			opts := NewClassifyOptions()
@@ -259,29 +272,6 @@ func TestSortedKeys(t *testing.T) {
 	}
 	if keys := sortedKeys(map[string]string(nil)); len(keys) != 0 {
 		t.Errorf("a nil map must produce no keys, got %v", keys)
-	}
-}
-
-// hasJSONOption must read the options, not the tag as a whole.
-func TestHasJSONOption(t *testing.T) {
-	cases := []struct {
-		tag  string
-		want bool
-	}{
-		{`name,omitempty`, true},
-		{`name,string,omitempty`, true},
-		{`,omitempty`, true},
-		{`omitempty`, false},         // that is the field's NAME, not an option
-		{`omitempty_flag`, false},    // the old substring test said true
-		{`name,omitemptyish`, false}, // near miss
-		{`name`, false},
-		{``, false},
-	}
-
-	for _, tc := range cases {
-		if got := hasJSONOption(tc.tag, "omitempty"); got != tc.want {
-			t.Errorf("hasJSONOption(%q) = %v, want %v", tc.tag, got, tc.want)
-		}
 	}
 }
 

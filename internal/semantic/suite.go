@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -30,6 +31,10 @@ import (
 // run, and exceeding it aborts with the partial results intact — an aborted run
 // that reports what it measured is more useful than one that discards the
 // evidence it already paid for.
+//
+// A ceiling can only hold against spend it can see. A trial whose cost cannot be
+// priced is spend of unknown size, so the run stops at the first one: counting it
+// as zero would let the rest of the suite run with no ceiling at all.
 
 // ErrLiveDisabled is returned when the suite is asked to run without the live
 // gate set.
@@ -40,6 +45,11 @@ var ErrNoBudget = errors.New("semantic: SCHEMAFLUX_SEMANTIC_BUDGET_USD must be s
 
 // ErrBudgetExhausted is returned when the declared ceiling is reached mid-run.
 var ErrBudgetExhausted = errors.New("semantic: spend ceiling reached; the run was stopped")
+
+// ErrSpendUnknown is the reason a run stopped when a trial could not be priced:
+// the model has no price in the table, or the operation reports no cost. What the
+// trial spent is unknown, so the ceiling can no longer be held.
+var ErrSpendUnknown = errors.New("semantic: a trial could not be priced, so the spend ceiling cannot be held; the run was stopped")
 
 // Gate reports whether the suite may run, and the ceiling it may spend up to.
 //
@@ -59,6 +69,12 @@ func Gate() (budgetUSD float64, err error) {
 	budget, parseErr := strconv.ParseFloat(raw, 64)
 	if parseErr != nil {
 		return 0, fmt.Errorf("%w: %q is not a number", ErrNoBudget, raw)
+	}
+	// NaN and infinity parse without an error, and no comparison against either
+	// is ever true: a ceiling of "inf", a plausible way to write "no limit",
+	// would never be reached, and one of NaN would never be crossed.
+	if math.IsNaN(budget) || math.IsInf(budget, 0) {
+		return 0, fmt.Errorf("%w: %q is not a finite number", ErrNoBudget, raw)
 	}
 	if budget <= 0 {
 		return 0, fmt.Errorf("%w: a ceiling of %v permits nothing", ErrNoBudget, budget)
@@ -124,6 +140,8 @@ type DimensionResult struct {
 	Passed Proportion
 
 	// Errors counts calls that did not complete, over every trial attempted.
+	// Errors.Successes is the number of errored trials: the type is a
+	// proportion, and its "successes" are the trials the proportion is about.
 	Errors Proportion
 
 	// TotalCost is the summed cost of the trials in this dimension.
@@ -145,11 +163,17 @@ type Report struct {
 	// Stopped is set when the spend ceiling ended the run early. The results
 	// above are still what was measured; they are simply incomplete, and a
 	// reader has to know which.
-	Stopped     bool
-	StopReason  error
-	SpentUSD    float64
-	CeilingUSD  float64
+	Stopped    bool
+	StopReason error
+	SpentUSD   float64
+	CeilingUSD float64
+
+	// CostPartial is set when any trial could not be priced, which also stops the
+	// run: SpentUSD is then a floor.
 	CostPartial bool
+
+	// UnpricedTrials counts the trials whose cost could not be priced.
+	UnpricedTrials int
 }
 
 // Run executes the cases and reports the rates. It does not decide whether the
@@ -157,26 +181,32 @@ type Report struct {
 // acceptable extraction accuracy is a product decision and not a property of
 // the measurement.
 //
+// The whole suite is validated before anything runs: a ceiling that is not a
+// finite positive number, and any case with fewer than two trials, no name, no
+// dimension or no Run, is refused with no call made. Validating as each case
+// came up meant the cases before a bad one had already been paid for.
+//
 // The ceiling is checked before each trial. A run that would exceed it stops
 // and returns what it has, with Stopped set — never a partial report that looks
-// complete.
+// complete. A trial that cannot be priced ends the run the same way, with
+// ErrSpendUnknown: its cost is unknown, and the ceiling is only a ceiling on
+// costs it can see. A trial that errored is recorded with no cost, because an
+// error carries no usage; if a provider billed a request it then failed to
+// parse, that spend is not visible here.
 func Run(ctx context.Context, cases []Case, ceilingUSD float64) (Report, error) {
-	if ceilingUSD <= 0 {
+	if math.IsNaN(ceilingUSD) || math.IsInf(ceilingUSD, 0) || ceilingUSD <= 0 {
 		return Report{}, ErrNoBudget
 	}
-
 	report := Report{CeilingUSD: ceilingUSD}
+	if err := validateCases(cases); err != nil {
+		return report, err
+	}
+
 	byDimension := map[string]*DimensionResult{}
 	latencies := map[string][]time.Duration{}
 	order := []string{}
 
 	for _, testCase := range cases {
-		if testCase.Trials < 2 {
-			return report, fmt.Errorf(
-				"semantic: case %q declares %d trial(s); a rate needs repeated trials, and a single sample reports 0%% or 100%% regardless of the model",
-				testCase.Name, testCase.Trials)
-		}
-
 		result, seen := byDimension[testCase.Dimension]
 		if !seen {
 			result = &DimensionResult{Dimension: testCase.Dimension, CostKnown: true}
@@ -213,20 +243,56 @@ func Run(ctx context.Context, cases []Case, ceilingUSD float64) (Report, error) 
 				result.Passed.Successes++
 			}
 			result.TotalTokens += outcome.Tokens
-			if outcome.Priced {
-				result.TotalCost += outcome.Cost
-				report.SpentUSD += outcome.Cost
-			} else {
-				// One unpriced trial makes the dimension's total a floor. It is
-				// not rounded up to a guess and not reported as complete.
+			latencies[testCase.Dimension] = append(latencies[testCase.Dimension], outcome.Elapsed)
+
+			if !priced(outcome) {
+				// Unknown spend. The trial is recorded, because it was paid for,
+				// and the run ends: not rounded up to a guess and not counted as
+				// free.
 				result.CostKnown = false
 				report.CostPartial = true
+				report.UnpricedTrials++
+				report.Stopped = true
+				report.StopReason = fmt.Errorf("%w: case %q, trial %d", ErrSpendUnknown, testCase.Name, trial)
+				return finish(report, order, byDimension, latencies), nil
 			}
-			latencies[testCase.Dimension] = append(latencies[testCase.Dimension], outcome.Elapsed)
+			result.TotalCost += outcome.Cost
+			report.SpentUSD += outcome.Cost
 		}
 	}
 
 	return finish(report, order, byDimension, latencies), nil
+}
+
+// priced reports whether an outcome's cost is a figure the ceiling can use. A
+// cost that is negative or not a finite number is not one: added to the total it
+// would lower it, or poison it, and the ceiling would stop meaning anything. A
+// NaN is refused by the comparison with zero, which it fails.
+func priced(outcome Outcome) bool {
+	return outcome.Priced && outcome.Cost >= 0 && !math.IsInf(outcome.Cost, 0)
+}
+
+// validateCases refuses a suite before any trial runs. Names and dimensions
+// are the harness's own text, never data, so they are named in the error.
+func validateCases(cases []Case) error {
+	if len(cases) == 0 {
+		return errors.New("semantic: the suite has no cases")
+	}
+	for index, testCase := range cases {
+		switch {
+		case testCase.Trials < 2:
+			return fmt.Errorf(
+				"semantic: case %d (%q) declares %d trial(s); a rate needs repeated trials, and a single sample reports 0%% or 100%% regardless of the model",
+				index, testCase.Name, testCase.Trials)
+		case testCase.Run == nil:
+			return fmt.Errorf("semantic: case %d (%q) has no Run", index, testCase.Name)
+		case testCase.Name == "":
+			return fmt.Errorf("semantic: case %d has no name, so a report could not say what was measured", index)
+		case testCase.Dimension == "":
+			return fmt.Errorf("semantic: case %d (%q) has no dimension, so its trials would be reported under no heading", index, testCase.Name)
+		}
+	}
+	return nil
 }
 
 func finish(report Report, order []string, byDimension map[string]*DimensionResult,

@@ -90,20 +90,17 @@ func TestRedactWithResult_InvalidOptionsRefuses(t *testing.T) {
 	}
 }
 
-// An invalid custom regex is skipped rather than aborting the whole pass --
-// exercises the `continue` branch in redactStringWithReport's custom-pattern
-// loop.
-func TestRedact_InvalidCustomPatternIsSkippedNotFatal(t *testing.T) {
+// An invalid custom regex is an error. This test used to pin the opposite, that
+// the pattern was skipped and the rest of the pass carried on: a typo in a
+// pattern meant to remove a secret then returned the secret with a nil error.
+func TestRedact_InvalidCustomPatternIsAnError(t *testing.T) {
 	opts := NewRedactOptions().
 		WithCategories([]string{"PII"}).
 		WithCustomPatterns([]string{"(unterminated["})
 
 	result, err := Redact("Contact john@example.com", opts)
-	if err != nil {
-		t.Fatalf("an invalid custom pattern should be skipped, not fail the operation: %v", err)
-	}
-	if strings.Contains(result, "john@example.com") {
-		t.Errorf("the PII category should still have redacted the address: %q", result)
+	if err == nil {
+		t.Fatalf("an invalid custom pattern was skipped and the text returned: %q", result)
 	}
 }
 
@@ -136,9 +133,9 @@ func TestApplyRedactionStrategy_UnknownStrategyFallsBackToMask(t *testing.T) {
 	}
 }
 
-// applyRedactionToValue's numeric branches: RedactNil zeroes an int/float
-// field redacted by name; any other strategy leaves the number as-is,
-// because there is no masked-number representation to produce.
+// The numeric kinds of a field redacted by name: every strategy zeroes an
+// int or float, because there is no masked-number representation to produce
+// and returning the number would leave it readable.
 func TestApplyRedactionToValue_NumericFields(t *testing.T) {
 	type record struct {
 		Score int     `redact:"x"`
@@ -157,14 +154,17 @@ func TestApplyRedactionToValue_NumericFields(t *testing.T) {
 		}
 	})
 
-	t.Run("RedactMask leaves numeric fields untouched", func(t *testing.T) {
+	// A number has no masked form, so a numeric field named for redaction is
+	// zeroed under any strategy. This test used to pin the opposite: the field
+	// was listed as redacted and returned in the clear.
+	t.Run("RedactMask zeroes numeric fields", func(t *testing.T) {
 		input := record{Score: 99, Ratio: 4.5, Label: "keep"}
 		result, err := Redact(input, NewRedactOptions().WithStrategy(RedactMask))
 		if err != nil {
 			t.Fatalf("Redact: %v", err)
 		}
-		if result.Score != 99 || result.Ratio != 4.5 {
-			t.Errorf("RedactMask altered a numeric field it cannot mask: %+v", result)
+		if result.Score != 0 || result.Ratio != 0 {
+			t.Errorf("RedactMask left a numeric field readable: %+v", result)
 		}
 		if result.Label != "***" {
 			t.Errorf("Label should still be masked by its redact tag: %q", result.Label)
@@ -346,9 +346,8 @@ func TestJumbleSmart_PreservesShapeAndCase(t *testing.T) {
 	}
 }
 
-// applyRedactionToValue's default reflect-kind branch: a bool field redacted
-// by name. RedactNil zeroes it; anything else leaves it as-is, because there
-// is no masked-boolean representation.
+// The default reflect-kind branch: a bool field redacted by name is zeroed
+// under every strategy, because there is no masked-boolean representation.
 func TestApplyRedactionToValue_DefaultKindBool(t *testing.T) {
 	type record struct {
 		Active bool `redact:"x"`
@@ -366,8 +365,8 @@ func TestApplyRedactionToValue_DefaultKindBool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Redact: %v", err)
 	}
-	if maskResult.Active != true {
-		t.Errorf("RedactMask altered a bool field it cannot mask")
+	if maskResult.Active != false {
+		t.Errorf("RedactMask left a bool field named for redaction readable")
 	}
 }
 

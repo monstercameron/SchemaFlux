@@ -37,8 +37,8 @@ const schemafluxTag = "schemaflux"
 //  1. an explicit `schemaflux:"required"` or `schemaflux:"optional"` tag;
 //  2. the field's type -- a pointer can be nil, which is how Go spells "may be
 //     absent", so a pointer field is optional unless the tag says otherwise;
-//  3. the presence of `omitempty`, which is the old inference, kept so types
-//     written before the tag existed keep their current behaviour.
+//  3. the presence of `omitempty` or `omitzero`, which is the old inference,
+//     kept so types written before the tag existed keep their current behaviour.
 func FieldRequiredness(field reflect.StructField) Requiredness {
 	switch strings.ToLower(strings.TrimSpace(field.Tag.Get(schemafluxTag))) {
 	case "required":
@@ -47,11 +47,14 @@ func FieldRequiredness(field reflect.StructField) Requiredness {
 		return FieldOptional
 	}
 
-	if field.Type.Kind() == reflect.Ptr {
+	if field.Type.Kind() == reflect.Pointer {
 		return FieldOptional
 	}
 
-	if hasJSONOption(field.Tag.Get("json"), "omitempty") {
+	// The tag is read as encoding/json reads it, by the one reader of a json
+	// tag's options: omitempty and omitzero both say the zero value may be left
+	// out, in whatever form encoding/json takes them (omitempty:x is one).
+	if parseJSONTagOptions(field.Tag.Get("json")).leavesOutZero() {
 		return FieldOptional
 	}
 

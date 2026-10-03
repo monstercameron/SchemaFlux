@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -146,10 +148,111 @@ func TestEveryTruncationSpellingClassifiesAsTruncated(t *testing.T) {
 	}
 }
 
+// 429 is a rate limit and 503 is the provider being unavailable, whichever type
+// carries the error and whichever provider returned it. A RateLimitError is also
+// what carries a 503's Retry-After, and it used to turn every 503 into a rate
+// limit while kindForStatus said otherwise.
+func TestClassifyReadsTheStatusOfARateLimitError(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   types.ErrorKind
+	}{
+		{"429", http.StatusTooManyRequests, types.KindRateLimited},
+		{"503", http.StatusServiceUnavailable, types.KindProviderUnavailable},
+		{"no status recorded", 0, types.KindRateLimited},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &RateLimitError{APIError: &APIError{Provider: "p", StatusCode: tc.status}, RetryAfter: time.Second}
+			if got := Classify(err); got != tc.want {
+				t.Errorf("Classify = %v, want %v", got, tc.want)
+			}
+			wrapped := fmt.Errorf("calling: %w", err)
+			if got := Classify(wrapped); got != tc.want {
+				t.Errorf("Classify(wrapped) = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Both statuses are retried, and the two are told apart by kind and not by
+// retry behaviour.
+func TestRateLimitAndUnavailableAreBothRetryable(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		err := &RateLimitError{APIError: &APIError{StatusCode: status}}
+		if !(&types.OperationError{Kind: Classify(err)}).Retryable() {
+			t.Errorf("status %d is not retryable", status)
+		}
+		if !err.APIError.Retryable() {
+			t.Errorf("APIError.Retryable() is false for %d", status)
+		}
+	}
+}
+
+// The library's own spend-limit errors are typed. A vendor's prose that happens
+// to say "budget" is not one: Anthropic's text for a bad thinking budget did, and
+// was read as the caller's spend limit.
+func TestOnlyTheLibrarysBudgetErrorIsABudgetError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want types.ErrorKind
+	}{
+		{"typed budget error", &types.OperationError{Kind: types.KindBudgetExceeded, Message: "x"}, types.KindBudgetExceeded},
+		{"the pricing package's budget error", fmt.Errorf("cost budget exceeded: daily spend 5.00 of limit 4.00"), types.KindBudgetExceeded},
+		{"the pricing package's error wrapped", fmt.Errorf("extract: %w", errors.New("cost budget exceeded: monthly")), types.KindBudgetExceeded},
+		{"vendor prose", errors.New("max_tokens must be greater than thinking.budget_tokens"), types.KindUnknown},
+		{"account message", errors.New("monthly budget exceeded for this account"), types.KindUnknown},
+		{"upper case", errors.New("BUDGET limit hit"), types.KindUnknown},
+		{"the word alone", errors.New("budget"), types.KindUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.err); got != tc.want {
+				t.Errorf("Classify = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestACompleteAnswerIsNotClassifiedAsTruncated(t *testing.T) {
 	for _, reason := range []string{"stop", "end_turn", "completed", ""} {
 		if got := ClassifyCompletion(CompletionResponse{FinishReason: reason, Content: "done"}); got == types.KindOutputTruncated {
 			t.Errorf("ClassifyCompletion(%q) reported truncation for a complete answer", reason)
 		}
+	}
+}
+
+// A reply that is only tool calls is an answer: the model asked for tools
+// instead of writing text. It used to classify as a malformed output because its
+// content was empty, which the call path refuses and sends again. A reply with no
+// content and no calls is still empty, and one cut off or withheld is still that.
+func TestClassifyCompletionReadsAReplyOfOnlyToolCallsAsAnAnswer(t *testing.T) {
+	calls := []ToolCall{{ID: "call_1", Name: "get_weather", Arguments: []byte(`{}`)}}
+	cases := []struct {
+		name string
+		resp CompletionResponse
+		want types.ErrorKind
+	}{
+		{"only calls", CompletionResponse{ToolCalls: calls, FinishReason: "tool_calls"}, types.KindUnknown},
+		{"only calls that finished as stop", CompletionResponse{ToolCalls: calls, FinishReason: "stop"}, types.KindUnknown},
+		{"only calls with no finish reason", CompletionResponse{ToolCalls: calls}, types.KindUnknown},
+		{"calls and blank text", CompletionResponse{ToolCalls: calls, Content: "  ", FinishReason: "tool_calls"}, types.KindUnknown},
+		{"calls and text", CompletionResponse{ToolCalls: calls, Content: "one moment", FinishReason: "tool_calls"}, types.KindUnknown},
+		{"several calls", CompletionResponse{ToolCalls: append(calls, ToolCall{ID: "call_2", Name: "get_time"}), FinishReason: "tool_calls"}, types.KindUnknown},
+		{"calls cut off at the ceiling", CompletionResponse{ToolCalls: calls, FinishReason: "max_output_tokens"}, types.KindOutputTruncated},
+		{"calls cut off, in the chat dialect's word", CompletionResponse{ToolCalls: calls, FinishReason: "length"}, types.KindOutputTruncated},
+		{"calls withheld by a content filter", CompletionResponse{ToolCalls: calls, FinishReason: "content_filter"}, types.KindPolicyViolation},
+		{"no calls and no text", CompletionResponse{FinishReason: "tool_calls"}, types.KindMalformedOutput},
+		{"an empty list of calls and no text", CompletionResponse{ToolCalls: []ToolCall{}, FinishReason: "stop"}, types.KindMalformedOutput},
+		{"no calls and text", CompletionResponse{Content: "hello", FinishReason: "stop"}, types.KindUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyCompletion(tc.resp); got != tc.want {
+				t.Errorf("ClassifyCompletion = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

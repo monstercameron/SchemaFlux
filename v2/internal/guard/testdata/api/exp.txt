@@ -1,0 +1,55 @@
+type Adjustment struct{Field string; OriginalValue any; ConformedValue any; Rule string; Description string}
+type AdversarialContext[T any] struct{Ours AdversarialPosition[T]; Theirs AdversarialPosition[T]; OurLeverage string; Relationship string}
+type AdversarialPosition[T any] struct{Position T; MustHaves []string; WalkAway map[string]any}
+func Arbitrate[T any](ctx context.Context, options []T, rules []string, values ...ArbitrateOptions) (ArbitrateResult[T], error)
+type ArbitrateOptions struct{embedded schemaflux.Options; Weights []float64; RequireAllRules bool; IncludeReasoning bool; Tiebreaker string}
+type ArbitrateResult[T any] struct{Winner T; WinnerIndex int; Scores map[int]float64; Evaluations []OptionEvaluation; Reasoning string; ModelConfidence float64; TiesBroken bool; Tied []int; Evaluated bool}
+func Assemble[T any](ctx context.Context, parts []any, options ...AssembleOptions) (AssembleResult[T], error)
+type AssembleOptions struct{embedded schemaflux.Options; Template string; MergeStrategy string; FillGaps bool}
+type AssembleResult[T any] struct{Composed T; FieldSources []ComposedField; ConflictsResolved int; GapsFilled []string; UnusedParts []int; Completeness float64}
+type ComposedField struct{Field string; Sources []int; Method string; Conflicts bool; Resolution string}
+type Conflict struct{Field string; Values map[int]any; Resolution string; ChosenSource int; ChosenValue any; Reasoning string}
+func Conform[T any](ctx context.Context, input T, standard string, options ...ConformOptions) (ConformResult[T], error)
+type ConformOptions struct{embedded schemaflux.Options; Strict bool; DropUnknown bool; CustomRules map[string]string}
+type ConformResult[T any] struct{Conformed T; Adjustments []Adjustment; Violations []string; Compliance float64; Standard string}
+func Decompose[T any](ctx context.Context, input T, opts ...DecomposeOptions) (DecomposeResult[T], error)
+type DecomposeOptions struct{embedded schemaflux.Options; Strategy string; By string; MaxDepth int; MinGranularity string; TargetParts int; OmitDependencies bool; NoHierarchy bool; IncludeEstimates bool}
+type DecomposeResult[T any] struct{Original T; Parts []DecomposedPart[T]; RootParts []string; TotalParts int; MaxDepth int; Dependencies map[string][]string}
+func DecomposeToSlice[U, T any](ctx context.Context, input T, opts ...DecomposeToSliceOptions) ([]U, error)
+type DecomposeToSliceOptions struct{embedded schemaflux.Options; Strategy string; TargetParts int}
+type DecomposedPart[T any] struct{ID string; Name string; Description string; Content T; ParentID string; Children []string; Dependencies []string; Depth int; Order int; Estimate string}
+type Derivation struct{Field string; SourceFields []string; Method string; Reasoning string; ModelConfidence float64}
+func Derive[U, T any](ctx context.Context, input T, options ...DeriveOptions) (DeriveResult[U], error)
+type DeriveOptions struct{embedded schemaflux.Options; Fields []string; Rules map[string]string; MinConfidence float64; OmitReasoning bool}
+type DeriveResult[U any] struct{Derived U; Derivations []Derivation; FieldConfidence map[string]float64; ModelOverallConfidence float64}
+func Enrich[U, T any](ctx context.Context, input T, options ...EnrichOptions) (EnrichResult[U], error)
+func EnrichInPlace[T any](ctx context.Context, input T, options ...EnrichOptions) (T, error)
+type EnrichOptions struct{embedded schemaflux.Options; Fields []string; Rules map[string]string; Background map[string]any; Domain string; ExcludeFields []string; AllowChanges bool; IncludeConfidence bool}
+type EnrichResult[U any] struct{Enriched U; AddedFields []string; ModelClaimedAddedFields []string; ModelConfidence map[string]float64; Derivations map[string]string}
+type FieldMapping struct{SourceField string; TargetField string; Method string; Transformation string}
+type FilledItem struct{Index int; Method string; BasedOn []int; Reasoning string; ModelConfidence float64}
+func Interpolate[T any](ctx context.Context, items []T, options ...InterpolateOptions) (InterpolateResult[T], error)
+type InterpolateOptions struct{embedded schemaflux.Options; Method string; GapIndices []int; SequenceField string; ContextWindow int; Constraints []string}
+type InterpolateResult[T any] struct{Complete []T; Filled []FilledItem; GapCount int; Method string; AverageConfidence float64}
+type OptionEvaluation struct{Index int; TotalScore float64; RuleResults []RuleEvaluation; Disqualified bool; DisqualifyReason string}
+func Project[T, U any](ctx context.Context, input T, options ...ProjectOptions) (ProjectResult[U], error)
+type ProjectOptions struct{embedded schemaflux.Options; Mappings map[string]string; Exclude []string; InferMissing bool}
+type ProjectResult[U any] struct{Projected U; Mappings []FieldMapping; Lost []string; Inferred []string; FieldsCompared bool; ModelClaimedLost []string; ModelClaimedInferred []string; ModelConfidence float64}
+func Resolve[T any](ctx context.Context, sources []T, options ...ResolveOptions) (ResolveResult[T], error)
+type ResolveOptions struct{embedded schemaflux.Options; Strategy string; AuthoritativeSource int; FieldPriorities map[string]int; ConflictThreshold float64}
+type ResolveResult[T any] struct{Resolved T; Conflicts []Conflict; SourceContributions map[int][]string; Strategy string; ModelConfidence float64; ModelAsked bool}
+type RuleEvaluation struct{Rule string; Passed bool; Score float64; Reasoning string}
+func Settle[T any](ctx context.Context, constraints any, options ...SettleOptions) (SettleResult[T], error)
+func SettleAdversarial[T any](ctx context.Context, parties AdversarialContext[T], options ...SettleAdversarialOptions) (SettleAdversarialResult[T], error)
+type SettleAdversarialOptions struct{embedded schemaflux.Options; Strategy string}
+type SettleAdversarialResult[T any] struct{Deal T; DealReached bool; TermMovements []TermMovement; WhoConcededMore string; OurSatisfaction float64; TheirSatisfaction float64; Reasoning string; ModelConfidence float64}
+type SettleOptions struct{embedded schemaflux.Options; Priorities map[string]float64; Constraints []string; MinSatisfaction float64; MaxAlternatives int; Strategy string}
+type SettleResult[T any] struct{Solution T; Satisfaction map[string]float64; OverallSatisfaction float64; Tradeoffs []Tradeoff; Alternatives []T; Reasoning string; ModelConfidence float64}
+type SynthesisConflict struct{Topic string; Positions map[int]string; Resolution string; Chosen int}
+type SynthesisFact struct{Fact string; Sources []int; Conflicts []string}
+type SynthesisInsight struct{Insight string; Supporting []int; Type string}
+func Synthesize[T any](ctx context.Context, sources []any, options ...SynthesizeOptions) (SynthesizeResult[T], error)
+type SynthesizeOptions struct{embedded schemaflux.Options; Strategy string; ConflictResolution string; SourcePriorities []int; OmitCitations bool; OmitInsights bool; OutputStructure string; FocusAreas []string; ExcludeAspects []string}
+type SynthesizeResult[T any] struct{Synthesized T; Facts []SynthesisFact; Insights []SynthesisInsight; Conflicts []SynthesisConflict; SourceCoverage map[int]float64}
+type TermMovement struct{Term string; OurAsk any; TheirOffer any; FinalValue any; Movement string}
+type Tradeoff struct{Sacrificed string; Gained string; Impact string; Reasoning string}

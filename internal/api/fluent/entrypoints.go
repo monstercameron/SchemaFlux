@@ -3,6 +3,7 @@ package fluent
 import (
 	"context"
 
+	"github.com/monstercameron/schemaflux/internal/ops"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -127,6 +128,13 @@ func (r ExtractRequest[T]) Quick() ExtractRequest[T] {
 // once and both invisible in the envelope.
 func (r ExtractRequest[T]) Model(model string) ExtractRequest[T] {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithModel(model)
+	return r
+}
+
+// Effort sets how much the model reasons before it answers, for this call.
+// See requestBase.Effort.
+func (r ExtractRequest[T]) Effort(effort Effort) ExtractRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithEffort(effort)
 	return r
 }
 
@@ -271,6 +279,13 @@ func (r TransformRequest[T, U]) Model(model string) TransformRequest[T, U] {
 	return r
 }
 
+// Effort sets how much the model reasons before it answers, for this call.
+// See requestBase.Effort.
+func (r TransformRequest[T, U]) Effort(effort Effort) TransformRequest[T, U] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithEffort(effort)
+	return r
+}
+
 func (r TransformRequest[T, U]) Merge(strategy string) TransformRequest[T, U] {
 	r.opts = r.opts.WithMergeStrategy(strategy)
 	return r
@@ -311,7 +326,7 @@ func (r TransformRequest[T, U]) RunResult(ctx context.Context) (Result[U], error
 	if err := buildError(r.opts); err != nil {
 		return Result[U]{}, err
 	}
-	return runEnvelope("transform", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (U, error) {
+	return runEnvelope(r.opts.GetContext(), "transform", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (U, error) {
 		return Transform[T, U](r.input, r.opts)
 	})
 }
@@ -419,6 +434,13 @@ func (r GenerateRequest[T]) Model(model string) GenerateRequest[T] {
 	return r
 }
 
+// Effort sets how much the model reasons before it answers, for this call.
+// See requestBase.Effort.
+func (r GenerateRequest[T]) Effort(effort Effort) GenerateRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithEffort(effort)
+	return r
+}
+
 func (r GenerateRequest[T]) Count(count int) GenerateRequest[T] {
 	r.opts.Count = count
 	return r
@@ -462,7 +484,7 @@ func (r GenerateRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
 	if err := buildError(r.opts); err != nil {
 		return Result[T]{}, err
 	}
-	return runEnvelope("generate", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
+	return runEnvelope(r.opts.GetContext(), "generate", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
 		return Generate[T](r.prompt, r.opts)
 	})
 }
@@ -528,6 +550,13 @@ func (r ChooseRequest[T]) Model(model string) ChooseRequest[T] {
 	return r
 }
 
+// Effort sets how much the model reasons before it answers, for this call.
+// See requestBase.Effort.
+func (r ChooseRequest[T]) Effort(effort Effort) ChooseRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithEffort(effort)
+	return r
+}
+
 func (r ChooseRequest[T]) Context(ctx context.Context) ChooseRequest[T] {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
 	return r
@@ -572,7 +601,7 @@ func (r ChooseRequest[T]) RunResult(ctx context.Context) (Result[T], error) {
 	if err := buildError(r.opts); err != nil {
 		return Result[T]{}, err
 	}
-	return runEnvelope("choose", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
+	return runEnvelope(r.opts.GetContext(), "choose", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() (T, error) {
 		return Choose[T](r.options, r.opts)
 	})
 }
@@ -638,6 +667,13 @@ func (r FilterRequest[T]) Model(model string) FilterRequest[T] {
 	return r
 }
 
+// Effort sets how much the model reasons before it answers, for this call.
+// See requestBase.Effort.
+func (r FilterRequest[T]) Effort(effort Effort) FilterRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithEffort(effort)
+	return r
+}
+
 func (r FilterRequest[T]) Context(ctx context.Context) FilterRequest[T] {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
 	return r
@@ -682,7 +718,7 @@ func (r FilterRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
 	if err := buildError(r.opts); err != nil {
 		return Result[[]T]{}, err
 	}
-	return runEnvelope("filter", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
+	return runEnvelope(r.opts.GetContext(), "filter", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
 		return Filter[T](r.items, r.opts)
 	})
 }
@@ -748,6 +784,13 @@ func (r SortRequest[T]) Model(model string) SortRequest[T] {
 	return r
 }
 
+// Effort sets how much the model reasons before it answers, for this call.
+// See requestBase.Effort.
+func (r SortRequest[T]) Effort(effort Effort) SortRequest[T] {
+	r.opts.CommonOptions = r.opts.CommonOptions.WithEffort(effort)
+	return r
+}
+
 func (r SortRequest[T]) Context(ctx context.Context) SortRequest[T] {
 	r.opts.CommonOptions = r.opts.CommonOptions.WithContext(ctx)
 	return r
@@ -784,17 +827,30 @@ func (r SortRequest[T]) Run(ctx ...context.Context) ([]T, error) {
 	return Sort[T](r.items, r.opts)
 }
 
-// RunResult executes identically to Run and returns a best-effort execution
-// envelope; see TransformRequest.RunResult for what "best-effort" leaves at
-// zero and why.
+// RunResult executes identically to Run and returns the execution envelope
+// ops.SortResult builds: usage, attempts, the strategy that produced the
+// order, and the contract level a sort establishes.
+//
+// It used to build a best-effort envelope of its own, which states no contract
+// level, so under any contract floor the builder was refused for a sort that
+// ops.SortResult, the same sort, was allowed.
+//
+// Options that do not validate are refused here, before ops.SortResult is
+// reached, and that refusal carries the caller's ids like every other envelope
+// the sort returns.
 func (r SortRequest[T]) RunResult(ctx context.Context) (Result[[]T], error) {
 	withCollectionRunContext(&r.opts.OpOptions, &r.opts.CommonOptions, []context.Context{ctx})
 	if err := buildError(r.opts); err != nil {
-		return Result[[]T]{}, err
+		meta := types.Meta{Operation: "sort", RequestID: r.opts.CommonOptions.RequestID, CorrelationID: r.opts.CommonOptions.CorrelationID}
+		if meta.RequestID == "" {
+			meta.RequestID = r.opts.OpOptions.RequestID
+		}
+		if meta.CorrelationID == "" {
+			meta.CorrelationID = r.opts.OpOptions.CorrelationID
+		}
+		return Result[[]T]{Meta: meta}, err
 	}
-	return runEnvelope("sort", r.opts.GetRequestID(), r.opts.GetCorrelationID(), func() ([]T, error) {
-		return Sort[T](r.items, r.opts)
-	})
+	return ops.SortResult[T](r.items, r.opts)
 }
 
 // ChooseBy is a compact entrypoint for selection-style tasks.

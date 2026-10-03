@@ -74,6 +74,29 @@ func TestModelPinReachesEveryBuilderItIsOfferedOn(t *testing.T) {
 	requireSet(t, "Sorting", "Model", Sorting([]string{"a"}).Model(pin).opts, pin)
 }
 
+// LX-105. The six entry-point builders carry their own setters, so each has its
+// own Effort.
+func TestEffortReachesEveryEntryPointBuilder(t *testing.T) {
+	requireSet(t, "Extracting", "Effort", Extracting[map[string]any]("x").Effort(EffortHigh).opts, EffortHigh)
+	requireSet(t, "Transforming", "Effort", Transforming[string, string]("x").Effort(EffortHigh).opts, EffortHigh)
+	requireSet(t, "Generating", "Effort", Generating[string]("x").Effort(EffortHigh).opts, EffortHigh)
+	requireSet(t, "Choosing", "Effort", Choosing([]string{"a"}).Effort(EffortHigh).opts, EffortHigh)
+	requireSet(t, "Filtering", "Effort", Filtering([]string{"a"}).Effort(EffortHigh).opts, EffortHigh)
+	requireSet(t, "Sorting", "Effort", Sorting([]string{"a"}).Effort(EffortHigh).opts, EffortHigh)
+
+	// EffortDefault clears it, and the last call wins.
+	cleared := Extracting[map[string]any]("x").Effort(EffortHigh).Effort(EffortDefault).opts
+	requireSet(t, "Extracting", "Effort", cleared, EffortDefault)
+	last := Summarizing("x").Effort(EffortNone).Effort(EffortMedium).opts
+	requireSet(t, "Summarizing", "Effort", last, EffortMedium)
+
+	// It does not disturb its neighbours.
+	both := Summarizing("x").Model("a-model").Effort(EffortLow).Steer("s").opts
+	requireSet(t, "Summarizing", "Model", both, "a-model")
+	requireSet(t, "Summarizing", "Effort", both, EffortLow)
+	requireSet(t, "Summarizing", "Steering", both, "s")
+}
+
 // An empty pin clears rather than pins to nothing, which is what a caller
 // reading `.Model("")` expects and the opposite of what a bare assignment on a
 // chain that set a model earlier would do.

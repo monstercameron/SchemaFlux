@@ -10,6 +10,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	schemaflux "github.com/monstercameron/schemaflux"
 	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
@@ -25,6 +26,11 @@ func main() {
 		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
 		return
 	}
+
+	// redacted counts the calls that returned a result. Every failure below is
+	// printed and the next case still runs, so without the count a run in
+	// which nothing was redacted ended with the success line and exit 0.
+	redacted := 0
 
 	// Example 1: Basic sensitive data detection
 	fmt.Println("\n1??  Basic PII Detection")
@@ -42,6 +48,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
 	} else {
+		redacted++
 		fmt.Printf("   Output: %q\n", result1.Text)
 		fmt.Println("   Spans detected:")
 		for _, span := range result1.Spans {
@@ -67,6 +74,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
 	} else {
+		redacted++
 		fmt.Printf("   Output: %q\n", result2.Text)
 		fmt.Println("   Spans detected:")
 		for _, span := range result2.Spans {
@@ -90,6 +98,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
 	} else {
+		redacted++
 		fmt.Printf("   Output: %q\n", result3.Text)
 		fmt.Println("   Spans detected:")
 		for _, span := range result3.Spans {
@@ -114,6 +123,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
 	} else {
+		redacted++
 		fmt.Printf("   Output: %q\n", result4.Text)
 		fmt.Println("   Spans detected:")
 		for _, span := range result4.Spans {
@@ -143,6 +153,7 @@ SSN: 987-65-4321`
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
 	} else {
+		redacted++
 		fmt.Printf("   Output:\n%s\n", result5.Text)
 		fmt.Printf("\n   Categories found: %v\n", result5.Categories)
 		fmt.Printf("   Total spans: %d\n", len(result5.Spans))
@@ -164,6 +175,7 @@ SSN: 987-65-4321`
 	if err != nil {
 		fmt.Printf("   ? Error: %v\n", err)
 	} else {
+		redacted++
 		fmt.Printf("   Output: %q\n", result6.Text)
 		fmt.Println("   Spans detected:")
 		for _, span := range result6.Spans {
@@ -172,5 +184,9 @@ SSN: 987-65-4321`
 	}
 
 	fmt.Println()
+	if redacted == 0 {
+		fmt.Println("Nothing was redacted: every call failed.")
+		os.Exit(1)
+	}
 	fmt.Println("? Success! Sensitive data detected and masked with LLM intelligence")
 }

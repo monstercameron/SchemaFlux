@@ -1,13 +1,17 @@
 package ops
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -16,11 +20,10 @@ import (
 //
 // Choose, Filter, and Sort used to send the model the raw items and ask for
 // the chosen/kept/sorted items back, matched to the caller's own values by
-// equality (collection_identity.go). Two failures came from that: a model
-// that echoed an item with one field subtly changed produced a record that
-// looked authoritative and was not the caller's, and the model had to spend
-// output tokens reproducing data it already had, which is what capped every
-// operation's size (C-06).
+// equality. Two failures came from that: a model that echoed an item with one
+// field subtly changed produced a record that looked authoritative and was not
+// the caller's, and the model had to spend output tokens reproducing data it
+// already had, which is what capped every operation's size (C-06).
 //
 // A bare positional index was tried before object echoing and abandoned for
 // a real reason: an index is only meaningful if the model returns every
@@ -134,11 +137,27 @@ func resolvePermutationByIDs[T any](items []T, ids []string) ([]T, error) {
 
 // idListResponse is what Filter and Sort ask the model to answer with: the
 // ids of the relevant items, and nothing else. Wrapping the array in an
-// object rather than returning it bare gives ParseJSONStrict a field name to
+// object rather than returning it bare gives decodeAnswer a member to
 // require, so an empty object or an answer about something else is caught
-// before the ID coverage check ever runs.
+// before the ID coverage check ever runs. The list may be empty, which is an
+// answer for Filter, and may not be null, which readIDList refuses: the reader
+// lets a null through for a slice.
 type idListResponse struct {
 	IDs []string `json:"ids"`
+}
+
+// readIDList reads an answer that is a list of ids. A list that is empty is an
+// answer, and one that is null is the model leaving it out, so it is refused
+// instead of being read as an empty list.
+func readIDList(op, response string) (idListResponse, error) {
+	var parsed idListResponse
+	if err := decodeAnswer(op, response, &parsed); err != nil {
+		return idListResponse{}, err
+	}
+	if parsed.IDs == nil {
+		return idListResponse{}, types.Newf(types.KindSchemaViolation, op, "ids is null, and null is not an answer for it")
+	}
+	return parsed, nil
 }
 
 // idResponse is what Choose asks the model to answer with: the id of the
@@ -161,6 +180,11 @@ func zeroOf[T any]() T {
 // model never sees the option's fields in the answer channel, only in the
 // question.
 //
+// The answer is the id and nothing else, so an option that asks for more than
+// that cannot be honoured or checked: RequireReasoning is put to the model as
+// an instruction and nothing comes back for it, and TopN and IncludeScores have
+// no place in the answer at all. They are stated or ignored, never verified.
+//
 // Examples:
 //
 //	// Basic selection
@@ -176,7 +200,7 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return result, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	if len(options) == 0 {
@@ -218,12 +242,16 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 	ctx, cancel := operationContext(resolvedContext(opts.CommonOptions, opts.OpOptions), config.GetTimeout())
 	defer cancel()
 
-	tagged := tagItems(options)
-	optionsJSON, err := json.Marshal(tagged)
+	// The options as the message carries them, each under its id, and where each
+	// option's own JSON lies within that text: the same bytes describe the
+	// option to a decision provider (LX-100), so nothing is written twice.
+	offered := itemIDs(len(options))
+	optionsJSON, described, err := taggedOptionsJSON(options, offered)
 	if err != nil {
 		return result, types.ChooseError{
 			OptionCount: len(options),
 			Reason:      fmt.Sprintf("failed to marshal options: %v", err),
+			Err:         types.Classified(types.KindInvalidRequest, err),
 		}
 	}
 
@@ -241,13 +269,23 @@ Rules:
 Example:
 - Input [{"id":"i-000001","item":{"name":"A"}},{"id":"i-000002","item":{"name":"B"}}] -> Output {"id":"i-000002"}`
 
-	// Include steering/criteria in the user prompt for better adherence
-	userPrompt := fmt.Sprintf("Choose the best option from this list:\n%s", string(optionsJSON))
-	if opOptions.Steering != "" {
-		userPrompt = fmt.Sprintf("Selection Requirements: %s\n\nChoose the best option from this list:\n%s", opOptions.Steering, string(optionsJSON))
-	}
+	// The steering and the criteria travel in opOptions.Steering, which callLLM
+	// adds to the message once, marked as the caller's. A copy written here as
+	// well was not marked and did not pass through the delimiter check, so a
+	// string that forged the delimiter was neutralised in one copy and in force
+	// in the other, and every call paid for the text twice.
+	userPrompt := fmt.Sprintf("Choose the best option from this list:\n%s", optionsJSON)
 
-	response, err := callLLM(ctx, systemPrompt, userPrompt, opOptions)
+	// LX-100: the same choice typed, for a provider that answers decisions and
+	// reads no prompt. The list is the state, each id is an option described by
+	// its item, and the caller's steering and criteria are the guidance. The
+	// instructions to give reasoning and to follow a strategy are for a model
+	// that writes, are checked on neither path, and are not part of it.
+	decision := newDecisionCall(ctx, optionsJSON, chooseGuidance(opts), nil, nil)
+	decision.one[0] = llm.DecisionQuestion{Kind: llm.DecisionChoice, Ask: chooseAsk, Options: offered, Criteria: described}
+	decision.decision.Questions = decision.one[:]
+
+	response, err := callLLM(decision, systemPrompt, userPrompt, opOptions)
 	if err != nil {
 		return result, types.ChooseError{
 			OptionCount: len(options),
@@ -257,7 +295,19 @@ Example:
 	}
 
 	var parsed idResponse
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if decision.typed {
+		// A decision provider answered, and CallLLM wrote its answer in the
+		// decision reader's form: the id chosen, by its position.
+		answers, _, readErr := readAssessAnswer(response, []assessQuestion{{kind: questionChoice, ask: chooseAsk, labels: offered}}, false)
+		if readErr != nil {
+			return zeroOf[T](), types.ChooseError{
+				OptionCount: len(options),
+				Reason:      "the decision provider's answer is not the id of one of the options",
+				Err:         readErr,
+			}
+		}
+		parsed.ID = offered[answers[0].choice]
+	} else if err := decodeAnswer("choose", response, &parsed); err != nil {
 		return zeroOf[T](), types.ChooseError{
 			OptionCount: len(options),
 			Reason:      fmt.Sprintf("failed to parse the selected id: %v", err),
@@ -270,7 +320,6 @@ Example:
 	// selection that names something never offered -- including an item's own
 	// domain id, which is a plausible-looking mistake for a model that
 	// forgets the protocol -- is refused rather than guessed at.
-	offered := itemIDs(len(options))
 	if err := MemberOf(offered, parsed.ID); err != nil {
 		return zeroOf[T](), types.ChooseError{
 			OptionCount: len(options),
@@ -280,6 +329,63 @@ Example:
 	}
 
 	return options[idPositions(offered)[parsed.ID]], nil
+}
+
+// chooseAsk is the question a choice puts to a decision provider. It is the
+// library's own and holds nothing of the caller's.
+const chooseAsk = "Which option is the best choice?"
+
+// chooseGuidance is what the caller said of how to choose, for a decision
+// provider: the steering, and the selection criteria.
+func chooseGuidance(opts ChooseOptions) string {
+	guidance := strings.TrimSpace(effectiveSteering(opts.CommonOptions, opts.OpOptions))
+	if len(opts.Criteria) == 0 {
+		return guidance
+	}
+	criteria := "Selection criteria: " + strings.Join(opts.Criteria, ", ")
+	if guidance == "" {
+		return criteria
+	}
+	return guidance + ". " + criteria
+}
+
+// taggedOptionsJSON writes options as the message carries them,
+// [{"id":"i-000001","item":...},...], byte for byte as json.Marshal writes
+// tagItems(options), and returns with it the JSON of each item by itself, in
+// order. Each of those is a part of the text returned and not a copy of it.
+func taggedOptionsJSON[T any](options []T, ids []string) (string, []string, error) {
+	var written bytes.Buffer
+	encoder := json.NewEncoder(&written)
+	type span struct{ from, to int }
+	spans := make([]span, len(options))
+
+	written.WriteByte('[')
+	for i := range options {
+		if i > 0 {
+			written.WriteByte(',')
+		}
+		written.WriteString(`{"id":"`)
+		written.WriteString(ids[i])
+		written.WriteString(`","item":`)
+		spans[i].from = written.Len()
+		// By address, as an element of the slice json.Marshal walks is reached:
+		// an item whose MarshalJSON is on the pointer is written by it.
+		if err := encoder.Encode(&options[i]); err != nil {
+			return "", nil, err
+		}
+		// The encoder ends every value with a line break.
+		written.Truncate(written.Len() - 1)
+		spans[i].to = written.Len()
+		written.WriteByte('}')
+	}
+	written.WriteByte(']')
+
+	text := written.String()
+	items := make([]string, len(options))
+	for i, at := range spans {
+		items[i] = text[at.from:at.to]
+	}
+	return text, items, nil
 }
 
 // Filter semantically filters items with specialized options.
@@ -303,6 +409,10 @@ Example:
 //
 // Filter selects the items matching the criteria.
 //
+// The answer is a list of ids, so MinConfidence and IncludeReasons are put to
+// the model as instructions and nothing in the answer lets Go check the first
+// or return the second. They are guidance, not guarantees.
+//
 // A collection too large for its id-only answer to fit the output budget is
 // split into chunks and filtered a chunk at a time, then concatenated. That
 // is safe for a filter because the merge is a concatenation: each item's
@@ -314,10 +424,11 @@ Example:
 // a filter that silently returned the items from the chunks that happened to
 // succeed would be the fail-open behaviour this library has spent its life
 // removing.
-func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
+func Filter[T any](items []T, opts FilterOptions) (_ []T, runErr error) {
+	defer observedPlain(&opts.CommonOptions, &opts.OpOptions, "filter").end(&runErr)
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid options: %w", err)
+		return nil, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	if len(items) == 0 {
@@ -339,7 +450,7 @@ func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 			MapReduceOptions{ChunkSize: fits},
 			func(ctx context.Context, chunk []T) ([]T, error) {
 				chunkOpts := opts
-				chunkOpts.OpOptions.Context = ctx
+				useContext(&chunkOpts.CommonOptions, &chunkOpts.OpOptions, ctx)
 				return filterOneChunk(chunk, chunkOpts)
 			})
 		if err != nil {
@@ -413,8 +524,8 @@ func filterOneChunk[T any](items []T, opts FilterOptions) ([]T, error) {
 	}
 
 	steering := strings.Join(instructions, ". ")
-	if opts.CommonOptions.Steering != "" {
-		steering = opts.CommonOptions.Steering + ". " + steering
+	if callerSteering := effectiveSteering(opts.CommonOptions, opts.OpOptions); callerSteering != "" {
+		steering = callerSteering + ". " + steering
 	}
 	opOptions.Steering = steering
 
@@ -427,6 +538,7 @@ func filterOneChunk[T any](items []T, opts FilterOptions) ([]T, error) {
 		return nil, types.FilterError{
 			ItemCount: len(items),
 			Reason:    fmt.Sprintf("failed to marshal items: %v", err),
+			Err:       types.Classified(types.KindInvalidRequest, err),
 		}
 	}
 
@@ -480,8 +592,8 @@ Examples:
 	// body as a single item and returned a one-element slice, so a malformed
 	// array silently collapsed a filter to one result (C-03); an id list has
 	// no equivalent single-value shape to fall back into.
-	var parsed idListResponse
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	parsed, err := readIDList("filter", response)
+	if err != nil {
 		return nil, types.FilterError{
 			ItemCount: len(items),
 			Reason:    fmt.Sprintf("failed to parse filtered ids: %v", err),
@@ -527,6 +639,9 @@ const sortScoringThreshold = 50
 // sortByScoringFallback for why that strategy cannot lose, duplicate, or
 // edit an item.
 //
+// IncludeScores is put to the model as an instruction and has nowhere to be
+// returned: the result is the items in order. It is guidance, not a guarantee.
+//
 // Examples:
 //
 //	// Basic sorting
@@ -538,10 +653,18 @@ const sortScoringThreshold = 50
 //	    WithCriteria("by quality").
 //	    WithSecondaryCriteria([]string{"by price", "by popularity"}).
 //	    WithDirection("descending"))
-func Sort[T any](items []T, opts SortOptions) ([]T, error) {
+func Sort[T any](items []T, opts SortOptions) (_ []T, runErr error) {
+	defer observedPlain(&opts.CommonOptions, &opts.OpOptions, "sort").end(&runErr)
 	result, _, err := sortWithStrategy(items, opts)
 	return result, err
 }
+
+// sortContract is the level SortResult requests and delivers. Sort declares no
+// schema on its request, and a level of schema constrained or above needs one
+// (see the header of contracttable.go), so the permutation Go checks on a
+// whole-list answer, and the scores it orders by otherwise, do not raise it
+// above the answer having parsed as JSON.
+const sortContract = types.ContractJSONWellFormed
 
 // SortResult runs Sort and returns the record of how it ran, including which
 // strategy produced the answer (OP-106): "whole-list" for the single-call id
@@ -550,17 +673,83 @@ func Sort[T any](items []T, opts SortOptions) ([]T, error) {
 // rejected. It is the same execution Sort runs -- see extractresult.go for
 // why this library attaches the envelope this way rather than giving every
 // operation a second, divergent code path.
-func SortResult[T any](items []T, opts SortOptions) (types.Result[[]T], error) {
-	ctx, records := withCallRecording(resolvedContext(opts.CommonOptions, opts.OpOptions))
-	opts.OpOptions.Context = ctx
+//
+// Every envelope it returns, a refusal and an error included, carries the
+// caller's request and correlation ids and the wall-clock time the whole call
+// took. Both came from the last provider call alone: an envelope built before
+// any call was made had no ids, and a sort that scored every item reported how
+// long the last item took. Attempts counts provider calls and is zero for a
+// sort that made none (fewer than two items): saying one would claim a call
+// that was never sent.
+func SortResult[T any](items []T, opts SortOptions) (_ types.Result[[]T], runErr error) {
+	start := time.Now()
+	requestID := firstSet(opts.CommonOptions.RequestID, opts.OpOptions.RequestID)
+	correlationID := firstSet(opts.CommonOptions.CorrelationID, opts.OpOptions.CorrelationID)
+
+	ctx, records := withCallRecording(WithOperationName(resolvedContext(opts.CommonOptions, opts.OpOptions), "sort"))
+	// The call is one unit to the installed observers, ending with the kind of
+	// whatever error this returns.
+	ctx, observed := observeOperation(ctx, "sort")
+	defer observed.end(&runErr)
+	useContext(&opts.CommonOptions, &opts.OpOptions, ctx)
+
+	// finish is the one place an envelope leaves this function. A call's own
+	// record names the ids the call went out under, which are the caller's when
+	// it set them and minted ones when it did not, so those are kept; the
+	// caller's own fill the envelopes that no call produced.
+	finish := func(meta types.Meta) types.Meta {
+		if meta.RequestID == "" {
+			meta.RequestID = requestID
+		}
+		if meta.CorrelationID == "" {
+			meta.CorrelationID = correlationID
+		}
+		meta.Elapsed = time.Since(start)
+		return meta
+	}
+
+	// A sort of fewer than two items sends nothing, so no route has a say in what
+	// it delivers. Any other sort is planned and delivered on the route that
+	// serves it, as RunOpBatchResult does: with a schema asked of a route that
+	// does not enforce one, the level is lower than the sort establishes.
+	sends := len(items) > 1
+	planned := sortContract
+	var planning types.OpOptions
+	if sends {
+		common := opts.CommonOptions
+		common.Timeout = 0 // the timeout is applied once, by resolvedContext
+		planning = mergeEmbeddedOpOptions(common, opts.OpOptions)
+		planned = plannedContractLevel(ctx, sortContract, planning)
+	}
+	if floorErr := checkContractFloor(ctx, planned); floorErr != nil {
+		return types.Result[[]T]{Meta: finish(types.Meta{Operation: "sort", RequestedContract: sortContract})}, floorErr
+	}
 
 	value, strategy, err := sortWithStrategy(items, opts)
 
-	meta := envelopeFrom(records.collect(), "sort")
+	meta := records.meta("sort")
 	meta.Strategy = strategy
+	meta.RequestedContract = sortContract
+	if err == nil {
+		meta.DeliveredContract = sortContract
+		if sends {
+			// The route that answered may not be the one that was planned, so
+			// the level is worked out again from it.
+			meta.DeliveredContract = negotiatedContractLevel(sortContract, planning, meta.Provider, meta.Model)
+		}
+	}
+	meta = finish(meta)
 
 	if err != nil {
 		return types.Result[[]T]{Meta: meta}, err
+	}
+	// The contract floor of the caller's policy, on the call or on the client:
+	// an answer delivered below it is an error and not a quieter success. Only
+	// RunOpResult asked; the six other places an envelope is built did not, so
+	// a floor set on a client held for none of the operations a caller is
+	// most likely to use.
+	if policyErr := enforceContractPolicy(ctx, meta.DeliveredContract); policyErr != nil {
+		return types.Result[[]T]{Meta: meta}, policyErr
 	}
 	return types.Result[[]T]{Value: value, Meta: meta}, nil
 }
@@ -568,7 +757,7 @@ func SortResult[T any](items []T, opts SortOptions) (types.Result[[]T], error) {
 func sortWithStrategy[T any](items []T, opts SortOptions) ([]T, string, error) {
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return nil, "", fmt.Errorf("invalid options: %w", err)
+		return nil, "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	if len(items) <= 1 {
@@ -603,8 +792,8 @@ func sortWithStrategy[T any](items []T, opts SortOptions) ([]T, string, error) {
 	}
 
 	steering := strings.Join(instructions, ". ")
-	if opts.CommonOptions.Steering != "" {
-		steering = opts.CommonOptions.Steering + ". " + steering
+	if callerSteering := effectiveSteering(opts.CommonOptions, opts.OpOptions); callerSteering != "" {
+		steering = callerSteering + ". " + steering
 	}
 	opOptions.Steering = steering
 
@@ -627,6 +816,7 @@ func sortWithStrategy[T any](items []T, opts SortOptions) ([]T, string, error) {
 		return nil, "", types.SortError{
 			ItemCount: len(items),
 			Reason:    fmt.Sprintf("failed to marshal items: %v", err),
+			Err:       types.Classified(types.KindInvalidRequest, err),
 		}
 	}
 
@@ -666,8 +856,8 @@ Example:
 	}
 
 	// Parse the sorted ids.
-	var parsed idListResponse
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	parsed, err := readIDList("sort", response)
+	if err != nil {
 		fallback, fallbackErr := sortByScoringFallback(ctx, items, opts, opOptions)
 		if fallbackErr == nil {
 			return fallback, "scoring-fallback", nil
@@ -675,11 +865,7 @@ Example:
 		// No response body in the Reason. Every caller logs this error and the
 		// body is their data reshaped -- the same X-03 that OP-110 removed from
 		// the two Filter errors, surviving here.
-		return nil, "whole-list", types.SortError{
-			ItemCount: len(items),
-			Reason:    fmt.Sprintf("failed to parse sorted ids: %v", err),
-			Err:       err,
-		}
+		return nil, "scoring-fallback", sortFallbackFailed(len(items), "failed to parse sorted ids", err, fallbackErr)
 	}
 
 	// A sort's answer is a permutation of the offered ids, checked with the
@@ -692,14 +878,27 @@ Example:
 		if fallbackErr == nil {
 			return fallback, "scoring-fallback", nil
 		}
-		return nil, "whole-list", types.SortError{
-			ItemCount: len(items),
-			Reason:    err.Error(),
-			Err:       err,
-		}
+		return nil, "scoring-fallback", sortFallbackFailed(len(items), err.Error(), err, fallbackErr)
 	}
 
 	return result, "whole-list", nil
+}
+
+// sortFallbackFailed is the error for a sort whose whole-list answer was
+// refused and whose scoring fallback then failed too.
+//
+// It carries both causes, the fallback's first. The caller used to be given
+// only the refused answer, so a call that ended because its context was
+// cancelled or its budget ran out was reported as a malformed answer:
+// errors.Is(err, context.Canceled) was false, the budget error could not be
+// reached, and a retry rule keyed on the kind saw the wrong one. The strategy
+// is the fallback's, since scoring calls were made.
+func sortFallbackFailed(itemCount int, reason string, refused, fallbackErr error) error {
+	return types.SortError{
+		ItemCount: itemCount,
+		Reason:    reason + "; the scoring fallback failed as well",
+		Err:       errors.Join(fallbackErr, refused),
+	}
 }
 
 // sortByScoringFallback scores each item independently and sorts by score in
@@ -728,7 +927,7 @@ func sortByScoringFallback[T any](ctx context.Context, items []T, opts SortOptio
 			item := chunk[0]
 			itemJSON, err := json.Marshal(item)
 			if err != nil {
-				return 0, fmt.Errorf("failed to marshal item: %w", err)
+				return 0, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal item: %w", err))
 			}
 
 			systemPrompt := `You are a sorting scorer.
@@ -756,11 +955,19 @@ Rules:
 				return 0, err
 			}
 
+			// The score has to be there and may not be null, which the reader
+			// holds a plain number to, so that a score left out is told from a
+			// zero. It is held to the 0 to 1 scale the prompt states: a null used
+			// to sort the item last as a zero, and 12 or -3 was used as it came,
+			// re-ordering the caller's data with no signal.
 			var parsed struct {
 				RankScore float64 `json:"rank_score"`
 			}
-			if err := ParseJSONStrict(response, &parsed); err != nil {
+			if err := decodeAnswer("sort", response, &parsed); err != nil {
 				return 0, err
+			}
+			if scaleErr := onScale("sort", "the rank score", parsed.RankScore); scaleErr != nil {
+				return 0, scaleErr
 			}
 			return parsed.RankScore, nil
 		})

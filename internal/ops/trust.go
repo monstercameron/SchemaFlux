@@ -4,6 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // TC-001. Every prompt segment this library sends has a role -- system or
@@ -109,7 +113,7 @@ func BuildSystemPrompt(segments ...PromptSegment) (string, error) {
 	var kept []string
 	for i, seg := range segments {
 		if !seg.Trust.Trusted() {
-			return "", fmt.Errorf("%w: segment %d has trust level %q", ErrUntrustedInSystemPrompt, i, seg.Trust)
+			return "", types.Classified(types.KindInvariantViolation, fmt.Errorf("%w: segment %d has trust level %q", ErrUntrustedInSystemPrompt, i, seg.Trust))
 		}
 		text := strings.TrimSpace(seg.Content)
 		if text != "" {
@@ -179,13 +183,114 @@ var ErrTrustBoundaryViolated = errors.New("ops: untrusted content detected insid
 // caller's per-call text into the block every provider's cache, and every
 // log line that prints a system prompt's length or hash, treats as fixed
 // policy.
+//
+// What it detects is the steering being carried in as an instruction block,
+// by the means applySteering and the fixed prompts use. It refuses when
+//
+//   - the system prompt holds one of the untrusted-content boundary markers,
+//     which only DelimitUntrusted writes and only the user message may hold;
+//   - the system prompt holds the "Additional instructions:" label that
+//     applySteering puts in front of steering, followed by the steering; or
+//   - steering of at least minSteeringBlockRunes runes stands in the system
+//     prompt on its own, that is as a line, a run of lines, or a sentence or a
+//     run of sentences of the prompt that is exactly the steering.
+//
+// What it cannot detect: steering that was rewritten, or run into the middle
+// of one of the library's own sentences, and short steering that is not
+// preceded by the label. Steering is free text, so a plain word or phrase of
+// it can also be a word or phrase of a fixed prompt ("concise" occurs in the
+// summarization prompt); the check therefore never refuses on text merely
+// being contained in the system prompt. It used to, and a Summarize call
+// steered with "concise" was refused with a message saying that steering had
+// been folded into the system prompt, which it had not.
 func verifyTrustBoundary(systemPrompt, steering string) error {
 	steering = strings.TrimSpace(steering)
 	if steering == "" {
 		return nil
 	}
-	if strings.Contains(systemPrompt, steering) {
-		return fmt.Errorf("%w: caller-supplied steering appears in the system prompt", ErrTrustBoundaryViolated)
+
+	violation := func(what string) error {
+		return types.Classified(types.KindInvariantViolation, fmt.Errorf("%w: %s", ErrTrustBoundaryViolated, what))
+	}
+
+	if strings.Contains(systemPrompt, untrustedOpen) || strings.Contains(systemPrompt, untrustedClose) {
+		return violation("an untrusted-content boundary marker appears in the system prompt")
+	}
+	if labelFollowedBy(systemPrompt, "Additional instructions:", steering) {
+		return violation("the steering follows the additional-instructions label in the system prompt")
+	}
+	if utf8.RuneCountInString(steering) >= minSteeringBlockRunes && containsStandalone(systemPrompt, steering) {
+		return violation("caller-supplied steering appears in the system prompt as text of its own")
 	}
 	return nil
+}
+
+// minSteeringBlockRunes is the shortest steering that is refused for standing
+// in the system prompt on its own. Below it a line or a sentence of steering is
+// as likely to be one the library wrote as one it folded in.
+const minSteeringBlockRunes = 12
+
+// labelFollowedBy reports whether label occurs in text with only whitespace
+// between it and the start of what.
+func labelFollowedBy(text, label, what string) bool {
+	rest := text
+	for {
+		at := strings.Index(rest, label)
+		if at < 0 {
+			return false
+		}
+		rest = rest[at+len(label):]
+		if strings.HasPrefix(strings.TrimLeftFunc(rest, unicode.IsSpace), what) {
+			return true
+		}
+	}
+}
+
+// containsStandalone reports whether block occurs in text as a line, a run of
+// lines, a sentence or a run of sentences: it starts at the start of the text,
+// of a line, or of a sentence, and ends at the end of the text, of a line, or of
+// a sentence. A block that is only part of a sentence does not count.
+func containsStandalone(text, block string) bool {
+	offset := 0
+	for {
+		at := strings.Index(text[offset:], block)
+		if at < 0 {
+			return false
+		}
+		start := offset + at
+		end := start + len(block)
+		if startsStandalone(text, start) && endsStandalone(text, block, end) {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+// startsStandalone reports whether a block beginning at start begins a line,
+// with nothing but indentation before it, or a sentence.
+func startsStandalone(text string, start int) bool {
+	line := start
+	for line > 0 && (text[line-1] == ' ' || text[line-1] == '\t') {
+		line--
+	}
+	if line == 0 || text[line-1] == '\n' {
+		return true
+	}
+	// After a sentence terminator and the space that follows it.
+	return start >= 2 && text[start-1] == ' ' && strings.ContainsRune(".!?", rune(text[start-2]))
+}
+
+// endsStandalone reports whether a block that ends at end ends a line, with
+// nothing but trailing space after it, or a sentence. A block that does not end
+// in a sentence terminator ends a sentence only at the end of a line.
+func endsStandalone(text, block string, end int) bool {
+	line := end
+	for line < len(text) && (text[line] == ' ' || text[line] == '\t' || text[line] == '\r') {
+		line++
+	}
+	if line == len(text) || text[line] == '\n' {
+		return true
+	}
+	last := block[len(block)-1]
+	return text[end] == ' ' && strings.ContainsRune(".!?", rune(last))
 }

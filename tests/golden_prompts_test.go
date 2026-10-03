@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ import (
 //
 // Regenerate deliberately:
 //
-//	SCHEMAFLUX_UPDATE_PROMPTS=1 go test . -run TestGoldenPrompts
+//	SCHEMAFLUX_UPDATE_PROMPTS=1 go test ./tests/ -run TestGoldenPrompts
 const goldenPromptsPath = "../testdata/golden_prompts.txt"
 
 // The inputs are fixed and boring on purpose: the subject is the prompt, and a
@@ -141,7 +142,7 @@ func TestGoldenPrompts(t *testing.T) {
 	current := strings.Join(recorded, "\n")
 
 	if os.Getenv("SCHEMAFLUX_UPDATE_PROMPTS") == "1" {
-		if err := os.MkdirAll("testdata", 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(goldenPromptsPath), 0o755); err != nil {
 			t.Fatalf("creating testdata: %v", err)
 		}
 		if err := os.WriteFile(goldenPromptsPath, []byte(current), 0o644); err != nil {
@@ -160,7 +161,7 @@ func TestGoldenPrompts(t *testing.T) {
 		t.Errorf("a prompt changed.\n\n%s\n\n"+
 			"A prompt is behaviour: this changes what every caller gets back, with no Go API\n"+
 			"change to show for it. If it is intended, note it in TODOS.md and regenerate:\n"+
-			"    SCHEMAFLUX_UPDATE_PROMPTS=1 go test . -run TestGoldenPrompts",
+			"    SCHEMAFLUX_UPDATE_PROMPTS=1 go test ./tests/ -run TestGoldenPrompts",
 			firstDifference(string(raw), current))
 	}
 }

@@ -2,9 +2,12 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // ModelConformanceChecks implements CP-003's checks that can only be
@@ -25,7 +28,7 @@ func ModelConformanceChecks() []ConformanceCheck {
 			Description: "the route's usage block reports non-zero prompt and completion token counts",
 			Run:         checkUsageReporting},
 		{ID: "unicode_roundtrip", Category: CategoryModel,
-			Description: "a prompt containing multi-byte scripts and emoji comes back as valid UTF-8 containing an answer",
+			Description: "a prompt containing multi-byte scripts and emoji is repeated back intact, as valid UTF-8",
 			Run:         checkUnicodeRoundtrip},
 		{ID: "large_payload", Category: CategoryModel,
 			Description: "a large prompt is accepted and answered rather than rejected or silently truncated",
@@ -70,13 +73,41 @@ func checkSchemaKeywordSupport(ctx context.Context, live *LiveTarget) Conformanc
 		SchemaName:     "conformance_greeting",
 	})
 	if err != nil {
-		return ConformanceOutcome{Passed: true, Supported: false,
-			Detail: fmt.Sprintf("route rejected the schema-constrained request: %v", classifyDetail(err))}
+		// Only the route saying the request was wrong is evidence that it does not
+		// take the schema. A throttle, an outage, a dropped connection, an expired
+		// key or a cancelled context is a request that was not answered, and what
+		// the route does with a schema is not known from it.
+		if Classify(err) == types.KindInvalidRequest {
+			return ConformanceOutcome{Passed: true, Supported: false,
+				Detail: fmt.Sprintf("route rejected the schema-constrained request: %v", classifyDetail(err))}
+		}
+		return failedOutcome(fmt.Sprintf("could not be determined: the request failed (%v)", classifyDetail(err)))
 	}
 	if strings.TrimSpace(resp.Content) == "" {
 		return ConformanceOutcome{Passed: true, Supported: false, Detail: "schema-constrained request returned empty content"}
 	}
-	return ConformanceOutcome{Passed: true, Supported: true, Detail: "schema-constrained request returned content"}
+
+	// Supported is the route having been held to the schema: the answer decodes to
+	// the one shape the schema allows, and carries the one value its enum allows.
+	// Any non-empty reply used to count, so a route that ignored the schema and
+	// answered in prose was published as one that enforces it.
+	if !conformsToGreetingSchema(resp.Content) {
+		return ConformanceOutcome{Passed: true, Supported: false,
+			Detail: "schema-constrained request returned content that does not conform to the schema"}
+	}
+	return ConformanceOutcome{Passed: true, Supported: true, Detail: "schema-constrained request returned content that conforms to the schema"}
+}
+
+// conformsToGreetingSchema reports whether content is a JSON object with exactly
+// the one property the conformance schema declares, holding the one value its
+// enum allows.
+func conformsToGreetingSchema(content string) bool {
+	var answer map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &answer); err != nil {
+		return false
+	}
+	greeting, isString := answer["greeting"].(string)
+	return len(answer) == 1 && isString && greeting == "hello"
 }
 
 func checkUsageReporting(ctx context.Context, live *LiveTarget) ConformanceOutcome {
@@ -124,7 +155,13 @@ func checkUnicodeRoundtrip(ctx context.Context, live *LiveTarget) ConformanceOut
 	if strings.TrimSpace(resp.Content) == "" {
 		return failedOutcome("response content is empty")
 	}
-	return passedOutcome(fmt.Sprintf("received %d valid UTF-8 bytes in response to a multi-script prompt", len(resp.Content)))
+	// Content decoded from JSON is always valid UTF-8, so validity alone says
+	// nothing: any non-empty answer passed it. What is checked is that the text
+	// that was asked to be repeated came back whole.
+	if !strings.Contains(resp.Content, probe) {
+		return failedOutcome("the multi-script text did not come back intact")
+	}
+	return passedOutcome(fmt.Sprintf("the multi-script text came back intact in %d valid UTF-8 bytes", len(resp.Content)))
 }
 
 func checkLargePayload(ctx context.Context, live *LiveTarget) ConformanceOutcome {

@@ -73,6 +73,32 @@ type (
 	// CompletionResponse is the low-level provider response shape.
 	CompletionResponse = llm.CompletionResponse
 
+	// TypedDecision is what an operation is deciding, typed: the subject and the
+	// questions about it. The bounded operations (Is, Which, WhichOrNone, Rate,
+	// Assess, Whether, RouteBy, Classify, Choose) fill CompletionRequest.Decision
+	// with it, beside the prompts. A provider for a decision API reads it and
+	// answers in CompletionResponse.DecisionAnswers; a generating provider does
+	// not look at it. These names are exported so that such a provider can be
+	// written outside this module: implementing Provider and reading the
+	// decision off the request is all an adapter needs. (Decision is the result
+	// of the Decide operation, which is why this is not called that.)
+	TypedDecision = llm.Decision
+
+	// DecisionQuestion is one question of a TypedDecision.
+	DecisionQuestion = llm.DecisionQuestion
+
+	// DecisionKind is the kind of answer a DecisionQuestion takes.
+	DecisionKind = llm.DecisionKind
+
+	// DecisionAnswer is a decision provider's answer to one question, with the
+	// probability the model reported for it, which is the model's own claim.
+	DecisionAnswer = llm.DecisionAnswer
+
+	// DecisionLimits is what a decision provider declares it can take, with a
+	// DecisionLimits method. Its Check refuses, with the classified error, a
+	// request that carries no decision and a decision past the limits.
+	DecisionLimits = llm.DecisionLimits
+
 	// TokenUsage is the token accounting a provider reports. It was not
 	// exported, so a caller implementing Provider — or a test asserting on
 	// cost — could not name the type they were required to return.
@@ -305,6 +331,30 @@ func SortResult[T any](items []T, opts SortOptions) (Result[[]T], error) {
 	return ops.SortResult(items, opts)
 }
 
+// GenerateResult runs Generate and returns the envelope alongside the value:
+// what the call cost, how many attempts it took, how long it waited, and the
+// request and correlation ids it carried, which are reported on a refusal that
+// never reached a provider as well as on an answer. Meta.DeliveredContract is
+// schema-constrained for a structured type and prompt-only for a string, which
+// is the model's text as it came.
+func GenerateResult[T any](prompt string, opts GenerateOptions) (Result[T], error) {
+	return ops.GenerateResult[T](prompt, opts)
+}
+
+// RedactLLMWithMeta runs RedactLLM and returns the envelope alongside the
+// redaction. It is not RedactLLMResult, which is the name of the redaction's own
+// type. Like RedactLLM it takes its context from opts.Context.
+func RedactLLMWithMeta(text string, opts RedactLLMOptions) (Result[RedactLLMResult], error) {
+	return ops.RedactLLMWithMeta(opts.Context, text, opts)
+}
+
+// AuditWithMeta runs AuditWithModel and returns the envelope alongside the
+// judgment, so an application can see what an audit cost and how long it
+// waited. It is not AuditResult, which is the name of the audit's own type.
+func AuditWithMeta[T any](data T, opts ...AuditOptions) (Result[JudgmentResult[T]], error) {
+	return ops.AuditWithMeta(data, opts...)
+}
+
 // The failure taxonomy.
 //
 // Branch on these instead of matching substrings against an error message: the
@@ -393,6 +443,56 @@ const (
 
 	// Quick uses the fastest available model.
 	Quick = types.Quick
+)
+
+// Effort is how much the model reasons before it answers, set per call with
+// OpOptions.Effort or a WithEffort method.
+//
+// It is the largest single lever on latency. On gpt-6-luna, with reasoning off,
+// judgments scored as they do at the default and ran about a third faster, and
+// arithmetic failed nearly half the time. So EffortNone suits a choice, a match
+// or a yes or no, and anything that computes wants EffortLow or more.
+//
+// Classify, Similar and Deduplicate prefer EffortNone when a caller sets
+// nothing, under two conditions. The model is gpt-6-luna, the one it was
+// measured on. And nothing supplied to the call mentions a number: no digit or
+// other numeral, and no English word for a quantity, in the input or in the
+// categories, descriptions, examples, aspects or steering. A number written
+// out in another language is not seen, so a caller with such input sets the
+// effort. Every other operation, and these three on any other model, leave
+// the effort to the provider.
+//
+// A value the model does not take is refused before the request is sent.
+type Effort = types.Effort
+
+// Timing says where the time of a call to a model went: the wait for a slot in
+// the client's scheduler, the connection, the wait for the provider, and the
+// reading of the answer. Result.Meta.Timing carries it for the operations that
+// return a Result, and CompletionResponse.Timing for one call to a provider.
+type Timing = types.Timing
+
+const (
+	// EffortDefault leaves the effort to the operation and the provider.
+	EffortDefault = types.EffortDefault
+	// EffortNone turns reasoning off: fastest, and not for arithmetic.
+	EffortNone    = types.EffortNone
+	EffortMinimal = types.EffortMinimal
+	EffortLow     = types.EffortLow
+	EffortMedium  = types.EffortMedium
+	EffortHigh    = types.EffortHigh
+	EffortXHigh   = types.EffortXHigh
+	EffortMax     = types.EffortMax
+)
+
+// The kinds of question a Decision asks, which a provider for a decision API
+// switches on.
+const (
+	// DecisionYesNo is answered yes or no.
+	DecisionYesNo = llm.DecisionYesNo
+	// DecisionChoice is answered with one of the question's Options.
+	DecisionChoice = llm.DecisionChoice
+	// DecisionScale is answered with a whole number from Low to High.
+	DecisionScale = llm.DecisionScale
 )
 
 // Log level constants.
@@ -546,7 +646,7 @@ func Choose[T any](options []T, opts ChooseOptions) (T, error) {
 //
 // Example:
 //
-//	filtered, err := schemaflux.Filter(items, schemaflux.NewFilterOptions().WithCondition("completed tasks"))
+//	filtered, err := schemaflux.Filter(items, schemaflux.NewFilterOptions().WithCriteria("completed tasks"))
 func Filter[T any](items []T, opts FilterOptions) ([]T, error) {
 	return ops.Filter(items, opts)
 }
@@ -700,7 +800,9 @@ func Rewrite(input string, opts RewriteOptions) (string, error) {
 //
 // Example:
 //
-//	result, err := schemaflux.RewriteWithMetadata(text, schemaflux.NewRewriteOptions().WithTargetTone("professional"))
+//	opts := schemaflux.NewRewriteOptions()
+//	opts.TargetTone = "professional"
+//	result, err := schemaflux.RewriteWithMetadata(text, opts)
 //	fmt.Printf("Rewritten: %s\nChanges: %v\nTone: %s\n",
 //	    result.Text, result.ChangesMade, result.ToneAchieved)
 //
@@ -766,7 +868,9 @@ func TranslateResult(input string, opts TranslateOptions) (Result[Translation], 
 //
 // Example:
 //
-//	expanded, err := schemaflux.Expand(briefText, schemaflux.NewExpandOptions().WithTargetLength(500))
+//	opts := schemaflux.NewExpandOptions()
+//	opts.ExpansionFactor = 3
+//	expanded, err := schemaflux.Expand(briefText, opts)
 func Expand(input string, opts ExpandOptions) (string, error) {
 	return ops.Expand(input, opts)
 }
@@ -841,8 +945,18 @@ var NewRedactLLMOptions = ops.NewRedactLLMOptions
 //	        WithShowLast(2))
 //	// result.Text = "Contact jo**********om for support"
 //	// result.Spans = [{Start: 8, End: 22, Category: "email", Original: "john@email.com"}]
+//
+// Span offsets are in characters, not bytes: the span is []rune(text)[Start:End].
+// On any error the result carries no text.
+//
+// The context is opts.Context. This function, Complete and CompleteField used to
+// pass context.Background() instead, so a caller's cancellation and deadline
+// reached nothing, and so did the client: Client.Context puts the client's
+// provider on the context, and without it the call went to whichever client had
+// been built last (LX-061). A nil context still means "no deadline of the
+// caller's", and the operation applies its own default.
 func RedactLLM(text string, opts RedactLLMOptions) (RedactLLMResult, error) {
-	return ops.RedactLLM(context.Background(), text, opts)
+	return ops.RedactLLM(opts.Context, text, opts)
 }
 
 // Re-export Complete types and functions
@@ -869,7 +983,7 @@ type CompleteFieldOptions = ops.CompleteFieldOptions
 //
 //	result, err := schemaflux.Complete(partialText, schemaflux.NewCompleteOptions())
 func Complete(partialText string, opts CompleteOptions) (CompleteResult, error) {
-	return ops.Complete(context.Background(), partialText, opts)
+	return ops.Complete(opts.Context, partialText, opts)
 }
 
 // CompleteField completes a specific string field in a struct and returns a new copy
@@ -885,7 +999,7 @@ func Complete(partialText string, opts CompleteOptions) (CompleteResult, error) 
 //	result, err := schemaflux.CompleteField[BlogPost](post, schemaflux.NewCompleteFieldOptions("Body"))
 //	// result.Data.Body now contains the completed text
 func CompleteField[T any](data T, opts CompleteFieldOptions) (CompleteFieldResult[T], error) {
-	return ops.CompleteField[T](context.Background(), data, opts)
+	return ops.CompleteField[T](opts.Context, data, opts)
 }
 
 // Validate checks if data meets specified validation rules with rich result.
@@ -908,14 +1022,8 @@ func Validate[T any](data T, opts ValidateOptions) (ValidateResult[T], error) {
 	return ops.Validate(data, opts)
 }
 
-// ValidateLegacy is the legacy validation function for backward compatibility.
-//
-// Example:
-//
-//	result, err := schemaflux.ValidateLegacy(person, "age must be 18-100")
-//
 // DeduplicateResult holds the unique items, the groups that collapsed into
-// them, and how many were removed.
+// them, how many were removed, and where each sat in the input.
 type DeduplicateResult[T any] = ops.DeduplicateResult[T]
 
 // Deduplicate removes semantically duplicate items, keeping the caller's own
@@ -927,9 +1035,18 @@ type DeduplicateResult[T any] = ops.DeduplicateResult[T]
 // undocumented one: the reader concludes the library is broken rather than that
 // the doc is (A-10).
 //
-// The threshold is a similarity floor between 0 and 1. Note what this costs: it
-// asks the model about pairs, so it is O(n^2) calls in the worst case. PS-006
-// tracks doing it with embeddings, which is the right shape for this problem.
+// The threshold is a floor between 0 and 1 on a fixed scale, where 1.0 is the
+// same item, 0.9 the same item written differently, and 0.7 the same item with
+// one detail in disagreement. The model reports how close each match is and the
+// threshold is applied in Go, so a value outside 0 to 1 is refused.
+//
+// It is one model call for the whole list, so the list has to fit in the
+// model's context. PS-006 tracks doing it with embeddings, which is the right
+// shape for a long list.
+//
+// The result maps back to the input: UniqueIndices and DuplicateIndices give
+// positions in items. An answer that cannot be read, or that names an item the
+// list does not have, is an error and never "no duplicates" (LX-021).
 func Deduplicate[T any](items []T, threshold float64, opts ...OpOptions) (DeduplicateResult[T], error) {
 	return ops.Deduplicate(items, threshold, opts...)
 }
@@ -1017,10 +1134,16 @@ func FormatWithMetadata(data any, template string, opts ...OpOptions) (FormatRes
 // then by asking the model. situation is the prompt data describing the
 // circumstances; ctx governs cancellation.
 //
-// Without a fallback, a provider failure or an unusable answer is an error.
-// Pass NewDecideOptions().WithFallback(i) to select a branch instead, which
-// sets Fallback on the result so the caller can tell a real decision from a
-// default one.
+// Without a fallback, a provider failure or an unusable answer is an error,
+// and an answer that selects nothing is unusable: it is never read as the
+// first branch. Pass NewDecideOptions().WithFallback(i) to select a branch
+// instead, which sets Fallback on the result so the caller can tell a real
+// decision from a default one. The fallback covers a provider that is
+// unavailable, rate limited or timed out, and an answer that could not be
+// used. It never covers a budget that is spent, a data policy that refuses
+// the call, a cancelled context or a configuration error: those are returned.
+// A branch taken because its own Condition held sets ByCondition, and carries
+// no model confidence, since no model was asked.
 //
 // Example:
 //
@@ -1124,7 +1247,7 @@ func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)
 //
 // Example:
 //
-//	result, err := schemaflux.Annotate(document, schemaflux.NewAnnotateOptions().WithTypes([]string{"entities", "sentiment"}))
+//	result, err := schemaflux.Annotate(document, schemaflux.NewAnnotateOptions().WithAnnotationTypes([]string{"entities", "sentiment"}))
 func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 	return ops.Annotate(input, opts)
 }
@@ -1133,7 +1256,7 @@ func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflux.Cluster(documents, schemaflux.NewClusterOptions().WithMaxClusters(5))
+//	result, err := schemaflux.Cluster(documents, schemaflux.NewClusterOptions().WithNumClusters(5))
 func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 	return ops.Cluster(items, opts)
 }
@@ -1151,7 +1274,7 @@ func Rank[T any](items []T, opts RankOptions) (RankResult[T], error) {
 //
 // Example:
 //
-//	result, err := schemaflux.Compress(document, schemaflux.NewCompressOptions().WithRatio(0.3))
+//	result, err := schemaflux.Compress(document, schemaflux.NewCompressOptions().WithCompressionRatio(0.3))
 func Compress[T any](input T, opts CompressOptions) (CompressResult[T], error) {
 	return ops.Compress(input, opts)
 }
@@ -1160,7 +1283,7 @@ func Compress[T any](input T, opts CompressOptions) (CompressResult[T], error) {
 //
 // Example:
 //
-//	compressed, err := schemaflux.CompressText("long text here...", schemaflux.NewCompressOptions().WithRatio(0.5))
+//	compressed, err := schemaflux.CompressText("long text here...", schemaflux.NewCompressOptions().WithCompressionRatio(0.5))
 func CompressText(input string, opts CompressOptions) (string, error) {
 	return ops.CompressText(input, opts)
 }
@@ -1264,7 +1387,7 @@ func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 //
 // Example:
 //
-//	result, err := schemaflux.Synthesize[Summary](articles, schemaflux.NewSynthesizeOptions().WithPerspective("balanced"))
+//	result, err := schemaflux.Synthesize[Summary](articles, schemaflux.NewSynthesizeOptions().WithStrategy("integrate"))
 func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[T], error) {
 	return ops.Synthesize[T](sources, opts)
 }
@@ -1278,11 +1401,13 @@ func Predict[T any](historicalData any, opts PredictOptions) (PredictResult[T], 
 	return ops.Predict[T](historicalData, opts)
 }
 
-// Verify checks facts, logic, and consistency in content.
+// Verify checks facts, logic, and consistency in content. The model reports
+// what it finds, and OverallVerdict is worked out from that by this library:
+// "verified", "false", "mixed" or "unverifiable".
 //
 // Example:
 //
-//	result, err := schemaflux.Verify("The Earth is flat.", schemaflux.NewVerifyOptions().WithMode("factual"))
+//	result, err := schemaflux.Verify("The Earth is flat.", schemaflux.NewVerifyOptions().WithCheckLogic(false))
 //
 // Deprecated: use VerifyWithModel, whose name says that this review is
 // model-assisted rather than a deterministic check, and which returns the
@@ -1291,13 +1416,15 @@ func Verify(input string, opts VerifyOptions) (VerifyResult, error) {
 	return ops.Verify(input, opts)
 }
 
-// VerifyClaim checks a specific claim.
+// VerifyClaim checks a specific claim. When the model finds several claims in
+// it, the verdict is the worst of them. When the fact check is on and the
+// model assesses no claim at all, it is an error and not a verdict.
 //
 // Example:
 //
 //	result, err := schemaflux.VerifyClaim("GDP grew 5%", schemaflux.NewVerifyOptions())
 //
-// Deprecated: use VerifyWithModel, whose name says the verdict is a model's
+// Deprecated: use VerifyWithModel, whose name says the findings are a model's
 // review rather than a deterministic check, and which returns the shared
 // JudgmentResult. See OP-206.
 func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
@@ -1437,16 +1564,33 @@ func Interpolate[T any](items []T, opts ...InterpolateOptions) (InterpolateResul
 	return ops.Interpolate[T](items, opts...)
 }
 
-// Arbitrate makes rule-based decisions with full audit trail.
+// Arbitrate picks one of several options by rules, and returns how every
+// option did on every rule.
+//
+// The model evaluates; this library decides. The model says, for each option
+// and each rule, whether the rule is met and how well. The winner is worked
+// out here: the caller's Weights are applied, an option that fails a rule is
+// disqualified when RequireAllRules is set, the highest total wins, and a tie
+// is broken by Tiebreaker. So the weights are exact, and the same evaluations
+// always give the same winner (unless the tiebreaker is "random").
+//
+// When RequireAllRules is set and no option meets every rule, there is no
+// winner and the error is ErrReviewRequired. An answer that leaves out an
+// option or a rule is an error, never a default. With one option and
+// RequireAllRules unset, that option wins without a model call, and the
+// result carries no scores, since none were given.
 //
 // Type parameter T specifies the type of options to choose from.
 //
 // Example:
 //
-//	result, err := schemaflux.Arbitrate(candidates)
 //	result, err := schemaflux.Arbitrate(candidates, schemaflux.ArbitrateOptions{
-//	    Rules: []string{"must have 3+ years experience", "prefer local candidates"},
+//	    Rules:   []string{"has three or more years of experience", "is local"},
+//	    Weights: []float64{2, 1},
 //	})
+//	if errors.Is(err, schemaflux.ErrReviewRequired) {
+//	    // every candidate failed a required rule
+//	}
 func Arbitrate[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResult[T], error) {
 	return ops.Arbitrate[T](options, opts...)
 }
@@ -1517,6 +1661,218 @@ func Assemble[T any](parts []any, opts ...ComposeOptions) (ComposeResult[T], err
 //	})
 func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) {
 	return ops.Pivot[T, U](input, opts...)
+}
+
+// Judged is an answer together with the model's own confidence in it, which is
+// a claim and not a measurement. The Result forms of the decisions return it.
+type Judged[T any] = ops.Judged[T]
+
+// DecisionRecord is one decision, after it was made: what was asked and what was
+// read, handed to the function registered with Client.WithDecisionObserver. It
+// holds the caller's questions and the model's answers, and goes nowhere else.
+type DecisionRecord = ops.DecisionRecord
+
+// AnsweredQuestion is one question of a DecisionRecord and the answer read for
+// it: a bool, the label chosen, or the level, and nil when the decision failed.
+type AnsweredQuestion = ops.AnsweredQuestion
+
+// Picked is the answer of WhichOrNoneResult: the label chosen and whether one
+// was, which is false when none of the labels fits.
+type Picked = ops.Picked
+
+// Is answers a yes-or-no question about a subject. The subject is any value
+// that can be written as JSON; text is the usual one.
+//
+//	spam, err := schemaflux.Is(ctx, message, "Is this message spam?")
+//
+// An answer that is not a plain true or false is an error, never a "no".
+func Is(ctx context.Context, subject any, question string, opts ...OpOptions) (bool, error) {
+	return ops.Is(ctx, subject, question, opts...)
+}
+
+// IsResult is Is with the model's confidence and the execution envelope.
+func IsResult(ctx context.Context, subject any, question string, opts ...OpOptions) (Result[Judged[bool]], error) {
+	return ops.IsResult(ctx, subject, question, opts...)
+}
+
+// Which answers a question by choosing one of the labels, and returns that
+// label as it was given.
+//
+//	team, err := schemaflux.Which(ctx, message, "Which team should handle this?",
+//	    []string{"billing", "technical", "shipping"})
+//
+// The answer is always one of the labels: an answer that names none of them is
+// an error, never the first label.
+func Which(ctx context.Context, subject any, question string, labels []string, opts ...OpOptions) (string, error) {
+	return ops.Which(ctx, subject, question, labels, opts...)
+}
+
+// WhichResult is Which with the model's confidence and the execution envelope.
+func WhichResult(ctx context.Context, subject any, question string, labels []string, opts ...OpOptions) (Result[Judged[string]], error) {
+	return ops.WhichResult(ctx, subject, question, labels, opts...)
+}
+
+// WhichOrNone is Which with "none of these" as an answer the model can give.
+// It returns the label and true, or "" and false. With no labels to choose
+// from the answer is none, and nothing is asked.
+func WhichOrNone(ctx context.Context, subject any, question string, labels []string, opts ...OpOptions) (string, bool, error) {
+	return ops.WhichOrNone(ctx, subject, question, labels, opts...)
+}
+
+// WhichOrNoneResult is WhichOrNone with the model's confidence and the
+// execution envelope: the answer is a Picked, the label and whether one was
+// found.
+func WhichOrNoneResult(ctx context.Context, subject any, question string, labels []string, opts ...OpOptions) (Result[Judged[Picked]], error) {
+	return ops.WhichOrNoneResult(ctx, subject, question, labels, opts...)
+}
+
+// Rate answers a question with a whole number on a scale, both ends included.
+//
+//	urgency, err := schemaflux.Rate(ctx, message, "How urgent is this?", 1, 5)
+//
+// An answer off the scale is an error, never the nearest end of it.
+func Rate(ctx context.Context, subject any, question string, low, high int, opts ...OpOptions) (int, error) {
+	return ops.Rate(ctx, subject, question, low, high, opts...)
+}
+
+// RateResult is Rate with the model's confidence and the execution envelope.
+func RateResult(ctx context.Context, subject any, question string, low, high int, opts ...OpOptions) (Result[Judged[int]], error) {
+	return ops.RateResult(ctx, subject, question, low, high, opts...)
+}
+
+// Assess answers several questions about one subject in one call, and returns
+// them as a struct. Each exported field of T asks a question in its `ask` tag,
+// and the field's type says what kind of answer it takes: a bool is a yes or
+// no; a string with a `oneof` tag chooses among the labels in it, separated by
+// commas; an integer with a `scale` tag, "1-5", is a rating.
+//
+//	type Triage struct {
+//	    Spam    bool   `ask:"Is this message spam?"`
+//	    Team    string `ask:"Which team should handle it?" oneof:"billing,technical,shipping"`
+//	    Urgency int    `ask:"How urgent is it?" scale:"1-5"`
+//	}
+//	triage, err := schemaflux.Assess[Triage](ctx, message)
+//
+// It is one call to the provider where Is, Which and Rate would be three, so a
+// program that needs several judgments of the same subject waits once. Every
+// question has to be answered: an answer that leaves one out is an error and
+// no field is filled.
+func Assess[T any](ctx context.Context, subject any, opts ...OpOptions) (T, error) {
+	return ops.Assess[T](ctx, subject, opts...)
+}
+
+// AssessResult is Assess with the model's confidence in its answers taken
+// together and the execution envelope.
+func AssessResult[T any](ctx context.Context, subject any, opts ...OpOptions) (Result[Judged[T]], error) {
+	return ops.AssessResult[T](ctx, subject, opts...)
+}
+
+// Branch runs then when yes is true and otherwise when it is not. It is an
+// if-else whose condition was decided somewhere else, by Is or as a field of
+// what Assess returned. A nil step returns the zero value.
+func Branch[T any](ctx context.Context, yes bool, then, otherwise Step[T]) (T, error) {
+	return ops.Branch(ctx, yes, then, otherwise)
+}
+
+// Whether asks a yes-or-no question about a subject and runs then when the
+// answer is yes and otherwise when it is no. When the question cannot be
+// answered neither runs: a failure is never read as a no.
+//
+//	reply, err := schemaflux.Whether(ctx, message, "Is this message spam?", discard, handle)
+func Whether[T any](ctx context.Context, subject any, question string, then, otherwise Step[T], opts ...OpOptions) (T, error) {
+	return ops.Whether(ctx, subject, question, then, otherwise, opts...)
+}
+
+// Route is one way a program can go: a label, and the step that is run when
+// the label is the one chosen.
+type Route[T any] = ops.Route[T]
+
+// To builds a Route.
+func To[T any](label string, run Step[T]) Route[T] {
+	return ops.To(label, run)
+}
+
+// Select runs the route whose label is the one given. It is a switch whose
+// value was decided somewhere else, by Which or as a field of what Assess
+// returned. A label that is none of the routes' is an error.
+func Select[T any](ctx context.Context, label string, routes ...Route[T]) (T, error) {
+	return ops.Select(ctx, label, routes...)
+}
+
+// RouteBy asks which of the routes' labels answers a question about a subject
+// and runs that route. When the question cannot be answered no route runs: a
+// failure is never read as the first route.
+//
+//	reply, err := schemaflux.RouteBy(ctx, message, "Which team should handle this?",
+//	    []schemaflux.Route[Reply]{
+//	        schemaflux.To("billing", handleBilling),
+//	        schemaflux.To("technical", handleTechnical),
+//	    })
+func RouteBy[T any](ctx context.Context, subject any, question string, routes []Route[T], opts ...OpOptions) (T, error) {
+	return ops.RouteBy(ctx, subject, question, routes, opts...)
+}
+
+// Gather runs steps that do not depend on each other at once and returns their
+// results in the order the steps were given: a program that needs three
+// answers waits as long as the slowest takes, where one after another it waits
+// for all three. The steps run under the caller's context, so a client's
+// scheduler and budget still apply. The first step to fail cancels the others
+// and its error is returned; no results are returned with it.
+func Gather[T any](ctx context.Context, steps ...Step[T]) ([]T, error) {
+	return ops.Gather(ctx, steps...)
+}
+
+// Gather2 is Gather for two steps whose results are of different types.
+func Gather2[A, B any](ctx context.Context, first Step[A], second Step[B]) (A, B, error) {
+	return ops.Gather2(ctx, first, second)
+}
+
+// Gather3 is Gather for three steps whose results are of different types.
+func Gather3[A, B, C any](ctx context.Context, first Step[A], second Step[B], third Step[C]) (A, B, C, error) {
+	return ops.Gather3(ctx, first, second, third)
+}
+
+// Gather4 is Gather for four steps whose results are of different types.
+func Gather4[A, B, C, D any](ctx context.Context, first Step[A], second Step[B], third Step[C], fourth Step[D]) (A, B, C, D, error) {
+	return ops.Gather4(ctx, first, second, third, fourth)
+}
+
+// Each runs a step for every item of a list, several at once, and returns the
+// results in the order of the items. The first step to fail stops the rest and
+// its error is returned; no results are returned with it.
+func Each[T, R any](ctx context.Context, items []T, step func(context.Context, T) (R, error)) ([]R, error) {
+	return ops.Each(ctx, items, step)
+}
+
+// BranchAhead decides and starts yes at once, and runs no only when the
+// decision says no. A yes costs one wait where deciding and then calling Branch
+// costs two; a no cancels yes and discards what it returned or failed with.
+// This is speculation, and it is off unless asked for by calling this: a branch
+// that is cancelled may already have been sent to the provider and is billed by
+// the provider, so use it for a branch that is taken most of the time. A
+// decision that fails returns its own error, and no goroutine outlives the
+// call; a step that ignores its context holds the call until it returns.
+func BranchAhead[T any](ctx context.Context, decide Step[bool], yes, no Step[T]) (T, error) {
+	return ops.BranchAhead(ctx, decide, yes, no)
+}
+
+// BranchBoth is BranchAhead for two branches that are about as likely: both
+// start at once with the decision, the one the decision picks is kept and the
+// other is cancelled. It costs both branches every time, and buys one wait in
+// both directions.
+func BranchBoth[T any](ctx context.Context, decide Step[bool], yes, no Step[T]) (T, error) {
+	return ops.BranchBoth(ctx, decide, yes, no)
+}
+
+// RouteAhead decides which route to take and starts the route labelled likely
+// at once. When the decision names it, its result is kept; when it names
+// another route, the likely one is cancelled and the named one runs. A likely
+// that is no route's label, a label given twice and a nil step are
+// configuration errors found before anything starts. Like BranchAhead it costs
+// money whenever the guess is wrong, since the route that is cancelled may
+// already have been billed.
+func RouteAhead[T any](ctx context.Context, decide Step[string], likely string, routes ...Route[T]) (T, error) {
+	return ops.RouteAhead(ctx, decide, likely, routes...)
 }
 
 // Step is one attempt at producing a value, for the control-flow combinators
@@ -1605,13 +1961,39 @@ func ValidateHybrid[T any](data T, opts ValidateOptions) (JudgmentResult[T], err
 	return ops.ValidateHybrid(data, opts)
 }
 
-// VerifyWithModel checks claims with a model. The verdict is the model's, and
-// the name says so.
+// VerifyWithModel checks content with a model: its claims, its reasoning and
+// its consistency, each of which can be switched off. The findings are the
+// model's, which is what the name says. The verdict is not: it is worked out
+// here from the findings, as the worst of the checks that were run, so Pass
+// means every claim was verified and nothing else was found. A check that is
+// on and that the model did not report on is an error, not a pass.
 func VerifyWithModel(input string, opts VerifyOptions) (JudgmentResult[any], error) {
 	return ops.VerifyWithModel(input, opts)
 }
 
-// AuditWithModel inspects a value with a model against the audit's criteria.
+// AuditWithModel inspects a value with a model against the policies and
+// categories the caller names. The findings are the model's. The verdict is
+// worked out here: it fails when a policy the caller supplied is violated,
+// whatever severity the model gave the violation, or when a problem in a
+// category the caller named is serious (a severity of 0.7 or above).
+//
+// Each issue's Rule is the policy it violates, in the caller's own words. With
+// policies supplied and no categories, a problem that is no policy's is in
+// ModelClaims["other_findings"] and does not count: an audit of three policies
+// does not fail on something outside all three.
+//
+// AuditOptions.Threshold is the lowest severity to list. It does not change
+// the verdict. An answer that does not report on every policy is an error and
+// not a pass.
+//
+//	result, err := schemaflux.AuditWithModel(customer, schemaflux.AuditOptions{
+//	    Policies: []string{"Passwords must not be stored in plain text"},
+//	})
+//	if err == nil && result.Verdict == schemaflux.VerdictFail {
+//	    for _, issue := range result.Issues {
+//	        fmt.Println(issue.Rule, issue.Subject, issue.Message)
+//	    }
+//	}
 func AuditWithModel[T any](data T, opts ...AuditOptions) (JudgmentResult[T], error) {
 	return ops.AuditWithModel(data, opts...)
 }
@@ -1930,14 +2312,34 @@ func Preflight[In, Out any](op Op[In, Out], items []In, req PlanRequest) (Plan, 
 	return ops.Preflight(op, items, req)
 }
 
+// StagedPreflight is the plan for a staged job and what it holds for each stage:
+// what will be asked, in how many requests, at what estimated cost, and whether the
+// estimate is an upper bound because the stage's input does not exist yet.
+type StagedPreflight = ops.StagedPreflight
+
+// PreflightStagedPlan returns the plan for taking datum through the stages of plan,
+// without running any of it and without calling a provider, for the client ctx
+// carries. Each stage is priced by the estimator Preflight uses, from what its
+// operation renders for the datum; a stage after the first is priced from the datum
+// too, as an upper bound, and says so. A stage that cannot be rendered makes the
+// plan ineligible, with the reason and its kind. A nil context or a plan with no
+// stages is an invalid request.
+func PreflightStagedPlan[T any](ctx context.Context, plan StagedPlan[T], datum T, req PlanRequest) (StagedPreflight, error) {
+	return ops.PreflightStagedPlan(ctx, plan, datum, req)
+}
+
 // NewPlanBuilder starts a plan whose shape the caller chooses.
 func NewPlanBuilder(opt OpOptions) *PlanBuilder {
 	return ops.NewPlanBuilder(opt)
 }
 
 // RunOpBatch runs one operation over many items in a single call, using the id
-// protocol: items go out tagged, the answer names ids, and coverage is checked
-// in Go. Output position is never trusted.
+// protocol: items go out tagged with ids made for this request, the answer names
+// ids, and coverage is checked in Go. Output position is never trusted: an answer
+// belongs to the item whose id it carries, and an element with an id that was not
+// offered answers nothing. A model that writes one item's answer under another
+// item's id cannot be caught; send one request per item (RunOpManyPartial) when that
+// matters.
 func RunOpBatch[In, Out any](ctx context.Context, op Op[In, Out], items []In, opt OpOptions) ([]Out, error) {
 	return ops.RunOpBatch(ctx, op, items, opt)
 }
@@ -1951,6 +2353,286 @@ func RunOpBatchResult[In, Out any](ctx context.Context, op Op[In, Out], items []
 // the plan that produced them.
 func RunOpMany[In, Out any](ctx context.Context, op Op[In, Out], items []In, req PlanRequest) ([]Result[Out], Plan, error) {
 	return ops.RunOpMany(ctx, op, items, req)
+}
+
+// --- Partial and recovering runs.
+//
+// RunOpMany fails the whole call on one bad item or one bad chunk. These two
+// entry points are for a caller who wants the items that worked, and a record
+// of what happened to each of the others: a BatchResult has one ItemResult per
+// input, in input order, and its only route to a plain slice (Values) hands back
+// whether every item succeeded beside it, so a short slice cannot be mistaken
+// for a complete one.
+//
+// Read the items, not the error: a run that collects its failures returns a nil
+// error even when every item failed.
+//
+//	result, err := schemaflux.RunOpManyPartial(ctx, op, items, opt, cfg)
+//	if err != nil { return err }
+//	for _, item := range result.Failures() { log(item.Index, item.Err) }
+type (
+	// BatchResult is a plural run's honest result: the status, value, attempts,
+	// repairs, cost and error of every item, a summary of the run, Total, what the
+	// whole run cost as measured (the figure to reconcile a bill against, where an
+	// item's Cost is an attribution), and Ledger, the decisions an adaptive run made.
+	BatchResult[Out any] = types.BatchResult[Out]
+
+	// ItemResult is one input's outcome from a plural run. Its Value is meaningful
+	// only when Status is ItemSucceeded.
+	ItemResult[Out any] = types.ItemResult[Out]
+
+	// ItemStatus is one item's terminal state: succeeded, failed, or cancelled.
+	ItemStatus = types.ItemStatus
+
+	// BatchSummary counts a plural run's items by status and records the policy
+	// that ran.
+	BatchSummary = types.BatchSummary
+
+	// BatchPolicy is what a partial run does when an item fails: stop, collect,
+	// retry, or require all.
+	BatchPolicy = types.BatchPolicy
+
+	// BatchMetrics is a BatchResult's per-item measurement: the valid-item
+	// ratio, the cost per accepted item, and how many items needed an isolate
+	// pass or an atomic fallback. It is computed by BatchResult.Metrics.
+	BatchMetrics = types.BatchMetrics
+
+	// DecisionLedger is the ordered record of the adaptive decisions a
+	// recovering run made, each with the reason it was made.
+	DecisionLedger = types.DecisionLedger
+
+	// DecisionEntry is one adaptive decision in a DecisionLedger.
+	DecisionEntry = types.DecisionEntry
+
+	// PartialConfig configures RunOpManyPartial: the policy, how many items run
+	// at once (zero is the client scheduler's limit, else 4), and how many times a
+	// failed item is retried (at most five rounds). A retry multiplies what an item
+	// costs: an item can make up to (1+MaxRetries) x (RepairAttempts+1) x (Client
+	// retries+1) provider requests.
+	PartialConfig = ops.PartialConfig
+
+	// RecoverConfig configures RunOpManyRecover: the chunk sizes, the number of
+	// isolate passes (at most three) and how many atomic calls run at once. The
+	// most requests a run sends for n items is 2n + 2k x floor(n/2) for k isolate
+	// passes, 3n at the default of one.
+	RecoverConfig = ops.RecoverConfig
+
+	// BatchItemCodec reads one item's answer out of a batched response. The
+	// recovering run needs it beside the operation, because it decodes the items
+	// that were answered correctly out of a response whose other items were not.
+	BatchItemCodec[In, Out any] = ops.BatchItemCodec[In, Out]
+)
+
+const (
+	ItemUnspecified = types.ItemUnspecified
+	ItemSucceeded   = types.ItemSucceeded
+	ItemFailed      = types.ItemFailed
+	ItemCancelled   = types.ItemCancelled
+
+	PolicyUnspecified      = types.PolicyUnspecified
+	PolicyFailFast         = types.PolicyFailFast
+	PolicyCollectFailures  = types.PolicyCollectFailures
+	PolicyRetryFailedItems = types.PolicyRetryFailedItems
+	PolicyRetryThenCollect = types.PolicyRetryThenCollect
+	PolicyRequireAll       = types.PolicyRequireAll
+
+	// ModeAtomicFallback is the ItemResult.Mode of an item that no batched
+	// pass resolved and that was answered by a call of its own. ModeMDSP is the
+	// mode of an item answered from a batched response. An item sent alone from the
+	// start, by RunOpManyPartial or because it is too large to share a request, has
+	// ShapeAtomic.String() as its mode.
+	ModeAtomicFallback = types.ModeAtomicFallback
+	ModeMDSP           = ops.ModeMDSP
+)
+
+// RunOpManyPartial runs op over items with one call per item, applying
+// cfg.Policy, and returns a BatchResult naming what happened to every item. A
+// policy left unspecified is PolicyCollectFailures, whatever the number of items,
+// and the summary records it.
+//
+// A call that cannot be run is refused before anything is sent, with the empty
+// result and an error: a nil context, a context that is already over, a descriptor
+// that cannot be run, or a contract floor it cannot reach. Once requests have been
+// sent, the error is non-nil exactly when the policy says a partial result fails
+// the call: PolicyFailFast, PolicyRequireAll, and PolicyRetryFailedItems when
+// retrying did not resolve every failure. It is always nil for
+// PolicyCollectFailures and PolicyRetryThenCollect, whose result is read with
+// BatchResult.Complete, and then it is nil even when every item failed. The
+// BatchResult is returned beside the error, so an error never hides which items
+// got through.
+//
+// A failed or cancelled item's Err is classified, and its text is the library's
+// own (the operation, the kind and the item's place); what the failure was, a
+// vendor's message or the caller's own error, is its cause, and not in the text. An
+// item the run's context ended is cancelled, under every policy. Concurrency zero is
+// the client scheduler's limit, or 4. A retry round multiplies the requests an item
+// costs (see PartialConfig). Total is what every request cost, including a request
+// whose answer the caller's own function panicked on.
+//
+// A function of the caller's that blocks and ignores the context it cannot see holds
+// the call.
+func RunOpManyPartial[In, Out any](ctx context.Context, op Op[In, Out], items []In, opt OpOptions, cfg PartialConfig) (BatchResult[Out], error) {
+	return ops.RunOpManyPartial(ctx, op, items, opt, cfg)
+}
+
+// RunOpManyRecover runs op over items in batched calls and recovers from a
+// response that answers some of its items wrongly: the items that were answered
+// correctly are kept, only the others are asked again in a smaller batch, and
+// whatever that does not resolve is asked one call per item. The size of each
+// chunk follows how the one before it was answered, within what the planner cuts
+// for the client's model. It returns a nil error whenever the cascade ran to its
+// end, even when every item failed, and the BatchResult says which items
+// resolved, how (ItemResult.Mode) and what the others failed with; a call that
+// would fail the same way again, such as a refusal by the client's policy or a
+// spent budget, or several requests in a row that fail in transport, stops the
+// cascade and fails every item not yet resolved. A request the provider's own
+// content filter refused is about some item, not the run: the request is split down
+// to the item refused alone, which fails with a refusal. A context that ends leaves
+// the items that finished as they were and cancels the others, with an error that
+// matches context.Canceled or context.DeadlineExceeded; a context already over is
+// refused before anything is sent.
+//
+// An answer is attributed to an item by the id its element carries and by nothing
+// else; ids are random, made for each request, and an element whose id was not
+// offered fills no item, so a response that drops an answer or adds one cannot move
+// the others. What cannot be detected is a model that writes one item's answer under
+// another item's id: nothing in Go can compare an answer with its question, so run
+// one request per item (RunOpManyPartial) when that matters.
+//
+// The most requests it sends for n items is 2n + 2k x floor(n/2) for k isolate
+// passes (RecoverConfig), 3n at the default of one, each of which the client may
+// repeat and, for a request of one item, repair. The error of an item is classified
+// with a text of the library's own. A function of the caller's that blocks and
+// ignores the context it cannot see holds the call; a panic or runtime.Goexit in one
+// fails that item. The client's budget can be overshot by the requests of the final
+// rung that overlap.
+//
+// codec is the BatchItemCodec the operation's batch algebra was built from with
+// NewIDBatchAlgebra, and has to be given again here: nothing checks that the two
+// agree. The operation's batch has to be an itemwise one built by NewIDBatchAlgebra
+// and must not require evidence; anything else is refused before a request is sent.
+func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []In, codec BatchItemCodec[In, Out], opt OpOptions, cfg RecoverConfig) (BatchResult[Out], error) {
+	return ops.RunOpManyRecover(ctx, op, items, codec, opt, cfg)
+}
+
+// NewIDBatchAlgebra builds the batch algebra that tags every item with an id made
+// for the request, asks for the answers by id and checks their coverage in Go,
+// which is what RunOpBatch, RunOpMany and RunOpManyRecover expect of an operation
+// that is batched. systemPrompt is the instruction the batch is sent with, and codec
+// reads one item's answer; a codec with no DecodeItem is refused before a request
+// is sent. An answer is attributed to an item by its id alone: a model that writes
+// one item's answer under another item's id cannot be caught, so run one request
+// per item when that matters.
+func NewIDBatchAlgebra[In, Out any](class BatchClass, kind AlgebraKind, systemPrompt string, codec BatchItemCodec[In, Out]) BatchAlgebra[In, Out] {
+	return ops.NewIDBatchAlgebra(class, kind, systemPrompt, codec)
+}
+
+// --- Staged plans.
+//
+// A staged plan runs several stages over one datum, one after another: the
+// structured output of one stage is the input of the next, one set of options is
+// shared by every stage, and a stage whose deterministic check already
+// establishes what it requires is skipped without a call. The requests the
+// stages make are bounded by the client's scheduler; the plan has none of its
+// own and no groups of stages (Gather over RunOpResult runs operations at once).
+type (
+	// Stage is one step of a staged plan over a datum of type T: an operation, and
+	// an optional deterministic check that can stand in for it.
+	Stage[T any] = ops.Stage[T]
+
+	// StagedPlan is an ordered list of stages over one datum.
+	StagedPlan[T any] = ops.StagedPlan[T]
+
+	// StageOutcome is what one stage produced: its value, whether it was skipped,
+	// the contract level established and, for a stage that called its operation,
+	// the envelope. For a stage that failed it holds the failure and the envelope.
+	StageOutcome[T any] = ops.StageOutcome[T]
+
+	// StagedPlanResult is what running a staged plan produced: the final datum
+	// and one outcome per stage that ran, in the order the plan declared them.
+	StagedPlanResult[T any] = ops.StagedPlanResult[T]
+)
+
+// RunStagedPlan runs plan's stages in order against input and returns the final
+// datum with every stage's outcome. A stage that fails ends the plan with that
+// failure, and the result beside it holds no value but the outcomes of the stages
+// that ran, the failed one included, so what was spent is not lost; a stage that
+// a deterministic check settled makes no provider call, and its outcome says it
+// was skipped, and the level its check attests to is held to the client's contract
+// floor: below it the stage is asked. opt is shared by every stage, except
+// ParentResultIDs, which are the caller's followed by the previous stage's result.
+//
+// The error of a failed stage, and its StageOutcome.Err, is classified with a text
+// of the library's own (the stage's name and "stage 2 of 3 failed"); what the stage
+// failed with is the cause. A panic in a stage's BuildPrompt, Decode, invariant,
+// Normalize or check is that stage's failure, of kind invariant violation, and the
+// result keeps what the earlier stages cost; so is a runtime.Goexit, which the
+// stage's functions are run where it can be caught. A call with no stages, a nil
+// context or a context already over is refused before anything runs, as an invalid
+// request. A function of the caller's that blocks and ignores the context it cannot
+// see holds the call.
+func RunStagedPlan[T any](ctx context.Context, plan StagedPlan[T], input T, opt OpOptions) (StagedPlanResult[T], error) {
+	return ops.RunStagedPlan(ctx, plan, input, opt)
+}
+
+// --- Sessions.
+
+// A conversation with a model that may ask for tools to be run. The zero Session
+// is ready to use; set Instructions and Tools and call Send:
+//
+//	var s schemaflux.Session
+//	s.Instructions = "You answer questions about weather. Use get_weather."
+//	s.Tools = []schemaflux.Tool{weather}
+//	reply, err := s.Send(ctx, "How warm is Oslo?")
+//	for err == nil && len(reply.Value.ToolCalls) > 0 {
+//	    results := map[string]string{}
+//	    for _, call := range reply.Value.ToolCalls {
+//	        results[call.ID] = lookup(call) // the caller runs the tool; the library never does
+//	    }
+//	    reply, err = s.SendResults(ctx, results)
+//	}
+//	fmt.Println(reply.Value.Content)
+type (
+	// Session is a conversation: its settings, its tools and its History, which
+	// Send and SendResults check whole before every request and append to when a
+	// turn succeeds. A turn that fails or is cancelled leaves History as it was. A
+	// second turn begun while one is running is refused at once. It is not safe
+	// for concurrent use otherwise, and is not copied after its first use.
+	//
+	// Each turn is one operation (chat.send or chat.sendresults) to the observers,
+	// goes through the client's data policy, budget, scheduler, deadline and
+	// retries as an operation's request does, and returns the Result of the turn:
+	// the model's reply as the Value and what the turn cost and used as the Meta.
+	// Session.Total is the sum of the turns.
+	Session = ops.Session
+
+	// Message is one turn of a conversation: a user message, the model's reply,
+	// or the result of a tool. Its Role is "user", "assistant" or "tool"; the
+	// system prompt is Session.Instructions and is not a message.
+	Message = llm.Message
+
+	// Tool declares one function a model may ask to have called. It is a
+	// declaration and never an invocation: the library does not run tools.
+	Tool = llm.Tool
+
+	// ToolCall is a model's request to have one of the declared tools run. The
+	// library has checked that Name is a declared tool, that ID is not empty and
+	// not repeated, and that Arguments is a JSON object. The arguments are model
+	// output, as untrusted as any, and are never written to an error.
+	ToolCall = llm.ToolCall
+)
+
+// ErrSessionInvariant is matched by the error a Session returns for a history that
+// no real conversation produces: a message in an order the model never made it in,
+// a tool result that answers no call of the message before it, or a call left
+// unanswered before the next message. The error is an invalid request as well,
+// and names the position of the message and never what it says.
+var ErrSessionInvariant = ops.ErrSessionInvariant
+
+// NewSession returns a Session. The zero Session is as ready as the one this
+// returns.
+func NewSession() *Session {
+	return ops.NewSession()
 }
 
 // --- The client and catalogue, re-exported.
@@ -1973,6 +2655,58 @@ type (
 )
 
 func NewClient(apiKey string) *Client { return client.NewClient(apiKey) }
+
+// What Client.WithScheduler and Client.WithDataPolicy take. The two methods
+// were exported with arguments of types that were not, so nothing outside this
+// module could call either (LX-126).
+type (
+	// Scheduler bounds how many requests are with a provider at once, and how
+	// many may wait. Give one to a client with Client.WithScheduler.
+	Scheduler = ops.Scheduler
+
+	// SchedulerLimits are a Scheduler's bounds. Zero on any of them means no
+	// bound on that axis.
+	SchedulerLimits = ops.SchedulerLimits
+
+	// SchedulerStats is what Scheduler.Stats reports.
+	SchedulerStats = ops.SchedulerStats
+
+	// DataPolicy says which routes a client's calls may take. It does not fail
+	// open: a list left empty allows nothing, so the zero value refuses every
+	// call. See Client.WithDataPolicy for what is enforced.
+	DataPolicy = types.DataPolicy
+
+	// RetentionDays is a length of retention in days, for
+	// DataPolicy.MaxRetentionDays.
+	RetentionDays = types.RetentionDays
+)
+
+// RetentionUnspecified is DataPolicy.MaxRetentionDays with nothing stated,
+// under which only a route that keeps nothing is allowed.
+const RetentionUnspecified = types.RetentionUnspecified
+
+// NewScheduler returns a scheduler with the given limits. Close it when the
+// client it was given to is done with, so that anything waiting is refused
+// and not left waiting.
+//
+//	scheduler := schemaflux.NewScheduler(schemaflux.SchedulerLimits{MaxConcurrent: 4, MaxQueued: 64})
+//	client := schemaflux.NewClient(key).WithScheduler(scheduler)
+func NewScheduler(limits SchedulerLimits) *Scheduler { return ops.NewScheduler(limits) }
+
+// DeclareRoute declares where a provider's model runs and how long it keeps
+// what it is sent. A client with a data policy refuses a route that has
+// declared nothing, so every route such a client uses is declared first, at
+// start-up and before any request is made:
+//
+//	schemaflux.DeclareRoute("openai", "gpt-6-luna", []string{"eu"}, 0)
+//
+// regions is every region the route may run in, and retentionDays the longest
+// it keeps content, zero for none. These are the caller's statements about
+// their own agreement with the provider. This library has no way to check
+// them and takes them as given.
+func DeclareRoute(provider, model string, regions []string, retentionDays int) {
+	llm.DeclareRoute(provider, model, regions, retentionDays)
+}
 
 func Init(key string) error             { return client.Init(key) }
 func InitWithEnv(paths ...string) error { return client.InitWithEnv(paths...) }

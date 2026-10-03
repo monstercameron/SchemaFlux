@@ -191,6 +191,81 @@ func TestNewPlanBuilderAtomicForcesTheShapeOntoThePlan(t *testing.T) {
 	}
 }
 
+// A staged plan is planned through the root without asking the provider anything,
+// then run: the first stage's request is what the plan priced (the client leaves
+// the library's reinforcement block off), and the run asks no more than the plan's
+// call ceiling.
+func TestPreflightStagedPlanPlansBeforeThePlanIsRun(t *testing.T) {
+	provider := testfixtures.WithScriptedProvider(t, "answered", nil)
+	stage := func(name, system string) schemaflux.Stage[string] {
+		op := echoOp()
+		op.ID.Name = name
+		op.BuildPrompt = func(input string, _ schemaflux.OpOptions) (string, string) { return system, input }
+		return schemaflux.Stage[string]{Op: op}
+	}
+	plan := schemaflux.StagedPlan[string]{
+		ID:     schemaflux.OperationID{Name: "rootwrap-stages", Version: "v1"},
+		Stages: []schemaflux.Stage[string]{stage("first", strings.Repeat("s", 400)), stage("second", strings.Repeat("t", 40))},
+	}
+	datum := strings.Repeat("d", 80)
+
+	planned, err := schemaflux.PreflightStagedPlan(context.Background(), plan, datum, schemaflux.PlanRequest{})
+	if err != nil || !planned.Plan.Eligible {
+		t.Fatalf("PreflightStagedPlan: %v (%s)", err, planned.Plan.IneligibleReason)
+	}
+	if got := len(provider.Requests()); got != 0 {
+		t.Fatalf("planning sent %d requests", got)
+	}
+	if planned.Plan.Shape != schemaflux.ShapeSDMP || planned.Plan.MaxCalls != 2 || len(planned.Stages) != 2 {
+		t.Fatalf("shape %v, max calls %d, %d stages", planned.Plan.Shape, planned.Plan.MaxCalls, len(planned.Stages))
+	}
+	// 100 tokens of system prompt and 20 of datum, and the 54 tokens of reinforcement
+	// block the call path puts in front of every system prompt; the second stage is
+	// priced from the datum.
+	const reinforcementTokens = 54
+	if first, second := planned.Stages[0], planned.Stages[1]; first.Estimate.EstimatedPromptTokens != 120+reinforcementTokens || first.UpperBound ||
+		second.Estimate.EstimatedPromptTokens != 30+reinforcementTokens || !second.UpperBound {
+		t.Errorf("stages priced %+v and %+v", first, second)
+	}
+
+	if _, err := schemaflux.RunStagedPlan(context.Background(), plan, datum, schemaflux.OpOptions{}); err != nil {
+		t.Fatalf("RunStagedPlan: %v", err)
+	}
+	if got := len(provider.Requests()); got == 0 || got > planned.Plan.MaxCalls {
+		t.Errorf("the run sent %d requests, the plan said at most %d", got, planned.Plan.MaxCalls)
+	}
+}
+
+func TestPreflightStagedPlanRefusesWhatCannotBePlannedAsAnInvalidRequest(t *testing.T) {
+	testfixtures.WithScriptedProvider(t, "", errors.New("must not be called"))
+	plan := schemaflux.StagedPlan[string]{Stages: []schemaflux.Stage[string]{{Op: echoOp()}}}
+
+	//lint:ignore SA1012 a nil context is what is being refused
+	if _, err := schemaflux.PreflightStagedPlan(nil, plan, "d", schemaflux.PlanRequest{}); !errors.Is(err, schemaflux.ErrInvalidRequest) {
+		t.Errorf("a nil context: %v", err)
+	}
+	if _, err := schemaflux.PreflightStagedPlan(context.Background(), schemaflux.StagedPlan[string]{}, "d", schemaflux.PlanRequest{}); !errors.Is(err, schemaflux.ErrInvalidRequest) {
+		t.Errorf("no stages: %v", err)
+	}
+}
+
+// An over-budget plan is refused with the budget kind, by the plan and by the run.
+func TestRunOpManyRefusesAnOverBudgetPlanAsABudgetError(t *testing.T) {
+	provider := testfixtures.WithScriptedProvider(t, "", errors.New("must not be called"))
+
+	_, plan, err := schemaflux.RunOpMany(context.Background(), echoOp(), []string{"a", "b", "c"},
+		schemaflux.PlanRequest{Options: schemaflux.OpOptions{Model: "gpt-4"}, Budget: 1e-9})
+	if !errors.Is(err, schemaflux.ErrBudgetExceededKind) || errors.Is(err, schemaflux.ErrConfiguration) {
+		t.Fatalf("err = %v, want a budget error and not a configuration one", err)
+	}
+	if plan.Eligible || plan.IneligibleKind != schemaflux.KindOf(err) {
+		t.Errorf("plan eligible %v, refusal kind %v, error kind %v", plan.Eligible, plan.IneligibleKind, schemaflux.KindOf(err))
+	}
+	if got := len(provider.Requests()); got != 0 {
+		t.Errorf("a refused plan sent %d requests", got)
+	}
+}
+
 // --- RunOpBatch / RunOpBatchResult -------------------------------------------
 
 // batchEchoOp tags each item's own text as its id, so Merge can pair the

@@ -1,0 +1,3 @@
+type Session struct{Model string; Tier schemaflux.Tier; Effort schemaflux.Effort; Mode schemaflux.Mode; MaxOutputTokens int; WebSearch bool; Instructions string; Tools []schemaflux.Tool; History []schemaflux.Message}
+method (*Session).Send(ctx context.Context, text string) (schemaflux.Message, error)
+method (*Session).SendResults(ctx context.Context, results map[string]string) (schemaflux.Message, error)

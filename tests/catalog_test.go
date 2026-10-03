@@ -45,6 +45,8 @@ func exportedFunctions(t *testing.T) []string {
 // name happens to start with "New" cannot slip through uncatalogued.
 var infrastructure = map[string]struct{}{
 	"NewClient": {}, "GetDefaultClient": {}, "SetDefaultClient": {},
+	// What a client's scheduler and data policy are built from (LX-126).
+	"NewScheduler": {}, "DeclareRoute": {},
 	"Init": {}, "InitWithEnv": {},
 	"GetLogger": {}, "GetLogEntries": {}, "ResetLogEntries": {}, "ConfigureLogging": {}, "SetLogLevel": {},
 	"ConfigureRequestTracking": {}, "GetRequestTrackingConfig": {}, "ExtractRequestTracking": {},
@@ -54,11 +56,21 @@ var infrastructure = map[string]struct{}{
 	"Escalate": {}, "Until": {}, "Fallback": {}, "ExactAgreement": {},
 	"Checkpoint": {}, "NewMemoryCheckpointStore": {},
 	"Like": {}, "Otherwise": {}, "When": {},
+	// The combinators that take a decision already made and run the branch,
+	// or run steps at once (BM-002). They ask nothing of a model themselves.
+	"Branch": {}, "Select": {}, "To": {}, "Gather": {}, "Gather2": {}, "Gather3": {}, "Gather4": {}, "Each": {},
+	// Speculation (LAT-007): the same, started beside the decision.
+	"BranchAhead": {}, "BranchBoth": {}, "RouteAhead": {},
 	"WithRequestID": {}, "WithCorrelationID": {}, "WithRequestTrackingMetadata": {},
 	"NewOp": {}, "MustNewOp": {}, "RunOp": {}, "RunOpResult": {},
-	"Preflight": {}, "NewPlanBuilder": {}, "RunOpBatch": {}, "RunOpBatchResult": {}, "RunOpMany": {},
+	"Preflight": {}, "PreflightStagedPlan": {}, "NewPlanBuilder": {}, "RunOpBatch": {}, "RunOpBatchResult": {}, "RunOpMany": {},
 	"WithDiagnosticSink": {},
-	"StreamSummarize":    {}, "StreamRewrite": {}, "StreamTranslate": {}, "StreamExpand": {},
+	// Partial and recovering runs, staged plans and sessions: ways to run an
+	// operation over many items or several stages, and the transcript a
+	// conversation is held in. None is an operation of its own.
+	"RunOpManyPartial": {}, "RunOpManyRecover": {}, "NewIDBatchAlgebra": {}, "NewAdaptiveChunkState": {},
+	"RunStagedPlan": {}, "NewSession": {},
+	"StreamSummarize": {}, "StreamRewrite": {}, "StreamTranslate": {}, "StreamExpand": {},
 	"Catalog": {}, "Describe": {},
 }
 

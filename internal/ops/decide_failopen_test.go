@@ -33,9 +33,9 @@ func TestDecideDoesNotSilentlyTakeBranchZero(t *testing.T) {
 		{"empty", "", false},
 		{"truncated_json", `{"selected": `, false},
 		{"error_page", "<html><body>502 Bad Gateway</body></html>", false},
-		{"index_too_high", `{"selected":7,"confidence":0.9}`, false},
-		{"index_negative", `{"selected":-1,"confidence":0.9}`, false},
-		{"index_off_by_one", `{"selected":3,"confidence":0.9}`, false},
+		{"index_too_high", `{"selected":7,"explanation":"x","confidence":0.9}`, false},
+		{"index_negative", `{"selected":-1,"explanation":"x","confidence":0.9}`, false},
+		{"index_off_by_one", `{"selected":3,"explanation":"x","confidence":0.9}`, false},
 		{"wrong_shape", `[{"selected":1}]`, false},
 		{"refusal", "I'm sorry, I can't help with that.", false},
 	}
@@ -75,7 +75,7 @@ func TestDecideFallbackIsExplicitAndLabelled(t *testing.T) {
 		body string
 	}{
 		{"prose", "billing, probably"},
-		{"index_out_of_range", `{"selected":9}`},
+		{"index_out_of_range", `{"selected":9,"explanation":"x","confidence":0.9}`},
 		{"empty", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,12 +109,10 @@ func TestDecideRejectsAnOutOfRangeFallback(t *testing.T) {
 	for _, index := range []int{-1, 3, 99} {
 		t.Run(fmt.Sprintf("index_%d", index), func(t *testing.T) {
 			called := false
-			previous := customLLMCaller
-			setLLMCaller(func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
+			swapLLMCaller(t, func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
 				called = true
 				return "", nil
 			})
-			defer func() { customLLMCaller = previous }()
 
 			if _, _, err := Decide(context.Background(), "x", routes(), NewDecideOptions().WithFallback(index)); err == nil {
 				t.Fatalf("fallback index %d must be rejected", index)
@@ -152,7 +150,7 @@ func TestDecideHonoursAWellFormedAnswer(t *testing.T) {
 
 // A fenced answer is still an answer.
 func TestDecideAcceptsAFencedAnswer(t *testing.T) {
-	restore := stubLLM("```json\n{\"selected\":0,\"confidence\":0.5}\n```")
+	restore := stubLLM("```json\n{\"selected\":0,\"explanation\":\"x\",\"confidence\":0.5}\n```")
 	defer restore()
 
 	value, result, err := Decide(context.Background(), "x", routes())
@@ -180,7 +178,7 @@ func TestDecideProgrammaticConditionNeedsNoProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if value != "billing" || result.SelectedIndex != 1 || result.ModelConfidence != 1.0 {
+	if value != "billing" || result.SelectedIndex != 1 || result.ModelConfidence != 0 || !result.ByCondition {
 		t.Errorf("selected %q at %d with confidence %v", value, result.SelectedIndex, result.ModelConfidence)
 	}
 }
@@ -197,11 +195,9 @@ func TestDecideWithNoDecisions(t *testing.T) {
 
 // A cancelled context is reported rather than turned into branch zero.
 func TestDecideHonoursACancelledContext(t *testing.T) {
-	previous := customLLMCaller
-	setLLMCaller(func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
+	swapLLMCaller(t, func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
 		return "", ctx.Err()
 	})
-	defer func() { customLLMCaller = previous }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

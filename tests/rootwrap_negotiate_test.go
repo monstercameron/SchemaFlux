@@ -15,7 +15,7 @@ import (
 // is tested for identical behaviour on the same scripted response.
 
 func TestSettleProducesTheScriptedSolution(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"solution":"Tuesday 3pm","satisfaction":{"time":0.8},"overall_satisfaction":0.8,"confidence":0.9}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"solution":"Tuesday 3pm","alternatives":[],"satisfaction":{"time":0.8},"overall_satisfaction":0.8,"confidence":0.9,"reasoning":"It is the only slot before 5pm.","tradeoffs":[]}`, nil)
 
 	result, err := schemaflux.Settle[string]("find a meeting time", schemaflux.NegotiateOptions{
 		Constraints: []string{"before 5pm"},
@@ -33,7 +33,7 @@ func TestSettleProducesTheScriptedSolution(t *testing.T) {
 
 // Negotiate is documented as forwarding to Settle -- same input, same output.
 func TestNegotiateForwardsToSettle(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"solution":"Tuesday 3pm","satisfaction":{"time":0.8},"overall_satisfaction":0.8,"confidence":0.9}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"solution":"Tuesday 3pm","alternatives":[],"satisfaction":{"time":0.8},"overall_satisfaction":0.8,"confidence":0.9,"reasoning":"It is the only slot before 5pm.","tradeoffs":[]}`, nil)
 
 	result, err := schemaflux.Negotiate[string]("find a meeting time", schemaflux.NegotiateOptions{
 		Constraints: []string{"before 5pm"},

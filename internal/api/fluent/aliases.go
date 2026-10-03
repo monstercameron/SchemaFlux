@@ -12,6 +12,9 @@ type (
 
 	Mode  = types.Mode
 	Speed = types.Speed
+	// Effort is how much the model reasons before it answers. See
+	// types.OpOptions.Effort.
+	Effort = types.Effort
 
 	// Result is the execution envelope RunResult(ctx) returns alongside
 	// Run(ctx)'s plain value -- see A-013.
@@ -122,6 +125,19 @@ const (
 	Smart     = types.Smart
 	Fast      = types.Fast
 	Quick     = types.Quick
+)
+
+// Reasoning efforts, for Effort(...). Which of them a model takes depends on
+// its family; one it does not take is refused before the request is sent.
+const (
+	EffortDefault = types.EffortDefault
+	EffortNone    = types.EffortNone
+	EffortMinimal = types.EffortMinimal
+	EffortLow     = types.EffortLow
+	EffortMedium  = types.EffortMedium
+	EffortHigh    = types.EffortHigh
+	EffortXHigh   = types.EffortXHigh
+	EffortMax     = types.EffortMax
 )
 
 var (

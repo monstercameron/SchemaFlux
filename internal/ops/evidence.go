@@ -6,7 +6,7 @@ import (
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// TC-002, wiring half. internal/types/evidence.go defines the shape of a
+// internal/types/evidence.go defines the shape of a
 // claim and the source it points into; this is where a batch of claims is
 // actually checked against an operation's declared policy and turned into
 // the one failure mode that means "a claim had nothing supporting it":
@@ -45,21 +45,35 @@ type EvidenceSourced interface {
 //   - EvidenceMaterialFields: only claims whose FieldPath is in
 //     materialFields must resolve; a field never claimed at all is itself a
 //     failure -- a material field with no claim is indistinguishable from a
-//     material field the model fabricated without saying so.
+//     material field the model fabricated without saying so. Every claim the
+//     model made for a material field must resolve, not only the last one, and
+//     marking a material field Inferred does not exempt it: a material field
+//     is one that must carry evidence.
 //   - EvidenceAllModelDerived: every claim not marked Inferred must resolve.
-//     An Inferred claim is exempt by construction.
+//     An Inferred claim is exempt by construction. That exemption rests on the
+//     model's own flag: a model that marks every claim Inferred satisfies this
+//     policy with no evidence at all. A caller who cannot accept that uses
+//     EvidenceNoInference.
 //   - EvidenceNoInference: every claim must resolve, and none may be marked
 //     Inferred -- under this policy, an inferred field is not permitted to
 //     exist at all, so a model that says it inferred one has already
 //     violated the contract.
+//
+// A policy that is none of the four is a configuration error, not a pass: a
+// value cast from an integer, or one added to the enumeration and not here,
+// would otherwise count nothing and report the evidence as satisfied.
 func StrictEvidence(op string, policy types.EvidencePolicy, materialFields []string, claims []types.ClaimProvenance, sources map[string]types.EvidenceSource) error {
-	if policy == types.EvidenceNone {
+	switch policy {
+	case types.EvidenceNone:
 		return nil
+	case types.EvidenceMaterialFields, types.EvidenceAllModelDerived, types.EvidenceNoInference:
+	default:
+		return types.Newf(types.KindConfiguration, op, "the evidence policy is not one this library knows (%d)", uint8(policy))
 	}
 
-	byField := make(map[string]types.ClaimProvenance, len(claims))
+	byField := make(map[string][]types.ClaimProvenance, len(claims))
 	for _, claim := range claims {
-		byField[claim.FieldPath] = claim
+		byField[claim.FieldPath] = append(byField[claim.FieldPath], claim)
 	}
 
 	var unresolved, missing, disallowedInference int
@@ -88,12 +102,17 @@ func StrictEvidence(op string, policy types.EvidencePolicy, materialFields []str
 	switch policy {
 	case types.EvidenceMaterialFields:
 		for _, field := range materialFields {
-			claim, found := byField[field]
+			fieldClaims, found := byField[field]
 			if !found {
 				missing++
 				continue
 			}
-			checkClaim(claim, false)
+			for _, claim := range fieldClaims {
+				// Inferred is cleared: a material field has to carry evidence
+				// whatever the model says about where it came from.
+				claim.Inferred = false
+				checkClaim(claim, false)
+			}
 		}
 	case types.EvidenceAllModelDerived:
 		for _, claim := range claims {

@@ -1,29 +1,47 @@
-// package ops - Derive operation for inferring new typed data from existing
 package ops
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// DeriveOptions configures the Derive operation
+// DeriveOptions configures the Derive operation.
+//
+// Passing a DeriveOptions value to Derive replaces the default of its boolean
+// field with the value's own: Derive with no options has IncludeReasoning on,
+// but Derive(x, DeriveOptions{Rules: ...}) has it off, because a bool that is
+// false cannot be told from one the caller never set. A caller who passes
+// options and wants reasoning sets IncludeReasoning: true. The same holds for
+// MinConfidence, which is a number: 0 stands for "not set" and means the
+// default of 0.6, so a floor of zero cannot be asked for and a caller who
+// wants the floor out of the way sets a value any score meets, such as 0.001.
+// A MinConfidence that is not a number from 0 to 1 (a NaN, an infinity, a
+// negative value, anything above 1) is refused before the model is asked.
+// Telling "unset" from "false" or zero needs the options redesigned; until then
+// the behaviour is this.
 type DeriveOptions struct {
-	// Fields specifies which fields to derive (empty means all fields in target type)
+	// Fields specifies which fields to derive (empty means all fields in target
+	// type). When it is set, the answer has to report a confidence for each of
+	// them, so that a weak field cannot escape the floor by being left out of
+	// field_confidence. When it is empty the floor is applied to the fields the
+	// model reports, since which fields were derived is not known to Go.
 	Fields []string
 
 	// Rules provides natural language derivation rules per field
 	Rules map[string]string
 
-	// IncludeReasoning includes per-field reasoning
+	// IncludeReasoning asks the model to include reasoning for each derivation.
+	// It is a request and is not checked.
 	IncludeReasoning bool
 
-	// MinConfidence is the minimum acceptable confidence per field
+	// MinConfidence is the minimum acceptable confidence per field, and for the
+	// overall confidence. An answer below it is refused.
 	MinConfidence float64
 
 	// Common options
@@ -32,11 +50,20 @@ type DeriveOptions struct {
 	Intelligence types.Speed
 
 	// Model pins the exact model for this call, bypassing the Intelligence
-	// tier's mapping (TC-005). These option types spell their common fields
+	// tier's mapping. These option types spell their common fields
 	// out rather than embedding CommonOptions, so the pin has to be declared
 	// here too -- otherwise `.Model(...)` on the builder would be a setter
 	// that changes nothing, which this repository fails the build over.
-	Model         string
+	Model string
+	// Effort is how much the model reasons before it answers. The
+	// builder sets it here for the same reason it sets Model here.
+	Effort types.Effort
+
+	// MaxOutputTokens is the ceiling on the answer's length. Zero means the tier's.
+	MaxOutputTokens int
+	// WebSearch declares the provider's web-search tool on the call.
+	WebSearch bool
+
 	Context       context.Context
 	RequestID     string
 	CorrelationID string
@@ -47,13 +74,16 @@ type Derivation struct {
 	// Field is the name of the derived field
 	Field string `json:"field"`
 
-	// SourceFields lists input fields used to derive this value
+	// SourceFields lists input fields used to derive this value. A value that
+	// rests on no input field (a constant, a default) has none to list.
 	SourceFields []string `json:"source_fields,omitempty"`
 
 	// Method describes how the derivation was performed
 	Method string `json:"method"`
 
-	// Reasoning explains the derivation logic
+	// Reasoning explains the derivation logic. It is asked for only when
+	// DeriveOptions.IncludeReasoning is on, so the type leaves it optional and
+	// Derive refuses an answer without it when the option asked for it.
 	Reasoning string `json:"reasoning,omitempty"`
 
 	// ModelConfidence for this specific derivation
@@ -130,12 +160,16 @@ type DeriveResult[U any] struct {
 //	    fmt.Printf("%s: %s (%.0f%% confident)\n", d.Field, d.Method, d.ModelConfidence*100)
 //	}
 func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], error) {
-	log := logger.GetLogger()
+	// The first line is written before the options are looked at, so the client is
+	// found from the context they carry.
+	var callerCtx context.Context
+	if len(opts) > 0 {
+		callerCtx = opts[0].Context
+	}
+	log := loggerFor(callerCtx)
 	log.Debug("Starting derive operation")
 
-	var result DeriveResult[U]
-	result.FieldConfidence = make(map[string]float64)
-	result.Metadata = make(map[string]any)
+	// Every return that carries an error carries the zero result with it.
 
 	// Apply defaults
 	opt := DeriveOptions{
@@ -145,7 +179,16 @@ func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], erro
 		Intelligence:     types.Fast,
 	}
 	if len(opts) > 0 {
+		// The caller's floor is looked at before the merge, which drops one
+		// that is not above zero: a NaN or a negative value would otherwise be
+		// taken for "not set" and replaced by the default without a word.
+		if err := checkDeriveOptions(opts[0]); err != nil {
+			return DeriveResult[U]{}, err
+		}
 		opt = mergeDeriveOptions(opt, opts[0])
+	}
+	if err := checkFlatLockedLimits(opt.Context, opt.Mode, opt.Intelligence, opt.MaxOutputTokens); err != nil {
+		return DeriveResult[U]{}, err
 	}
 
 	// Get context
@@ -160,7 +203,7 @@ func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], erro
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		log.Error("Derive operation failed: marshal error", "error", err)
-		return result, fmt.Errorf("failed to marshal input: %w", err)
+		return DeriveResult[U]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
 	// Get input and output type schemas
@@ -171,15 +214,21 @@ func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], erro
 	// Build fields description
 	fieldsDesc := ""
 	if len(opt.Fields) > 0 {
-		fieldsDesc = fmt.Sprintf("\n\nFocus on deriving these fields: %s", strings.Join(opt.Fields, ", "))
+		// The caller's text, written as a JSON list.
+		quotedFields, _ := promptJSON(opt.Fields)
+		fieldsDesc = fmt.Sprintf("\n\nFocus on deriving these fields: %s", quotedFields)
 	}
 
 	// Build rules description
 	rulesDesc := ""
 	if len(opt.Rules) > 0 {
 		var parts []string
-		for field, rule := range opt.Rules {
-			parts = append(parts, fmt.Sprintf("- %s: %s", field, rule))
+		// In field order, and quoted: the rules are the caller's text, and
+		// ranging over the map wrote them in a different order on every call.
+		for _, field := range sortedKeys(opt.Rules) {
+			quotedField, _ := promptJSON(field)
+			quotedRule, _ := promptJSON(opt.Rules[field])
+			parts = append(parts, fmt.Sprintf("- %s: %s", quotedField, quotedRule))
 		}
 		rulesDesc = fmt.Sprintf("\n\nDerivation rules:\n%s", strings.Join(parts, "\n"))
 	}
@@ -227,21 +276,26 @@ Rules:
 
 	// Build OpOptions for LLM call
 	opOpts := types.OpOptions{
-		Mode:          opt.Mode,
-		Intelligence:  opt.Intelligence,
-		Model:         opt.Model,
-		Context:       ctx,
-		RequestID:     opt.RequestID,
-		CorrelationID: opt.CorrelationID,
+		Mode:            opt.Mode,
+		Intelligence:    opt.Intelligence,
+		Model:           opt.Model,
+		Effort:          opt.Effort,
+		MaxOutputTokens: opt.MaxOutputTokens,
+		WebSearch:       opt.WebSearch,
+		Context:         ctx,
+		RequestID:       opt.RequestID,
+		CorrelationID:   opt.CorrelationID,
 	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
 		log.Error("Derive operation LLM call failed", "error", err)
-		return result, fmt.Errorf("derivation failed: %w", err)
+		return DeriveResult[U]{}, fmt.Errorf("derivation failed: %w", err)
 	}
 
-	// Parse response
+	// Parse the response. The prompt asks for every member, so an answer that
+	// leaves one out is refused by name, and an overall confidence of zero is the
+	// model saying zero.
 	var parsed struct {
 		Derived                json.RawMessage    `json:"derived"`
 		Derivations            []Derivation       `json:"derivations"`
@@ -249,39 +303,84 @@ Rules:
 		ModelOverallConfidence float64            `json:"overall_confidence"`
 	}
 
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if err := decodeAnswer("derive", response, &parsed); err != nil {
 		// The response is the caller's record derived from; it does not belong
-		// in a log line (X-03).
+		// in a log line.
 		log.Error("Derive operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse derivation result: %w", err)
+		return DeriveResult[U]{}, fmt.Errorf("failed to parse derivation result: %w", err)
+	}
+
+	// The derived value is the answer. The reader refuses one that is missing; a
+	// RawMessage can hold a null, which would leave Derived at U's zero value
+	// under a nil error, and with no field_confidence in it the per-field floor
+	// below had nothing to look at.
+	if isJSONNull(parsed.Derived) {
+		log.Error("Derive operation failed: the derived value is null")
+		return DeriveResult[U]{}, types.Newf(types.KindSchemaViolation, "derive",
+			"derived is null, so there is nothing to return")
+	}
+
+	// Reasoning is asked for only when IncludeReasoning is on, so it is optional
+	// in the type (Derivation.Reasoning is omitempty) and is held here to what
+	// the option asked: a derivation without an explanation, or with a blank one,
+	// is not the account the caller requested.
+	if opt.IncludeReasoning {
+		for i, derivation := range parsed.Derivations {
+			if strings.TrimSpace(derivation.Reasoning) == "" {
+				log.Error("Derive operation failed: a derivation has no reasoning", "derivation", i)
+				return DeriveResult[U]{}, types.Newf(types.KindSchemaViolation, "derive",
+					"derivations[%d].reasoning is missing, and reasoning was asked for", i)
+			}
+		}
 	}
 
 	// The option is documented as "the minimum acceptable confidence per field",
 	// and it was a sentence in the prompt. Per-field first, then the overall
 	// claim: a derivation whose one weak field is the one the caller cares about
-	// should not pass because the average carried it.
-	for field, reported := range parsed.FieldConfidence {
-		if err := AtLeastConfidence(reported, opt.MinConfidence); err != nil {
+	// should not pass because the average carried it. The fields are taken in
+	// name order so that the one a refusal names is the same on every call.
+	for _, field := range sortedKeys(parsed.FieldConfidence) {
+		if err := AtLeastConfidence(parsed.FieldConfidence[field], opt.MinConfidence); err != nil {
 			log.Error("Derived field is below the configured confidence floor", "field", field, "error", err)
-			return result, fmt.Errorf("derivation rejected for field %q: %w", field, err)
+			return DeriveResult[U]{}, fmt.Errorf("derivation rejected for field %q: %w", field, err)
+		}
+	}
+	// A field the caller asked to have derived has to be scored: the loop above
+	// only sees what the model chose to report, so a weak field left out of
+	// field_confidence passed unexamined.
+	reported := make(map[string]struct{}, len(parsed.FieldConfidence))
+	for field := range parsed.FieldConfidence {
+		reported[deriveFieldKey(field)] = struct{}{}
+	}
+	for _, field := range opt.Fields {
+		if _, ok := reported[deriveFieldKey(field)]; !ok {
+			log.Error("Derive operation failed: a requested field has no confidence", "field", field)
+			return DeriveResult[U]{}, types.Newf(types.KindSchemaViolation, "derive",
+				"field_confidence does not score the requested field %q", field)
 		}
 	}
 	if err := AtLeastConfidence(parsed.ModelOverallConfidence, opt.MinConfidence); err != nil {
 		log.Error("Derivation is below the configured confidence floor", "error", err)
-		return result, fmt.Errorf("derivation rejected: %w", err)
+		return DeriveResult[U]{}, fmt.Errorf("derivation rejected: %w", err)
 	}
 
 	// Parse derived data
-	if len(parsed.Derived) > 0 {
-		if err := json.Unmarshal(parsed.Derived, &result.Derived); err != nil {
-			log.Error("Derive operation failed: derived data parse error", "error", err)
-			return result, fmt.Errorf("failed to parse derived data: %w", err)
-		}
+	var derived U
+	if err := decodeCallerAnswer("derive", string(parsed.Derived), &derived); err != nil {
+		log.Error("Derive operation failed: derived data parse error", "error", err)
+		return DeriveResult[U]{}, fmt.Errorf("failed to parse derived data: %w", err)
 	}
 
-	result.Derivations = parsed.Derivations
-	result.FieldConfidence = parsed.FieldConfidence
-	result.ModelOverallConfidence = parsed.ModelOverallConfidence
+	result := DeriveResult[U]{
+		Derived:                derived,
+		Derivations:            parsed.Derivations,
+		FieldConfidence:        parsed.FieldConfidence,
+		ModelOverallConfidence: parsed.ModelOverallConfidence,
+		Metadata:               make(map[string]any),
+	}
+	if result.FieldConfidence == nil {
+		result.FieldConfidence = make(map[string]float64)
+	}
 
 	log.Debug("Derive operation succeeded",
 		"derivations", len(result.Derivations),
@@ -290,7 +389,27 @@ Rules:
 	return result, nil
 }
 
-// mergeDeriveOptions merges user options with defaults
+// deriveFieldKey is a field name as it is compared between the caller's Fields
+// and the model's field_confidence: without case and without the separators
+// that tell snake_case, kebab-case and CamelCase apart, since the caller may
+// write the Go name and the model the JSON name.
+func deriveFieldKey(name string) string {
+	return strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(name))
+}
+
+// checkDeriveOptions refuses a floor in the caller's options that no answer
+// could be held to. Zero is the value of an option that was not set and is
+// accepted: it stands for the default. The error names the option and not the
+// value.
+func checkDeriveOptions(user DeriveOptions) error {
+	if math.IsNaN(user.MinConfidence) || user.MinConfidence < 0 || user.MinConfidence > 1 {
+		return types.Newf(types.KindConfiguration, "derive", "MinConfidence has to be a number from 0 to 1")
+	}
+	return nil
+}
+
+// mergeDeriveOptions merges user options with defaults. The numbers are checked
+// by checkDeriveOptions before this runs, so what is dropped here is only zero.
 func mergeDeriveOptions(defaults, user DeriveOptions) DeriveOptions {
 	if user.Fields != nil {
 		defaults.Fields = user.Fields
@@ -315,8 +434,23 @@ func mergeDeriveOptions(defaults, user DeriveOptions) DeriveOptions {
 	if user.Model != "" {
 		defaults.Model = user.Model
 	}
+	if user.Effort != types.EffortDefault {
+		defaults.Effort = user.Effort
+	}
+	if user.MaxOutputTokens > 0 {
+		defaults.MaxOutputTokens = user.MaxOutputTokens
+	}
+	if user.WebSearch {
+		defaults.WebSearch = true
+	}
 	if user.Context != nil {
 		defaults.Context = user.Context
+	}
+	if user.RequestID != "" {
+		defaults.RequestID = user.RequestID
+	}
+	if user.CorrelationID != "" {
+		defaults.CorrelationID = user.CorrelationID
 	}
 	return defaults
 }

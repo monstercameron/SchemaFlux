@@ -115,6 +115,12 @@ func TestLoadMapReduceStopsOnFirstFailureWithoutRunningEveryChunk(t *testing.T) 
 	// actually stop would have thousands of further chunks to wrongly run.
 	const failAtChunk = 3
 
+	// The other chunks hold their workers until the run is cancelled, which is
+	// what a failure does. Without that they finish at once, and the chunk that
+	// fails, which is one goroutine among twenty-four, can be descheduled until
+	// the rest have taken every chunk there is: nothing could stop a run that
+	// had finished. The wait is bounded, so a run that never cancels is slow and
+	// fails the check below instead of hanging.
 	var dispatched int64
 	_, summary, err := MapReduce(context.Background(), items,
 		MapReduceOptions{ChunkSize: chunkSize, Concurrency: 24},
@@ -125,6 +131,10 @@ func TestLoadMapReduceStopsOnFirstFailureWithoutRunningEveryChunk(t *testing.T) 
 			}
 			if chunk[0]/chunkSize == failAtChunk {
 				return 0, fmt.Errorf("simulated failure at chunk %d", failAtChunk)
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(200 * time.Millisecond):
 			}
 			return 0, nil
 		})

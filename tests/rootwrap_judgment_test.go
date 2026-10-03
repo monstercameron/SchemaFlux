@@ -84,7 +84,7 @@ func TestValidateHybridShortcutsWhenEverythingIsDecidable(t *testing.T) {
 // With free-text Rules left over, ValidateHybrid must reach the model rather
 // than erroring the way ValidateDeterministically does.
 func TestValidateHybridCallsModelForFreeTextRules(t *testing.T) {
-	testfixtures.WithScriptedProvider(t, `{"valid":true,"errors":[],"confidence":0.9}`, nil)
+	testfixtures.WithScriptedProvider(t, `{"valid":true,"errors":[],"warnings":[],"info":[],"confidence":0.9,"summary":"s"}`, nil)
 
 	result, err := schemaflux.ValidateHybrid(judgmentPerson{Age: 30},
 		schemaflux.NewValidateOptions().WithRules("age should feel about right"))
@@ -98,7 +98,7 @@ func TestValidateHybridCallsModelForFreeTextRules(t *testing.T) {
 
 func TestVerifyWithModelReportsAFalseClaim(t *testing.T) {
 	testfixtures.WithScriptedProvider(t,
-		`{"overall_verdict":"false","overall_confidence":0.9,"claims":[{"claim":"The Earth is flat.","verdict":"false","confidence":0.95,"reasoning":"contradicts basic geodesy"}],"summary":"false claim"}`, nil)
+		`{"logic_issues":[],"consistency_issues":[],"overall_confidence":0.9,"trust_score":0.1,"claims":[{"claim":"The Earth is flat.","verdict":"false","confidence":0.95,"evidence":[],"reasoning":"contradicts basic geodesy"}],"summary":"false claim"}`, nil)
 
 	result, err := schemaflux.VerifyWithModel("The Earth is flat.", schemaflux.NewVerifyOptions())
 	if err != nil {
@@ -153,7 +153,7 @@ func TestAuditWithModelCleanRecordPasses(t *testing.T) {
 
 func TestCritiqueWithModelReportsIssues(t *testing.T) {
 	testfixtures.WithScriptedProvider(t,
-		`{"overall_score":0.4,"criteria_scores":{"clarity":0.4},"issues":[{"criterion":"clarity","severity":"major","description":"unclear thesis"}],"summary":"needs work"}`, nil)
+		`{"overall_score":0.4,"criteria_scores":{"clarity":0.4},"issues":[{"criterion":"clarity","severity":"major","description":"unclear thesis"}],"summary":"needs work","top_priorities":[]}`, nil)
 
 	result, err := schemaflux.CritiqueWithModel("a rough draft essay",
 		critiqueOptionsWithCriteria("clarity"))

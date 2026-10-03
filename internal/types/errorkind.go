@@ -247,6 +247,13 @@ type OperationError struct {
 	// field is the reference half of that channel.
 	Diagnostic DiagnosticRef
 
+	// Narrow says what the failure is within its kind, for a boundary that has
+	// to tell apart what one kind holds (a refusal from the other policy
+	// violations, a recovered panic from the other invariant violations). It
+	// is zero for every error that has not been marked, it changes neither the
+	// kind nor the sentinel errors.Is matches, and Error does not print it.
+	Narrow Narrowing
+
 	Cause error
 }
 
@@ -274,13 +281,18 @@ func (e *OperationError) Error() string {
 
 func (e *OperationError) Unwrap() error { return e.Cause }
 
-// Is reports true for this error's own kind sentinel, so a caller can write
-// errors.Is(err, types.ErrRateLimited) without knowing which layer produced it.
+// Is reports true for this error's own kind sentinel and for no other target, so
+// a caller can write errors.Is(err, types.ErrRateLimited) without knowing which
+// layer produced it. It does not match another *OperationError of the same kind:
+// two errors with different operations and messages are different errors, and a
+// target that merely wraps the sentinel is not the sentinel. Equality of kind is
+// what KindOf is for.
+//
+// errors.Is walks the chain, so an OperationError wrapping another one also
+// matches the inner one's sentinel. KindOf reports the outermost kind alone.
 func (e *OperationError) Is(target error) bool {
-	if sentinel := sentinelFor(e.Kind); sentinel != nil && errors.Is(target, sentinel) {
-		return true
-	}
-	return false
+	sentinel := sentinelFor(e.Kind)
+	return sentinel != nil && target == sentinel
 }
 
 // Retryable reports whether repeating the same request could succeed.
@@ -336,15 +348,248 @@ func Wrap(kind ErrorKind, op string, cause error) *OperationError {
 	return &OperationError{Kind: kind, Op: op, Cause: cause}
 }
 
-// KindOf reports the classified kind of an error, or KindUnknown.
+// Narrowing says what a failure is within its kind, for a boundary that tells
+// apart what one kind holds. NarrowNone, the zero value, is every error that
+// has not been marked.
+type Narrowing uint8
+
+const (
+	// NarrowNone is an error nobody marked.
+	NarrowNone Narrowing = iota
+
+	// NarrowRefusal is read with KindPolicyViolation: the model declined, or
+	// the provider's filter withheld the answer.
+	NarrowRefusal
+
+	// NarrowPanic is a recovered panic or a step that never returned.
+	NarrowPanic
+)
+
+// classifiedError carries a kind for an error whose message has to stay as it
+// is. It prints err's text, unwraps to err, and matches its kind's sentinel
+// beside whatever err already matches. It is one unexported type so that
+// KindOf, which reads it as a kindCarrier, and errors.Is cannot disagree.
+type classifiedError struct {
+	kind ErrorKind
+	err  error
+
+	// narrow is set by ClassifiedRefusal and is NarrowNone for every other
+	// classified error.
+	narrow Narrowing
+
+	// routed is set by ClassifiedCall: the four fields below say where the
+	// request went, and are the zero value otherwise.
+	routed     bool
+	provider   string
+	model      string
+	requestID  string
+	retryAfter time.Duration
+}
+
+func (e *classifiedError) Error() string { return e.err.Error() }
+
+func (e *classifiedError) Unwrap() error { return e.err }
+
+func (e *classifiedError) errorKind() ErrorKind { return e.kind }
+
+// Narrowing is the mark this error carries itself, and not the one of an error
+// it wraps. It is how a boundary that reads a kind from a carrier (the v2
+// converter) reads the mark that goes with that kind.
+func (e *classifiedError) Narrowing() Narrowing { return e.narrow }
+
+// Is reports true for the sentinel of this error's own kind and for no other
+// target, as (*OperationError).Is does: another classified error of the same
+// kind is a different error.
+func (e *classifiedError) Is(target error) bool {
+	sentinel := sentinelFor(e.kind)
+	return sentinel != nil && target == sentinel
+}
+
+// Classified returns err carrying kind: KindOf reports kind, errors.Is matches
+// the kind's sentinel, and its text and its Unwrap chain are err's own. It is
+// for an error whose message must stay as it is, because a caller may already
+// match on it; an error built to be classified is better made with Newf.
+//
+// A nil err stays nil. A kind that has no sentinel (KindUnknown, or a value
+// past the last kind) returns err as it was, since there is nothing to say
+// about it. Classifying an error that already has a kind puts the new kind
+// outermost, so KindOf reports it, and the inner kind's sentinel still matches
+// through errors.Is.
+func Classified(kind ErrorKind, err error) error {
+	if err == nil || sentinelFor(kind) == nil {
+		return err
+	}
+	return &classifiedError{kind: kind, err: err}
+}
+
+// ClassifiedRefusal is Classified for an answer the model declined to give, or
+// that the provider's filter withheld: it carries KindPolicyViolation and
+// NarrowRefusal, so that a boundary which tells a refusal from the other policy
+// violations (NarrowingOf) can. Its text and its Unwrap chain are err's own, as
+// Classified's are. A nil err stays nil.
+func ClassifiedRefusal(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &classifiedError{kind: KindPolicyViolation, err: err, narrow: NarrowRefusal}
+}
+
+// ClassifiedCall is Classified for a failure of a request to a provider, with
+// the route it failed on: the provider and model it went to, the request's id,
+// and how long the provider asked the caller to wait (zero when it did not
+// say). CallOf reads the route back. None of the four is the caller's data.
+func ClassifiedCall(kind ErrorKind, err error, provider, model, requestID string, retryAfter time.Duration) error {
+	if err == nil || sentinelFor(kind) == nil {
+		return err
+	}
+	return &classifiedError{
+		kind:       kind,
+		err:        err,
+		routed:     true,
+		provider:   provider,
+		model:      model,
+		requestID:  requestID,
+		retryAfter: retryAfter,
+	}
+}
+
+// CallOf returns the route the outermost ClassifiedCall error in err's chain
+// was made on, and whether there is one. An error that went through Classified
+// alone, an *OperationError and a plain error have no route here; a caller
+// that wants an *OperationError's own Provider and Model reads them from it.
+func CallOf(err error) (provider, model, requestID string, retryAfter time.Duration, ok bool) {
+	if routed := routeOf(err); routed != nil {
+		return routed.provider, routed.model, routed.requestID, routed.retryAfter, true
+	}
+	return "", "", "", 0, false
+}
+
+// routeOf finds the first routed classifiedError of the chain, outermost
+// first, descending into joined errors in order.
+func routeOf(err error) *classifiedError {
+	for err != nil {
+		if typed, isClassified := err.(*classifiedError); isClassified && typed.routed {
+			return typed
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, inner := range wrapper.Unwrap() {
+				if found := routeOf(inner); found != nil {
+					return found
+				}
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// NarrowingOf returns the mark of the outermost error in err's chain that has
+// one to give: an *OperationError, whatever its Narrow is, or an error made by
+// ClassifiedRefusal. It is NarrowNone when there is none. An unmarked outer
+// *OperationError hides the mark of one it wraps: the outermost error is the
+// one the caller was given. An error made by Classified or ClassifiedCall has
+// no mark and is looked through.
+func NarrowingOf(err error) Narrowing {
+	mark, _ := narrowingIn(err)
+	return mark
+}
+
+// narrowingIn finds the mark NarrowingOf reports, and whether there was a node
+// to read it from. It looks at err and then at what it wraps, in order, and
+// into every error of a joined one.
+func narrowingIn(err error) (Narrowing, bool) {
+	for err != nil {
+		switch typed := err.(type) {
+		case *OperationError:
+			if typed == nil {
+				return NarrowNone, true
+			}
+			return typed.Narrow, true
+		case *classifiedError:
+			if typed.narrow != NarrowNone {
+				return typed.narrow, true
+			}
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, inner := range wrapper.Unwrap() {
+				if mark, found := narrowingIn(inner); found {
+					return mark, true
+				}
+			}
+			return NarrowNone, false
+		default:
+			return NarrowNone, false
+		}
+	}
+	return NarrowNone, false
+}
+
+// lastKind is the highest kind there is. A kind added after it has to move it,
+// and the test over every kind fails until it does.
+const lastKind = KindReviewRequired
+
+// kindOfSentinel reports the kind a sentinel stands for. A sentinel is the kind
+// itself, so KindOf of the bare sentinel is its kind, as errors.Is of it
+// against the sentinel always was.
+func kindOfSentinel(err error) (ErrorKind, bool) {
+	for kind := KindConfiguration; kind <= lastKind; kind++ {
+		if err == sentinelFor(kind) {
+			return kind, true
+		}
+	}
+	return KindUnknown, false
+}
+
+// kindCarrier is implemented by an error type that carries a kind without being
+// an *OperationError, so that KindOf and errors.Is agree about it. It is
+// unexported: an error type that is not in this package says what it is by
+// wrapping an *OperationError.
+type kindCarrier interface {
+	errorKind() ErrorKind
+}
+
+// KindOf reports the classified kind of an error, or KindUnknown. It is the kind
+// of the outermost *OperationError, or of the outermost error that carries a kind
+// of its own, in the chain; for every error type this package defines, it is the
+// kind whose sentinel errors.Is matches.
 //
 // KindUnknown is deliberately not a guess. A caller branching on it should treat
 // it as "nobody classified this", which is a gap to close rather than a
 // category to handle.
 func KindOf(err error) ErrorKind {
-	var operationErr *OperationError
-	if errors.As(err, &operationErr) {
-		return operationErr.Kind
+	if err == nil {
+		return KindUnknown
+	}
+	if kind, isSentinel := kindOfSentinel(err); isSentinel {
+		return kind
+	}
+	switch typed := err.(type) {
+	case *OperationError:
+		if typed == nil {
+			return KindUnknown
+		}
+		return typed.Kind
+	case kindCarrier:
+		return typed.errorKind()
+	}
+
+	switch wrapper := err.(type) {
+	case interface{ Unwrap() error }:
+		return KindOf(wrapper.Unwrap())
+	case interface{ Unwrap() []error }:
+		for _, inner := range wrapper.Unwrap() {
+			if kind := KindOf(inner); kind != KindUnknown {
+				return kind
+			}
+		}
 	}
 	return KindUnknown
 }

@@ -1,9 +1,6 @@
 package types
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // ReviewPacket is a terminal outcome, and a successful one -- not a failure
 // dressed up as a struct.
@@ -76,11 +73,18 @@ func (e *ReviewRequiredError[T]) Error() string {
 	return message
 }
 
-// Is reports true for ErrReviewRequired, so errors.Is reaches the sentinel
-// without a caller needing to import or type-assert ReviewRequiredError.
+// Is reports true for ErrReviewRequired and for no other target, so errors.Is
+// reaches the sentinel without a caller needing to import or type-assert
+// ReviewRequiredError.
 func (e *ReviewRequiredError[T]) Is(target error) bool {
-	return errors.Is(target, ErrReviewRequired)
+	return target == ErrReviewRequired
 }
+
+// errorKind makes types.KindOf report KindReviewRequired for this error, which
+// is the kind errors.Is already matches. KindOf used to find no *OperationError
+// in it and answer KindUnknown, so a caller switching on the kind never saw a
+// review request from Approve or Vote.
+func (e *ReviewRequiredError[T]) errorKind() ErrorKind { return KindReviewRequired }
 
 // NewReviewRequired builds the sentinel-bearing error from a packet. It is the
 // one place a ReviewPacket is turned into an error, so every producer of a

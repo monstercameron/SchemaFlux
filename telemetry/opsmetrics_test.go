@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -19,7 +20,7 @@ func enableMetrics(t *testing.T) {
 	t.Helper()
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)
-	t.Setenv("SCHEMAFLUX_METRICS", "")
+	configtest.Setenv(t, "SCHEMAFLUX_METRICS", "")
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })
 	config.SetMetricsEnabled(true)
@@ -91,6 +92,35 @@ func TestRecordBatchMetricsUnpricedEmitsNoCostSeries(t *testing.T) {
 			t.Errorf("an unpriced batch must not emit schemaflux_cost_total (PR-002: unpriced is not free), got snapshot %+v", s)
 		}
 	}
+}
+
+// A cost series is emitted only for an outcome that happened: a run that
+// accepted nothing has no accepted cost to report, and a run in which nothing
+// failed has no failed cost, and a zero on either would read as a measurement.
+func TestRecordBatchMetricsCostSeriesAreEmittedOnlyForOutcomesThatHappened(t *testing.T) {
+	series := func(quality string) (MetricSnapshot, bool) {
+		return GetMetricSnapshot("schemaflux_cost_total", map[string]string{"operation": "op", "shape": "shape", "currency": "USD", "quality": quality})
+	}
+	t.Run("nothing accepted", func(t *testing.T) {
+		enableMetrics(t)
+		RecordBatchMetrics("op", "shape", types.BatchMetrics{CostPriced: true, Currency: "USD", Failed: 2, FailedCost: 0.4, CostQuality: types.PricingUnknown})
+		if _, ok := series("accepted"); ok {
+			t.Error("an accepted-cost series was emitted for a run that accepted nothing")
+		}
+		if _, ok := series("failed"); !ok {
+			t.Error("the failed-cost series is missing")
+		}
+	})
+	t.Run("nothing failed", func(t *testing.T) {
+		enableMetrics(t)
+		RecordBatchMetrics("op", "shape", types.BatchMetrics{CostPriced: true, Currency: "USD", Succeeded: 2, AcceptedCost: 0.4, CostPerAcceptedItem: 0.2, CostQuality: types.PricingExact})
+		if _, ok := series("failed"); ok {
+			t.Error("a failed-cost series was emitted for a run in which nothing failed")
+		}
+		if _, ok := series("accepted"); !ok {
+			t.Error("the accepted-cost series is missing")
+		}
+	})
 }
 
 func TestRecordBatchMetricsItemsTotalCoversEveryStatus(t *testing.T) {
@@ -213,7 +243,7 @@ func TestRecordBatchMetricsCostPerAcceptedItemUnknownEmitsNothing(t *testing.T) 
 func TestRecordBatchMetricsDisabledWhenMetricsAreOff(t *testing.T) {
 	ResetMetrics()
 	t.Cleanup(ResetMetrics)
-	t.Setenv("SCHEMAFLUX_METRICS", "")
+	configtest.Setenv(t, "SCHEMAFLUX_METRICS", "")
 	original := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(original) })
 	config.SetMetricsEnabled(false)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
@@ -38,7 +39,7 @@ func (p *scriptedRetryProvider) RetryPolicy() (int, time.Duration)          { re
 // explicitly; so does the test.
 func withExplicitModel(t *testing.T) {
 	t.Helper()
-	t.Setenv("SCHEMAFLUX_MODEL", "test-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "test-model")
 }
 
 // The retry budget is the caller's to set, and each setting has to be honoured

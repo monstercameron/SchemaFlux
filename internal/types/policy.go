@@ -137,13 +137,21 @@ var ErrDataPolicyConflict = errors.New("data policy conflict")
 
 // Tighten combines p (the boundary policy, usually the tenant/client
 // default) with override (a per-invocation policy) into the policy that
-// governs one call. Every field independently takes whichever side is more
-// restrictive; a field undeclared on one side defers entirely to the other
-// side's value, declared or not. The result is never less restrictive than
-// either input on any field -- that is the whole TRU-11 property this
-// function exists to guarantee, and every test in policy_test.go that
-// matters checks it from the "did this get more permissive" direction, not
-// just "did this match an example."
+// governs one call. The result allows nothing that either input does not allow:
+// whatever AllowsProvider, AllowsRegion, AllowsRetention, AllowsContentLogging
+// and the two boolean permissions say of the result, they say of both inputs
+// too. That is the whole TRU-11 property this function exists to guarantee, and
+// it holds when Tighten is applied again to its own result, in either order.
+//
+// A field one side leaves undeclared is the most restrictive that side can be,
+// as in every Allows method: an empty provider or region list allows nothing,
+// and an unspecified retention allows none. So a side that does not declare a
+// field takes the other side's value away rather than lending it its own, and an
+// override that means to narrow only retention has to list the providers and
+// regions it keeps. A list whose intersection with the other is empty is empty:
+// nothing is allowed, and nothing a later Tighten is given can bring it back.
+// Provider and region names are compared without regard to case and surrounding
+// space, as AllowsProvider compares them.
 //
 // Classification is the one field that can produce ErrDataPolicyConflict:
 // two different non-empty labels do not have an ordering to pick the
@@ -162,8 +170,8 @@ func (p DataPolicy) Tighten(override DataPolicy) (DataPolicy, error) {
 		return DataPolicy{}, fmt.Errorf("%w: classification %q vs %q", ErrDataPolicyConflict, p.Classification, override.Classification)
 	}
 
-	out.AllowedProviders = intersectOrDefer(p.AllowedProviders, override.AllowedProviders)
-	out.AllowedRegions = intersectOrDefer(p.AllowedRegions, override.AllowedRegions)
+	out.AllowedProviders = intersectNames(p.AllowedProviders, override.AllowedProviders)
+	out.AllowedRegions = intersectNames(p.AllowedRegions, override.AllowedRegions)
 
 	out.MaxRetentionDays = stricterRetention(p.MaxRetentionDays, override.MaxRetentionDays)
 
@@ -185,40 +193,34 @@ func (p DataPolicy) Tighten(override DataPolicy) (DataPolicy, error) {
 	return out, nil
 }
 
-// intersectOrDefer implements the "undeclared defers to the other side,
-// both declared means intersect" rule AllowedProviders and AllowedRegions
-// share. An intersection that ends up empty (both declared, nothing in
-// common) is returned as a non-nil empty slice, not nil -- nil means
-// "undeclared" everywhere else in this file, and a real, all-excluding
-// intersection must not be misread as "no constraint" by a caller checking
-// len(out) == 0 against the wrong sentinel.
-func intersectOrDefer(a, b []string) []string {
-	if len(a) == 0 {
-		return append([]string(nil), b...)
-	}
-	if len(b) == 0 {
-		return append([]string(nil), a...)
-	}
-	set := make(map[string]bool, len(b))
-	for _, v := range b {
-		set[v] = true
-	}
+// intersectNames returns the names both lists contain, sorted, spelled as in a,
+// each once. A name is the same name whatever its case or surrounding space. The
+// result is never nil: a list with nothing in it allows nothing, and an
+// intersection that comes out empty, because either side was empty or because
+// they share nothing, is that same list and is not read as "undeclared" by
+// anything that gets it.
+func intersectNames(a, b []string) []string {
 	out := make([]string, 0, len(a))
-	for _, v := range a {
-		if set[v] {
-			out = append(out, v)
+	kept := make(map[string]bool, len(a))
+	for _, name := range a {
+		folded := strings.ToLower(strings.TrimSpace(name))
+		if folded == "" || kept[folded] || !containsFold(b, name) {
+			continue
 		}
+		kept[folded] = true
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
 }
 
+// stricterRetention is the shorter of two retention ceilings. An unspecified
+// ceiling allows no retention at all (AllowsRetention), so it is the shortest
+// there is, and tightening with one gives one: it is not a ceiling the other
+// side's value can replace.
 func stricterRetention(a, b RetentionDays) RetentionDays {
-	if a == RetentionUnspecified {
-		return b
-	}
-	if b == RetentionUnspecified {
-		return a
+	if a == RetentionUnspecified || b == RetentionUnspecified {
+		return RetentionUnspecified
 	}
 	if a < b {
 		return a
@@ -264,8 +266,15 @@ func (p DataPolicy) AllowsContentLogging(level ContentLoggingLevel) bool {
 	return level <= p.ContentLogging
 }
 
+// containsFold reports whether want is in list, ignoring case and surrounding
+// space. A blank name is in no list: an empty entry is not a name that was ever
+// cleared for anything, and "" matching an empty entry would allow a route with
+// no provider name.
 func containsFold(list []string, want string) bool {
 	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return false
+	}
 	for _, v := range list {
 		if strings.ToLower(strings.TrimSpace(v)) == want {
 			return true

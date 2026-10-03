@@ -455,24 +455,31 @@ if errors.As(err, &apiErr) && apiErr.Retryable() {
 }
 ```
 
-`Error()` prints the status, the model, and the vendor's own `message`, `type`,
-`code`, and `param` — but **not the raw response body**. A provider's error can
-quote your input back at you (a content filter naming the passage it objected
-to, a validation error echoing the field it could not parse), and this library
-exists to run invoices, tickets, and notes through models. That content does not
-belong in your logs by default. The body is retained on the value: use
-`apiErr.Body`, `apiErr.Detail()`, or set `SCHEMAFLUX_ERROR_DETAIL=1` while
-debugging against data you own.
+`Error()` prints the status, the model, how long a throttled answer asked you to
+wait, and the vendor's `type`, `code` and `param`, which are fixed words. It does
+**not** print the vendor's `message` or the raw response body, and says how long
+each was. A provider's message can quote your input back at you (a content filter
+naming the passage it objected to, a validation error echoing the field it could
+not parse), and a gateway's can quote the key it rejected; this library exists to
+run invoices, tickets and notes through models, and that text does not belong in
+your logs by default. The same holds however the error is printed: with `%v` or
+`%#v`, through `log/slog`, or marshalled as JSON. Both are kept on the value, with
+the provider's own key already removed: read `apiErr.Message`, `apiErr.Body` or
+`apiErr.Detail()`, or set `SCHEMAFLUX_ERROR_DETAIL=1` while debugging against data
+you own.
 
 ### Rate limits
 
 A 429 or 503 carries the wait the server wants in `Retry-After`, and that number
-is used in place of the local backoff. This matters more than it sounds: the
-computed backoff doubles from 500ms and stops at five seconds, so against a
+is used in place of the local backoff, unjittered — the point of honouring a
+number the server gave you is lost if you then randomise it. This matters more
+than it sounds: the local backoff is capped at five seconds, so against a
 provider that limits *per minute* every retry landed inside the same closed
 window and the retry budget bought nothing but latency. The server's wait is
 bounded at two minutes, and the caller's own context deadline still cuts it
-short. When the server states no wait, the local backoff stays in charge.
+short. A `Retry-After` that cannot be parsed, or names a time already past,
+counts as *the server did not say* rather than as a wait of zero. When the
+server states no wait, the local backoff stays in charge.
 
 Client tuning:
 
@@ -483,6 +490,69 @@ client := schemaflux.NewClient(apiKey).
     WithTimeout(30 * time.Second).
     WithProvider("openai")
 ```
+
+### The retry contract
+
+If you are embedding this library inside an application that does its own
+retrying, these are the parts you can code against. They are stated here
+because an embedder needs to know where this library's retrying stops and
+theirs begins, and because two layers that both retry multiply.
+
+**Attempts are bounded, always.** A call makes at most `retries + 1` requests.
+The default is three retries, so four requests. Nothing in the retry path is
+unbounded and nothing escalates on its own.
+
+**`WithRetries(0)` means zero.** Not "zero, so use the default" — zero
+requests beyond the first. That distinction was a real defect once: the
+dispatcher tested `maxRetries <= 0` and substituted the global default of
+three, so retries could not be turned off at all and a caller who asked for
+none waited out two backoffs anyway. An embedder that does its own retrying
+depends on being able to switch this one off, so it is pinned by a test
+(`internal/ops/retry_policy_test.go`).
+
+**A custom provider states its own policy, and the three cases are distinct.**
+`Provider.RetryPolicy() (int, time.Duration)` is asked once per call:
+
+| Returned | Meaning |
+| --- | --- |
+| `n > 0` | exactly `n` retries |
+| `0` | no retries; the request is made once |
+| `< 0` | no opinion — the library's default applies |
+
+Note that `Client.WithRetries` clamps a negative to zero while a provider
+returning a negative gets the default. They are different questions: a caller
+setting a ceiling of -1 means "none", and a provider that has no policy to
+declare means "you decide".
+
+**The backoff is jittered, and the jitter is decorrelated.** Each wait is
+uniformly random between the base backoff and three times the *previous* wait,
+capped at five seconds. It used to be a plain exponential ladder computed from
+the attempt number, which meant every caller retrying the same failure against
+the same base backoff retried at the same instant — a provider coming back
+from an outage met all of them in one synchronised wave. Correlating each wait
+with the previous one rather than with the attempt number is what breaks the
+wave up.
+
+**Cancellation and deadlines are never retried, and never slept through.** A
+context that is already done ends the call rather than starting an attempt
+that cannot succeed, and a backoff in progress is cut short the moment the
+context ends — a five-retry budget with an hour of backoff returns
+immediately on a cancelled context rather than in five hours. The error
+arrives classified as `canceled` or `timeout`, distinct from any provider
+failure.
+
+**One place decides what is retryable.** `internal/llm/classify.go` maps a
+failure to a `types.ErrorKind`, and the kind decides. There is deliberately no
+second opinion anywhere in the stack: an unrecognised error is retried rather
+than failed fast, because "nobody has taught the taxonomy this shape yet" is
+not evidence that the failure is permanent, and the attempt budget already
+bounds what being wrong about it costs.
+
+**Repair is not retry, and has its own budget.** A retry sends the same
+request again; a repair sends a new one naming what was wrong with the
+answer. They are counted and configured separately (`SCHEMAFLUX_REPAIR_ATTEMPTS`),
+and both appear in `Meta` — `Attempts` counts requests, `Repairs` counts the
+ones that were corrections.
 
 ## Logging
 
@@ -579,7 +649,28 @@ if ok {
 ## Providers
 
 Default provider:
-- `openai` (`gpt-5.6-luna` / `-sol` / `-terra` by tier, over the Responses API)
+- `openai` (`gpt-6-luna` on every tier, over the Responses API)
+
+Which request parameters a model accepts is decided by a table in the library, by
+model name. `gpt-5`, `gpt-6` and the o-series reject `temperature`, so it is not sent
+to them. A name the table does not know is not sent `temperature` on OpenAI's own
+endpoint, and is sent it on any other endpoint, where an unknown name is usually a
+local model that accepts it.
+
+The one case the table cannot see is an alias: an Azure deployment or a proxy route
+that gives a `gpt-6` model another name. Requests to it fail with "Unsupported
+parameter: 'temperature'". Set `OmitTemperature` on the provider configuration for
+that endpoint. It is a field of `ProviderConfig` only: there is no environment
+variable for it, so an endpoint configured through `SCHEMAFLUX_OPENAI_BASE_URL`
+alone has to be given a configuration to set it.
+
+```go
+client := schemaflux.NewClient(apiKey).WithProviderConfig("openai", schemaflux.ProviderConfig{
+    APIKey:          apiKey,
+    BaseURL:         "https://my-resource.openai.azure.com/openai/v1",
+    OmitTemperature: true,
+})
+```
 
 Secondary provider:
 - `cerebras` (`gemma-4-31b`, over the OpenAI-compatible chat API)
@@ -640,6 +731,68 @@ Two things are worth knowing:
 Free-tier keys are limited to **5 requests/minute**; paid keys to 500. Either
 way a 429 is waited out using the server's own `Retry-After`, not a local
 backoff — see the resilience note below.
+
+### Codex CLI — a subscription login, no API key
+
+`codex` runs operations through the [Codex CLI](https://developers.openai.com/codex/cli)
+using whatever login `codex login` already established. There is no API key
+anywhere in the path.
+
+```go
+import "github.com/monstercameron/schemaflux/codex"
+
+provider, err := codex.New(codex.Options{Model: "gpt-5.6-sol"})
+if err != nil {
+    return err // the CLI is not installed, or not on PATH
+}
+client := schemaflux.NewClient("").WithProviderInstance(provider)
+```
+
+Or make it selectable from configuration, which is what a host embedding this
+library usually wants:
+
+```go
+codex.Register()
+client := schemaflux.NewClient("").WithProvider("codex")
+```
+
+It is a separate package for the same reason `telemetry/otel` is: a consumer
+who does not import it gets no process-spawning code path and no new public
+API. Registration is an explicit call rather than an `init()`, so a provider
+name never appears in the registry as a side effect of an import.
+
+Four things are worth knowing, and the first two are the point:
+
+- **API-key variables are removed from the child process.** `OPENAI_API_KEY`,
+  `OPENAI_KEY`, and `CODEX_API_KEY` are stripped before the CLI is started, so
+  it cannot quietly fall back to key-based authentication. That fallback is
+  worth engineering against precisely because it *succeeds*: the answers come
+  back, an account nobody chose gets billed, and nothing in the result says
+  which identity paid. `CODEX_HOME` is preserved — it is where the login lives.
+- **Every call is unpriced, which is not the same as free.** The token counts
+  are real and come from the CLI's own `turn.completed` event, but they are
+  drawn against a flat-rate plan rather than invoiced per token, so multiplying
+  them by any rate card produces a number that is not the bill. `Meta.Cost`
+  reports `Priced: false`. A zero would be indistinguishable from a free call
+  and would understate spend silently.
+- **The model has to be named.** There is no tier mapping for `codex`: set
+  `SCHEMAFLUX_MODEL`, pin one on the call, or pass `Options.Model`. Which models
+  a login may run depends on the CLI's version and the caller's subscription,
+  and a built-in default here would be this library asserting something it
+  cannot know.
+- **There is one prompt channel, not two.** `codex exec` takes a single task on
+  stdin and has no system role, so the operation's instructions and your data
+  arrive in one stream where a chat API would keep them separate. The library's
+  own trust boundary still applies upstream — steering is delimited before it
+  reaches any provider — but the role separation an API gives for free is not
+  available here.
+
+The prompt is written to the child's **stdin**, never to its argument list, so
+it cannot be read out of a process listing or echoed back by a CLI that prints
+its own invocation. When a turn fails, the CLI's message and its stderr are
+both withheld from the error string and reachable through `Detail()` or
+`SCHEMAFLUX_ERROR_DETAIL=1`: the one gate that every provider's message and
+response body sit behind.
 
 Custom provider registration:
 
@@ -877,10 +1030,28 @@ is an error rather than a longer summary.
 the limits and the callback, so clearing history silently disabled spend
 alerting. Use `ResetBudget` for that.
 
-**`SCHEMAFLUX_JAEGER_ENDPOINT` is no longer supported.** OpenTelemetry dropped
-the Jaeger exporter in 2023 and Jaeger accepts OTLP natively. Point
-`SCHEMAFLUX_OTLP_ENDPOINT` at the collector's OTLP port. Setting the old
-variable logs an error rather than silently exporting nothing.
+**The library no longer sets tracing up for you.** `telemetry/otel.InitTracing`,
+`ShutdownTracing` and the variables they read (`SCHEMAFLUX_OTLP_ENDPOINT`,
+`SCHEMAFLUX_JAEGER_ENDPOINT`, `SCHEMAFLUX_TRACE_SAMPLE_RATE`,
+`SCHEMAFLUX_EXPORT_TRACES_STDOUT`, `SCHEMAFLUX_ENVIRONMENT`) are gone, with the
+older helpers `StartSpan`, `RecordLLMCall`, `AddSpanTags`, `RecordSpanEvent`,
+`ExtractTraceContext` and `InjectTraceContext`. Build your own OpenTelemetry
+tracer provider, with your exporter, sampler and resource, configured by
+OpenTelemetry's own `OTEL_*` variables, and hand it over:
+
+```go
+restore, err := otel.Install(tracerProvider) // github.com/monstercameron/schemaflux/telemetry/otel
+defer restore()
+```
+
+One call of an operation is then a span named `schemaflux.<operation>`, and each
+request it makes to a provider is a child span named by the OpenTelemetry
+generative-AI convention (`chat <model>`), with the `gen_ai.*` attributes, a
+retry or a hedged copy as an event, and a repair as a second request marked as
+one. A failed operation is an error on its own span, with `error.type` holding
+the library's error kind. No span carries a prompt, an input, an answer or a
+key. The package's documentation lists every attribute and has a runnable
+example. A program that only calls `Install` no longer links gRPC and protobuf.
 
 **`Init` returns an error for a provider it cannot resolve a model for.** It
 always had the error return; it now uses it. `WithProvider("qwen")` without

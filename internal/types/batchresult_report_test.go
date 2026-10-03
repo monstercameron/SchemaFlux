@@ -143,29 +143,78 @@ func TestBatchResultStringSummarizesCountsAndPolicyNeverAValue(t *testing.T) {
 	}
 }
 
-// DefaultPolicyFor's cutover: at or below the threshold gets FailFast, above
-// it gets RetryThenCollect, and the reason names both the count and the
-// threshold so a caller can tell a deliberate choice from a fallback.
-func TestDefaultPolicyForCutover(t *testing.T) {
+// A result whose summary lags its items is not complete: Complete reads both.
+func TestBatchResultCompleteReadsTheItemsAsWellAsTheSummary(t *testing.T) {
 	cases := []struct {
-		itemCount  int
-		wantPolicy BatchPolicy
+		name  string
+		items []ItemResult[string]
+		sum   BatchSummary
+		want  bool
 	}{
-		{1, PolicyFailFast},
-		{LongBatchThreshold, PolicyFailFast},
-		{LongBatchThreshold + 1, PolicyRetryThenCollect},
-		{500, PolicyRetryThenCollect},
+		{"summary and items agree on success", []ItemResult[string]{{Status: ItemSucceeded}, {Status: ItemSucceeded}}, BatchSummary{Total: 2, Succeeded: 2}, true},
+		{"a failed item the summary does not count", []ItemResult[string]{{Status: ItemSucceeded}, {Status: ItemFailed}}, BatchSummary{Total: 2, Succeeded: 2}, false},
+		{"a cancelled item the summary does not count", []ItemResult[string]{{Status: ItemSucceeded}, {Status: ItemCancelled}}, BatchSummary{Total: 2, Succeeded: 2}, false},
+		{"an item with no status", []ItemResult[string]{{Status: ItemSucceeded}, {}}, BatchSummary{Total: 2, Succeeded: 2}, false},
+		{"a failure the summary counts and the items do not show", []ItemResult[string]{{Status: ItemSucceeded}}, BatchSummary{Total: 1, Failed: 1}, false},
+		{"a cancellation the summary counts alone", nil, BatchSummary{Cancelled: 1}, false},
+		{"no items and an empty summary", nil, BatchSummary{}, true},
+		{"one item that succeeded", []ItemResult[string]{{Status: ItemSucceeded}}, BatchSummary{Total: 1, Succeeded: 1}, true},
+		{"one item that failed", []ItemResult[string]{{Status: ItemFailed}}, BatchSummary{Total: 1, Failed: 1}, false},
+		{"every item failed and the summary says none did", []ItemResult[string]{{Status: ItemFailed}, {Status: ItemFailed}}, BatchSummary{Total: 2}, false},
 	}
 	for _, tc := range cases {
-		policy, reason := DefaultPolicyFor(tc.itemCount)
-		if policy != tc.wantPolicy {
-			t.Errorf("DefaultPolicyFor(%d) = %v, want %v", tc.itemCount, policy, tc.wantPolicy)
-		}
-		if reason == "" {
-			t.Errorf("DefaultPolicyFor(%d) gave no reason", tc.itemCount)
-		}
-		if !strings.Contains(reason, "no policy specified") {
-			t.Errorf("reason = %q, does not say the policy was unspecified", reason)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			r := BatchResult[string]{Items: tc.items, Summary: tc.sum}
+			if got := r.Complete(); got != tc.want {
+				t.Errorf("Complete() = %v, want %v", got, tc.want)
+			}
+			if _, values := r.Values(); values != tc.want {
+				t.Errorf("Values() complete = %v, want %v", values, tc.want)
+			}
+			if complete, failures := r.Complete(), len(r.Failures()); complete && failures > 0 {
+				t.Errorf("Complete() is true beside %d failure(s)", failures)
+			}
+		})
+	}
+}
+
+func TestBatchResultValuesSurvivesANonsenseSummary(t *testing.T) {
+	r := BatchResult[string]{
+		Summary: BatchSummary{Total: 2, Succeeded: -5},
+		Items:   []ItemResult[string]{{Status: ItemSucceeded, Value: "a"}, {Status: ItemSucceeded, Value: "b"}},
+	}
+	values, _ := r.Values()
+	if len(values) != 2 {
+		t.Errorf("Values() = %v", values)
+	}
+}
+
+func TestBatchMetricsCostQualityIgnoresAnUnsetQualityAndMixesFreeWithExact(t *testing.T) {
+	priced := func(quality PricingQuality) ItemResult[string] {
+		return ItemResult[string]{Status: ItemSucceeded, Cost: CostInfo{Priced: true, TotalCost: 0.01, Currency: "USD", Quality: quality}}
+	}
+	cases := []struct {
+		name  string
+		items []ItemResult[string]
+		want  PricingQuality
+	}{
+		{"an unset quality, then exact", []ItemResult[string]{priced(""), priced(PricingExact)}, PricingExact},
+		{"exact, then an unset quality", []ItemResult[string]{priced(PricingExact), priced("")}, PricingExact},
+		{"only unset qualities", []ItemResult[string]{priced(""), priced("")}, PricingUnknown},
+		{"free, then exact", []ItemResult[string]{priced(PricingFree), priced(PricingExact)}, PricingExact},
+		{"exact, then free", []ItemResult[string]{priced(PricingExact), priced(PricingFree)}, PricingExact},
+		{"free only", []ItemResult[string]{priced(PricingFree), priced(PricingFree)}, PricingFree},
+		{"exact then estimated", []ItemResult[string]{priced(PricingExact), priced(PricingEstimated)}, PricingEstimated},
+		{"estimated then exact", []ItemResult[string]{priced(PricingEstimated), priced(PricingExact)}, PricingEstimated},
+		{"free then estimated", []ItemResult[string]{priced(PricingFree), priced(PricingEstimated)}, PricingEstimated},
+		{"unknown quality items", []ItemResult[string]{priced(PricingUnknown)}, PricingUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := BatchResult[string]{Items: tc.items, Summary: BatchSummary{Total: len(tc.items), Succeeded: len(tc.items)}}
+			if got := r.Metrics().CostQuality; got != tc.want {
+				t.Errorf("CostQuality = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -13,7 +13,7 @@ func clearModelEnv(t *testing.T) {
 	for _, name := range []string{
 		"SCHEMAFLUX_MODEL", "SCHEMAFLUX_MODEL_SMART", "SCHEMAFLUX_MODEL_FAST", "SCHEMAFLUX_MODEL_QUICK",
 	} {
-		t.Setenv(name, "")
+		setenvAndReload(t, name, "")
 		os.Unsetenv(name)
 	}
 }
@@ -34,6 +34,9 @@ func TestNoProviderReceivesAnotherProvidersModel(t *testing.T) {
 		{"groq", []string{"gpt-", "claude-", "deepseek-"}},
 		{"mistral", []string{"gpt-", "claude-", "llama"}},
 		{"openai", []string{"claude-", "llama", "deepseek-", "mistral-"}},
+		{"jev", []string{"gpt-", "claude-", "llama", "deepseek-"}},
+		{"jev-openrouter", []string{"gpt-", "claude-", "llama", "deepseek-"}},
+		{"jev-litellm", []string{"gpt-", "claude-", "llama", "deepseek-"}},
 	}
 
 	for _, tc := range cases {
@@ -91,7 +94,7 @@ func TestExplicitModelRescuesAnUnmappedProvider(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearModelEnv(t)
-			t.Setenv(tc.env, "qwen-max")
+			setenvAndReload(t, tc.env, "qwen-max")
 
 			if got := GetModel(tc.speed, "qwen"); got != "qwen-max" {
 				t.Errorf("GetModel = %q, want the override qwen-max", got)
@@ -137,6 +140,10 @@ func TestHasModelMapping(t *testing.T) {
 		{"openrouter", true},
 		{"cerebras", true},
 		{"local", true},
+		{"jev", true},
+		{"jev-openrouter", true},
+		{"jev-litellm", true},
+		{" JEV ", true},
 		{"qwen", false},
 		{"zai", false},
 		{"made-up", false},

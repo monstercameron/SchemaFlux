@@ -42,7 +42,8 @@ func TestREADMEClaimsMatchTheLibrary(t *testing.T) {
 		{"no provider call at all", "internal/ops/rules_test.go"},
 
 		// X-03: error bodies carried the caller's payload.
-		{"not the raw response body", "internal/llm/apierror_test.go"},
+		// Revised 2026-10-03: the vendor's message is withheld as well as the body.
+		{"the vendor's `message` or the raw response body", "internal/llm/apierror_disclosure_test.go"},
 	}
 
 	for _, claim := range claims {

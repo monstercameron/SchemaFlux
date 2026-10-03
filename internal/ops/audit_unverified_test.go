@@ -2,8 +2,11 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/monstercameron/schemaflux/internal/types"
 )
 
 // This file demonstrates the "asks but never checks" pattern in operations
@@ -26,7 +29,10 @@ func TestSettle_RefusesASolutionBelowTheSatisfactionFloor(t *testing.T) {
 		"solution": {"weeks": 5},
 		"satisfaction": {"budget": 0.1},
 		"overall_satisfaction": 0.1,
-		"confidence": 0.9
+		"confidence": 0.9,
+		"tradeoffs": [],
+		"alternatives": [],
+		"reasoning": "balanced"
 	}`)
 
 	type plan struct {
@@ -46,7 +52,10 @@ func TestSettle_RefusesASolutionBelowTheSatisfactionFloor(t *testing.T) {
 func TestSettle_RefusesMoreAlternativesThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"solution": {"weeks": 5},
+		"satisfaction": {"budget": 0.8},
 		"overall_satisfaction": 0.8,
+		"tradeoffs": [],
+		"reasoning": "balanced",
 		"confidence": 0.9,
 		"alternatives": [{"weeks": 1}, {"weeks": 2}, {"weeks": 3}, {"weeks": 4}]
 	}`)
@@ -68,7 +77,10 @@ func TestSettle_RefusesMoreAlternativesThanRequested(t *testing.T) {
 func TestSettle_AcceptsASolutionInsideBothConstraints(t *testing.T) {
 	withResponse(t, `{
 		"solution": {"weeks": 5},
+		"satisfaction": {"budget": 0.8},
 		"overall_satisfaction": 0.8,
+		"tradeoffs": [],
+		"reasoning": "balanced",
 		"confidence": 0.9,
 		"alternatives": [{"weeks": 1}]
 	}`)
@@ -162,12 +174,14 @@ func TestSemanticMatch_MaxMatchesCountsPerSourceNotOverTheWholeList(t *testing.T
 func TestCritique_RefusesMoreIssuesThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"overall_score": 0.4,
+		"criteria_scores": {"clarity": 0.4},
 		"issues": [
 			{"criterion": "clarity", "severity": "minor", "description": "issue 1"},
 			{"criterion": "clarity", "severity": "minor", "description": "issue 2"},
 			{"criterion": "clarity", "severity": "minor", "description": "issue 3"}
 		],
-		"summary": "several issues found"
+		"summary": "several issues found",
+		"top_priorities": []
 	}`)
 
 	_, err := Critique("some text", NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithMaxIssues(1))
@@ -177,22 +191,32 @@ func TestCritique_RefusesMoreIssuesThanRequested(t *testing.T) {
 }
 
 // SeverityFilter narrows what the caller wants reported; an issue carrying a
-// different severity is an answer to a question that was not asked.
+// different severity is an answer to a question that was not asked. The refusal
+// says which issue by its position and never repeats the severity the model
+// wrote: that word is the model's text, and no error carries it.
 func TestCritique_RefusesAnIssueOutsideTheRequestedSeverity(t *testing.T) {
 	withResponse(t, `{
 		"overall_score": 0.4,
+		"criteria_scores": {"clarity": 0.4},
 		"issues": [
-			{"criterion": "clarity", "severity": "minor", "description": "a minor nit, not critical"}
+			{"criterion": "clarity", "severity": "minor-canary-7c1", "description": "a nit, not critical"}
 		],
-		"summary": "one minor issue"
+		"summary": "one small issue",
+		"top_priorities": []
 	}`)
 
 	_, err := Critique("some text", NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithSeverityFilter("critical"))
 	if err == nil {
-		t.Fatal("Critique accepted a minor issue against a SeverityFilter of \"critical\"")
+		t.Fatal("Critique accepted an issue of another severity against a SeverityFilter of \"critical\"")
 	}
-	if !strings.Contains(err.Error(), "minor") {
-		t.Fatalf("the error does not name the offending severity: %v", err)
+	if !strings.Contains(err.Error(), "issue 0") {
+		t.Fatalf("the error does not say which issue: %v", err)
+	}
+	if strings.Contains(err.Error(), "minor-canary-7c1") {
+		t.Fatalf("the error repeats the severity the model wrote: %v", err)
+	}
+	if !errors.Is(err, types.ErrInvariantViolation) {
+		t.Fatalf("the refusal is not an invariant violation: %v", err)
 	}
 }
 
@@ -200,10 +224,12 @@ func TestCritique_RefusesAnIssueOutsideTheRequestedSeverity(t *testing.T) {
 func TestCritique_AcceptsIssuesWithinBothConstraints(t *testing.T) {
 	withResponse(t, `{
 		"overall_score": 0.4,
+		"criteria_scores": {"clarity": 0.4},
 		"issues": [
 			{"criterion": "clarity", "severity": "critical", "description": "a real problem"}
 		],
-		"summary": "one critical issue"
+		"summary": "one critical issue",
+		"top_priorities": []
 	}`)
 
 	result, err := Critique("some text",
@@ -216,18 +242,23 @@ func TestCritique_AcceptsIssuesWithinBothConstraints(t *testing.T) {
 	}
 }
 
-// An issue with no severity label is not matched against the filter: refusing
-// it would discard a real finding over a missing string.
-func TestCritique_UnlabeledSeverityIsNotAFilterViolation(t *testing.T) {
+// An issue with no severity label cannot be matched against the filter, and
+// letting it through would be a way round the filter, so the answer is refused:
+// the severity is part of every issue the prompt asks for.
+func TestCritique_RefusesAnIssueWithNoSeverityLabel(t *testing.T) {
 	withResponse(t, `{
 		"overall_score": 0.4,
+		"criteria_scores": {"clarity": 0.4},
 		"issues": [{"criterion": "clarity", "description": "no severity given"}],
-		"summary": "one issue"
+		"summary": "one issue",
+		"top_priorities": []
 	}`)
 
-	if _, err := Critique("some text",
-		NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithSeverityFilter("critical")); err != nil {
-		t.Fatalf("Critique refused an issue that simply carried no severity label: %v", err)
+	_, err := Critique("some text",
+		NewCritiqueOptions().WithCriteria([]string{"clarity"}).WithSeverityFilter("critical"))
+	wantKind(t, err, types.KindSchemaViolation)
+	if err == nil || !strings.Contains(err.Error(), "issues[0].severity is missing") {
+		t.Fatalf("err = %v, want the missing severity named", err)
 	}
 }
 
@@ -237,7 +268,7 @@ func TestCritique_UnlabeledSeverityIsNotAFilterViolation(t *testing.T) {
 // did not fit.
 func TestCompress_RefusesOutputAboveTheRequestedMaximum(t *testing.T) {
 	longOutput := strings.Repeat("word ", 500) // ~2500 characters
-	withResponse(t, `{"compressed": "`+longOutput+`"}`)
+	withResponse(t, `{"compressed": "`+longOutput+`","preserved_info": [], "removed_info": []}`)
 
 	_, err := Compress("some long input text that should be compressed down",
 		NewCompressOptions().WithMaxOutputSize(20))
@@ -254,7 +285,7 @@ func TestCompress_RefusesOutputAboveTheRequestedMaximum(t *testing.T) {
 // It used to be documented as "tokens/words", which agreed with neither -- and
 // since nothing enforced it, the disagreement never surfaced.
 func TestCompress_AcceptsOutputInsideTheRequestedMaximum(t *testing.T) {
-	withResponse(t, `{"compressed": "short"}`)
+	withResponse(t, `{"compressed": "short","preserved_info": [], "removed_info": []}`)
 
 	result, err := Compress("some long input text that should be compressed down",
 		NewCompressOptions().WithMaxOutputSize(20))
@@ -270,7 +301,7 @@ func TestCompress_AcceptsOutputInsideTheRequestedMaximum(t *testing.T) {
 // "approximately", it is a target rather than a bound, and beating it is a
 // better answer, not a violation.
 func TestCompress_BeatingTheCompressionRatioIsNotAViolation(t *testing.T) {
-	withResponse(t, `{"compressed": "x"}`)
+	withResponse(t, `{"compressed": "x","preserved_info": [], "removed_info": []}`)
 
 	input := strings.Repeat("verbose input text ", 20)
 	if _, err := Compress(input, NewCompressOptions().WithCompressionRatio(0.5)); err != nil {
@@ -286,7 +317,7 @@ func TestCompress_RefusesOutputMissingARetainedField(t *testing.T) {
 		SSN  string `json:"ssn"`
 		Note string `json:"note"`
 	}
-	withResponse(t, `{"compressed": {"note": "kept the wrong one"}}`)
+	withResponse(t, `{"compressed": {"note": "kept the wrong one"},"preserved_info": [], "removed_info": []}`)
 
 	_, err := Compress(record{SSN: "111-11-1111", Note: "some note"},
 		NewCompressOptions().WithRetainFields([]string{"ssn"}))
@@ -303,7 +334,7 @@ func TestCompress_AcceptsOutputCarryingEveryRetainedField(t *testing.T) {
 		SSN  string `json:"ssn"`
 		Note string `json:"note"`
 	}
-	withResponse(t, `{"compressed": {"ssn": "111-11-1111"}}`)
+	withResponse(t, `{"compressed": {"ssn": "111-11-1111"},"preserved_info": [], "removed_info": []}`)
 
 	result, err := Compress(record{SSN: "111-11-1111", Note: "some long note"},
 		NewCompressOptions().WithRetainFields([]string{"ssn"}))
@@ -320,7 +351,7 @@ func TestCompress_AcceptsOutputCarryingEveryRetainedField(t *testing.T) {
 // as being for structured data -- refusing here would break every text
 // compression that happens to set the option.
 func TestCompress_RetainFieldsIsNotCheckedAgainstUnstructuredOutput(t *testing.T) {
-	withResponse(t, `{"compressed": "a plain compressed sentence"}`)
+	withResponse(t, `{"compressed": "a plain compressed sentence","preserved_info": [], "removed_info": []}`)
 
 	if _, err := Compress("a long plain input sentence",
 		NewCompressOptions().WithRetainFields([]string{"ssn"})); err != nil {
@@ -328,87 +359,79 @@ func TestCompress_RetainFieldsIsNotCheckedAgainstUnstructuredOutput(t *testing.T
 	}
 }
 
-// A winner the model itself disqualified is a self-contradictory answer, and it
-// was being returned as the decision. This holds under any options: the
-// disqualification is the model's own claim, and refusing to act on a claim it
-// just made is not second-guessing it.
-func TestArbitrate_RefusesAWinnerItDisqualified(t *testing.T) {
+// The answer Arbitrate asks for now has no winner in it and no
+// disqualification: the model says how each option did on each rule and this
+// library works out both (LX-024). These three tests used to script a winner
+// and check it against the model's own evaluations, which is a contradiction
+// the new answer cannot express. What they were protecting is kept: an option
+// that failed a rule does not win when every rule is required.
+func arbitrateScripted(first, second string) string {
+	return `{"options":{"o1":{"r1":` + first + `},"o2":{"r1":` + second + `}},"reasoning":"overall","confidence":0.9}`
+}
+
+func TestArbitrate_AnOptionThatFailedARuleDoesNotWinWhenEveryRuleIsRequired(t *testing.T) {
 	type candidate struct {
 		Name string `json:"name"`
 	}
-	withResponse(t, `{
-		"winner_index": 1,
-		"scores": {"0": 0.4, "1": 0.9},
-		"evaluations": [
-			{"index": 0, "total_score": 0.4, "disqualified": false},
-			{"index": 1, "total_score": 0.9, "disqualified": true, "disqualify_reason": "fails the income rule"}
-		],
-		"reasoning": "picked the disqualified one anyway",
-		"confidence": 0.9
-	}`)
+	// The first option scores higher and fails the rule.
+	withResponse(t, arbitrateScripted(
+		`{"passed":false,"score":0.9,"reasoning":"did not meet it"}`,
+		`{"passed":true,"score":0.4,"reasoning":"met it"}`))
 
-	_, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}}, ArbitrateOptions{Rules: []string{"some rule"}})
-	if err == nil {
-		t.Fatal("Arbitrate returned a winner it had marked disqualified")
+	result, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}},
+		ArbitrateOptions{Rules: []string{"some rule"}, RequireAllRules: true, IncludeReasoning: true})
+	if err != nil {
+		t.Fatalf("Arbitrate: %v", err)
 	}
-	if !strings.Contains(err.Error(), "disqualified") {
-		t.Fatalf("the error does not name the contradiction: %v", err)
+	if result.Winner.Name != "b" {
+		t.Fatalf("Winner = %+v, want the option that met the rule", result.Winner)
+	}
+	if !result.Evaluations[0].Disqualified || result.Evaluations[1].Disqualified {
+		t.Fatalf("disqualified: %v and %v, want the first only", result.Evaluations[0].Disqualified, result.Evaluations[1].Disqualified)
+	}
+	if !strings.Contains(result.Evaluations[0].DisqualifyReason, "rule 1") {
+		t.Errorf("the reason does not name the rule: %q", result.Evaluations[0].DisqualifyReason)
 	}
 }
 
-// RequireAllRules is stated in the prompt as "disqualify any option that fails
-// ANY rule" and was checked nowhere, so the winner could be an option with a
-// failing rule result -- the single thing the flag exists to prevent.
-func TestArbitrate_RefusesAWinnerFailingARuleUnderRequireAllRules(t *testing.T) {
+// When every rule is required and every option fails one, there is no winner.
+// The model used to be left to pick "the best of a bad bunch".
+func TestArbitrate_HasNoWinnerWhenEveryOptionFailsARequiredRule(t *testing.T) {
 	type candidate struct {
 		Name string `json:"name"`
 	}
-	withResponse(t, `{
-		"winner_index": 0,
-		"scores": {"0": 0.9},
-		"evaluations": [
-			{"index": 0, "total_score": 0.9, "disqualified": false,
-			 "rule_results": [{"rule": "some rule", "passed": false, "reasoning": "did not meet it"}]}
-		],
-		"reasoning": "best of a bad bunch",
-		"confidence": 0.9
-	}`)
+	withResponse(t, arbitrateScripted(
+		`{"passed":false,"score":0.9,"reasoning":"did not meet it"}`,
+		`{"passed":false,"score":0.4,"reasoning":"did not meet it"}`))
 
 	_, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}},
-		ArbitrateOptions{Rules: []string{"some rule"}, RequireAllRules: true})
-	if err == nil {
-		t.Fatal("Arbitrate returned a winner with a failing rule under RequireAllRules")
-	}
-	if !strings.Contains(err.Error(), "RequireAllRules") {
-		t.Fatalf("the error does not name the flag it violated: %v", err)
+		ArbitrateOptions{Rules: []string{"some rule"}, RequireAllRules: true, IncludeReasoning: true})
+	if !errors.Is(err, types.ErrReviewRequired) {
+		t.Fatalf("err = %v, want review required", err)
 	}
 }
 
 // The companion case: the same failing rule, without the flag. RequireAllRules
 // is what turns a failed rule into a disqualification, so without it the
-// evaluation is reported and the winner stands.
+// evaluation is reported and the higher score wins.
 func TestArbitrate_AFailedRuleIsNotFatalWithoutRequireAllRules(t *testing.T) {
 	type candidate struct {
 		Name string `json:"name"`
 	}
-	withResponse(t, `{
-		"winner_index": 0,
-		"scores": {"0": 0.9},
-		"evaluations": [
-			{"index": 0, "total_score": 0.9, "disqualified": false,
-			 "rule_results": [{"rule": "some rule", "passed": false, "reasoning": "did not meet it"}]}
-		],
-		"reasoning": "best of a bad bunch",
-		"confidence": 0.9
-	}`)
+	withResponse(t, arbitrateScripted(
+		`{"passed":false,"score":0.9,"reasoning":"did not meet it"}`,
+		`{"passed":true,"score":0.4,"reasoning":"met it"}`))
 
 	result, err := Arbitrate([]candidate{{Name: "a"}, {Name: "b"}},
-		ArbitrateOptions{Rules: []string{"some rule"}})
+		ArbitrateOptions{Rules: []string{"some rule"}, IncludeReasoning: true})
 	if err != nil {
 		t.Fatalf("Arbitrate refused a failed rule with RequireAllRules unset: %v", err)
 	}
 	if result.Winner.Name != "a" {
 		t.Fatalf("Winner = %+v, want the option at index 0", result.Winner)
+	}
+	if result.Evaluations[0].Disqualified {
+		t.Error("an option was disqualified with RequireAllRules unset")
 	}
 }
 
@@ -487,9 +510,9 @@ func TestRedactLLM_AllCategoriesAcceptsAnySpan(t *testing.T) {
 // being compared at all.
 func TestVerify_RefusesAClaimCitingASourceThatDoesNotExist(t *testing.T) {
 	withResponse(t, `{
-		"claims": [{"claim": "the sky is blue", "verdict": "verified", "confidence": 0.95, "sources": [7]}],
-		"overall_verdict": "verified",
-		"overall_confidence": 0.95
+		"claims": [{"claim": "the sky is blue", "verdict": "verified", "confidence": 0.95, "evidence": [], "reasoning": "r", "sources": [7]}],
+		"logic_issues": [], "consistency_issues": [],
+		"summary": "s", "overall_confidence": 0.95, "trust_score": 0.9
 	}`)
 
 	opts := NewVerifyOptions()
@@ -510,8 +533,8 @@ func TestVerify_RefusesAClaimCitingASourceThatDoesNotExist(t *testing.T) {
 func TestDecompose_RefusesADecompositionDeeperThanRequested(t *testing.T) {
 	withResponse(t, `{
 		"parts": [
-			{"id": "1", "name": "a", "depth": 1, "content": "part a"},
-			{"id": "2", "name": "b", "depth": 3, "content": "part b"}
+			{"id": "1", "name": "a", "depth": 1, "order": 1, "content": "part a"},
+			{"id": "2", "name": "b", "depth": 3, "order": 2, "content": "part b"}
 		],
 		"root_parts": ["1"]
 	}`)
@@ -528,8 +551,8 @@ func TestDecompose_RefusesADecompositionDeeperThanRequested(t *testing.T) {
 func TestDecompose_AcceptsADecompositionInsideTheDepthLimit(t *testing.T) {
 	withResponse(t, `{
 		"parts": [
-			{"id": "1", "name": "a", "depth": 1, "content": "part a"},
-			{"id": "2", "name": "b", "depth": 2, "content": "part b"}
+			{"id": "1", "name": "a", "depth": 1, "order": 1, "content": "part a"},
+			{"id": "2", "name": "b", "depth": 2, "order": 2, "content": "part b"}
 		],
 		"root_parts": ["1"]
 	}`)
@@ -554,7 +577,7 @@ func TestDecompose_AcceptsADecompositionInsideTheDepthLimit(t *testing.T) {
 //
 // It now refuses. This test pins the refusal.
 func TestScore_RefusesAValueOutsideTheRequestedScale(t *testing.T) {
-	withResponse(t, `{"value": 95, "breakdown": {}, "reasoning": "great"}`)
+	withResponse(t, `{"value": 95, "breakdown": {}, "reasoning": "great", "strengths": [], "weaknesses": []}`)
 
 	opts := NewScoreOptions()
 	opts.ScaleMin = 0
@@ -572,7 +595,7 @@ func TestScore_RefusesAValueOutsideTheRequestedScale(t *testing.T) {
 // which is what makes the refusal above a real check rather than a blanket
 // rejection of everything.
 func TestScore_AcceptsAValueInsideTheRequestedScale(t *testing.T) {
-	withResponse(t, `{"value": 7, "breakdown": {}, "reasoning": "good"}`)
+	withResponse(t, `{"value": 7, "breakdown": {}, "reasoning": "good", "strengths": [], "weaknesses": []}`)
 
 	opts := NewScoreOptions()
 	opts.ScaleMin = 0
@@ -878,19 +901,26 @@ func TestResolve_RefusesAConflictCitingASourceThatDoesNotExist(t *testing.T) {
 // the aggregate was checked, so a claim could be marked verified at 0.1 as long
 // as the summary number cleared the floor -- and the summary number is a
 // separate model claim, so the two do not constrain each other at all.
-func TestVerify_RefusesAClaimVerifiedBelowTheFloor(t *testing.T) {
+//
+// The claim used to fail the whole call. It is now reported as what it is, a
+// claim that was not verified (LX-028): the property this test holds is the
+// same, that "verified" at 0.1 never comes back as verified.
+func TestVerify_DoesNotReportAClaimVerifiedBelowTheFloor(t *testing.T) {
 	withResponse(t, `{
-		"claims": [{"claim": "a shaky one", "verdict": "verified", "confidence": 0.1}],
-		"overall_verdict": "verified",
-		"overall_confidence": 0.95
+		"claims": [{"claim": "a shaky one", "verdict": "verified", "confidence": 0.1, "evidence": [], "reasoning": "r"}],
+		"logic_issues": [], "consistency_issues": [],
+		"summary": "s", "overall_confidence": 0.95, "trust_score": 0.9
 	}`)
 
-	_, err := Verify("a shaky one", NewVerifyOptions().WithMinConfidence(0.7))
-	if err == nil {
-		t.Fatal("Verify accepted a claim marked verified at confidence 0.1 against a 0.7 floor")
+	result, err := Verify("a shaky one", NewVerifyOptions().WithMinConfidence(0.7))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
-	if !strings.Contains(err.Error(), "claim 0") {
-		t.Fatalf("the error does not name the offending claim: %v", err)
+	if result.Claims[0].Verdict == "verified" || result.OverallVerdict == "verified" {
+		t.Fatalf("a claim at confidence 0.1 came back verified against a 0.7 floor: %+v", result)
+	}
+	if result.Metadata["claims_below_min_confidence"] != 1 {
+		t.Fatalf("Metadata = %v, want the claim counted", result.Metadata)
 	}
 }
 
@@ -899,9 +929,9 @@ func TestVerify_RefusesAClaimVerifiedBelowTheFloor(t *testing.T) {
 // anything the floor protects, so a low confidence on it is not a violation.
 func TestVerify_DoesNotHoldANonVerifiedClaimToTheFloor(t *testing.T) {
 	withResponse(t, `{
-		"claims": [{"claim": "unknowable", "verdict": "unverifiable", "confidence": 0.1}],
-		"overall_verdict": "unverifiable",
-		"overall_confidence": 0.95
+		"claims": [{"claim": "unknowable", "verdict": "unverifiable", "confidence": 0.1, "evidence": [], "reasoning": "r"}],
+		"logic_issues": [], "consistency_issues": [],
+		"summary": "s", "overall_confidence": 0.95, "trust_score": 0.5
 	}`)
 
 	result, err := Verify("unknowable", NewVerifyOptions().WithMinConfidence(0.7))

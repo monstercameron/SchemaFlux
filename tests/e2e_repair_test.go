@@ -7,6 +7,7 @@ import (
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/ops"
 )
 
@@ -57,7 +58,7 @@ func (p *flakyProvider) callCount() int {
 }
 
 func TestOneUnusableAnswerIsRepairedAndTheEnvelopeSaysSo(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &flakyProvider{badBodies: 1, good: `{"number":"INV-4417","vendor":"Northwind"}`}
 	ctx := ops.WithProvider(context.Background(), provider)
@@ -89,7 +90,7 @@ func TestOneUnusableAnswerIsRepairedAndTheEnvelopeSaysSo(t *testing.T) {
 // Reporting zero is what this originally did, and it is the reading that matters
 // most: nobody asks how many attempts a successful call took.
 func TestAnExhaustedRequestStillReportsTheAttemptsItBurned(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	// Never returns anything usable.
 	provider := &flakyProvider{badBodies: 1000, good: `{"number":"never"}`}
@@ -116,7 +117,7 @@ func TestAnExhaustedRequestStillReportsTheAttemptsItBurned(t *testing.T) {
 // must not be retried indefinitely — an unbounded repair loop against a paid
 // endpoint is the expensive kind of hang.
 func TestRepairsAreBoundedRatherThanEndless(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &flakyProvider{badBodies: 1000, good: `{}`}
 	ctx := ops.WithProvider(context.Background(), provider)

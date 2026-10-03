@@ -2,18 +2,18 @@ package telemetry
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/internal/config"
 )
 
 var (
@@ -36,6 +36,10 @@ const (
 	// FatalLevel logs fatal errors and exits.
 	FatalLevel
 )
+
+// DefaultLevel is the level of a logger nobody configured: warn, so that a call
+// that goes well writes nothing.
+const DefaultLevel = WarnLevel
 
 // LogEntry is a captured log record for later review.
 type LogEntry struct {
@@ -66,9 +70,14 @@ type Logger struct {
 	config  LoggerConfig
 }
 
+// logHistory keeps the newest maxSize entries in a ring: once it is full, an
+// append overwrites the oldest entry in place. It used to shift the whole slice
+// down by one on every append at capacity, which is a 64 KB copy under the lock
+// every log call has to take.
 type logHistory struct {
 	mu      sync.RWMutex
 	entries []LogEntry
+	start   int // index of the oldest entry once the ring is full
 	maxSize int
 }
 
@@ -84,35 +93,38 @@ type historyHandler struct {
 }
 
 // DefaultLoggerConfig returns logger configuration from environment variables.
+//
+// The variables are SCHEMAFLUX_LOG_LEVEL (debug, info, warn, warning, error or
+// fatal), SCHEMAFLUX_LOG_FORMAT (text or json), SCHEMAFLUX_LOG_BUFFER (a whole
+// number of entries, at least 1), SCHEMAFLUX_LOG_FILE, the booleans
+// SCHEMAFLUX_LOG_DISABLE_CAPTURE, SCHEMAFLUX_LOG_SOURCE and
+// SCHEMAFLUX_LOG_DISABLE_STDERR, and SCHEMAFLUX_DEBUG=true, which raises a level
+// of info, or of none stated, to debug. A value one of them cannot take is
+// reported once, naming the variable, and the default applies.
+//
+// The default level is warn. A library that prints a line to standard error for
+// every call it makes is not one a program embeds without noticing, and the
+// lines about a call that went well (that an operation started, that a request
+// completed) are written at debug. Set SCHEMAFLUX_LOG_LEVEL=debug to see them,
+// or SCHEMAFLUX_LOG_LEVEL=info for the lines that remain at that level.
 func DefaultLoggerConfig() LoggerConfig {
-	level := parseLogLevel(os.Getenv("SCHEMAFLUX_LOG_LEVEL"))
-	if level == InfoLevel && envEnabled("SCHEMAFLUX_DEBUG") {
+	named := config.EnvChoice("SCHEMAFLUX_LOG_LEVEL", "", "debug", "info", "warn", "warning", "error", "fatal")
+	level := DefaultLevel
+	if named != "" {
+		level = parseLogLevel(named)
+	}
+	if (named == "" || level == InfoLevel) && config.EnvBool("SCHEMAFLUX_DEBUG") {
 		level = DebugLevel
-	}
-
-	format := strings.ToLower(strings.TrimSpace(os.Getenv("SCHEMAFLUX_LOG_FORMAT")))
-	if format == "" {
-		format = "text"
-	}
-	if format != "json" {
-		format = "text"
-	}
-
-	bufferSize := 1000
-	if raw := strings.TrimSpace(os.Getenv("SCHEMAFLUX_LOG_BUFFER")); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-			bufferSize = parsed
-		}
 	}
 
 	return LoggerConfig{
 		Level:         level,
-		Format:        format,
+		Format:        config.EnvChoice("SCHEMAFLUX_LOG_FORMAT", "text", "text", "json"),
 		FilePath:      strings.TrimSpace(os.Getenv("SCHEMAFLUX_LOG_FILE")),
-		Capture:       !envEnabled("SCHEMAFLUX_LOG_DISABLE_CAPTURE"),
-		BufferSize:    bufferSize,
-		AddSource:     envEnabled("SCHEMAFLUX_LOG_SOURCE"),
-		DisableStderr: envEnabled("SCHEMAFLUX_LOG_DISABLE_STDERR"),
+		Capture:       !config.EnvBool("SCHEMAFLUX_LOG_DISABLE_CAPTURE"),
+		BufferSize:    config.EnvInt("SCHEMAFLUX_LOG_BUFFER", 1000, 1),
+		AddSource:     config.EnvBool("SCHEMAFLUX_LOG_SOURCE"),
+		DisableStderr: config.EnvBool("SCHEMAFLUX_LOG_DISABLE_STDERR"),
 	}
 }
 
@@ -150,10 +162,17 @@ func NewLoggerWithConfig(cfg LoggerConfig) *Logger {
 		handlers = append(handlers, newStructuredHandler(writer, cfg.Format, handlerOpts))
 	}
 
+	// A log file that cannot be opened is reported, once, through the handlers
+	// that did start, and the logger runs without it. It used to be dropped with
+	// no word anywhere, so the log a deployment believed it was keeping did not
+	// exist.
+	var fileErr error
 	if cfg.FilePath != "" {
-		if err := os.MkdirAll(filepath.Dir(cfg.FilePath), 0o755); err == nil {
-			file, err := os.OpenFile(cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-			if err == nil {
+		fileErr = os.MkdirAll(filepath.Dir(cfg.FilePath), 0o755)
+		if fileErr == nil {
+			var file *os.File
+			file, fileErr = os.OpenFile(cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if fileErr == nil {
 				handlers = append(handlers, newStructuredHandler(file, cfg.Format, handlerOpts))
 				closers = append(closers, file)
 			}
@@ -171,13 +190,37 @@ func NewLoggerWithConfig(cfg LoggerConfig) *Logger {
 		handlers = append(handlers, slog.NewTextHandler(io.Discard, handlerOpts))
 	}
 
-	return &Logger{
+	built := &Logger{
 		Logger:  slog.New(&multiHandler{handlers: handlers}),
 		level:   levelVar,
 		history: history,
 		closers: closers,
 		config:  cfg,
 	}
+	if fileErr != nil {
+		built.Warn("the log file could not be opened; logging to it is off", "error", fileErr)
+	}
+	return built
+}
+
+// FromSlog returns a Logger that writes through l and keeps no history of its
+// own: Entries is empty, SetLevel changes nothing (the level is l's handler's
+// to decide), and Close closes nothing, because the outputs are the caller's.
+// It is how a program that already has a *slog.Logger hands it to a client.
+//
+// A nil l is read as no logger at all and returns Discard(), so the result is
+// never nil and never panics on the first line written.
+func FromSlog(l *slog.Logger) *Logger {
+	if l == nil {
+		return Discard()
+	}
+	return &Logger{Logger: l}
+}
+
+// Discard returns a Logger that is enabled at no level and writes nowhere.
+// Each call returns a Logger of its own.
+func Discard() *Logger {
+	return &Logger{Logger: slog.New(slog.DiscardHandler)}
 }
 
 // ConfigureLogger replaces the global logger with one built from cfg.
@@ -187,7 +230,11 @@ func ConfigureLogger(cfg LoggerConfig) *Logger {
 	return next
 }
 
-// SetLogger replaces the global logger instance.
+// SetLogger replaces the global logger instance, and closes the file outputs of
+// the one it replaces. Anything else still holding the replaced logger, such as a
+// client built before the swap, keeps a logger whose file is closed: its records
+// still reach its other outputs and its history, and the file write fails and is
+// dropped. Replace the logger before building what keeps it.
 func SetLogger(next *Logger) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -196,21 +243,25 @@ func SetLogger(next *Logger) {
 		_ = logger.Close()
 	}
 	logger = next
+	published.Store(next)
 }
+
+// published is the logger GetLogger hands out, for a read that takes no lock.
+// Every call asks for the logger several times, and the read lock was a cache
+// line every core touched each time. It is written under mu, with logger.
+var published atomic.Pointer[Logger]
 
 // GetLogger returns the global logger instance, creating one on-demand.
 func GetLogger() *Logger {
-	mu.RLock()
-	if logger != nil {
-		defer mu.RUnlock()
-		return logger
+	if held := published.Load(); held != nil {
+		return held
 	}
-	mu.RUnlock()
 
 	mu.Lock()
 	defer mu.Unlock()
 	if logger == nil {
 		logger = NewLogger()
+		published.Store(logger)
 	}
 	return logger
 }
@@ -253,8 +304,14 @@ func (l *Logger) SetLevelString(level string) {
 // FatalLevel does not survive the round trip: it shares slog.LevelError, so a
 // logger set to fatal reports error. Nothing in this library sets fatal.
 func (l *Logger) Level() LogLevel {
-	if l == nil || l.level == nil {
-		return InfoLevel
+	if l == nil {
+		return DefaultLevel
+	}
+	if l.level == nil {
+		if l.Logger == nil {
+			return DefaultLevel
+		}
+		return probedLevel(l.Logger)
 	}
 	switch l.level.Level() {
 	case slog.LevelDebug:
@@ -265,6 +322,26 @@ func (l *Logger) Level() LogLevel {
 		return ErrorLevel
 	default:
 		return InfoLevel
+	}
+}
+
+// probedLevel reports the lowest level a logger built by FromSlog or Discard
+// writes at, which is the only way to learn it: the *slog.Logger it was made
+// from keeps its level inside its handler. A logger enabled at none of the
+// four reports FatalLevel, the one above them.
+func probedLevel(l *slog.Logger) LogLevel {
+	ctx := context.Background()
+	switch {
+	case l.Enabled(ctx, slog.LevelDebug):
+		return DebugLevel
+	case l.Enabled(ctx, slog.LevelInfo):
+		return InfoLevel
+	case l.Enabled(ctx, slog.LevelWarn):
+		return WarnLevel
+	case l.Enabled(ctx, slog.LevelError):
+		return ErrorLevel
+	default:
+		return FatalLevel
 	}
 }
 
@@ -298,9 +375,16 @@ func (l *Logger) WithFields(fields map[string]any) *Logger {
 		return nil
 	}
 
+	// In key order: ranging over the map put the attributes of every line in a
+	// different order from one run to the next.
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	attrs := make([]any, 0, len(fields)*2)
-	for key, value := range fields {
-		attrs = append(attrs, key, value)
+	for _, key := range keys {
+		attrs = append(attrs, key, fields[key])
 	}
 
 	return &Logger{
@@ -337,15 +421,21 @@ func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return false
 }
 
+// Handle gives the record to every enabled handler, and returns the errors of
+// those that failed joined together. One output failing, a closed pipe or a full
+// disk, must not stop the others: the history handler comes after the file and
+// the stderr handlers, and stopping at the first error left it without every
+// record from then on while the process kept logging.
 func (h *multiHandler) Handle(ctx context.Context, record slog.Record) error {
+	var failures []error
 	for _, handler := range h.handlers {
 		if handler.Enabled(ctx, record.Level) {
 			if err := handler.Handle(ctx, record.Clone()); err != nil {
-				return err
+				failures = append(failures, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func (h *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -421,8 +511,8 @@ func (h *logHistory) append(entry LogEntry) {
 		h.maxSize = 1000
 	}
 	if len(h.entries) >= h.maxSize {
-		copy(h.entries, h.entries[1:])
-		h.entries[len(h.entries)-1] = entry
+		h.entries[h.start] = entry
+		h.start = (h.start + 1) % len(h.entries)
 		return
 	}
 	h.entries = append(h.entries, entry)
@@ -433,7 +523,8 @@ func (h *logHistory) snapshot() []LogEntry {
 	defer h.mu.RUnlock()
 
 	entries := make([]LogEntry, len(h.entries))
-	for i, entry := range h.entries {
+	for i := range h.entries {
+		entry := h.entries[(h.start+i)%len(h.entries)]
 		entries[i] = LogEntry{
 			Time:    entry.Time,
 			Level:   entry.Level,
@@ -453,6 +544,7 @@ func (h *logHistory) reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.entries = nil
+	h.start = 0
 }
 
 func addAttr(target map[string]any, groups []string, attr slog.Attr) {
@@ -462,7 +554,9 @@ func addAttr(target map[string]any, groups []string, attr slog.Attr) {
 	}
 
 	if attr.Value.Kind() == slog.KindGroup {
-		groupChain := groups
+		// A copy: appending to groups itself writes into spare capacity of the
+		// slice the handler shares with every concurrent Handle call.
+		groupChain := append([]string(nil), groups...)
 		if attr.Key != "" {
 			groupChain = append(groupChain, attr.Key)
 		}
@@ -528,161 +622,4 @@ func toSlogLevel(level LogLevel) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
-}
-
-// SEC-002. Content logging policy.
-//
-// AGENTS.md: "No request or response body in an error string or a log line.
-// Ever." An audit of every logger.Debug/Info/Warn/Error call site this task
-// is permitted to touch (client.go, internal/ops/complete.go,
-// internal/ops/redact_llm.go, internal/ops/llm_helper.go) found none that
-// logs a prompt, completion, or other caller-payload string today -- they
-// already log requestID, provider, counts, and error values only. That is
-// the right state, and this mechanism is the backstop for it, not a fix for
-// a leak that was found: a future call site that reaches for "log the
-// prompt for debugging" has an opt-in, policy-gated way to do it that cannot
-// regress into logging full content by accident, instead of a raw string
-// argument that always would.
-//
-// Content marks a string as caller-payload-shaped. Wrapping a value in
-// Content (e.g. slog.Any("prompt", telemetry.Content(userPrompt))) is the
-// only way a string reaches a log line under anything less than
-// LogFullContent; an unwrapped string argument is untouched by this
-// mechanism; the deliberate choice per the audit above is that no
-// production call site should need to.
-//
-// "Debug changes verbosity, not content policy" (SEC-002's own text): raising
-// the logger's Level to DebugLevel does not raise ContentLoggingPolicy. The
-// two are unrelated knobs on purpose -- SetLevel governs which severities
-// reach a handler at all; ContentLoggingPolicy governs, independently of
-// severity, how much of a Content value's text a handler is allowed to see.
-// A caller who wants deep debug output does not thereby get prompts in the
-// log.
-type Content string
-
-var (
-	contentPolicyMu sync.RWMutex
-	// contentPolicy's zero value is types.LogNoContent, the strictest level --
-	// a process that never calls SetContentLoggingPolicy logs no content,
-	// matching DataPolicy's own zero-value contract in internal/types/policy.go.
-	contentPolicy types.ContentLoggingLevel
-)
-
-// SetContentLoggingPolicy sets the maximum ContentLoggingLevel Content values
-// are allowed to reveal in a log line, process-wide. Call it with the
-// Tighten()-resolved DataPolicy.ContentLogging for the tenant/call in effect,
-// not with a value chosen ad hoc at the log call site -- the policy decision
-// belongs where DataPolicy already makes it.
-func SetContentLoggingPolicy(level types.ContentLoggingLevel) {
-	contentPolicyMu.Lock()
-	defer contentPolicyMu.Unlock()
-	contentPolicy = level
-}
-
-// ContentLoggingPolicy returns the level SetContentLoggingPolicy last set.
-func ContentLoggingPolicy() types.ContentLoggingLevel {
-	contentPolicyMu.RLock()
-	defer contentPolicyMu.RUnlock()
-	return contentPolicy
-}
-
-// contentSuppressedMarker is what a Content value resolves to at LogNoContent
-// and for any level this package does not recognise. It is a fixed literal,
-// never derived from the caller's text, so it cannot itself leak anything --
-// the property the "no content in any log line" verification checks.
-const contentSuppressedMarker = "[content suppressed by content-logging policy]"
-
-// LogValue implements slog.LogValuer. historyHandler.Handle and every
-// slog.Handler this package builds call attr.Value.Resolve() before touching
-// an attribute (see addAttr below), which is what invokes this -- a Content
-// value is never rendered any other way.
-func (c Content) LogValue() slog.Value {
-	switch ContentLoggingPolicy() {
-	case types.LogFullContent:
-		return slog.StringValue(string(c))
-	case types.LogRedactedContent:
-		return slog.StringValue(redactLogContent(string(c)))
-	case types.LogMetadataOnly:
-		// Shape, not value: length only, the same "describe, don't
-		// reproduce" contract types.DescribeValue uses for input.
-		return slog.StringValue(fmt.Sprintf("[content omitted by logging policy: %d bytes]", len(c)))
-	case types.LogNoContent:
-		return slog.StringValue(contentSuppressedMarker)
-	default:
-		// SEC-002 / AGENTS.md "never fail open": a ContentLoggingLevel this
-		// switch does not recognise (out-of-range, or a level added to
-		// internal/types/policy.go this file has not been taught about) is a
-		// policy that cannot determine an answer. Refuse -- behave exactly
-		// like LogNoContent -- rather than falling through to a case that
-		// might allow more than was ever actually granted.
-		return slog.StringValue(contentSuppressedMarker)
-	}
-}
-
-// logContentPatterns are the credential shapes redactLogContent scrubs at
-// LogRedactedContent. This is a fifth copy of the pattern list
-// mw/redact.go, schemafluxtest/cassette.go, scripts/secret_scan.py, and
-// internal/types/diagnostics.go's diagnosticPatterns already carry --
-// mw/redact.go's doc comment records why the first three do not share one,
-// and diagnostics.go's carries the reasoning for why a fourth was justified
-// rather than sharing across a layering boundary that cannot support it
-// (internal/types cannot import mw; mw cannot import schemafluxtest).
-//
-// This package adds a fifth rather than reusing any of those for the same
-// kind of reason, sharper here:
-//
-//   - Importing mw from internal/telemetry would be a straight import cycle:
-//     mw -> internal/ops -> internal/logger -> internal/telemetry (internal/
-//     ops/llm_helper.go and complete.go call logger.GetLogger(), and
-//     internal/logger is a thin re-export of this package's GetLogger). mw
-//     is therefore not reachable from here at all, not just undesirable to
-//     depend on.
-//   - schemafluxtest is test-support code; production log formatting must
-//     not depend on it (the same rule mw/redact.go's comment states for
-//     itself).
-//   - diagnostics.go's diagnosticPatterns is unexported, and internal/types/
-//     diagnostics.go is outside this task's edit scope (only policy.go and
-//     new files under internal/types/ are), so exporting it is not an option
-//     available here either.
-//
-// This guards a sixth distinct moment besides: an arbitrary structured log
-// line, emitted from anywhere in the process, at any verbosity level,
-// through a Content wrapper -- not an egress request, a cassette fixture, a
-// captured diagnostic body, or a committed file. Duplicating a handful of
-// regexes again costs less than any path that would avoid it.
-var logContentPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}`),
-	regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}`),
-	regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{30,}`),
-	regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
-	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`),
-	regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`),
-	regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----`),
-	regexp.MustCompile(`(?i)authorization"?\s*[:=]\s*"?bearer\s+\S+`),
-	regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
-}
-
-const logRedactedMarker = "[redacted]"
-
-// redactLogContent scrubs the credential/PII shapes logContentPatterns
-// recognises. It is not a general content filter -- ordinary text that
-// matches none of these shapes passes through unchanged, which is exactly
-// what LogRedactedContent (weaker than LogMetadataOnly, stronger than
-// LogFullContent only in that these shapes never survive it) promises and no
-// more.
-func redactLogContent(text string) string {
-	for _, pattern := range logContentPatterns {
-		text = pattern.ReplaceAllString(text, logRedactedMarker)
-	}
-	return text
-}
-
-func envEnabled(keys ...string) bool {
-	for _, key := range keys {
-		switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-		case "1", "true", "yes", "on":
-			return true
-		}
-	}
-	return false
 }

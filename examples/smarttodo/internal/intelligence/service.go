@@ -370,7 +370,6 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 		},
 		Categories:   []string{"quality", "consistency", "planning"},
 		Threshold:    0.45,
-		Deep:         true,
 		Mode:         schemaflux.TransformMode,
 		Intelligence: schemaflux.Smart,
 	})
@@ -396,13 +395,13 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 		FocusAreas:       focus.FocusAreas,
 		QuickWins:        focus.QuickWins,
 		BiggestBlocker:   focus.BiggestBlocker,
-		Risks:            extractAuditRisks(auditResult),
+		Risks:            auditRisks(auditResult, auditErr),
 		RecommendedMoves: forecast.RecommendedMoves,
 		Forecast:         forecast,
 	}
 
 	synthesized, synthErr := schemaflux.Synthesize[BoardReview](
-		[]any{summary, auditResult, focus, forecast},
+		[]any{summary, auditSourceForSynthesis(auditResult, auditErr), focus, forecast},
 		schemaflux.NewSynthesizeOptions().
 			WithStrategy("integrate").
 			WithGenerateInsights(true).
@@ -416,7 +415,7 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 			review.Summary = summary
 		}
 		if len(review.Risks) == 0 {
-			review.Risks = extractAuditRisks(auditResult)
+			review.Risks = auditRisks(auditResult, auditErr)
 		}
 		if len(review.RecommendedMoves) == 0 {
 			review.RecommendedMoves = forecast.RecommendedMoves
@@ -438,8 +437,14 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 	if review.BiggestBlocker == "" {
 		review.BiggestBlocker = heuristicBlocker(todos)
 	}
-	if len(review.Risks) == 0 && auditErr != nil {
-		review.Risks = []string{"Audit unavailable; using heuristic risk detection"}
+	// A review built from an audit that did not run says so, whatever the
+	// synthesis wrote. Its risks were composed from the summary, the focus and
+	// the forecast, none of which looked for structural problems, so they are
+	// not a finding of nothing wrong, and a clean bill of health from them
+	// would be the failure auditRisks exists to prevent. The text that used to
+	// stand here promised a heuristic risk detection that does not exist.
+	if auditErr != nil {
+		review.Risks = []string{auditUnavailableRisk}
 	}
 	if len(review.RecommendedMoves) == 0 && forecastErr != nil {
 		review.RecommendedMoves = []string{"Reduce overdue load", "Clear one quick win", "Protect one deep-work block"}
@@ -666,10 +671,45 @@ func cloneTodos(todos []*models.SmartTodo) []*models.SmartTodo {
 	return cloned
 }
 
+// auditUnavailableRisk is what the board review says about risks when the audit
+// could not be run: that nothing was assessed, not that nothing was found.
+const auditUnavailableRisk = "The board audit could not be run, so the board's risks have not been assessed."
+
+// auditSourceForSynthesis is the audit's place among the sources the review is
+// synthesized from. An audit that failed leaves a zero result, which reads as
+// an audit that found nothing, and the synthesis was free to turn it into a
+// clean bill of health. In its place goes a statement that the audit did not
+// run, so what the model is shown matches what happened.
+func auditSourceForSynthesis(result schemaflux.AuditResult[BoardSnapshot], err error) any {
+	if err != nil {
+		return auditUnavailableRisk
+	}
+	return result
+}
+
+// auditRisks is what the board review says about risks. An audit that failed
+// has found nothing, and that is not the same as an audit that found nothing
+// wrong: the review said "No critical structural issues detected." for both,
+// so a failed audit read as a clean bill of health.
+func auditRisks(result schemaflux.AuditResult[BoardSnapshot], err error) []string {
+	if err != nil {
+		return nil
+	}
+	return extractAuditRisks(result)
+}
+
+// extractAuditRisks lists what the audit found. The verdict is read from the
+// summary and not from the list: the list holds what reached the threshold,
+// and an audit fails on any violation of a policy, listed or not. Reading the
+// list alone, a board that broke a policy at a severity under the threshold
+// was told it had no issues.
 func extractAuditRisks(result schemaflux.AuditResult[BoardSnapshot]) []string {
-	risks := make([]string, 0, len(result.Findings))
+	risks := make([]string, 0, len(result.Findings)+1)
 	for _, finding := range result.Findings {
 		risks = append(risks, truncate(strings.TrimSpace(finding.Issue), 120))
+	}
+	if !result.Summary.PassesAudit && result.Summary.BelowThreshold > 0 {
+		risks = append(risks, fmt.Sprintf("The board does not pass its audit: %d lesser finding(s) are not listed here.", result.Summary.BelowThreshold))
 	}
 	if len(risks) == 0 {
 		risks = append(risks, "No critical structural issues detected.")

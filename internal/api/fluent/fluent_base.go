@@ -2,6 +2,7 @@ package fluent
 
 import (
 	"context"
+	"reflect"
 )
 
 // accumulateSteering joins a new steering instruction onto whatever the
@@ -184,6 +185,47 @@ func (r requestBase[Self, Opt]) Model(model string) Self {
 		return r.lift(r.opts)
 	}
 	return r.lift(r.setModel(r.opts, model))
+}
+
+// Effort sets how much the model reasons before it answers, for this call.
+// EffortDefault clears it.
+//
+// It is the largest lever on latency: on gpt-6-luna, reasoning off cost a
+// judgment nothing and ran about a third faster, and got arithmetic wrong
+// nearly half the time. EffortNone suits a choice or a yes or no; anything that
+// computes wants EffortLow or more. A value the model does not take is refused
+// before the request is sent.
+func (r requestBase[Self, Opt]) Effort(effort Effort) Self {
+	return r.lift(withEffort(r.opts, effort))
+}
+
+// withEffort writes an effort into whichever home an options type has for it.
+//
+// The other common setters are closures written once per builder, because the
+// option types come in three shapes: embedding CommonOptions, embedding
+// types.OpOptions, or spelling the fields out flat. This one reads the shape
+// instead. All three keep the effort in a field named Effort, and a
+// fifty-fourth copy of the same three lines is how a builder ends up with a
+// setter that was never wired. A test sets it on every builder and reads it
+// back.
+func withEffort[Opt any](opts Opt, effort Effort) Opt {
+	value := reflect.ValueOf(&opts).Elem()
+	if value.Kind() != reflect.Struct {
+		return opts
+	}
+	// A type that embeds both halves has two fields named Effort at the same
+	// depth, which a lookup by name cannot choose between. CommonOptions is
+	// the half that wins a merge, so it is the one written.
+	if common := value.FieldByName("CommonOptions"); common.IsValid() {
+		if field := common.FieldByName("Effort"); field.IsValid() && field.CanSet() {
+			field.Set(reflect.ValueOf(effort))
+		}
+		return opts
+	}
+	if field := value.FieldByName("Effort"); field.IsValid() && field.CanSet() {
+		field.Set(reflect.ValueOf(effort))
+	}
+	return opts
 }
 
 // optsWithRunContext applies a trailing Run(ctx) argument, returning the

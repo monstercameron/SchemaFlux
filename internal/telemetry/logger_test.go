@@ -102,7 +102,7 @@ func TestDefaultLoggerConfigReadsEnvironment(t *testing.T) {
 	t.Setenv("SCHEMAFLUX_LOG_FORMAT", "json")
 	t.Setenv("SCHEMAFLUX_LOG_BUFFER", "25")
 	t.Setenv("SCHEMAFLUX_LOG_SOURCE", "true")
-	t.Setenv("SCHEMAFLUX_LOG_DISABLE_STDERR", "1")
+	t.Setenv("SCHEMAFLUX_LOG_DISABLE_STDERR", "true")
 
 	cfg := DefaultLoggerConfig()
 	if cfg.Level != DebugLevel {

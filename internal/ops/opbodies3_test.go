@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/monstercameron/schemaflux/internal/config/configtest"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -21,7 +22,7 @@ import (
 // =============================================================================
 
 func TestSummarizeResultHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"text": "a short summary", "key_points": ["point one"], "confidence": 0.9}`,
 	}}
@@ -48,7 +49,7 @@ func TestSummarizeResultHappyPath(t *testing.T) {
 // must still report the attempt that was billed -- a caller reading Meta
 // after an error is exactly the case "billed even on failure" exists for.
 func TestSummarizeResultRefusalStillBillsTheAttempt(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{"not json at all"}}
 	opts := NewSummarizeOptions()
 	opts.OpOptions.Context = WithProvider(context.Background(), provider)
@@ -63,7 +64,7 @@ func TestSummarizeResultRefusalStillBillsTheAttempt(t *testing.T) {
 }
 
 func TestRewriteResultHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"text": "a rewritten sentence", "changes_made": ["tone"], "tone_achieved": "formal", "confidence": 0.8}`,
 	}}
@@ -83,7 +84,7 @@ func TestRewriteResultHappyPath(t *testing.T) {
 }
 
 func TestRewriteResultRefusesAMalformedResponse(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{"not json"}}
 	opts := NewRewriteOptions()
 	opts.OpOptions.Context = WithProvider(context.Background(), provider)
@@ -95,7 +96,7 @@ func TestRewriteResultRefusesAMalformedResponse(t *testing.T) {
 }
 
 func TestTranslateResultHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"text": "hola", "source_language_detected": "English", "confidence": 0.9, "alternatives": []}`,
 	}}
@@ -133,7 +134,7 @@ func TestTranslateResultRefusesMissingTargetLanguage(t *testing.T) {
 }
 
 func TestExpandResultHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"text": "a much longer elaborated version of the input", "added_content": ["background"], "confidence": 0.7}`,
 	}}
@@ -153,7 +154,7 @@ func TestExpandResultHappyPath(t *testing.T) {
 }
 
 func TestExpandResultRefusesAMalformedResponse(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{"not json"}}
 	opts := NewExpandOptions()
 	opts.OpOptions.Context = WithProvider(context.Background(), provider)
@@ -174,7 +175,7 @@ type extractWidget struct {
 }
 
 func TestExtractResultHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{`{"name": "widget-a", "count": 3}`}}
 	opts := NewExtractOptions()
 	opts.CommonOptions.Context = WithProvider(context.Background(), provider)
@@ -194,12 +195,87 @@ func TestExtractResultHappyPath(t *testing.T) {
 	}
 }
 
+type extractGadget struct {
+	Label string  `json:"label"`
+	Price float64 `json:"price"`
+}
+
+// The envelope reports the digest of the schema the call was made with. It was
+// always empty: Extract writes the schema's identity on its own copy of the
+// options, and the envelope read it from the caller's.
+func TestExtractResultReportsTheDigestOfTheSchemaTheCallWasMadeWith(t *testing.T) {
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
+	digestOf := func(t *testing.T, body string, mode types.Mode, run func(ExtractOptions) (types.Meta, error)) string {
+		t.Helper()
+		opts := NewExtractOptions().WithMode(mode)
+		opts.CommonOptions.Context = WithProvider(context.Background(), &scriptedProvider{bodies: []string{body}})
+		meta, err := run(opts)
+		if err != nil {
+			t.Fatalf("ExtractResult: %v", err)
+		}
+		return meta.Provenance.SchemaDigest
+	}
+	widget := func(opts ExtractOptions) (types.Meta, error) {
+		result, err := ExtractResult[extractWidget]("a widget", opts)
+		return result.Meta, err
+	}
+	gadget := func(opts ExtractOptions) (types.Meta, error) {
+		result, err := ExtractResult[extractGadget]("a gadget", opts)
+		return result.Meta, err
+	}
+	const widgetBody = `{"name": "widget-a", "count": 3}`
+	const gadgetBody = `{"label": "g", "price": 2.5}`
+
+	first := digestOf(t, widgetBody, types.TransformMode, widget)
+	again := digestOf(t, widgetBody, types.TransformMode, widget)
+	other := digestOf(t, gadgetBody, types.TransformMode, gadget)
+
+	if first == "" || other == "" {
+		t.Fatalf("an empty digest: %q and %q", first, other)
+	}
+	if first != again {
+		t.Errorf("the same type gave %q and then %q", first, again)
+	}
+	if first == other {
+		t.Errorf("two different types gave the same digest %q", first)
+	}
+	if want := DescribeSchema(reflect.TypeFor[extractWidget]()).String(); first != want {
+		t.Errorf("digest = %q, want the schema's identity %q", first, want)
+	}
+	if want := DescribeSchema(reflect.TypeFor[extractGadget]()).String(); other != want {
+		t.Errorf("digest = %q, want the schema's identity %q", other, want)
+	}
+	if strict := digestOf(t, widgetBody, types.Strict, widget); strict != first {
+		t.Errorf("strict mode gave %q, transform mode %q: the schema is the same in every mode", strict, first)
+	}
+
+	// A call that made the request and was refused afterwards still names the
+	// schema it was made with.
+	opts := NewExtractOptions()
+	opts.CommonOptions.Context = WithProvider(context.Background(), &scriptedProvider{bodies: []string{"not json"}})
+	result, err := ExtractResult[extractWidget]("a widget", opts)
+	if err == nil {
+		t.Fatal("ExtractResult accepted an unparseable response")
+	}
+	if result.Meta.Provenance.SchemaDigest != first {
+		t.Errorf("a refused call reports digest %q, want %q", result.Meta.Provenance.SchemaDigest, first)
+	}
+
+	// A target no answer could satisfy is refused before any call, and asking
+	// for its digest must not be what fails.
+	anyOpts := NewExtractOptions()
+	anyOpts.CommonOptions.Context = WithProvider(context.Background(), &scriptedProvider{bodies: []string{`{}`}})
+	if _, err := ExtractResult[any]("anything", anyOpts); err == nil {
+		t.Error("ExtractResult[any] was accepted")
+	}
+}
+
 // TestExtractResultRefusalReportsPromptOnlyContract: a failed extraction
 // delivered nothing, so DeliveredContract must report the weakest level with
 // a failed decode check -- not silently inherit whatever RequestedContract
 // was.
 func TestExtractResultRefusalReportsPromptOnlyContract(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{"not json"}}
 	opts := NewExtractOptions()
 	opts.CommonOptions.Context = WithProvider(context.Background(), provider)
@@ -240,6 +316,53 @@ func TestRequestedContractFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := requestedContractFor(tc.opts); got != tc.want {
 				t.Errorf("requestedContractFor() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ExtractResult resolves the options once and asks the three questions of the
+// result, so each question has to answer what it answers when it resolves them
+// itself.
+func TestTheEnvelopeQuestionsAnswerTheSameOnResolvedOptions(t *testing.T) {
+	failure := errors.New("boom")
+	cases := []struct {
+		name string
+		opts ExtractOptions
+	}{
+		{"defaults", NewExtractOptions()},
+		{"strict", NewExtractOptions().WithMode(types.Strict)},
+		{"creative", NewExtractOptions().WithMode(types.Creative)},
+		{"exact fields", NewExtractOptions().WithExactFields()},
+		{"complete fields", NewExtractOptions().WithCompleteFields()},
+		{"both halves", NewExtractOptions().WithExactFields().WithCompleteFields()},
+		{"strict and both halves", NewExtractOptions().WithMode(types.Strict).WithExactFields().WithCompleteFields()},
+		{"a timeout", func() ExtractOptions { o := NewExtractOptions(); o.Timeout = time.Second; return o }()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved := tc.opts.toOpOptions()
+
+			if got, want := requestedContractOf(resolved), requestedContractFor(tc.opts); got != want {
+				t.Errorf("requested contract = %v on resolved options, %v otherwise", got, want)
+			}
+			for _, outcome := range []error{nil, failure} {
+				gotLevel, gotChecks := deliveredContractOf(resolved, outcome)
+				wantLevel, wantChecks := deliveredContractFor(tc.opts, outcome)
+				if gotLevel != wantLevel || !reflect.DeepEqual(gotChecks, wantChecks) {
+					t.Errorf("delivered contract (error %v) = %v %v on resolved options, %v %v otherwise",
+						outcome, gotLevel, gotChecks, wantLevel, wantChecks)
+				}
+			}
+
+			meta := types.Meta{Model: "m", Provider: "p", CacheHitRatio: 0.5}
+			got, want := provenanceOf("input", resolved, meta), extractProvenance("input", tc.opts, meta)
+			if got.ResultID == "" || want.ResultID == "" || got.ResultID == want.ResultID {
+				t.Errorf("each provenance has an identity of its own: %q and %q", got.ResultID, want.ResultID)
+			}
+			got.ResultID, want.ResultID = "", ""
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("provenance = %+v on resolved options, %+v otherwise", got, want)
 			}
 		})
 	}

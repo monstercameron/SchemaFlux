@@ -10,7 +10,7 @@ import (
 
 // TestCompatibleProviderRateLimited proves a 429 from a chat-completions
 // dialect vendor is reported through the RateLimitError path -- the
-// isRateLimited branch inside completeViaChatCompletions was untested by the
+// Retry-After branch inside completeViaChatCompletions was untested by the
 // existing "surfaces the error body" (400) and "undecodable body" (502)
 // cases, neither of which is a rate-limited status.
 func TestCompatibleProviderRateLimited(t *testing.T) {

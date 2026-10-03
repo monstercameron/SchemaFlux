@@ -6,27 +6,21 @@ import (
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
-// A-012: Extract ported to the Op descriptor, as the proof A-001 asked for.
-//
-// core.go's Extract keeps every step upstream of the model call exactly as
-// it was -- option validation, steering assembly, PreflightType, schema
-// generation, the cache identity, input normalization, prompt construction
-// -- and hands off to runExtractOp only for the part that used to be a
-// direct withRepair call. That is the whole port: the bytes sent to the
-// model, the schema and cache identities, and the error type returned on
-// failure are unchanged, which is what TestGoldenPrompts (golden_prompts_
-// test.go, unmoved) and the existing internal/ops extract tests
-// (untouched) both check.
+// Extract runs on the Op descriptor. core.go's Extract does every step upstream
+// of the model call -- option validation, steering assembly, PreflightType,
+// schema generation, the cache identity, input normalization, prompt
+// construction -- and hands off to runExtractOp only for the part that is a
+// direct withRepair call. The bytes sent to the model, the schema and cache
+// identities, and the error type returned on failure are what they were before
+// the port, which TestGoldenPrompts and the extract tests check.
 
 // extractOpMeta is the part of Extract's descriptor that does not depend on
 // the target type T: identity, semantics, batch class, default policy. It is
 // built through MustNewOp at package init, so if this ever loses its batch
-// class -- BatchNone, declared explicitly because Extract has no batch form
-// today -- every test run panics during init rather than a caller
-// discovering it as a silent behaviour change. op_test.go's
-// TestStableExtractOpFailsInitWithoutBatchClass reproduces the same check
-// against a copy with the batch class stripped, so the mechanism itself has
-// a witness independent of extractOpMeta staying correct.
+// class -- BatchNone, declared explicitly because Extract has no batch form --
+// every test run panics during init rather than a caller discovering it as a
+// silent behaviour change. op_test.go's TestStableExtractOpFailsInitWithoutBatchClass
+// reproduces the same check against a copy with the batch class stripped.
 var extractOpMeta = MustNewOp(Op[any, any]{
 	ID: types.OperationID{Name: "extract", Version: extractPromptVersion},
 	Semantics: types.Semantics{
@@ -41,12 +35,8 @@ var extractOpMeta = MustNewOp(Op[any, any]{
 	// RepairAttempts is left at zero rather than set to
 	// DefaultRepairAttempts: zero is the "caller stated no opinion" value
 	// repairAttempts() (repair.go) reads, and it resolves through
-	// config.GetRepairAttempts() -- which is what the pre-port Extract did
-	// by calling withRepair with a bare RepairPolicy{}. Setting this to
-	// DefaultRepairAttempts here would fix the repair budget at 1
-	// regardless of configuration, which is a behaviour change the task
-	// instructions say to stop and report rather than make. It is left
-	// unset on purpose, and this note is that report.
+	// config.GetRepairAttempts(). Setting it to DefaultRepairAttempts here
+	// would fix the repair budget at 1 regardless of configuration.
 	DefaultPolicy: types.DefaultPolicy{},
 })
 
@@ -82,6 +72,7 @@ func newExtractOp[T any](opt types.OpOptions, systemPrompt, userPrompt string) O
 			SchemaName: opt.SchemaName,
 			Decode: func(body string) (T, error) {
 				var attempt T
+				var zero T
 
 				// Strict's two rules, asked separately (DX-007). Strict still
 				// means both; either can now be had without the other, because
@@ -96,15 +87,15 @@ func newExtractOp[T any](opt types.OpOptions, systemPrompt, userPrompt string) O
 					// past the limits is a failure rather than something
 					// encoding/json quietly resolves (F-035).
 					if err := DecodeExact(body, &attempt, DecodeLimits{}); err != nil {
-						return attempt, err
+						return zero, err
 					}
-				} else if err := ParseJSONStrict(body, &attempt); err != nil {
-					return attempt, err
+				} else if err := decodeCallerAnswer(extractOpMeta.ID.Name, body, &attempt); err != nil {
+					return zero, err
 				}
 
 				if complete {
 					if err := ValidateExtractedData(attempt); err != nil {
-						return attempt, err
+						return zero, err
 					}
 				}
 				return attempt, nil

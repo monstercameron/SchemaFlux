@@ -12,11 +12,9 @@ import (
 
 // stubLLMError makes every call fail, standing in for an outage.
 func stubLLMError(err error) func() {
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, _, _ string, _ types.OpOptions) (string, error) {
+	return replaceLLMCaller(func(_ context.Context, _, _ string, _ types.OpOptions) (string, error) {
 		return "", err
 	})
-	return func() { customLLMCaller = previous }
 }
 
 // Match used to swallow a provider failure as "this case did not match", so an
@@ -213,11 +211,9 @@ func TestMatchSkipsCasesWithNoAction(t *testing.T) {
 
 // A cancelled context must reach the caller rather than becoming a non-match.
 func TestMatchHonoursACancelledContext(t *testing.T) {
-	previous := customLLMCaller
-	setLLMCaller(func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
+	swapLLMCaller(t, func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
 		return "", ctx.Err()
 	})
-	defer func() { customLLMCaller = previous }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

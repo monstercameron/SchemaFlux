@@ -1,0 +1,3 @@
+func New(opts Options) (schemaflux.Provider, error)
+type Options struct{Executable string; Model string; Effort schemaflux.Effort; Retries int; RetryBackoff time.Duration}
+func Register() error

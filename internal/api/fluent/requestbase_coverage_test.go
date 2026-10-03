@@ -21,103 +21,103 @@ func TestCommonSettersApplyOnTheRemainingBuilders(t *testing.T) {
 		opts any
 	}{
 		{"Classifying", Classifying[stubExtractTarget, string](stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Negotiating", Negotiating[stubExtractTarget](map[string]any{"budget": "low"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"NegotiatingAdversarially", NegotiatingAdversarially(AdversarialContext[stubExtractTarget]{}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Auditing", Auditing(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Scoring", Scoring(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Comparing", Comparing(stubExtractTarget{Name: "a"}, stubExtractTarget{Name: "b"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"CheckingSimilarity", CheckingSimilarity(stubExtractTarget{Name: "a"}, stubExtractTarget{Name: "b"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Inferring", Inferring(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Diffing", Diffing(stubExtractTarget{Name: "a"}, stubExtractTarget{Name: "b"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Explaining", Explaining(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Parsing", Parsing[stubExtractTarget]("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Summarizing", Summarizing("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Rewriting", Rewriting("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Translating", Translating("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Expanding", Expanding("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Suggesting", Suggesting[string]("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Redacting", Redacting(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"LLMRedacting", LLMRedacting("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Completing", Completing("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"CompletingField", CompletingField(stubExtractTarget{Name: "x"}, "Name").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Validating", Validating(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Asking", Asking[stubExtractTarget, string](stubExtractTarget{Name: "x"}, "q").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Annotating", Annotating(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Clustering", Clustering([]stubExtractTarget{{Name: "a"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Ranking", Ranking([]stubExtractTarget{{Name: "a"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Compressing", Compressing(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"CompressingText", CompressingText("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Decomposing", Decomposing(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"DecomposingInto", DecomposingInto[stubExtractTarget, stubExtractTarget](stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Enriching", Enriching[stubExtractTarget, stubExtractTarget](stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"EnrichingInPlace", EnrichingInPlace(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Normalizing", Normalizing(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"NormalizingText", NormalizingText("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"NormalizingBatch", NormalizingBatch([]stubExtractTarget{{Name: "a"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Matching", Matching([]stubExtractTarget{{Name: "a"}}, []stubExtractTarget{{Name: "b"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"MatchingOne", MatchingOne(stubExtractTarget{Name: "a"}, []stubExtractTarget{{Name: "b"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Critiquing", Critiquing(stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Synthesizing", Synthesizing[stubExtractTarget]([]any{"a"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Predicting", Predicting[stubExtractTarget]("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Verifying", Verifying("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"VerifyingClaim", VerifyingClaim("x").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Resolving", Resolving([]stubExtractTarget{{Name: "a"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Deriving", Deriving[stubExtractTarget, stubExtractTarget](stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Conforming", Conforming(stubExtractTarget{Name: "x"}, "standard").
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Interpolating", Interpolating([]stubExtractTarget{{Name: "a"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Arbitrating", Arbitrating([]stubExtractTarget{{Name: "a"}}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Projecting", Projecting[stubExtractTarget, stubExtractTarget](stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Assembling", Assembling[stubExtractTarget]([]any{"part"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 		{"Pivoting", Pivoting[stubExtractTarget, stubExtractTarget](stubExtractTarget{Name: "x"}).
-			Steer("s").RequestID("r").CorrelationID("c").Model(model).Threshold(0.5).opts},
+			Steer("s").RequestID("r").CorrelationID("c").Model(model).Effort(EffortLow).Threshold(0.5).opts},
 	}
 
 	for _, tc := range cases {
@@ -126,6 +126,9 @@ func TestCommonSettersApplyOnTheRemainingBuilders(t *testing.T) {
 			requireSet(t, tc.name, "RequestID", tc.opts, "r")
 			requireSet(t, tc.name, "CorrelationID", tc.opts, "c")
 			requireSet(t, tc.name, "Model", tc.opts, model)
+			// LX-105: the effort has a home on every builder's options, and
+			// the one shared setter finds it.
+			requireSet(t, tc.name, "Effort", tc.opts, EffortLow)
 		})
 	}
 }

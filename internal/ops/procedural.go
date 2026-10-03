@@ -4,13 +4,11 @@ package ops
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/internal/llm"
 	"github.com/monstercameron/schemaflux/internal/types"
 )
 
@@ -32,9 +30,14 @@ type DecisionResult struct {
 	Alternatives    []int
 
 	// Fallback reports that the configured fallback index was selected because
-	// the model could not be reached or its answer could not be used. It is the
-	// only case in which ModelConfidence is not the model's own number.
+	// the model could not be reached or its answer could not be used (see
+	// DecideOptions.Fallback for the failures that count).
+	// ModelConfidence is zero then: no model's answer was used.
 	Fallback bool
+
+	// ByCondition reports that the branch was taken because its own Condition
+	// held, without asking a model. ModelConfidence is zero then too.
+	ByCondition bool
 }
 
 // DecideOptions configures a decision. It carries the usual operation options
@@ -44,9 +47,20 @@ type DecisionResult struct {
 type DecideOptions struct {
 	types.OpOptions
 
-	// Fallback names the index to select when the provider fails or returns an
-	// answer that cannot be used. Nil means there is no fallback and the call
+	// Fallback names the index to select when the model could not be reached or
+	// its answer could not be used: a failure of kind provider unavailable,
+	// circuit open, rate limited or timeout, or of an invalid answer (malformed
+	// output, a schema or invariant violation, a batch protocol or evidence
+	// violation, repair exhausted). Nil means there is no fallback and the call
 	// returns an error instead of guessing.
+	//
+	// Any other failure is returned and the fallback is not taken: a budget, a
+	// policy, a cancellation, a configuration, authentication, permission or
+	// invalid-request failure is something the caller has to act on, and
+	// selecting a branch would hide it behind a decision that looks made. So is a
+	// truncated answer, a context too large for the model, a refusal and a
+	// recovered panic. A failure of the call that nothing classified is read as
+	// a provider that could not be reached.
 	Fallback *int
 }
 
@@ -78,7 +92,10 @@ func (o DecideOptions) WithMode(mode types.Mode) DecideOptions {
 // by asking the model. situation is prompt data describing the circumstances;
 // ctx is the real context governing cancellation.
 func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], opts ...DecideOptions) (T, DecisionResult, error) {
-	log := logger.GetLogger()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	log := loggerFor(ctx)
 	log.Debug("Starting decide operation", "decisionsCount", len(decisions))
 
 	var zero T
@@ -86,7 +103,7 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 
 	if len(decisions) == 0 {
 		log.Error("Decide operation failed: no decisions provided")
-		return zero, result, fmt.Errorf("decide: no decisions provided")
+		return zero, result, types.Newf(types.KindInvalidRequest, "decide", "no decisions were provided")
 	}
 
 	var decideOpts DecideOptions
@@ -95,17 +112,25 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 	}
 	if decideOpts.Fallback != nil {
 		if index := *decideOpts.Fallback; index < 0 || index >= len(decisions) {
-			return zero, result, fmt.Errorf("decide: fallback index %d is out of range for %d decisions", index, len(decisions))
+			return zero, result, types.Newf(types.KindConfiguration, "decide",
+				"the fallback index %d is out of range for %d decisions", index, len(decisions))
 		}
 	}
 
-	if ctx == nil {
-		ctx = context.Background()
+	// What no answer can be declared for is refused here, before the
+	// conditions are looked at. After them, the same oversized request ran when
+	// a condition happened to hold and was refused when none did.
+	if len(decisions) > strictEnumBudget {
+		return zero, result, types.Newf(types.KindConfiguration, "decide",
+			"%d decisions is more than one choice can declare an answer for (at most %d); choose among them in smaller groups",
+			len(decisions), strictEnumBudget)
 	}
 
-	// Report a fallback selection, or the error that made one necessary.
+	// Report a fallback selection, or the error that made one necessary. Only
+	// a failure the model could not recover from is covered; any other is the
+	// caller's to see.
 	fallback := func(cause error) (T, DecisionResult, error) {
-		if decideOpts.Fallback == nil {
+		if decideOpts.Fallback == nil || !decideFallbackCovers(cause) {
 			return zero, result, cause
 		}
 		index := *decideOpts.Fallback
@@ -119,8 +144,10 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 	// First check programmatic conditions
 	for i, decision := range decisions {
 		if decision.Condition != nil && decision.Condition(situation) {
+			// No model was asked, so there is no model confidence to report.
+			// This wrote 1.0 into ModelConfidence, a figure nobody gave.
 			result.SelectedIndex = i
-			result.ModelConfidence = 1.0
+			result.ByCondition = true
 			result.Explanation = fmt.Sprintf("Condition met for: %s", decision.Description)
 			return decision.Value, result, nil
 		}
@@ -128,62 +155,84 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 
 	// If no programmatic condition matches, use LLM for decision
 	opt := applyDefaults(decideOpts.OpOptions)
-	llmCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
+	// operationContext, not WithTimeout: a deadline the caller set is kept.
+	llmCtx, cancel := operationContext(ctx, config.GetTimeout())
 	defer cancel()
 
-	// Prepare decision options for LLM
-	var options []string
+	// The branches go to the model by number, with their descriptions; the
+	// answer is declared, with the selection required (LX-024).
+	descriptions := make([]string, len(decisions))
 	for i, decision := range decisions {
-		options = append(options, fmt.Sprintf("%d. %s", i, decision.Description))
+		descriptions[i] = decision.Description
 	}
+	// A request that cannot be made is the caller's to fix, and is reported
+	// with or without a fallback. The fallback is for a provider that fails
+	// and an answer that cannot be used; taken here it would be taken on every
+	// call, and the mistake behind it never seen.
+	//
+	// The situation is looked at here and not before the conditions: one that
+	// only the caller's own conditions read never has to be shown to a model.
+	shown, err := writtenSubject("decide", situation)
+	if err != nil {
+		return zero, result, err
+	}
+	userPrompt, err := decideUserPrompt(shown, descriptions)
+	if err != nil {
+		log.Warn("Decide operation could not write its request", "error", err)
+		return zero, result, err
+	}
+	opt.ResponseFormat = "json"
+	opt.JSONSchema = decideSchema(len(decisions))
+	opt.SchemaName = "decision"
 
-	systemPrompt := `You are a decision-making expert. Analyze the context and choose the best option.
-Return a JSON object with:
-{
-  "selected": 0,
-  "explanation": "reason for selection",
-  "confidence": 0.0-1.0,
-  "alternatives": [other viable option indices]
-}`
-
-	userPrompt := fmt.Sprintf(`Context:
-%v
-
-Options:
-%s
-
-Choose the best option based on the context.`, situation, strings.Join(options, "\n"))
-
-	response, err := callLLM(llmCtx, systemPrompt, userPrompt, opt)
+	response, err := callLLM(llmCtx, decideSystemPrompt, userPrompt, opt)
 	if err != nil {
 		log.Warn("Decide operation LLM call failed", "error", err)
-		return fallback(fmt.Errorf("decide: %w", err))
+		return fallback(err)
 	}
 
-	// Parse LLM response
-	var llmResult struct {
-		Selected        int     `json:"selected"`
-		Explanation     string  `json:"explanation"`
-		ModelConfidence float64 `json:"confidence"`
-		Alternatives    []int   `json:"alternatives"`
-	}
-
-	if err := ParseJSONStrict(response, &llmResult); err != nil {
+	answer, err := readDecideAnswer(response, len(decisions))
+	if err != nil {
 		log.Warn("Decide operation response was not usable", "error", err)
-		return fallback(fmt.Errorf("decide: the model's answer could not be parsed: %w", err))
+		return fallback(err)
 	}
 
-	if llmResult.Selected < 0 || llmResult.Selected >= len(decisions) {
-		log.Warn("Decide operation selected an out-of-range option", "selected", llmResult.Selected)
-		return fallback(fmt.Errorf("decide: the model selected option %d, which is out of range for %d decisions", llmResult.Selected, len(decisions)))
-	}
+	result.SelectedIndex = answer.selected
+	result.Explanation = answer.explanation
+	result.ModelConfidence = answer.modelConfidence
+	result.Alternatives = answer.alternatives
+	log.Debug("Decide operation succeeded", "selectedIndex", answer.selected, "confidence", answer.modelConfidence)
+	return decisions[answer.selected].Value, result, nil
+}
 
-	result.SelectedIndex = llmResult.Selected
-	result.Explanation = llmResult.Explanation
-	result.ModelConfidence = llmResult.ModelConfidence
-	result.Alternatives = llmResult.Alternatives
-	log.Debug("Decide operation succeeded", "selectedIndex", llmResult.Selected, "confidence", llmResult.ModelConfidence)
-	return decisions[llmResult.Selected].Value, result, nil
+// decideFallbackCovers reports whether a failure is one Decide's fallback
+// stands in for: the model could not be reached (unavailable, circuit open,
+// rate limited, timeout) or its answer could not be used (malformed output,
+// schema, invariant or evidence violation, batch protocol violation, repair
+// exhausted). It reads the kind the way the rest of the library does, so a
+// bare context error is read for what it is.
+//
+// A failure of the model's call that nothing classified is a provider that
+// could not be reached, and is read as one: it is how the call path has always
+// treated it (it is retried as one), and a provider's own plain error is the
+// usual case. Decide reads only the error of that call and of reading its
+// answer, so nothing else can arrive here without a kind.
+//
+// Everything else is returned by Decide: a budget, a policy, a cancellation or
+// a configuration failure would be hidden by a branch taken in its place. A
+// recovered panic is an invariant violation by kind and a failure of the
+// library itself by its mark, and is not an answer the model gave.
+func decideFallbackCovers(err error) bool {
+	if types.NarrowingOf(err) == types.NarrowPanic {
+		return false
+	}
+	switch llm.Classify(err) {
+	case types.KindUnknown, types.KindProviderUnavailable, types.KindCircuitOpen, types.KindRateLimited, types.KindTimeout,
+		types.KindMalformedOutput, types.KindSchemaViolation, types.KindBatchProtocolViolation,
+		types.KindInvariantViolation, types.KindEvidenceViolation, types.KindRepairExhausted:
+		return true
+	}
+	return false
 }
 
 // GuardResult represents the result of a guard check
@@ -194,15 +243,11 @@ type GuardResult struct {
 	RetryAfter   *time.Duration
 }
 
-// Guard checks if conditions are met before proceeding
-// Guard checks conditions before proceeding, and asks the model for
-// suggestions on whatever failed.
-//
-// ctx governs that call. Guard used to take no context at all, so the
-// suggestion call could not be cancelled and ignored any deadline the caller
-// had set.
+// Guard runs the checks against state and reports which of them failed. It
+// calls no model and reads ctx only to find the logger the client's lines go to;
+// GuardWithSuggestions is the form that asks a model.
 func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)) GuardResult {
-	log := logger.GetLogger()
+	log := loggerFor(ctx)
 	log.Debug("Starting guard operation", "checksCount", len(checks))
 
 	result := GuardResult{
@@ -219,17 +264,10 @@ func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)
 		}
 	}
 
-	// No provider call. CF-08 and P-03: this used to call a model whenever a
-	// check failed, to write suggestions nobody asked for. A caller handing
-	// this function a list of Go predicates has every reason to believe it
-	// runs Go predicates, and it did three things they did not agree to: it
-	// spent their money, it sent the failed-check messages -- built from their
-	// own state -- to a provider, and it did both on a hardcoded two-second
-	// timeout with hardcoded options, so their configured tier, deadline, and
-	// steering were all ignored.
-	//
-	// Suggestions are now GuardWithSuggestions, where asking for them is the
-	// whole point of calling it.
+	// No provider call. A caller handing this function a list of Go predicates
+	// has every reason to believe it runs Go predicates, and a model call here
+	// would spend their money and send the failed-check messages, built from
+	// their own state, to a provider they never named.
 	return result
 }
 
@@ -251,7 +289,7 @@ func Guard[T any](ctx context.Context, state T, checks ...func(T) (bool, string)
 // is already decided in Go by then, and returning an error would turn a
 // provider outage into a blocked operation that Go had already approved.
 func GuardWithSuggestions[T any](ctx context.Context, state T, opts types.OpOptions, checks ...func(T) (bool, string)) GuardResult {
-	log := logger.GetLogger()
+	log := loggerFor(ctx)
 
 	result := Guard(ctx, state, checks...)
 	if result.CanProceed || len(result.FailedChecks) == 0 {
@@ -261,8 +299,11 @@ func GuardWithSuggestions[T any](ctx context.Context, state T, opts types.OpOpti
 	ctx, cancel := operationContext(ctx, config.GetTimeout())
 	defer cancel()
 
+	// The messages come from the caller's own check functions and may quote
+	// their state, so they are written as a JSON list: a message with a newline
+	// in it cannot start a line the model reads as an instruction.
 	systemPrompt := "You are a helpful assistant. Suggest how to fix these issues."
-	userPrompt := fmt.Sprintf("Issues:\n%s", strings.Join(result.FailedChecks, "\n"))
+	userPrompt := fmt.Sprintf("Issues: %s", parsePromptQuote(result.FailedChecks))
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opts)
 	if err != nil {
@@ -276,306 +317,4 @@ func GuardWithSuggestions[T any](ctx context.Context, state T, opts types.OpOpti
 		}
 	}
 	return result
-}
-
-// StateMachine represents a finite state machine
-type StateMachine[S comparable, E any] struct {
-	Current     S
-	States      map[S]StateDefinition[S, E]
-	Transitions map[S]map[string]S // Current state -> Event type -> Next state
-	History     []S
-	mu          sync.RWMutex
-}
-
-// StateDefinition defines a state in the state machine
-type StateDefinition[S comparable, E any] struct {
-	Name    S
-	OnEnter func() error
-	OnExit  func() error
-	Timeout *time.Duration
-}
-
-// NewStateMachine creates a new state machine
-func NewStateMachine[S comparable, E any](initial S) *StateMachine[S, E] {
-	return &StateMachine[S, E]{
-		Current:     initial,
-		States:      make(map[S]StateDefinition[S, E]),
-		Transitions: make(map[S]map[string]S),
-		History:     []S{initial},
-	}
-}
-
-// AddState adds a state to the machine
-func (sm *StateMachine[S, E]) AddState(state StateDefinition[S, E]) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.States[state.Name] = state
-}
-
-// AddTransition adds a transition rule
-func (sm *StateMachine[S, E]) AddTransition(from S, eventType string, to S) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if sm.Transitions[from] == nil {
-		sm.Transitions[from] = make(map[string]S)
-	}
-	sm.Transitions[from][eventType] = to
-}
-
-// Transition attempts to transition based on an event
-func (sm *StateMachine[S, E]) Transition(event E) (S, error) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	eventType := reflect.TypeOf(event).Name()
-	if eventType == "" {
-		eventType = fmt.Sprintf("%T", event)
-	}
-
-	// Check if transition exists
-	if transitions, ok := sm.Transitions[sm.Current]; ok {
-		if nextState, ok := transitions[eventType]; ok {
-			// Execute exit handler for current state
-			if state, exists := sm.States[sm.Current]; exists && state.OnExit != nil {
-				if err := state.OnExit(); err != nil {
-					return sm.Current, fmt.Errorf("exit handler failed: %w", err)
-				}
-			}
-
-			// Transition to new state
-			sm.Current = nextState
-			sm.History = append(sm.History, nextState)
-
-			// Execute enter handler for new state
-			if state, exists := sm.States[nextState]; exists && state.OnEnter != nil {
-				if err := state.OnEnter(); err != nil {
-					return sm.Current, fmt.Errorf("enter handler failed: %w", err)
-				}
-			}
-
-			return nextState, nil
-		}
-	}
-
-	return sm.Current, fmt.Errorf("no transition from %v for event %s", sm.Current, eventType)
-}
-
-// GetHistory returns the state transition history
-func (sm *StateMachine[S, E]) GetHistory() []S {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	history := make([]S, len(sm.History))
-	copy(history, sm.History)
-	return history
-}
-
-// RetryStrategy defines how to retry operations
-type RetryStrategy struct {
-	MaxAttempts  int
-	InitialDelay time.Duration
-	MaxDelay     time.Duration
-	Multiplier   float64
-}
-
-// WithRetry executes an operation with retry logic
-func WithRetry[T any](operation func() (T, error), strategy RetryStrategy) (T, error) {
-	var zero T
-	var lastErr error
-
-	delay := strategy.InitialDelay
-
-	for attempt := 0; attempt < strategy.MaxAttempts; attempt++ {
-		result, err := operation()
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-
-		// Check if error is retryable
-		if !isRetryableError(err) {
-			return zero, err
-		}
-
-		if attempt < strategy.MaxAttempts-1 {
-			time.Sleep(delay)
-
-			// Calculate next delay
-			delay = time.Duration(float64(delay) * strategy.Multiplier)
-			if delay > strategy.MaxDelay {
-				delay = strategy.MaxDelay
-			}
-		}
-	}
-
-	return zero, fmt.Errorf("operation failed after %d attempts: %w", strategy.MaxAttempts, lastErr)
-}
-
-func isRetryableError(err error) bool {
-	// More comprehensive check for retryable errors.
-	s := strings.ToLower(err.Error())
-	retryableSubstrings := []string{
-		"timeout", "temporary", "connection reset", "connection refused",
-		"i/o timeout", "rate limit", "throttled", "try again later",
-		"service unavailable", "503", "429", "504",
-	}
-
-	for _, sub := range retryableSubstrings {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
-
-// LoopWhile executes a function while a condition is true
-func LoopWhile[T any](
-	state T,
-	condition func(T) bool,
-	body func(T) (T, error),
-	maxIterations int,
-) (T, error) {
-	iterations := 0
-	current := state
-
-	for condition(current) && iterations < maxIterations {
-		next, err := body(current)
-		if err != nil {
-			return current, fmt.Errorf("loop body failed at iteration %d: %w", iterations, err)
-		}
-		current = next
-		iterations++
-	}
-
-	if iterations >= maxIterations {
-		return current, fmt.Errorf("max iterations (%d) reached", maxIterations)
-	}
-
-	return current, nil
-}
-
-// Switch provides multi-way branching with typed returns
-func Switch[T comparable, R any](value T, cases map[T]func() R, defaultCase func() R) R {
-	if fn, ok := cases[value]; ok {
-		return fn()
-	}
-	if defaultCase != nil {
-		return defaultCase()
-	}
-	var zero R
-	return zero
-}
-
-// IfElse provides conditional execution with typed returns
-func IfElse[T any](condition bool, ifTrue func() T, ifFalse func() T) T {
-	if condition {
-		return ifTrue()
-	}
-	return ifFalse()
-}
-
-// Try provides exception-like error handling
-func Try[T any](operation func() (T, error)) (result T, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("panic recovered: %v", r)
-		}
-	}()
-
-	return operation()
-}
-
-// Workflow represents a complex multi-step workflow
-type Workflow struct {
-	Name  string
-	Steps []WorkflowStep
-	State map[string]any
-	mu    sync.RWMutex
-}
-
-// WorkflowStep represents a step in a workflow
-type WorkflowStep struct {
-	Name         string
-	Execute      func(context.Context, map[string]any) error
-	Compensate   func(map[string]any) error // Rollback action
-	CanRetry     bool
-	MaxRetries   int
-	Dependencies []string // Names of steps that must complete first
-}
-
-// NewWorkflow creates a new workflow
-func NewWorkflow(name string) *Workflow {
-	return &Workflow{
-		Name:  name,
-		Steps: []WorkflowStep{},
-		State: make(map[string]any),
-	}
-}
-
-// AddStep adds a step to the workflow
-func (w *Workflow) AddStep(step WorkflowStep) *Workflow {
-	w.Steps = append(w.Steps, step)
-	return w
-}
-
-// Execute runs the workflow
-func (w *Workflow) Execute(ctx context.Context) error {
-	completed := make(map[string]bool)
-
-	for _, step := range w.Steps {
-		// Check dependencies
-		for _, dep := range step.Dependencies {
-			if !completed[dep] {
-				return fmt.Errorf("dependency %s not met for step %s", dep, step.Name)
-			}
-		}
-
-		// Execute step with retry
-		attempts := 1
-		if step.CanRetry && step.MaxRetries > 0 {
-			attempts = step.MaxRetries
-		}
-
-		var stepErr error
-		for attempt := 0; attempt < attempts; attempt++ {
-			stepErr = step.Execute(ctx, w.State)
-			if stepErr == nil {
-				completed[step.Name] = true
-				break
-			}
-
-			if attempt < attempts-1 {
-				time.Sleep(time.Duration(attempt+1) * time.Second)
-			}
-		}
-
-		if stepErr != nil {
-			// Execute compensation for completed steps in reverse order
-			for i := len(w.Steps) - 1; i >= 0; i-- {
-				if completed[w.Steps[i].Name] && w.Steps[i].Compensate != nil {
-					_ = w.Steps[i].Compensate(w.State)
-				}
-			}
-			return fmt.Errorf("step %s failed: %w", step.Name, stepErr)
-		}
-	}
-
-	return nil
-}
-
-// SetState sets a value in the workflow state
-func (w *Workflow) SetState(key string, value any) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.State[key] = value
-}
-
-// GetState gets a value from the workflow state
-func (w *Workflow) GetState(key string) (any, bool) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	val, ok := w.State[key]
-	return val, ok
 }

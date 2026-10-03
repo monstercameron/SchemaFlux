@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	schemaflux "github.com/monstercameron/schemaflux"
@@ -59,7 +60,7 @@ func TestSLONoPanicsFromValidAPIUse(t *testing.T) {
 			_, err := schemaflux.Summarize("é́ مرحبا 👨‍👩‍👧‍👦", schemaflux.NewSummarizeOptions())
 			return err
 		}},
-		{"classify with an answer outside the set", `{"category":"nope","confidence":0.9}`, func() error {
+		{"classify with an answer outside the set", `{"category":"nope","confidence":0.9,"reasoning":"r"}`, func() error {
 			_, err := schemaflux.Classify[string, string]("input", schemaflux.NewClassifyOptions().WithCategories([]string{"a", "b"}))
 			return err
 		}},
@@ -86,9 +87,15 @@ func TestSLONoPanicsFromValidAPIUse(t *testing.T) {
 // Without the settle loop this measures scheduler noise rather than leaks: a
 // goroutine that is on its way out has not necessarily gone when the call that
 // spawned it returns.
+//
+// It is called only inside a synctest bubble. synctest.Wait returns once every
+// other goroutine of the bubble has finished or is blocked for good, so the
+// goroutines the library started for the calls are settled by then and not by
+// how long the loop happened to sleep; the loop is left for the runtime's own.
 func settledGoroutines() int {
 	previous := -1
 	for i := 0; i < 40; i++ {
+		synctest.Wait()
 		runtime.GC()
 		current := runtime.NumGoroutine()
 		if current == previous {
@@ -101,50 +108,62 @@ func settledGoroutines() int {
 }
 
 func TestSLONoGoroutineLeaksAfterCompletion(t *testing.T) {
-	defer schemafluxtest.Install(t, schemafluxtest.New().Reply(`{"ids":["i-000001","i-000002"]}`))()
+	synctest.Test(t, func(t *testing.T) {
+		defer schemafluxtest.Install(t, schemafluxtest.New().Reply(`{"ids":["i-000001","i-000002"]}`))()
 
-	before := settledGoroutines()
+		before := settledGoroutines()
 
-	for i := 0; i < 20; i++ {
-		_, _ = schemaflux.Filter([]string{"a", "b"}, schemaflux.NewFilterOptions().WithCriteria("any"))
-	}
+		for i := 0; i < 20; i++ {
+			_, _ = schemaflux.Filter([]string{"a", "b"}, schemaflux.NewFilterOptions().WithCriteria("any"))
+		}
 
-	after := settledGoroutines()
-	// A small allowance for runtime-owned goroutines that appear on first use;
-	// a leak shows up as growth proportional to the loop, not as two.
-	if after > before+2 {
-		t.Errorf("goroutines went from %d to %d over 20 completed operations", before, after)
-	}
+		after := settledGoroutines()
+		// A small allowance for runtime-owned goroutines that appear on first use;
+		// a leak shows up as growth proportional to the loop, not as two.
+		if after > before+2 {
+			t.Errorf("goroutines went from %d to %d over 20 completed operations", before, after)
+		}
+	})
 }
 
 func TestSLONoGoroutineLeaksAfterCancel(t *testing.T) {
 	// Slow enough that every operation is cancelled mid-flight rather than
 	// finishing before the cancel is noticed. The fake's own Slow mode exists
 	// for this, so there is no second provider double here to keep in step.
-	defer schemafluxtest.Install(t, schemafluxtest.New().Slow(2*time.Second).Reply("{}"))()
+	synctest.Test(t, func(t *testing.T) {
+		defer schemafluxtest.Install(t, schemafluxtest.New().Slow(2*time.Second).Reply("{}"))()
 
-	before := settledGoroutines()
+		before := settledGoroutines()
 
-	for i := 0; i < 20; i++ {
-		// A deadline that expires *during* the call, not before it: cancelling
-		// up front means the operation returns without ever starting, and a
-		// leak test on work that never began proves nothing.
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		for i := 0; i < 20; i++ {
+			// A deadline that expires *during* the call, not before it: cancelling
+			// up front means the operation returns without ever starting, and a
+			// leak test on work that never began proves nothing.
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 
-		opts := schemaflux.NewFilterOptions().WithCriteria("any")
-		opts.CommonOptions.Context = ctx
-		_, err := schemaflux.Filter([]string{"a", "b"}, opts)
-		cancel()
+			opts := schemaflux.NewFilterOptions().WithCriteria("any")
+			opts.CommonOptions.Context = ctx
+			started := time.Now()
+			_, err := schemaflux.Filter([]string{"a", "b"}, opts)
+			elapsed := time.Since(started)
+			cancel()
 
-		if err == nil {
-			t.Fatal("an operation against a provider slower than its deadline succeeded")
+			if err == nil {
+				t.Fatal("an operation against a provider slower than its deadline succeeded")
+			}
+			// On the bubble's clock the deadline passes at 20 ms, while the
+			// provider would have taken 2 s: the call was cut short by the
+			// deadline, which is what makes this a test of cancellation.
+			if elapsed != 20*time.Millisecond {
+				t.Fatalf("the operation returned after %v, want the 20ms deadline", elapsed)
+			}
 		}
-	}
 
-	after := settledGoroutines()
-	if after > before+2 {
-		t.Errorf("goroutines went from %d to %d over 20 cancelled operations", before, after)
-	}
+		after := settledGoroutines()
+		if after > before+2 {
+			t.Errorf("goroutines went from %d to %d over 20 cancelled operations", before, after)
+		}
+	})
 }
 
 // --- SLO: zero unknown or duplicate batch IDs accepted.

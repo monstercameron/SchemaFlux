@@ -85,7 +85,7 @@ func TestEmbeddedOpOptionsAreNotDiscarded(t *testing.T) {
 			return o.toOpOptions()
 		}},
 		{"Batch", func() types.OpOptions {
-			o := NewBatchOptions()
+			o := BatchOptions{}
 			o.OpOptions.RequestID = requestID
 			return o.toOpOptions()
 		}},
