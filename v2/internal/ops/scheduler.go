@@ -46,7 +46,8 @@ const (
 // priorityOrder is the order the dispatcher services priority classes in:
 // every High-priority tenant queue is drained before any Normal one is even
 // considered. SchedPriority only ever changes *ordering* among admittable work —
-// see globalCapacityLocked/bulkheadCapacityLocked, which every request is
+// see concurrencyCapacityLocked, estimateCapacityLocked, and
+// bulkheadCapacityLocked, which every request is
 // checked against regardless of priority —
 // never bypasses a concurrency, token, cost, provider, or tenant limit. A
 // priority that could buy its way past a locked limit would let a caller
@@ -566,19 +567,18 @@ func (s *Scheduler) expireWaitersLocked() {
 	}
 }
 
-// globalCapacityLocked reports whether the scheduler as a whole has room.
-//
-// It is separated from the bulkheads because the two refusals mean different
-// things to the dispatcher: no global room means *nothing* can be admitted and
-// scanning further down a queue is wasted work, while a bulkhead refusal is
-// specific to one request and the item behind it may well be admittable.
-// Conflating them is what produced the head-of-line block described on
-// nextAdmittableAtPriorityLocked.
-func (s *Scheduler) globalCapacityLocked(req SubmitRequest) bool {
+// concurrencyCapacityLocked reports whether another request can run at all.
+// Unlike token and cost capacity, this does not depend on the particular
+// waiter, so when it is false no further queue scan can find work to admit.
+func (s *Scheduler) concurrencyCapacityLocked() bool {
+	return s.limits.MaxConcurrent <= 0 || s.inFlight < s.limits.MaxConcurrent
+}
+
+// estimateCapacityLocked reports whether this request's estimates fit the
+// remaining token and cost ceilings. A false result only blocks this waiter:
+// a smaller request later in the queue may still fit.
+func (s *Scheduler) estimateCapacityLocked(req SubmitRequest) bool {
 	l := s.limits
-	if l.MaxConcurrent > 0 && s.inFlight >= l.MaxConcurrent {
-		return false
-	}
 	if l.MaxInFlightTokens > 0 && s.inFlightTokens+req.EstimatedTokens > l.MaxInFlightTokens {
 		return false
 	}
@@ -804,8 +804,8 @@ func (s *Scheduler) nextAdmittableAtPriorityLocked(p SchedPriority) (*schedWaite
 		if len(list) == 0 {
 			continue
 		}
-		// Scan past waiters whose *bulkhead* is full rather than stopping at
-		// the head.
+		// Scan past waiters that cannot currently fit a per-request resource
+		// estimate or a bulkhead rather than stopping at the head.
 		//
 		// The head-only version turned a per-provider bulkhead into a
 		// per-tenant head-of-line block: four requests for a saturated
@@ -815,14 +815,17 @@ func (s *Scheduler) nextAdmittableAtPriorityLocked(p SchedPriority) (*schedWaite
 		// it showed up as an intermittent test failure -- InFlight 1, Queued 4
 		// -- which reads like flakiness and is not.
 		//
-		// Skipping is only correct for a bulkhead refusal. If the scheduler
-		// has no global room, nothing further down can be admitted either, so
-		// the loop stops rather than walking the whole queue to no purpose.
-		// FIFO still holds within a provider, because the scan preserves queue
-		// order and only steps over requests that could not run yet anyway.
+		// A full MaxConcurrent limit means nothing further down can be admitted,
+		// so stop without walking the queue. Token and cost ceilings are
+		// request-specific: a large estimate can fail while a smaller waiter
+		// behind it fits. The scan preserves order among requests that fit now,
+		// stepping over only waiters that cannot currently run.
 		for _, w := range list {
-			if !s.globalCapacityLocked(w.req) {
+			if !s.concurrencyCapacityLocked() {
 				return nil, false
+			}
+			if !s.estimateCapacityLocked(w.req) {
+				continue
 			}
 			if s.bulkheadCapacityLocked(w.req) {
 				s.cursor[p] = (idx + 1) % n

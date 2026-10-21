@@ -9472,10 +9472,16 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   only the marker. Focused compiled test binaries and the complete v2 suite
   pass. A mismatched END marker conservatively discards the remaining body.
 
-- [ ] **QP-022** — Admit a smaller request behind a queued request whose token
+- [x] **QP-022** — Admit a smaller request behind a queued request whose token
   or cost demand does not fit remaining global capacity. Preserve priority and
   tenant constraints. Cover deterministic scheduler cases and the exported
   operation path, and measure queue scan cost before and after if it changes.
+  **Verified:** all ten deterministic `Submit` scenarios failed before the
+  split capacity check and passed afterward; twelve direct estimate cases and
+  the existing ceiling, priority, and tenant checks pass. The complete v2
+  suite passes. Scanning 256 estimate-blocked waiters to find a fitting one
+  rose from about 88 to 499–527 ns/op, still zero allocations. This extra
+  scan is required to admit work the old code incorrectly left queued.
 
 - [ ] **QP-023** — Reject negative or contradictory `ClusterOptions` size
   bounds before any provider call; reject negative totals in

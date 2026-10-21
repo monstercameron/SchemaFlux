@@ -854,6 +854,130 @@ func TestAFullSchedulerDoesNotAdmitPastItsGlobalCeiling(t *testing.T) {
 	})
 }
 
+// A queued request whose token or cost estimate does not fit is not evidence
+// that the scheduler as a whole is full. A smaller request behind it can use
+// the remaining budget, regardless of which tenant or priority class owns it.
+func TestSchedulerAdmitsSmallerRequestBehindResourceBlockedWaiter(t *testing.T) {
+	tests := []struct {
+		name   string
+		limits SchedulerLimits
+		holder SubmitRequest
+		large  SubmitRequest
+		small  SubmitRequest
+	}{
+		{"tokens same tenant low", SchedulerLimits{MaxConcurrent: 3, MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 60}, SubmitRequest{Tenant: "t", EstimatedTokens: 50}, SubmitRequest{Tenant: "t", EstimatedTokens: 20}},
+		{"tokens different tenants low", SchedulerLimits{MaxConcurrent: 3, MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 60}, SubmitRequest{Tenant: "large", EstimatedTokens: 50}, SubmitRequest{Tenant: "small", EstimatedTokens: 20}},
+		{"tokens different tenants normal", SchedulerLimits{MaxConcurrent: 3, MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 60}, SubmitRequest{Tenant: "large", Priority: SchedPriorityNormal, EstimatedTokens: 50}, SubmitRequest{Tenant: "small", Priority: SchedPriorityNormal, EstimatedTokens: 20}},
+		{"tokens different tenants high", SchedulerLimits{MaxConcurrent: 3, MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 60}, SubmitRequest{Tenant: "large", Priority: SchedPriorityHigh, EstimatedTokens: 50}, SubmitRequest{Tenant: "small", Priority: SchedPriorityHigh, EstimatedTokens: 20}},
+		{"tokens exact remaining fit", SchedulerLimits{MaxConcurrent: 3, MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 80}, SubmitRequest{Tenant: "large", EstimatedTokens: 30}, SubmitRequest{Tenant: "small", EstimatedTokens: 20}},
+		{"cost same tenant low", SchedulerLimits{MaxConcurrent: 3, MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .6}, SubmitRequest{Tenant: "t", EstimatedCost: .5}, SubmitRequest{Tenant: "t", EstimatedCost: .4}},
+		{"cost different tenants low", SchedulerLimits{MaxConcurrent: 3, MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .6}, SubmitRequest{Tenant: "large", EstimatedCost: .5}, SubmitRequest{Tenant: "small", EstimatedCost: .4}},
+		{"cost different tenants normal", SchedulerLimits{MaxConcurrent: 3, MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .6}, SubmitRequest{Tenant: "large", Priority: SchedPriorityNormal, EstimatedCost: .5}, SubmitRequest{Tenant: "small", Priority: SchedPriorityNormal, EstimatedCost: .4}},
+		{"cost exact remaining fit", SchedulerLimits{MaxConcurrent: 3, MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .8}, SubmitRequest{Tenant: "large", EstimatedCost: .3}, SubmitRequest{Tenant: "small", EstimatedCost: .2}},
+		{"tokens and cost", SchedulerLimits{MaxConcurrent: 3, MaxInFlightTokens: 100, MaxInFlightCost: 1}, SubmitRequest{EstimatedTokens: 60, EstimatedCost: .6}, SubmitRequest{Tenant: "large", EstimatedTokens: 50, EstimatedCost: .5}, SubmitRequest{Tenant: "small", EstimatedTokens: 20, EstimatedCost: .4}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := NewScheduler(tc.limits)
+				defer s.Close(context.Background())
+
+				release := make(chan struct{})
+				var wg sync.WaitGroup
+				errs := make(chan error, 3)
+				start := func(req SubmitRequest) {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						_, err := Submit(context.Background(), s, req, func(ctx context.Context) (int, error) {
+							select {
+							case <-release:
+								return 1, nil
+							case <-ctx.Done():
+								return 0, ctx.Err()
+							}
+						})
+						if err != nil {
+							errs <- err
+						}
+					}()
+				}
+
+				start(tc.holder)
+				waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == 1 })
+				start(tc.large)
+				waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == 1 && st.Queued == 1 })
+				start(tc.small)
+				waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == 2 && st.Queued == 1 })
+
+				close(release)
+				wg.Wait()
+				close(errs)
+				for err := range errs {
+					t.Errorf("Submit: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestSchedulerEstimateCapacityCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit SchedulerLimits
+		used  SubmitRequest
+		next  SubmitRequest
+		want  bool
+	}{
+		{"unbounded", SchedulerLimits{}, SubmitRequest{}, SubmitRequest{EstimatedTokens: 1, EstimatedCost: 1}, true},
+		{"tokens empty", SchedulerLimits{MaxInFlightTokens: 100}, SubmitRequest{}, SubmitRequest{}, true},
+		{"tokens exact ceiling", SchedulerLimits{MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 60}, SubmitRequest{EstimatedTokens: 40}, true},
+		{"tokens one over", SchedulerLimits{MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 60}, SubmitRequest{EstimatedTokens: 41}, false},
+		{"tokens below ceiling", SchedulerLimits{MaxInFlightTokens: 100}, SubmitRequest{EstimatedTokens: 50}, SubmitRequest{EstimatedTokens: 49}, true},
+		{"cost empty", SchedulerLimits{MaxInFlightCost: 1}, SubmitRequest{}, SubmitRequest{}, true},
+		{"cost exact ceiling", SchedulerLimits{MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .6}, SubmitRequest{EstimatedCost: .4}, true},
+		{"cost one over", SchedulerLimits{MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .6}, SubmitRequest{EstimatedCost: .41}, false},
+		{"cost below ceiling", SchedulerLimits{MaxInFlightCost: 1}, SubmitRequest{EstimatedCost: .25}, SubmitRequest{EstimatedCost: .5}, true},
+		{"both fit", SchedulerLimits{MaxInFlightTokens: 100, MaxInFlightCost: 1}, SubmitRequest{EstimatedTokens: 60, EstimatedCost: .6}, SubmitRequest{EstimatedTokens: 40, EstimatedCost: .4}, true},
+		{"tokens block combined", SchedulerLimits{MaxInFlightTokens: 100, MaxInFlightCost: 1}, SubmitRequest{EstimatedTokens: 61, EstimatedCost: .2}, SubmitRequest{EstimatedTokens: 40, EstimatedCost: .2}, false},
+		{"cost blocks combined", SchedulerLimits{MaxInFlightTokens: 100, MaxInFlightCost: 1}, SubmitRequest{EstimatedTokens: 20, EstimatedCost: .61}, SubmitRequest{EstimatedTokens: 20, EstimatedCost: .4}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Scheduler{limits: tc.limit, inFlightTokens: tc.used.EstimatedTokens, inFlightCost: tc.used.EstimatedCost}
+			if got := s.estimateCapacityLocked(tc.next); got != tc.want {
+				t.Errorf("estimateCapacityLocked(%+v) = %v, want %v", tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
+func BenchmarkSchedulerSkipsResourceBlockedWaiters(b *testing.B) {
+	const blocked = 256
+	waiters := make([]*schedWaiter, 0, blocked+1)
+	for i := 0; i < blocked; i++ {
+		waiters = append(waiters, &schedWaiter{req: SubmitRequest{Tenant: "t", EstimatedTokens: 50}})
+	}
+	waiters = append(waiters, &schedWaiter{req: SubmitRequest{Tenant: "t", EstimatedTokens: 20}})
+	s := &Scheduler{
+		limits:         SchedulerLimits{MaxInFlightTokens: 100},
+		inFlightTokens: 60,
+		queues: map[string]map[SchedPriority][]*schedWaiter{
+			"t": {SchedPriorityLow: waiters},
+		},
+		tenantOrder: []string{"t"},
+		cursor:      map[SchedPriority]int{},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_, _ = s.nextAdmittableLocked()
+		s.cursor[SchedPriorityLow] = 0
+	}
+}
+
 // A priority outside the three classes was queued where nothing looks for it:
 // the request waited for ever, counted against MaxQueued, and was not answered
 // even by Close.
