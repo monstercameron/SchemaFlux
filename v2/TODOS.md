@@ -9449,10 +9449,17 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   both telemetry packages with three shuffled runs, and focused `go vet`
   pass. This is helper-level improvement; no full-call latency claim is made.
 
-- [ ] **QP-020** — Bind provider `ExtraHeaders` to the configured origin so
+- [x] **QP-020** — Bind provider `ExtraHeaders` to the configured origin so
   cross-origin redirects cannot receive custom credentials. Preserve ordinary
   same-origin requests and caller redirect behavior. Cover direct transport
   cases and the exported provider request path with two local test servers.
+  **Verified:** ten header-shape regressions failed against the old transport
+  and passed after the origin guard. The tests also cover a configured name
+  already on the caller request, same-origin redirect retention, caller
+  redirect policy, exported OpenAI and compatible completion calls, and a
+  runnable example. The complete v2 suite passed with `go test -work -p 1
+  -parallel 1 -count=1 ./...` on windows/amd64. The redirect policy uses the
+  first request's origin; no policy is inferred from later redirect targets.
 
 - [ ] **QP-021** — Redact entire private-key PEM blocks from opt-in diagnostic
   captures, including a truncated block without an END marker. Cover direct

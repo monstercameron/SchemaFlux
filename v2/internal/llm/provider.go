@@ -10,6 +10,7 @@ import (
 	"iter"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -443,6 +444,7 @@ func resolveHTTPClient(config ProviderConfig) *http.Client {
 			base = http.DefaultTransport
 		}
 		wrapped.Transport = newCustomTransport(base, config.ExtraHeaders)
+		protectExtraHeadersOnRedirect(&wrapped)
 		return &wrapped
 	}
 
@@ -452,8 +454,57 @@ func resolveHTTPClient(config ProviderConfig) *http.Client {
 	client := &http.Client{Timeout: config.Timeout, Transport: sharedTransport()}
 	if len(config.ExtraHeaders) > 0 {
 		client.Transport = newCustomTransport(sharedTransport(), config.ExtraHeaders)
+		protectExtraHeadersOnRedirect(client)
 	}
 	return client
+}
+
+// extraHeaderOriginKey carries the first request's origin through net/http's
+// redirect loop. The transport uses it to avoid adding configured credentials
+// to a redirected request for another origin.
+type extraHeaderOriginKey struct{}
+
+type requestOrigin struct {
+	scheme string
+	host   string
+	port   string
+}
+
+func originOf(u *url.URL) requestOrigin {
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return requestOrigin{scheme: scheme, host: host, port: port}
+}
+
+// protectExtraHeadersOnRedirect marks redirected requests with their original
+// origin while retaining the caller's redirect callback. ExtraHeaders are
+// credentials in many configurations, and the transport runs after net/http
+// follows a redirect; without this guard it re-adds them after net/http has
+// removed sensitive standard headers for a cross-origin hop.
+func protectExtraHeadersOnRedirect(client *http.Client) {
+	callerPolicy := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if callerPolicy != nil {
+			if err := callerPolicy(req, via); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if len(via) > 0 {
+			*req = *req.WithContext(context.WithValue(req.Context(), extraHeaderOriginKey{}, originOf(via[0].URL)))
+		}
+		return nil
+	}
 }
 
 // callContext applies ProviderConfig.Timeout to one call's context when the
@@ -1755,8 +1806,18 @@ func newCustomTransport(transport http.RoundTripper, headers map[string]string) 
 // inspect it afterwards.
 func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
-	for name, value := range t.headers {
-		clone.Header.Set(name, value)
+	origin, redirected := req.Context().Value(extraHeaderOriginKey{}).(requestOrigin)
+	if !redirected || originOf(req.URL) == origin {
+		for name, value := range t.headers {
+			clone.Header.Set(name, value)
+		}
+	} else {
+		// net/http carries arbitrary caller headers across redirects. Remove the
+		// configured names too, so a value already present on the request cannot
+		// bypass the origin check; leave unrelated caller headers alone.
+		for name := range t.headers {
+			clone.Header.Del(name)
+		}
 	}
 	return t.transport.RoundTrip(clone)
 }
