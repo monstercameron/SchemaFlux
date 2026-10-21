@@ -65,7 +65,7 @@ jobs:
         # Budget tests run in the normal suite; this pass checks concurrency.
         run: >
           go test -race
-          -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
+          -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing|ADecisionWithNoObserverBuildsNoRecord'
           ./...
 
       # Order dependence and shared package state hide from a single ordered
@@ -73,7 +73,7 @@ jobs:
       - name: Test shuffled
         run: >
           go test -shuffle=on -count=10
-          -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
+          -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing|ADecisionWithNoObserverBuildsNoRecord'
           ./...
 
       - name: Vet

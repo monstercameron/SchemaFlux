@@ -42,7 +42,7 @@ done
 
 # Checks are ordered fast-to-slow so a typo fails in seconds rather than after
 # the full suite. Each entry is "label|command".
-ALLOCATION_SKIP='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
+ALLOCATION_SKIP='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing|ADecisionWithNoObserverBuildsNoRecord'
 CHECKS=(
   "gofmt|test -z \"\$(gofmt -l .)\" || { gofmt -l .; false; }"
   "build|go build ./..."

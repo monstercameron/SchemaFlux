@@ -9350,11 +9350,43 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   sandbox, so its individual build, test, analysis, and policy steps were
   checked directly; CI must still verify the Linux and macOS legs.
 
-- [ ] **QP-016** — Publish the relocated module as v2.0.1. Update the
+- [x] **QP-016** — Publish the relocated module as v2.0.1. Update the
   reported library version and installation docs, verify the complete tests
   from the Desktop checkout, then commit, tag, and push the module with its
   Go-compatible repository tag. Ensure pull request demo runs cannot cancel
   the `main` Pages deployment.
+  **Verified:** `main` commits `5c690d4` and `75504ca` are on origin, and
+  annotated tag `v2.0.1` points to `75504ca`. The Desktop checkout has no
+  repository-root Go files, and `go test -p 1 -parallel 1 ./... -count=1`
+  passed there under Go 1.27.3/windows-amd64. A fresh external module
+  downloaded `github.com/monstercameron/schemaflux/v2@v2.0.1` from origin
+  and built imports of the root and public subpackages. The SmartTodo
+  workflow passed its browser smoke test and Pages deployment at run
+  `39601135599`; the live URL returned HTTP 200. Scoping the workflow's
+  concurrency group to `github.ref` stopped pull request runs from
+  cancelling the main deployment. The first broader CI run exposed the
+  allocation-test exclusion gap tracked as QP-018; its rerun is pending.
+
+- [ ] **QP-017** — Isolate the Windows ARM64 Go 1.27.3 runtime crashes seen
+  during the relocated module's local full-suite runs. The first run ended
+  in a GC bad-pointer fatal error in `internal/ops`; another ended in an
+  unknown-caller-PC traceback, and a serialized run crashed while scanning
+  a stack in `internal/runtime/telemetry`. Focused `internal/ops` tests and
+  the complete windows-amd64 run pass. Determine whether the cause is in
+  this repository, a dependency, or the toolchain before changing code or
+  weakening assertions. A diagnostic run with `GOMAXPROCS=1` avoided the
+  runtime crash but made `TestSchedulerGoroutineCountStaysFlatUnderLoad`
+  unable to exercise its bounded queue, so that setting is not a valid gate.
+
+- [x] **QP-018** — Keep the observer allocation comparison in the normal
+  test suite, but exclude it from race and shuffled runs. The race detector
+  changes allocation counts, and the CI exclusion list omitted
+  `TestADecisionWithNoObserverBuildsNoRecord`; Ubuntu's race job saw equal
+  instrumented counts and failed for that reason. Update the CI and local
+  skip lists together and verify the test still runs normally.
+  **Verified:** the targeted normal test passes, the same targeted test
+  with the new skip reports no tests to run, and `check.sh --list` parses.
+  The corresponding CI rerun must still verify the race and shuffled jobs.
 
 ## Standing rules for this list
 
