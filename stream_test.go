@@ -1141,18 +1141,27 @@ func TestAStreamUnderAnObserverIsOneOperationScopeThatFinishesWhenTheStreamEnds(
 				}
 			}})
 			defer restore()
-			plain := newStreamModel(finishing("ab", "cd"))
+			started := make(chan struct{})
+			release := make(chan struct{})
+			defer close(release)
+			plain := newStreamModel(func(ctx context.Context, yield func(schemaflux.Chunk, error) bool) {
+				close(started)
+				<-release
+				finishing("ab", "cd")(ctx, yield)
+			})
 			var recorder schemaflux.Recorder
 			stream, err := c.open(operationClient(plain, recordingTo(&recorder)), schemaflux.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
+			<-started
 			mu.Lock()
 			began := len(seen)
 			mu.Unlock()
 			if began != 0 {
-				t.Errorf("the observer saw %v finish before the stream was read", seen)
+				t.Errorf("the observer saw %v finish while the provider was still running", seen)
 			}
+			release <- struct{}{}
 			if text, err := stream.Text(); err != nil || text != "abcd" {
 				t.Fatalf("Text = %q, %v", text, err)
 			}
