@@ -359,6 +359,32 @@ func TestSinkCapturesTruncatedRedactedBodyAndErrorCarriesReference(t *testing.T)
 	}
 }
 
+func TestSinkCapturesRedactedPrivateKeyBlockThroughRunOp(t *testing.T) {
+	sink := &recordingSink{}
+	ctx := WithDiagnosticSink(context.Background(), sink, types.DiagnosticPolicy{})
+	privateMaterial := "private-material-must-not-reach-the-diagnostic-sink"
+	body := "invalid response\n-----BEGIN " + "PRIVATE KEY-----\n" + privateMaterial + "\n-----END " + "PRIVATE KEY-----\ntrailing text"
+	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+		return body, nil
+	})
+	t.Cleanup(func() { setLLMCaller(nil) })
+
+	_, _, err := RunOp(ctx, echoOp(func(string) error { return errors.New("rejected") }), "x", types.OpOptions{})
+	if err == nil {
+		t.Fatal("expected validation exhaustion")
+	}
+	records := sink.all()
+	if len(records) != 1 {
+		t.Fatalf("sink captured %d records, want 1", len(records))
+	}
+	if got, want := records[0].Body, "invalid response\n[redacted]\ntrailing text"; got != want {
+		t.Errorf("captured body = %q, want %q", got, want)
+	}
+	if strings.Contains(records[0].Body, privateMaterial) {
+		t.Errorf("private-key material reached the configured sink: %q", records[0].Body)
+	}
+}
+
 // TestCaptureDiagnosticRedactsSeveralCredentialShapes exercises
 // types.CaptureDiagnostic directly across the shapes diagnosticPatterns
 // names, so the redaction list is proven independent of the repair-loop

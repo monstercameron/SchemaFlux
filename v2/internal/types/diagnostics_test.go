@@ -209,6 +209,46 @@ func TestRedactCredentialsReplacesEveryShapeItKnows(t *testing.T) {
 	}
 }
 
+func TestRedactCredentialsReplacesEntirePrivateKeyBlocks(t *testing.T) {
+	privateMaterial := "private-material-must-not-reach-the-diagnostic-sink"
+	block := func(label string, end bool) string {
+		text := "-----BEGIN " + label + "-----\n" + privateMaterial + "\n"
+		if end {
+			text += "-----END " + label + "-----"
+		}
+		return text
+	}
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"PKCS8 private key", block("PRIVATE KEY", true), redactedMarker},
+		{"RSA private key", block("RSA PRIVATE KEY", true), redactedMarker},
+		{"EC private key", block("EC PRIVATE KEY", true), redactedMarker},
+		{"OpenSSH private key", block("OPENSSH PRIVATE KEY", true), redactedMarker},
+		{"PGP private key", block("PGP PRIVATE KEY", true), redactedMarker},
+		{"encrypted private key", block("ENCRYPTED PRIVATE KEY", true), redactedMarker},
+		{"truncated PKCS8 private key", block("PRIVATE KEY", false), redactedMarker},
+		{"truncated RSA private key", block("RSA PRIVATE KEY", false), redactedMarker},
+		{"truncated OpenSSH private key", block("OPENSSH PRIVATE KEY", false), redactedMarker},
+		{"mismatched END discards the remainder", "prefix\n-----BEGIN " + "RSA PRIVATE KEY-----\n" + privateMaterial + "\n-----END " + "EC PRIVATE KEY-----\n" + privateMaterial + "-after-mismatch", "prefix\n" + redactedMarker},
+		{"multiple blocks are each replaced", block("RSA PRIVATE KEY", true) + "\nbetween\n" + block("EC PRIVATE KEY", true), redactedMarker + "\nbetween\n" + redactedMarker},
+		{"surrounding text is preserved", "before\n" + block("EC PRIVATE KEY", true) + "\nafter", "before\n" + redactedMarker + "\nafter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactCredentials(tc.in)
+			if got != tc.want {
+				t.Errorf("RedactCredentials() = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, privateMaterial) {
+				t.Errorf("private-key material survived redaction: %q", got)
+			}
+		})
+	}
+}
+
 // A captured body is cut at the limit on a character boundary, so it never ends
 // in half of one.
 func TestCaptureDiagnosticCutsOnACharacterBoundary(t *testing.T) {

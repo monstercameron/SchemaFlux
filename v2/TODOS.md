@@ -9461,9 +9461,16 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   -parallel 1 -count=1 ./...` on windows/amd64. The redirect policy uses the
   first request's origin; no policy is inferred from later redirect targets.
 
-- [ ] **QP-021** — Redact entire private-key PEM blocks from opt-in diagnostic
+- [x] **QP-021** — Redact entire private-key PEM blocks from opt-in diagnostic
   captures, including a truncated block without an END marker. Cover direct
   scrub cases and the configured diagnostic sink through the public API.
+  **Revised:** the current root API does not expose the diagnostic sink; verify
+  the configured sink through `RunOp`, where the capture actually occurs.
+  **Verified:** the old header-only redaction failed the new regression and
+  exposed body material. Twelve direct cases now cover complete, truncated,
+  mismatched, and consecutive PEM blocks. A configured `RunOp` sink receives
+  only the marker. Focused compiled test binaries and the complete v2 suite
+  pass. A mismatched END marker conservatively discards the remaining body.
 
 - [ ] **QP-022** — Admit a smaller request behind a queued request whose token
   or cost demand does not fit remaining global capacity. Preserve priority and

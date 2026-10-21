@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -51,7 +52,8 @@ type DiagnosticRecord struct {
 	Kind ErrorKind
 
 	// Body is the captured content: bounded to the configured limit and
-	// scrubbed of the credential shapes diagnosticPatterns recognises. It is
+	// scrubbed of the credential shapes diagnosticPatterns recognises, including
+	// complete private-key blocks and truncated blocks without an END marker. It is
 	// still the caller's application data beyond that -- the sink is the
 	// place that opted in to holding it, which is why capture is off by
 	// default and every field above exists to make the record traceable
@@ -154,21 +156,65 @@ var diagnosticPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
 	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`),
 	regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`),
-	regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----`),
 	regexp.MustCompile(`(?i)authorization"?\s*[:=]\s*"?bearer\s+\S+`),
 }
+
+var (
+	privateKeyBegin = regexp.MustCompile(`-----BEGIN ([A-Z ]*PRIVATE KEY(?: BLOCK)?)-----`)
+	privateKeyEnd   = regexp.MustCompile(`-----END ([A-Z ]*PRIVATE KEY(?: BLOCK)?)-----`)
+)
 
 const redactedMarker = "[redacted]"
 
 // RedactCredentials replaces every credential shape this package recognises in
-// text with a fixed marker: provider API keys, cloud access keys, tokens, private
-// key headers and bearer authorization values. It is not a general content
+// text with a fixed marker: provider API keys, cloud access keys, tokens, full
+// private-key blocks and bearer authorization values. An unterminated private
+// key block is replaced through the end of the text. It is not a general content
 // filter: text that matches none of the shapes comes back unchanged.
 func RedactCredentials(text string) string {
+	text = redactPrivateKeyBlocks(text)
 	for _, pattern := range diagnosticPatterns {
 		text = pattern.ReplaceAllString(text, redactedMarker)
 	}
 	return text
+}
+
+// redactPrivateKeyBlocks replaces each complete PEM block only when its END
+// label matches its BEGIN label. A mismatched or missing END leaves the block's
+// boundary unknowable, so the remainder is discarded rather than risking that
+// key material after a malformed marker reaches a diagnostic sink.
+func redactPrivateKeyBlocks(text string) string {
+	var out strings.Builder
+	cursor := 0
+	changed := false
+	for cursor < len(text) {
+		begin := privateKeyBegin.FindStringSubmatchIndex(text[cursor:])
+		if begin == nil {
+			break
+		}
+		start := cursor + begin[0]
+		bodyStart := cursor + begin[1]
+		label := text[cursor+begin[2] : cursor+begin[3]]
+		end := privateKeyEnd.FindStringSubmatchIndex(text[bodyStart:])
+
+		out.WriteString(text[cursor:start])
+		out.WriteString(redactedMarker)
+		changed = true
+		if end == nil {
+			return out.String()
+		}
+		endAfter := bodyStart + end[1]
+		endLabel := text[bodyStart+end[2] : bodyStart+end[3]]
+		if endLabel != label {
+			return out.String()
+		}
+		cursor = endAfter
+	}
+	if !changed {
+		return text
+	}
+	out.WriteString(text[cursor:])
+	return out.String()
 }
 
 // redactDiagnosticBody scrubs the built-in credential shapes plus any
