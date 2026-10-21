@@ -1,4 +1,4 @@
-// Command bench times the support desk's three flows over the labelled
+// Command bench times the support desk's four flows over the labelled
 // messages.
 //
 // Offline, which is the default, the provider is the simulator: every answer

@@ -76,7 +76,7 @@ type Message struct {
 
 // Text is the text the desk works from: the subject and the body together, the
 // subject first. Every question of every flow is asked of it, or of what
-// translation and redaction make of it, so that the three flows read the same
+// translation and redaction make of it, so that the four flows read the same
 // words.
 func (m Message) Text() string {
 	return m.Subject + "\n\n" + m.Body

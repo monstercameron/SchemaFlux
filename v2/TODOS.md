@@ -9503,10 +9503,16 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   and the complete v2 suite pass. Direct struct-field edits cannot carry the
   setter's explicit-intent flag; validation still rejects a literal conflict.
 
-- [ ] **QP-025** — Reconcile SmartTodo's declared SchemaFlux version with the
+- [x] **QP-025** — Reconcile SmartTodo's declared SchemaFlux version with the
   released module, and make its launcher accept an ancestor `.env` as the app
   itself does. Correct Flowdesk's documented flow count. Verify nested module
   and offline example paths.
+  **Verified:** SmartTodo now declares the published v2.0.1 dependency. A
+  disposable external copy without the local SchemaFlux replacement resolved
+  v2.0.1 and built. The nested module test suite, `go mod tidy -diff`, Bash
+  syntax check, and Flowdesk's offline `ahead` flow pass; the complete v2
+  suite passes. Launcher tests cover ancestor `.env` acceptance and missing
+  `.env` refusal on Unix, but are skipped on this Windows host and await CI.
 
 - [ ] **QP-026** — Reconcile the local and CI vulnerability scan gates so
   `check.sh` and the workflow report and enforce the same result. Verify the
