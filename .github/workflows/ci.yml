@@ -58,7 +58,7 @@ jobs:
         if: runner.os != 'Windows'
         # The race runtime allocates; allocation-budget tests run in the normal
         # and shuffled suites, while this pass checks concurrency behavior.
-        run: go test -race -skip=Allocat ./...
+        run: go test -race -skip='Allocat|TestDecideConvertsEightDecisionsOnTheStackAndMoreOnTheHeap' ./...
 
       # Order dependence and shared package state hide from a single ordered
       # run. Ten shuffled runs is cheap and has found real bugs in this kind of

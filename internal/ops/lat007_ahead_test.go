@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1193,16 +1192,10 @@ func TestAheadRouteWithOneRoute(t *testing.T) {
 
 // No step is left running after the call that started it, whichever way the
 // call went: each step signals its return and every signal has been seen when
-// the call returns, and the goroutines of the process are the same after as
-// before.
+// the call returns. synctest verifies that the bubble is quiescent when it ends.
 func TestAheadNothingIsLeftRunning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
-		// A first call starts whatever the logger or the runtime starts on first use.
-		var warm aheadLog
-		_, _ = BranchAhead(ctx, warm.decide(0, true, nil), warm.step("yes", 0, "", nil), warm.step("no", 0, "", nil))
-		before := runtime.NumGoroutine()
-
 		// short is a duration of a millisecond or three, varied so that the decision
 		// and the branch finish in either order.
 		short := func(i, offset int) time.Duration { return time.Duration((i+offset)%4) * time.Millisecond }
@@ -1249,17 +1242,6 @@ func TestAheadNothingIsLeftRunning(t *testing.T) {
 			if started, exited := l.started.Load(), l.exited.Load(); started != exited {
 				t.Fatalf("cancelled iteration %d: %d steps started and %d had returned when the call did: %v", i, started, exited, l.names())
 			}
-		}
-
-		var after int
-		for settle := 0; settle < 100; settle++ {
-			if after = runtime.NumGoroutine(); after <= before {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		if after > before {
-			t.Errorf("%d goroutines before the calls and %d after", before, after)
 		}
 	})
 }

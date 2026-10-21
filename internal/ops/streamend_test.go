@@ -571,24 +571,21 @@ func TestStreamEndIsNotRunForACallThatOpenedNoStream(t *testing.T) {
 	})
 }
 
-// A context that ends right after the stream is opened, before its producer has
-// reached the provider, ends the stream once.
-func TestStreamEndRunsForAContextThatEndsBeforeTheProviderIsReached(t *testing.T) {
+// A context that ends right after the stream is opened ends the stream once,
+// whether or not the producer has reached the provider.
+func TestStreamEndRunsForContextCanceledImmediatelyAfterOpen(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		watcher := &endWatcher{}
 		provider := &endStreamProvider{run: func(ctx context.Context, yield func(llm.StreamChunk, error) bool) {
-			if err := ctx.Err(); err != nil {
-				yield(llm.StreamChunk{}, err)
-				return
-			}
-			endCompletes("never")(ctx, yield)
+			<-ctx.Done()
+			yield(llm.StreamChunk{}, ctx.Err())
 		}}
 		ctx, cancel := context.WithCancel(context.Background())
 		stream, err := openWithEnd(ctx, provider, watcher)
 		if err != nil {
 			t.Fatalf("streamLLM: %v", err)
 		}
-		cancel() // before the producer's goroutine has run
+		cancel()
 		_, readErr := readAll(stream)
 		if readErr == nil {
 			t.Fatal("a cancelled stream read to a clean end")
