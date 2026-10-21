@@ -324,3 +324,45 @@ func TestConcurrentSetLimitsCallsAndRestoresLeaveNoLimitsInForce(t *testing.T) {
 		t.Errorf("limits are still in force: %v", err)
 	}
 }
+
+// Replacing one enforced budget with another must never expose the unlocked
+// interval that used to exist between ResetBudget and SetBudgetEnforcement.
+func TestReplacingEnforcedLimitsNeverAdmitsAnOverBudgetCall(t *testing.T) {
+	isolateLedger(t)
+	base := setLimits(t, pricing.Limits{Daily: 1, Enforce: true})
+	defer base()
+	spend("already-over", 3)
+
+	done := make(chan struct{})
+	checked := make(chan struct{})
+	admitted := make(chan struct{}, 1)
+	go func() {
+		defer close(checked)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if checkBudget() == nil {
+				select {
+				case admitted <- struct{}{}:
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	for range 2000 {
+		restore := setLimits(t, pricing.Limits{Daily: 2, Enforce: true})
+		restore()
+	}
+	close(done)
+	<-checked
+	select {
+	case <-admitted:
+		t.Error("a call passed while every configured budget was enforcing and exhausted")
+	default:
+	}
+}

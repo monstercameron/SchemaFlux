@@ -862,6 +862,26 @@ func SetBudget(daily, weekly, monthly float64, callback func(current, limit floa
 	)
 }
 
+// ReplaceBudget publishes a complete process budget while holding the ledger
+// lock. Resetting and then setting its fields separately made an enforcing
+// budget briefly advisory, so a concurrent call could pass CheckBudget.
+func ReplaceBudget(daily, weekly, monthly float64, callback func(current, limit float64, period string), enforce bool) {
+	costMutex.Lock()
+	budgetLimits = map[string]float64{
+		"daily": daily, "weekly": weekly, "monthly": monthly,
+	}
+	budgetCallback = callback
+	budgetNotified = nil
+	budgetEnforcing.Store(enforce)
+	costMutex.Unlock()
+
+	logger.GetLogger().Info("Budget limits configured",
+		"daily", fmt.Sprintf("$%.2f", daily),
+		"weekly", fmt.Sprintf("$%.2f", weekly),
+		"monthly", fmt.Sprintf("$%.2f", monthly),
+	)
+}
+
 // GetCostBreakdown returns the cost for a period by model, operation and
 // provider, with the period's total under "total". Unpriced calls add nothing
 // to any entry; GetTotalSpend says whether the total is complete.

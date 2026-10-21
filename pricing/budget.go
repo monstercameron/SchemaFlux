@@ -110,10 +110,9 @@ func SetLimits(b Limits) (restore func(), err error) {
 // is no limits. It clears the record of the alerts that were sent. It is called
 // by the layers, with their lock held.
 func apply(l *Limits) {
-	inner.ResetBudget()
 	if l == nil {
+		inner.ResetBudget()
 		return
 	}
-	inner.SetBudget(l.Daily, l.Weekly, l.Monthly, l.OnThreshold)
-	inner.SetBudgetEnforcement(l.Enforce)
+	inner.ReplaceBudget(l.Daily, l.Weekly, l.Monthly, l.OnThreshold, l.Enforce)
 }
