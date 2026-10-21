@@ -6,16 +6,16 @@
 
 **Structured AI that ships.** SchemaFlux turns language-model work into typed Go calls. It builds a request, checks the answer against the requested type and the operation's rules, and returns the value or a classified error. A `Recorder` keeps execution details separate from the answer.
 
-This README describes the **v2 upgrade in progress** on this branch. The module path is `github.com/monstercameron/schemaflux/v2`, with its packages at the repository root. The v1 release remains at the unsuffixed module path until v2 is tagged. The migration notes below describe the new API.
+This README describes SchemaFlux v2.0.0. The module path is `github.com/monstercameron/schemaflux/v2`, with its packages at the repository root. V1 releases remain at the unsuffixed module path. The migration notes below describe the new API.
 
 → [Read the case study](https://www.earlcameron.com/projects/schemaflux)
 
 ## Requirements and installation
 
-SchemaFlux v2 requires Go 1.27 or later. After the v2 release:
+SchemaFlux v2 requires Go 1.27 or later. Install the v2.0.0 release with:
 
 ```bash
-go get github.com/monstercameron/schemaflux/v2
+go get github.com/monstercameron/schemaflux/v2@v2.0.0
 ```
 
 For the default OpenAI provider, set `SCHEMAFLUX_OPENAI_API_KEY` or `OPENAI_API_KEY`. `SCHEMAFLUX_API_KEY` is a fallback. If no usable key is set, the first call returns `ErrConfiguration`; it does not send a request or invent an answer. Set `SCHEMAFLUX_PROVIDER` to select another built-in provider. See [`provider`](provider) for names and provider-specific variables.
@@ -127,7 +127,7 @@ The example also imports `github.com/monstercameron/schemaflux/v2/schemafluxtest
 
 ## Migrating from v1
 
-V2 is a major API change. Update the module import to `github.com/monstercameron/schemaflux/v2` after release, then make these changes:
+V2 is a major API change. Update the module import to `github.com/monstercameron/schemaflux/v2`, then make these changes:
 
 | V1 pattern | V2 pattern |
 | --- | --- |
@@ -144,4 +144,4 @@ Review each operation's new options and result type rather than doing a mechanic
 
 ## Development and release checks
 
-Run `./scripts/check.sh` for the repository's CI gate; `./scripts/check.sh --list` shows its steps. The suite clears `SCHEMAFLUX_LIVE_TESTS` before running. See [`AGENTS.md`](AGENTS.md) for the project rules and [`TODOS.md`](TODOS.md) for the upgrade's remaining work and evidence. The branch is still under development; passing a subset of tests does not mean v2 has been released.
+Run `./scripts/check.sh` for the repository's CI gate; `./scripts/check.sh --list` shows its steps. The suite clears `SCHEMAFLUX_LIVE_TESTS` before running. See [`AGENTS.md`](AGENTS.md) for the project rules and [`TODOS.md`](TODOS.md) for the upgrade's evidence and remaining follow-ups.
