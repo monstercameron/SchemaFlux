@@ -9483,10 +9483,15 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   rose from about 88 to 499–527 ns/op, still zero allocations. This extra
   scan is required to admit work the old code incorrectly left queued.
 
-- [ ] **QP-023** — Reject negative or contradictory `ClusterOptions` size
+- [x] **QP-023** — Reject negative or contradictory `ClusterOptions` size
   bounds before any provider call; reject negative totals in
   `CoversExactlyOnce` without panic. Cover direct validation and public
   `Cluster` behavior.
+  **Verified:** the invalid bounds and negative-total regressions failed
+  before the change. Twelve direct size-bound cases now pass, `Cluster`
+  refuses invalid options before a provider call with a configuration kind,
+  and `CoversExactlyOnce(-1, nil)` returns an invariant error without panic.
+  The complete v2 suite passes.
 
 - [ ] **QP-024** — Make enabling strict Extract schema from the default options
   produce a valid configuration while retaining a clear rule for an explicitly

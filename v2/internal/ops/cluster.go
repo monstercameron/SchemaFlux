@@ -65,6 +65,12 @@ func (c ClusterOptions) Validate() error {
 	if c.MinClusterSize < 1 {
 		return fmt.Errorf("min cluster size must be at least 1, got %d", c.MinClusterSize)
 	}
+	if c.MaxClusterSize < 0 {
+		return fmt.Errorf("max cluster size cannot be negative, got %d", c.MaxClusterSize)
+	}
+	if c.MaxClusterSize > 0 && c.MinClusterSize > c.MaxClusterSize {
+		return fmt.Errorf("min cluster size %d cannot exceed max cluster size %d", c.MinClusterSize, c.MaxClusterSize)
+	}
 	if c.SimilarityThreshold < 0 || c.SimilarityThreshold > 1 {
 		return fmt.Errorf("similarity threshold must be between 0 and 1, got %f", c.SimilarityThreshold)
 	}

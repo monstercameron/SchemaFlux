@@ -59,6 +59,43 @@ func TestClusterOptions(t *testing.T) {
 	})
 }
 
+func TestClusterOptionsValidateSizeBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		min     int
+		max     int
+		wantErr string
+	}{
+		{"defaults", 1, 0, ""},
+		{"zero max means unlimited", 4, 0, ""},
+		{"matching bounds", 3, 3, ""},
+		{"min below max", 2, 5, ""},
+		{"minimum one", 1, 1, ""},
+		{"negative max one", 1, -1, "max cluster size cannot be negative, got -1"},
+		{"negative max several", 1, -7, "max cluster size cannot be negative, got -7"},
+		{"zero min", 0, 4, "min cluster size must be at least 1, got 0"},
+		{"negative min", -2, 4, "min cluster size must be at least 1, got -2"},
+		{"min exceeds max by one", 4, 3, "min cluster size 4 cannot exceed max cluster size 3"},
+		{"min exceeds max by several", 8, 2, "min cluster size 8 cannot exceed max cluster size 2"},
+		{"impossible minimum against max one", 2, 1, "min cluster size 2 cannot exceed max cluster size 1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := NewClusterOptions().WithMinClusterSize(tc.min).WithMaxClusterSize(tc.max)
+			err := opts.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("Validate() = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestCluster(t *testing.T) {
 	// A scripted answer, so this runs without a provider.
 	withResponse(t, `{
@@ -151,6 +188,11 @@ func TestClusterRefusalsBeforeACallHaveAKind(t *testing.T) {
 			"invalid options: min cluster size must be at least 1, got 0", types.KindConfiguration},
 		{"a negative minimum size", refuse(func(o *ClusterOptions) { o.MinClusterSize = -4 }),
 			"invalid options: min cluster size must be at least 1, got -4", types.KindConfiguration},
+		{"a negative maximum size", refuse(func(o *ClusterOptions) { o.MaxClusterSize = -2 }),
+			"invalid options: max cluster size cannot be negative, got -2", types.KindConfiguration},
+		{"a minimum larger than its maximum", refuse(func(o *ClusterOptions) {
+			o.MinClusterSize, o.MaxClusterSize = 4, 3
+		}), "invalid options: min cluster size 4 cannot exceed max cluster size 3", types.KindConfiguration},
 		{"a similarity threshold above one", refuse(func(o *ClusterOptions) { o.SimilarityThreshold = 1.25 }),
 			"invalid options: similarity threshold must be between 0 and 1, got 1.250000", types.KindConfiguration},
 		{"a negative similarity threshold", refuse(func(o *ClusterOptions) { o.SimilarityThreshold = -0.5 }),

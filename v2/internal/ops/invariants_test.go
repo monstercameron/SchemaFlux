@@ -166,6 +166,19 @@ func TestCoversExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestCoversExactlyOnceRejectsNegativeTotalWithoutPanicking(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("CoversExactlyOnce panicked for negative total: %v", recovered)
+		}
+	}()
+	err := CoversExactlyOnce(-1, nil)
+	wantKind(t, err, types.KindInvariantViolation)
+	if !errors.Is(err, types.ErrInvariantViolation) {
+		t.Fatalf("errors.Is(%v, ErrInvariantViolation) is false", err)
+	}
+}
+
 func TestMemberOf(t *testing.T) {
 	offered := invItems(3)
 

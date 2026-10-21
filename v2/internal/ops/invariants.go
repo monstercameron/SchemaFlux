@@ -131,6 +131,9 @@ func SubsetOf[T any](input, output []T) error {
 // and a caller iterating the clusters silently processes an item twice or not
 // at all.
 func CoversExactlyOnce(total int, groups [][]int) error {
+	if total < 0 {
+		return invariantFailure("the total item count cannot be negative")
+	}
 	seen := make([]int, total)
 
 	var outOfRange []int
