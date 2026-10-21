@@ -3,6 +3,7 @@ package schemafluxtest_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -182,20 +183,20 @@ func TestDelayMakesEachRequestWaitOnItsContext(t *testing.T) {
 	})
 	inBubble(t, "a Respond function runs after the wait", func(t *testing.T) {
 		var p schemafluxtest.Provider
-		ran := false
+		var ran atomic.Bool
 		p.Respond(func(int, schemaflux.Request) (schemaflux.Response, error) {
-			ran = true
+			ran.Store(true)
 			return schemaflux.Response{Content: "late"}, nil
 		})
 		p.Delay(time.Second)
 		r := start(context.Background(), &p, schemaflux.Request{})
-		if ran {
+		if ran.Load() {
 			t.Fatal("the function ran before the delay was over")
 		}
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if !ran || r.resp.Content != "late" {
-			t.Fatalf("ran = %v, Content = %q", ran, r.resp.Content)
+		if !ran.Load() || r.resp.Content != "late" {
+			t.Fatalf("ran = %v, Content = %q", ran.Load(), r.resp.Content)
 		}
 	})
 	inBubble(t, "requests that overlap wait together and not one after another", func(t *testing.T) {

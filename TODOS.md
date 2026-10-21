@@ -7734,6 +7734,19 @@ session's working files and their findings are entered here as they are acted on
   remain before release. This Windows
   host has cgo disabled, so its race gate is reported as unavailable and must
   run in CI.
+  **Dependency review, 2026-10-20.** The open Dependabot PRs were checked
+  against the new root. OpenTelemetry 1.45, SmartTodo's SQLite 1.14.52 and
+  Charm terminal packages, and the applicable GitHub Actions tags were
+  updated. SmartTodo's embedded Bubble Tea copy needed the focus and blur
+  message types used by Bubbles 1.0; its own replacement remains local.
+  The old OpenAI SDK and tracing exporters no longer appear after the module
+  tidy, so their PRs have no remaining dependency to update. The nested
+  SmartTodo tests and wasm target build pass locally. The complete
+  `scripts/check.sh` gate passed 16/16 again with the dependency updates.
+  The first draft-PR CI run found two race detector failures in test
+  bookkeeping, an unmatched staticcheck directive, and a stale `Init` call
+  in the wasm entry point; those have been corrected. Linux CI on this
+  updated commit still needs verification.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a

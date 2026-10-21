@@ -11,7 +11,7 @@ import (
 	"syscall/js"
 
 	tea "github.com/charmbracelet/bubbletea"
-	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
 	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/database"
 	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/localization"
 	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/tui"
@@ -81,7 +81,9 @@ func connect(args []js.Value) (string, error) {
 	}
 	goConsole("connect", fmt.Sprintf("starting TUI at %dx%d", currentW, currentH))
 
-	schemaflux.Init(apiKey)
+	if err := appclient.UseKey(apiKey); err != nil {
+		return "", err
+	}
 	localization.InitLocalization()
 	go localization.PreloadCommonStrings()
 

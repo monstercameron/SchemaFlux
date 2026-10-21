@@ -288,7 +288,7 @@ func TestRedactLLMAppliesTheDefaultDeadline(t *testing.T) {
 		}
 	})
 	t.Run("no context", func(t *testing.T) {
-		//lint:ignore SA1012 a nil context is what a caller who set none passes.
+		// A nil context is what a caller who set none passes.
 		if _, bounded := seen(t, nil); !bounded {
 			t.Error("the call ran with no deadline")
 		}

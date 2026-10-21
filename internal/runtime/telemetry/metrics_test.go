@@ -968,10 +968,15 @@ func TestATagIsBoundWhenManyGoroutinesRecordAtOnce(t *testing.T) {
 	}
 }
 
-type tagWritingSink struct{ seen map[string]string }
+type tagWritingSink struct {
+	mu   sync.Mutex
+	seen map[string]string
+}
 
 func (s *tagWritingSink) RecordMetric(event MetricEvent) {
+	s.mu.Lock()
 	s.seen = event.Tags
+	s.mu.Unlock()
 	event.Tags["written-by-a-sink"] = "yes"
 	delete(event.Tags, "model")
 }
