@@ -9524,11 +9524,22 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   windows/amd64; race was unavailable without cgo. The fast gate omits the
   shuffled and examples checks, and this branch has not run remote CI.
 
-- [ ] **QP-027** — Publish the verified quality sweep as SchemaFlux v2.0.2.
+- [x] **QP-027** — Publish the verified quality sweep as SchemaFlux v2.0.2.
   Update the reported version, installation docs, and SmartTodo's declared
   dependency; verify local tests and packaging, fast-forward the clean main
   checkout, push the commit and annotated tag, publish GitHub release notes,
   and verify CI, module resolution, and the demo deployment.
+  **Evidence:** The release commit `ebbb80b` is merged and pushed to `main`,
+  and annotated tag `v2.0.2` points to it. The GitHub release is published at
+  `https://github.com/monstercameron/SchemaFlux/releases/tag/v2.0.2`.
+  Local `scripts/check.sh --fast` passed all 16 checks; the release commit's
+  CI run `39620996915` passed, including the full Go matrix and quality gate.
+  SmartTodo run `39620996728` passed nested module tests, browser smoke, and
+  Pages deployment; the public demo returned HTTP 200. An external
+  `go mod download` resolved `github.com/monstercameron/schemaflux/v2@v2.0.2`
+  to `ebbb80b`; a fresh consumer's `go get` and `go build ./...` passed.
+  The repository root contains zero Go source files. Paid provider tests are
+  excluded from CI by the project's live-test guard.
 
 ## Standing rules for this list
 
