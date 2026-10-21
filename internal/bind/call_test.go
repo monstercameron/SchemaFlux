@@ -1056,7 +1056,13 @@ func TestStreamEndsTheCallWhenTheStreamEnds(t *testing.T) {
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				provider := &streamingLLM{scriptedLLM: scriptedLLM{name: scriptedName}, run: sc.run}
+				// A fast provider may finish before Stream returns. Hold its work
+				// until the pre-completion assertion has observed the open call.
+				producerMayRun := make(chan struct{})
+				provider := &streamingLLM{scriptedLLM: scriptedLLM{name: scriptedName}, run: func(ctx context.Context, yield func(llm.StreamChunk, error) bool) {
+					<-producerMayRun
+					sc.run(ctx, yield)
+				}}
 				sink := &recordingSink{}
 				ctx, cancel := context.WithCancel(ops.WithSink(clientContext(provider), sink))
 				defer cancel()
@@ -1071,6 +1077,7 @@ func TestStreamEndsTheCallWhenTheStreamEnds(t *testing.T) {
 				if len(sink.given()) != 0 {
 					t.Fatal("the call ended before the stream did")
 				}
+				close(producerMayRun)
 				sc.drive(t, stream, cancel)
 				synctest.Wait()
 				o := sink.only(t)

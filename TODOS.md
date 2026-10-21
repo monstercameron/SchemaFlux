@@ -7783,6 +7783,12 @@ session's working files and their findings are entered here as they are acted on
   `flowNoLeak` helper. It now uses the same bubble-scoped check. The affected
   root test passed 100 local repetitions of its assertions; Go again reported
   only the Windows temporary executable deletion error afterwards.
+  The following CI race run exposed a scheduling assumption in
+  `TestStreamEndsTheCallWhenTheStreamEnds`: a fast producer can finish before
+  `Stream` returns, so the test's immediate "still open" assertion raced the
+  documented completion callback. The scripted producer now waits until that
+  assertion has checked an unfinished call. All scenarios passed 100 local
+  repetitions after the change; the CI race gate still needs to verify it.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a
