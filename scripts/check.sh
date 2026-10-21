@@ -42,6 +42,7 @@ done
 
 # Checks are ordered fast-to-slow so a typo fails in seconds rather than after
 # the full suite. Each entry is "label|command".
+ALLOCATION_SKIP='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
 CHECKS=(
   "gofmt|test -z \"\$(gofmt -l .)\" || { gofmt -l .; false; }"
   "build|go build ./..."
@@ -61,7 +62,7 @@ CHECKS=(
 )
 
 SLOW=(
-  "tests shuffled|go test ./... -count=3 -shuffle=on"
+  "tests shuffled|go test ./... -count=3 -shuffle=on -skip='$ALLOCATION_SKIP'"
   "examples gate|python scripts/examples_gate.py"
 )
 
@@ -83,8 +84,8 @@ if [ "$PLATFORM" = "windows/arm64" ]; then
 elif [ "$(go env CGO_ENABLED)" != "1" ]; then
   RACE_NOTE="SKIPPED on $PLATFORM (the race detector requires cgo; CI covers it)"
 else
-  # Race instrumentation adds allocations; those budgets run above without it.
-  CHECKS+=("race|go test -race -skip=Allocat ./... -count=1")
+  # Race instrumentation changes process-wide allocation measurements.
+  CHECKS+=("race|go test -race -skip='$ALLOCATION_SKIP' ./... -count=1")
   RACE_NOTE=""
 fi
 

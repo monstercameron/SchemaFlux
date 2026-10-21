@@ -57,18 +57,19 @@ jobs:
       - name: Test with the race detector
         if: runner.os != 'Windows'
         # The race runtime changes process-wide allocation measurements.
-        # Budget tests run in the normal and shuffled suites; this pass checks
-        # concurrency behavior.
+        # Budget tests run in the normal suite; this pass checks concurrency.
         run: >
           go test -race
           -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
           ./...
 
       # Order dependence and shared package state hide from a single ordered
-      # run. Ten shuffled runs is cheap and has found real bugs in this kind of
-      # library.
+      # run. Budget probes use process-wide counters and run in the normal suite.
       - name: Test shuffled
-        run: go test -shuffle=on -count=10 ./...
+        run: >
+          go test -shuffle=on -count=10
+          -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
+          ./...
 
       - name: Vet
         run: go vet ./...
