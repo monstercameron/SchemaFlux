@@ -7756,7 +7756,13 @@ session's working files and their findings are entered here as they are acted on
   process budget briefly disabled enforcement; the replacement now publishes
   all fields under one ledger lock, with a concurrent regression test. The
   focused pricing, runtime pricing, schemafluxtest and ops suites pass.
-  Linux CI on this updated commit still needs verification.
+  **CI verification, 2026-10-21.** The draft branch at `818cef4` passed all
+  12 CI jobs, including the full `scripts/check.sh` gate, staticcheck and
+  govulncheck, normal and shuffled tests on Windows, Ubuntu, Ubuntu ARM and
+  macOS, and race detection on Ubuntu, Ubuntu ARM and macOS. The SmartTodo
+  demo build passed separately. The live tool-wire and Flowdesk checks remain
+  pending because no API key is available to this task; the owner authorized
+  up to US$2 in provider spend for those checks.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a
