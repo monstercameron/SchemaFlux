@@ -1,17 +1,17 @@
-// package ops - Negotiate operation for reconciling competing constraints
+// Negotiate operation for reconciling competing constraints.
+
 package ops
 
 import (
-	gocontext "context"
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
-	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // NegotiateOptions configures the Negotiate operation
@@ -22,13 +22,22 @@ type NegotiateOptions struct {
 	// Constraints as natural language requirements
 	Constraints []string
 
-	// MinSatisfaction is the minimum acceptable satisfaction score (0.0-1.0)
+	// MinSatisfaction is the minimum acceptable satisfaction score, a number
+	// from 0 to 1. An answer whose overall satisfaction is below it is refused.
+	// Zero is the unset value and means the default of 0.6, so a floor of
+	// nothing cannot be asked for; a caller who wants the floor out of the way
+	// sets a value any score meets, such as 0.001. A NaN, an infinity or a
+	// number outside 0 to 1 is refused before the model is asked.
 	MinSatisfaction float64
 
-	// MaxAlternatives limits the number of alternative solutions returned
+	// MaxAlternatives limits the number of alternative solutions returned. Zero
+	// is the unset value and means the default of 3; a negative number is
+	// refused before the model is asked.
 	MaxAlternatives int
 
-	// Strategy guides the negotiation approach ("balanced", "maximize_primary", "pareto")
+	// Strategy guides the negotiation approach ("balanced", "maximize_primary",
+	// "pareto"). It is guidance to the model, written into the prompt as a quoted
+	// string; Go does not check the answer against it.
 	Strategy string
 
 	// Common options
@@ -41,8 +50,17 @@ type NegotiateOptions struct {
 	// out rather than embedding CommonOptions, so the pin has to be declared
 	// here too -- otherwise `.Model(...)` on the builder would be a setter
 	// that changes nothing, which this repository fails the build over.
-	Model         string
-	Context       gocontext.Context
+	Model string
+	// Effort is how much the model reasons before it answers (LX-105). The
+	// builder sets it here for the same reason it sets Model here.
+	Effort types.Effort
+
+	// MaxOutputTokens is the ceiling on the answer's length. Zero means the tier's.
+	MaxOutputTokens int
+	// WebSearch declares the provider's web-search tool on the call.
+	WebSearch bool
+
+	Context       context.Context
 	RequestID     string
 	CorrelationID string
 }
@@ -85,7 +103,8 @@ type NegotiateResult[T any] struct {
 	// ModelConfidence in the solution quality (0.0-1.0)
 	ModelConfidence float64 `json:"confidence"`
 
-	// Metadata contains additional operation information
+	// Metadata contains additional operation information. Settle does not write
+	// to it.
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
@@ -162,13 +181,30 @@ func Negotiate[T any](constraints any, opts ...NegotiateOptions) (NegotiateResul
 // round trip. For an actual multi-turn exchange, drive a Session yourself: the
 // transcript shape exists (session.go) precisely because this operation is not
 // one.
+//
+// What the answer has to satisfy, beyond being the right shape: it carries a
+// solution, a satisfaction for each constraint it names, an overall
+// satisfaction and a confidence, each a number from 0 to 1; every alternative
+// fits T; the overall satisfaction meets MinSatisfaction; and there are no more
+// alternatives than MaxAlternatives. An answer that breaks one is refused, and
+// the result beside the error is empty. Strategy and the Pareto-optimality of
+// the alternatives are guidance to the model: Go cannot verify either.
+//
+// The options are one value; a second one is a configuration error, as it is
+// for Audit and Arbitrate.
 func Settle[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T], error) {
-	log := logger.GetLogger()
+	// The first line is written before the options are looked at, so the client is
+	// found from the context they carry.
+	var callerCtx context.Context
+	if len(opts) > 0 {
+		callerCtx = opts[0].Context
+	}
+	log := loggerFor(callerCtx)
 	log.Debug("Starting negotiate operation")
 
-	var result NegotiateResult[T]
-	result.Satisfaction = make(map[string]float64)
-	result.Metadata = make(map[string]any)
+	if err := checkOneOptionsValue("negotiate", len(opts)); err != nil {
+		return NegotiateResult[T]{}, err
+	}
 
 	// Apply defaults
 	opt := NegotiateOptions{
@@ -179,34 +215,46 @@ func Settle[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T
 		Intelligence:    types.Fast,
 	}
 	if len(opts) > 0 {
+		// The caller's numbers are looked at before the merge, which drops one
+		// that is not above zero: a NaN or a negative value would otherwise be
+		// taken for "not set" and replaced by the default without a word.
+		if err := checkNegotiateOptions(opts[0]); err != nil {
+			return NegotiateResult[T]{}, err
+		}
 		opt = mergeNegotiateOptions(opt, opts[0])
+	}
+	if err := checkFlatLockedLimits(opt.Context, opt.Mode, opt.Intelligence, opt.MaxOutputTokens); err != nil {
+		return NegotiateResult[T]{}, err
 	}
 
 	// Get context
 	ctx := opt.Context
 	if ctx == nil {
-		ctx = gocontext.Background()
+		ctx = context.Background()
 	}
-	ctx, cancel := gocontext.WithTimeout(ctx, config.GetTimeout())
+	// operationContext, not WithTimeout: a deadline the caller set is kept.
+	ctx, cancel := operationContext(ctx, config.GetTimeout())
 	defer cancel()
 
 	// Convert constraints to JSON
-	constraintsJSON, err := json.Marshal(constraints)
+	constraintsJSON, err := promptJSON(constraints)
 	if err != nil {
-		log.Error("Negotiate operation failed: marshal error", "error", err)
-		return result, fmt.Errorf("failed to marshal constraints: %w", err)
+		log.Error("Negotiate operation failed: marshal error", "error", loggedError(err))
+		return NegotiateResult[T]{}, types.Newf(types.KindInvalidRequest, "negotiate", "the constraints could not be written as JSON")
 	}
 
 	// Get target type schema
 	var zero T
 	typeSchema := GenerateTypeSchema(reflect.TypeOf(zero))
 
-	// Build priorities description
+	// Build priorities description. The names are the caller's text: they are
+	// written as JSON strings, and in the order of their names, so that the same
+	// options give the same prompt.
 	prioritiesDesc := ""
 	if len(opt.Priorities) > 0 {
 		var parts []string
-		for name, weight := range opt.Priorities {
-			parts = append(parts, fmt.Sprintf("%s (weight: %.2f)", name, weight))
+		for _, name := range sortedKeys(opt.Priorities) {
+			parts = append(parts, fmt.Sprintf("%s (weight: %.2f)", quotedText(name), opt.Priorities[name]))
 		}
 		prioritiesDesc = fmt.Sprintf("\n\nPriorities:\n%s", strings.Join(parts, "\n"))
 	}
@@ -214,7 +262,11 @@ func Settle[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T
 	// Build constraints description
 	constraintsDesc := ""
 	if len(opt.Constraints) > 0 {
-		constraintsDesc = fmt.Sprintf("\n\nAdditional constraints:\n- %s", strings.Join(opt.Constraints, "\n- "))
+		quoted := make([]string, len(opt.Constraints))
+		for i, constraint := range opt.Constraints {
+			quoted[i] = quotedText(constraint)
+		}
+		constraintsDesc = fmt.Sprintf("\n\nAdditional constraints:\n- %s", strings.Join(quoted, "\n- "))
 	}
 
 	systemPrompt := fmt.Sprintf(`You are a negotiation and optimization expert. Find the best solution that balances competing constraints.
@@ -239,98 +291,41 @@ Rules:
 - "tradeoffs" explains what compromises were made
 - "alternatives" provides up to %d Pareto-optimal alternatives
 - Balance all constraints according to their priorities`,
-		opt.Strategy, opt.MinSatisfaction*100, prioritiesDesc, constraintsDesc, typeSchema, opt.MaxAlternatives)
-
-	steeringNote := ""
-	if opt.Steering != "" {
-		steeringNote = fmt.Sprintf("\n\nAdditional guidance: %s", opt.Steering)
-	}
+		quotedText(opt.Strategy), opt.MinSatisfaction*100, prioritiesDesc, constraintsDesc, typeSchema, opt.MaxAlternatives)
 
 	userPrompt := fmt.Sprintf(`Find the optimal solution that balances these constraints:
 
-%s%s`, string(constraintsJSON), steeringNote)
+%s`, string(constraintsJSON))
 
-	// Build OpOptions for LLM call
+	// Build OpOptions for LLM call. The steering goes through the options and
+	// not into the message by hand, so that the caller's text is delimited as
+	// the caller's.
 	opOpts := types.OpOptions{
-		Mode:          opt.Mode,
-		Intelligence:  opt.Intelligence,
-		Model:         opt.Model,
-		Context:       ctx,
-		RequestID:     opt.RequestID,
-		CorrelationID: opt.CorrelationID,
+		Mode:            opt.Mode,
+		Intelligence:    opt.Intelligence,
+		Model:           opt.Model,
+		Effort:          opt.Effort,
+		MaxOutputTokens: opt.MaxOutputTokens,
+		WebSearch:       opt.WebSearch,
+		Steering:        opt.Steering,
+		Context:         ctx,
+		RequestID:       opt.RequestID,
+		CorrelationID:   opt.CorrelationID,
 	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Negotiate operation LLM call failed", "error", err)
-		return result, fmt.Errorf("negotiation failed: %w", err)
+		log.Error("Negotiate operation LLM call failed", "error", loggedError(err))
+		return NegotiateResult[T]{}, fmt.Errorf("negotiation failed: %w", err)
 	}
 
-	// Parse response
-	var parsed struct {
-		Solution            json.RawMessage   `json:"solution"`
-		Satisfaction        map[string]any    `json:"satisfaction"`
-		OverallSatisfaction float64           `json:"overall_satisfaction"`
-		Tradeoffs           []Tradeoff        `json:"tradeoffs"`
-		Alternatives        []json.RawMessage `json:"alternatives"`
-		Reasoning           string            `json:"reasoning"`
-		ModelConfidence     float64           `json:"confidence"`
-	}
-
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	result, err := readSettleAnswer[T](response, opt)
+	if err != nil {
 		// The raw response is deliberately NOT logged. It can carry
 		// caller-derived content, and AGENTS.md forbids putting the caller's
-		// payload in a log line -- these two negotiate paths were the only
-		// operations in this package still doing it.
-		log.Error("Negotiate operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse negotiation result: %w", err)
-	}
-
-	// Parse solution
-	if len(parsed.Solution) > 0 {
-		if err := json.Unmarshal(parsed.Solution, &result.Solution); err != nil {
-			log.Error("Negotiate operation failed: solution parse error", "error", err)
-			return result, fmt.Errorf("failed to parse solution: %w", err)
-		}
-	}
-
-	// Parse alternatives
-	for _, alt := range parsed.Alternatives {
-		var alternative T
-		if err := json.Unmarshal(alt, &alternative); err == nil {
-			result.Alternatives = append(result.Alternatives, alternative)
-		}
-	}
-
-	for key, value := range parsed.Satisfaction {
-		if score, ok := normalizeFloat(value); ok {
-			result.Satisfaction[key] = score
-		}
-	}
-	result.OverallSatisfaction = parsed.OverallSatisfaction
-	result.Tradeoffs = parsed.Tradeoffs
-	result.Reasoning = parsed.Reasoning
-	result.ModelConfidence = parsed.ModelConfidence
-
-	// MinSatisfaction was stated in the prompt as "Minimum acceptable
-	// satisfaction: %.0f%%" and compared against nothing, so a model that openly
-	// reported failing it -- 0.1 against a 0.9 floor -- still came back as a
-	// usable NegotiateResult with a nil error. The number is the model's claim,
-	// but the floor is the caller's, and checking one against the other is what
-	// makes the option mean what its name says.
-	if opt.MinSatisfaction > 0 && result.OverallSatisfaction < opt.MinSatisfaction {
-		log.Error("Negotiated solution is below the configured satisfaction floor",
-			"overallSatisfaction", result.OverallSatisfaction, "minSatisfaction", opt.MinSatisfaction)
-		return result, fmt.Errorf(
-			"negotiate: the model reported overall satisfaction %.2f, below the %.2f floor this operation was configured with",
-			result.OverallSatisfaction, opt.MinSatisfaction)
-	}
-
-	// MaxAlternatives was described in the prompt as "up to %d" and never
-	// counted.
-	if err := AtMost(result.Alternatives, opt.MaxAlternatives); err != nil {
-		log.Error("Negotiate returned more alternatives than requested", "error", err)
-		return result, fmt.Errorf("negotiate: %w", err)
+		// payload in a log line.
+		log.Error("Negotiate operation refused the answer", "error", loggedError(err))
+		return NegotiateResult[T]{}, err
 	}
 
 	log.Debug("Negotiate operation succeeded",
@@ -341,7 +336,133 @@ Rules:
 	return result, nil
 }
 
-// mergeNegotiateOptions merges user options with defaults
+// readSettleAnswer reads the model's answer to a settlement request and checks
+// it against the options the request was made under.
+func readSettleAnswer[T any](response string, opt NegotiateOptions) (NegotiateResult[T], error) {
+	const op = "negotiate"
+
+	answer, err := readAnswerObject(op, response)
+	if err != nil {
+		return NegotiateResult[T]{}, err
+	}
+
+	var result NegotiateResult[T]
+	if err := answer.decode("solution", &result.Solution); err != nil {
+		return NegotiateResult[T]{}, err
+	}
+
+	alternatives, err := answer.elements("alternatives")
+	if err != nil {
+		return NegotiateResult[T]{}, err
+	}
+	for i, raw := range alternatives {
+		if isJSONNull(raw) {
+			return NegotiateResult[T]{}, answer.refuse("alternative %d is null", i)
+		}
+		var alternative T
+		if err := json.Unmarshal(raw, &alternative); err != nil {
+			// An alternative of the wrong shape is a failure of the answer,
+			// not an entry to leave out of it.
+			return NegotiateResult[T]{}, answer.refuse("alternative %d does not fit the solution type", i)
+		}
+		result.Alternatives = append(result.Alternatives, alternative)
+	}
+
+	var satisfaction map[string]json.RawMessage
+	if err := answer.decode("satisfaction", &satisfaction); err != nil {
+		return NegotiateResult[T]{}, err
+	}
+	result.Satisfaction = make(map[string]float64, len(satisfaction))
+	for _, name := range sortedKeys(satisfaction) {
+		score, ok := fractionOf(satisfaction[name])
+		if !ok {
+			return NegotiateResult[T]{}, answer.refuse("an entry of \"satisfaction\" is not a number from 0 to 1")
+		}
+		result.Satisfaction[name] = score
+	}
+
+	if result.OverallSatisfaction, err = answer.fraction("overall_satisfaction"); err != nil {
+		return NegotiateResult[T]{}, err
+	}
+	if result.ModelConfidence, err = answer.fraction("confidence"); err != nil {
+		return NegotiateResult[T]{}, err
+	}
+	if result.Reasoning, err = answer.text("reasoning"); err != nil {
+		return NegotiateResult[T]{}, err
+	}
+
+	tradeoffs, err := answer.elements("tradeoffs")
+	if err != nil {
+		return NegotiateResult[T]{}, err
+	}
+	for i, raw := range tradeoffs {
+		var fields struct {
+			Sacrificed *string `json:"sacrificed"`
+			Gained     *string `json:"gained"`
+			Impact     *string `json:"impact"`
+			Reasoning  string  `json:"reasoning"`
+		}
+		if err := json.Unmarshal(raw, &fields); err != nil || fields.Sacrificed == nil || fields.Gained == nil || fields.Impact == nil {
+			return NegotiateResult[T]{}, answer.refuse("tradeoff %d does not say what was sacrificed, what was gained and the impact", i)
+		}
+		result.Tradeoffs = append(result.Tradeoffs, Tradeoff{
+			Sacrificed: *fields.Sacrificed,
+			Gained:     *fields.Gained,
+			Impact:     *fields.Impact,
+			Reasoning:  fields.Reasoning,
+		})
+	}
+
+	// MinSatisfaction was stated in the prompt as "Minimum acceptable
+	// satisfaction: %.0f%%" and compared against nothing, so a model that openly
+	// reported failing it -- 0.1 against a 0.9 floor -- still came back as a
+	// usable result with a nil error. The number is the model's claim, but the
+	// floor is the caller's, and checking one against the other is what makes
+	// the option mean what its name says.
+	if opt.MinSatisfaction > 0 && result.OverallSatisfaction < opt.MinSatisfaction {
+		return NegotiateResult[T]{}, types.Newf(types.KindInvariantViolation, op,
+			"the model reported overall satisfaction %.2f, below the %.2f floor this operation was configured with",
+			result.OverallSatisfaction, opt.MinSatisfaction)
+	}
+
+	// MaxAlternatives was described in the prompt as "up to %d" and never
+	// counted.
+	if err := AtMost(result.Alternatives, opt.MaxAlternatives); err != nil {
+		return NegotiateResult[T]{}, types.Newf(types.KindInvariantViolation, op, "%v", err)
+	}
+
+	return result, nil
+}
+
+// checkOneOptionsValue refuses a call that was given more than one options
+// value. The options are one value: the variadic form is there so that they can
+// be left out, and a second value was ignored without a word. It is the rule
+// Audit and Arbitrate state in the same words.
+func checkOneOptionsValue(op string, given int) error {
+	if given > 1 {
+		return types.Newf(types.KindConfiguration, op,
+			"%d option values were given, and only one is read", given)
+	}
+	return nil
+}
+
+// checkNegotiateOptions refuses a number in the caller's options that no
+// reading of the option could use. Zero is the value of an option that was not
+// set and is accepted: it stands for the default. The error names the option
+// and not the value.
+func checkNegotiateOptions(user NegotiateOptions) error {
+	if math.IsNaN(user.MinSatisfaction) || user.MinSatisfaction < 0 || user.MinSatisfaction > 1 {
+		return types.Newf(types.KindConfiguration, "negotiate", "MinSatisfaction has to be a number from 0 to 1")
+	}
+	if user.MaxAlternatives < 0 {
+		return types.Newf(types.KindConfiguration, "negotiate", "MaxAlternatives cannot be negative")
+	}
+	return nil
+}
+
+// mergeNegotiateOptions merges user options with defaults: an option the caller
+// left at its zero value keeps its default. The numbers are checked by
+// checkNegotiateOptions before this runs, so what is dropped here is only zero.
 func mergeNegotiateOptions(defaults, user NegotiateOptions) NegotiateOptions {
 	if user.Priorities != nil {
 		defaults.Priorities = user.Priorities
@@ -361,42 +482,34 @@ func mergeNegotiateOptions(defaults, user NegotiateOptions) NegotiateOptions {
 	if user.Steering != "" {
 		defaults.Steering = user.Steering
 	}
-	if user.Mode != 0 {
+	if user.Mode != types.ModeUnset {
 		defaults.Mode = user.Mode
 	}
-	if user.Intelligence != 0 {
+	if user.Intelligence != types.TierUnset {
 		defaults.Intelligence = user.Intelligence
 	}
 	if user.Model != "" {
 		defaults.Model = user.Model
 	}
+	if user.Effort != types.EffortDefault {
+		defaults.Effort = user.Effort
+	}
+	if user.MaxOutputTokens > 0 {
+		defaults.MaxOutputTokens = user.MaxOutputTokens
+	}
+	if user.WebSearch {
+		defaults.WebSearch = true
+	}
 	if user.Context != nil {
 		defaults.Context = user.Context
 	}
-	return defaults
-}
-
-func normalizeFloat(value any) (float64, bool) {
-	switch v := value.(type) {
-	case float64:
-		return v, true
-	case float32:
-		return float64(v), true
-	case int:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case json.Number:
-		f, err := v.Float64()
-		return f, err == nil
-	case string:
-		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-		return f, err == nil
-	default:
-		return 0, false
+	if user.RequestID != "" {
+		defaults.RequestID = user.RequestID
 	}
+	if user.CorrelationID != "" {
+		defaults.CorrelationID = user.CorrelationID
+	}
+	return defaults
 }
 
 // =============================================================================
@@ -494,8 +607,17 @@ type AdversarialOptions struct {
 	// out rather than embedding CommonOptions, so the pin has to be declared
 	// here too -- otherwise `.Model(...)` on the builder would be a setter
 	// that changes nothing, which this repository fails the build over.
-	Model         string
-	Context       gocontext.Context
+	Model string
+	// Effort is how much the model reasons before it answers (LX-105). The
+	// builder sets it here for the same reason it sets Model here.
+	Effort types.Effort
+
+	// MaxOutputTokens is the ceiling on the answer's length. Zero means the tier's.
+	MaxOutputTokens int
+	// WebSearch declares the provider's web-search tool on the call.
+	WebSearch bool
+
+	Context       context.Context
 	RequestID     string
 	CorrelationID string
 }
@@ -535,56 +657,63 @@ type AdversarialOptions struct {
 //
 // Deprecated: use SettleAdversarial. One model round trip, not an exchange.
 // See PS-005.
-func NegotiateAdversarial[T any](context AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
-	return SettleAdversarial(context, opts...)
+func NegotiateAdversarial[T any](negotiation AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
+	return SettleAdversarial(negotiation, opts...)
 }
 
 // SettleAdversarial produces a settlement between opposed positions in one
 // model round trip.
-func SettleAdversarial[T any](context AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
-	log := logger.GetLogger()
+//
+// What the answer has to satisfy, beyond being the right shape: it carries a
+// deal that fits T, a deal_reached flag, the term movements, and the two
+// satisfactions and the confidence as numbers from 0 to 1. An answer that
+// leaves one out, or gives it in another kind, is refused, and the result
+// beside the error is empty. How much each party conceded is the model's
+// account and is not checked against the leverage.
+//
+// The options are one value; a second one is a configuration error.
+func SettleAdversarial[T any](negotiation AdversarialContext[T], opts ...AdversarialOptions) (AdversarialResult[T], error) {
+	// The first line is written before the options are looked at, so the client is
+	// found from the context they carry.
+	var callerCtx context.Context
+	if len(opts) > 0 {
+		callerCtx = opts[0].Context
+	}
+	log := loggerFor(callerCtx)
 	log.Debug("Starting adversarial negotiation")
 
-	var result AdversarialResult[T]
+	if err := checkOneOptionsValue("negotiate", len(opts)); err != nil {
+		return AdversarialResult[T]{}, err
+	}
 
-	// Apply defaults. Mode and Intelligence are taken verbatim when the caller
-	// supplied options at all, because their zero values -- Strict and Smart --
-	// are real choices. Testing `!= 0` to decide whether to copy them, as this
-	// did, makes those two settings unrepresentable through the merge (F-01),
-	// and RequestID and CorrelationID were not copied at all.
+	// Apply defaults. A field the caller left unset keeps its default, by the
+	// same rule Settle uses.
 	opt := AdversarialOptions{
 		Strategy:     "balanced",
 		Mode:         types.TransformMode,
 		Intelligence: types.Fast,
 	}
 	if len(opts) > 0 {
-		user := opts[0]
-		opt.Mode = user.Mode
-		opt.Intelligence = user.Intelligence
-		opt.Steering = user.Steering
-		opt.RequestID = user.RequestID
-		opt.CorrelationID = user.CorrelationID
-		if user.Strategy != "" {
-			opt.Strategy = user.Strategy
-		}
-		if user.Context != nil {
-			opt.Context = user.Context
-		}
+		opt = mergeAdversarialOptions(opt, opts[0])
+	}
+	if err := checkFlatLockedLimits(opt.Context, opt.Mode, opt.Intelligence, opt.MaxOutputTokens); err != nil {
+		return AdversarialResult[T]{}, err
 	}
 
 	// Get context
 	ctx := opt.Context
 	if ctx == nil {
-		ctx = gocontext.Background()
+		ctx = context.Background()
 	}
-	ctx, cancel := gocontext.WithTimeout(ctx, config.GetTimeout())
+	// operationContext, not WithTimeout: a deadline the caller set is kept.
+	ctx, cancel := operationContext(ctx, config.GetTimeout())
 	defer cancel()
 
-	// Convert context to JSON
-	contextJSON, err := json.Marshal(context)
+	// Convert the negotiation to JSON
+	negotiationJSON, err := promptJSON(negotiation)
 	if err != nil {
-		log.Error("Adversarial negotiation failed: marshal error", "error", err)
-		return result, fmt.Errorf("failed to marshal context: %w", err)
+		log.Error("Adversarial negotiation failed: marshal error", "error", loggedError(err))
+		return AdversarialResult[T]{}, types.Newf(types.KindInvalidRequest, "negotiate", "the negotiation could not be written as JSON")
 	}
 
 	// Get target type schema
@@ -597,7 +726,7 @@ Strategy: %s
 
 The input contains:
 - "ours": Our party's position and requirements
-- "theirs": Their party's position and requirements  
+- "theirs": Their party's position and requirements
 - "our_leverage": Our bargaining power (strong/weak/balanced)
 
 CRITICAL: The leverage determines who concedes more:
@@ -623,71 +752,144 @@ Rules:
 - "term_movements" must cover each field showing movement direction
 - "movement" values: "we_concede" (we moved toward them), "they_concede" (they moved toward us), "split" (both moved)
 - Leverage MUST influence the outcome - stronger party gets better terms`,
-		opt.Strategy, typeSchema)
-
-	steeringNote := ""
-	if opt.Steering != "" {
-		steeringNote = fmt.Sprintf("\n\nAdditional guidance: %s", opt.Steering)
-	}
+		quotedText(opt.Strategy), typeSchema)
 
 	userPrompt := fmt.Sprintf(`Analyze this adversarial negotiation and determine the final deal:
 
-%s%s`, string(contextJSON), steeringNote)
+%s`, string(negotiationJSON))
 
-	// Build OpOptions for LLM call
+	// Build OpOptions for LLM call. The steering goes through the options and
+	// not into the message by hand, so that the caller's text is delimited as
+	// the caller's.
 	opOpts := types.OpOptions{
-		Mode:          opt.Mode,
-		Intelligence:  opt.Intelligence,
-		Model:         opt.Model,
-		Context:       ctx,
-		RequestID:     opt.RequestID,
-		CorrelationID: opt.CorrelationID,
+		Mode:            opt.Mode,
+		Intelligence:    opt.Intelligence,
+		Model:           opt.Model,
+		Effort:          opt.Effort,
+		MaxOutputTokens: opt.MaxOutputTokens,
+		WebSearch:       opt.WebSearch,
+		Steering:        opt.Steering,
+		Context:         ctx,
+		RequestID:       opt.RequestID,
+		CorrelationID:   opt.CorrelationID,
 	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Adversarial negotiation LLM call failed", "error", err)
-		return result, fmt.Errorf("adversarial negotiation failed: %w", err)
+		log.Error("Adversarial negotiation LLM call failed", "error", loggedError(err))
+		return AdversarialResult[T]{}, fmt.Errorf("adversarial negotiation failed: %w", err)
 	}
 
-	// Parse response
-	var parsed struct {
-		Deal              json.RawMessage `json:"deal"`
-		DealReached       bool            `json:"deal_reached"`
-		TermMovements     []TermMovement  `json:"term_movements"`
-		WhoConcededMore   string          `json:"who_conceded_more"`
-		OurSatisfaction   float64         `json:"our_satisfaction"`
-		TheirSatisfaction float64         `json:"their_satisfaction"`
-		Reasoning         string          `json:"reasoning"`
-		ModelConfidence   float64         `json:"confidence"`
-	}
-
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	result, err := readAdversarialAnswer[T](response)
+	if err != nil {
 		// See Settle: the response body stays out of the log.
-		log.Error("Adversarial negotiation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse result: %w", err)
+		log.Error("Adversarial negotiation refused the answer", "error", loggedError(err))
+		return AdversarialResult[T]{}, err
 	}
-
-	// Parse deal
-	if len(parsed.Deal) > 0 {
-		if err := json.Unmarshal(parsed.Deal, &result.Deal); err != nil {
-			log.Error("Adversarial negotiation failed: deal parse error", "error", err)
-			return result, fmt.Errorf("failed to parse deal: %w", err)
-		}
-	}
-
-	result.DealReached = parsed.DealReached
-	result.TermMovements = parsed.TermMovements
-	result.WhoConcededMore = parsed.WhoConcededMore
-	result.OurSatisfaction = parsed.OurSatisfaction
-	result.TheirSatisfaction = parsed.TheirSatisfaction
-	result.Reasoning = parsed.Reasoning
-	result.ModelConfidence = parsed.ModelConfidence
 
 	log.Debug("Adversarial negotiation succeeded",
 		"dealReached", result.DealReached,
-		"whoConceded", result.WhoConcededMore,
 		"ourSatisfaction", result.OurSatisfaction)
 
 	return result, nil
+}
+
+// readAdversarialAnswer reads the model's answer to an adversarial negotiation.
+func readAdversarialAnswer[T any](response string) (AdversarialResult[T], error) {
+	answer, err := readAnswerObject("negotiate", response)
+	if err != nil {
+		return AdversarialResult[T]{}, err
+	}
+
+	var result AdversarialResult[T]
+	if err := answer.decode("deal", &result.Deal); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	if result.DealReached, err = answer.flag("deal_reached"); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	if result.WhoConcededMore, err = answer.text("who_conceded_more"); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	if result.OurSatisfaction, err = answer.fraction("our_satisfaction"); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	if result.TheirSatisfaction, err = answer.fraction("their_satisfaction"); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	if result.ModelConfidence, err = answer.fraction("confidence"); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	// The prompt's JSON shape does not list the reasoning, so it is read when
+	// the model gives it and is not required.
+	if err := answer.decodeOptional("reasoning", &result.Reasoning); err != nil {
+		return AdversarialResult[T]{}, err
+	}
+
+	movements, err := answer.elements("term_movements")
+	if err != nil {
+		return AdversarialResult[T]{}, err
+	}
+	for i, raw := range movements {
+		var fields struct {
+			Term       *string `json:"term"`
+			OurAsk     any     `json:"our_ask"`
+			TheirOffer any     `json:"their_offer"`
+			FinalValue any     `json:"final_value"`
+			Movement   *string `json:"movement"`
+		}
+		if err := json.Unmarshal(raw, &fields); err != nil || fields.Term == nil || fields.Movement == nil {
+			return AdversarialResult[T]{}, answer.refuse("term movement %d does not name its term and its movement", i)
+		}
+		result.TermMovements = append(result.TermMovements, TermMovement{
+			Term:       *fields.Term,
+			OurAsk:     fields.OurAsk,
+			TheirOffer: fields.TheirOffer,
+			FinalValue: fields.FinalValue,
+			Movement:   *fields.Movement,
+		})
+	}
+	return result, nil
+}
+
+// mergeAdversarialOptions merges user options with defaults by the rule
+// mergeNegotiateOptions uses: a field the caller left unset keeps its default.
+// It used to take Mode and Intelligence from the caller whatever they held, so
+// an options value that carried only a Steering replaced the Fast tier with
+// the unset one.
+func mergeAdversarialOptions(defaults, user AdversarialOptions) AdversarialOptions {
+	if user.Strategy != "" {
+		defaults.Strategy = user.Strategy
+	}
+	if user.Steering != "" {
+		defaults.Steering = user.Steering
+	}
+	if user.Mode != types.ModeUnset {
+		defaults.Mode = user.Mode
+	}
+	if user.Intelligence != types.TierUnset {
+		defaults.Intelligence = user.Intelligence
+	}
+	if user.Model != "" {
+		defaults.Model = user.Model
+	}
+	if user.Effort != types.EffortDefault {
+		defaults.Effort = user.Effort
+	}
+	if user.MaxOutputTokens > 0 {
+		defaults.MaxOutputTokens = user.MaxOutputTokens
+	}
+	if user.WebSearch {
+		defaults.WebSearch = true
+	}
+	if user.Context != nil {
+		defaults.Context = user.Context
+	}
+	if user.RequestID != "" {
+		defaults.RequestID = user.RequestID
+	}
+	if user.CorrelationID != "" {
+		defaults.CorrelationID = user.CorrelationID
+	}
+	return defaults
 }

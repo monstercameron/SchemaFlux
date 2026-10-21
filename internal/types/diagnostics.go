@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // The second channel A-011's Revised line asks for.
@@ -143,25 +144,9 @@ func nextDiagnosticID() string {
 }
 
 // diagnosticPatterns are the credential shapes scrubbed from a captured body
-// before it reaches a sink.
-//
-// This is a third copy of a list mw/redact.go and schemafluxtest/cassette.go
-// already have, and mw/redact.go's own comment explains why those two do not
-// share one: they guard different moments (a live egress request; a fixture
-// about to be committed) with different failure costs for a false positive.
-// This is a fourth moment with its own cost profile again -- a body a caller
-// has explicitly opted into storing outside the error, for as long as
-// DiagnosticPolicy.Retention says, in whatever backend the sink writes to.
-// That is closer to cassette.go's "about to persist somewhere durable" than
-// to mw's "about to leave the process on every call", but it is still a
-// different write path with a different caller and a different lifetime, and
-// internal/types cannot import mw (mw imports internal/types; the reverse
-// would be a cycle) or schemafluxtest (test-support code the production path
-// must not depend on) to reuse either list. Duplicating a handful of regexes
-// a fourth time costs less than any of the alternatives: sharing across a
-// layering boundary that cannot support it, or leaving a caller's captured
-// diagnostic body unscrubbed because the "right" list lived somewhere this
-// package could not reach.
+// before it reaches a sink, and from content a logger is asked to redact. They
+// are the one list in this package; RedactCredentials exports it, so a layer
+// that needs the same scrubbing calls it and does not keep a copy that drifts.
 var diagnosticPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}`),
 	regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}`),
@@ -175,14 +160,22 @@ var diagnosticPatterns = []*regexp.Regexp{
 
 const redactedMarker = "[redacted]"
 
+// RedactCredentials replaces every credential shape this package recognises in
+// text with a fixed marker: provider API keys, cloud access keys, tokens, private
+// key headers and bearer authorization values. It is not a general content
+// filter: text that matches none of the shapes comes back unchanged.
+func RedactCredentials(text string) string {
+	for _, pattern := range diagnosticPatterns {
+		text = pattern.ReplaceAllString(text, redactedMarker)
+	}
+	return text
+}
+
 // redactDiagnosticBody scrubs the built-in credential shapes plus any
 // caller-supplied patterns, in that order, so a caller's own pattern can
 // still catch whatever the built-ins already turned into a marker.
 func redactDiagnosticBody(body string, extra []*regexp.Regexp) string {
-	out := body
-	for _, pattern := range diagnosticPatterns {
-		out = pattern.ReplaceAllString(out, redactedMarker)
-	}
+	out := RedactCredentials(body)
 	for _, pattern := range extra {
 		if pattern != nil {
 			out = pattern.ReplaceAllString(out, redactedMarker)
@@ -212,11 +205,12 @@ func CaptureDiagnostic(sink DiagnosticSink, policy DiagnosticPolicy, operation s
 
 	truncated := false
 	if len(scrubbed) > limit {
-		// Truncating by byte, not rune, could split a multi-byte character at
-		// the boundary. That is acceptable here -- Body is diagnostic text
-		// for a human or a store, not data this package parses back -- and
-		// matching mw/redact.go's own byte-oriented regex work keeps the two
-		// scrubbing passes consistent about what "the text" means.
+		// The limit is in bytes, and the cut backs up to the start of a character,
+		// so Body never ends in half of one: a store or a JSON encoder would
+		// replace or refuse the broken sequence.
+		for limit > 0 && !utf8.RuneStart(scrubbed[limit]) {
+			limit--
+		}
 		scrubbed = scrubbed[:limit]
 		truncated = true
 	}

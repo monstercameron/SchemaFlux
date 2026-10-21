@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -280,4 +281,105 @@ func TestMemoryCheckpointStoreConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+
+	// Whatever order the writers ran in, each run holds the whole record of one
+	// of them: the fingerprint and the value of the same goroutine.
+	for _, runID := range []string{"run", "run-even"} {
+		record, found, err := store.Load(context.Background(), runID, "step")
+		if err != nil || !found {
+			t.Fatalf("%s: found %v, err %v", runID, found, err)
+		}
+		matched := false
+		for i := 0; i < goroutines; i++ {
+			if (i%2 == 0) != (runID == "run-even") {
+				continue
+			}
+			hash, _ := fingerprintInput(i)
+			if record.InputHash == hash && string(record.Value) == strconv.Itoa(i) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("%s: the stored record %q / %q is not the whole record of any writer", runID, record.InputHash, record.Value)
+		}
+	}
+}
+
+// ("a\x00b", "c") and ("a", "b\x00c") used to be one key, because the separator
+// was a byte either string may contain.
+func TestCheckpointKeysAreDistinctWhateverTheStringsContain(t *testing.T) {
+	pairs := [][2]string{
+		{"a\x00b", "c"}, {"a", "b\x00c"}, {"a", "bc"}, {"ab", "c"}, {"", "abc"}, {"abc", ""},
+		{"1:", "x"}, {"", "1:x"}, {"1", ":x"}, {"10", "x"}, {"1", "0x"}, {"\x00", ""}, {"", "\x00"},
+	}
+	seen := map[string][2]string{}
+	for _, pair := range pairs {
+		key := checkpointKey(pair[0], pair[1])
+		if other, clash := seen[key]; clash {
+			t.Errorf("%q and %q share the key %q", pair, other, key)
+		}
+		seen[key] = pair
+	}
+}
+
+func TestMemoryCheckpointStoreSeparatesRunsWhoseNamesCollide(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryCheckpointStore()
+	if err := store.Save(ctx, "a\x00b", "c", CheckpointRecord{InputHash: "one", Value: []byte("1")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.Load(ctx, "a", "b\x00c"); found {
+		t.Error("a different (run, step) read another's record")
+	}
+}
+
+func TestMemoryCheckpointStoreKeepsItsOwnCopyOfTheValue(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryCheckpointStore()
+	value := []byte("12345")
+	if err := store.Save(ctx, "run", "step", CheckpointRecord{InputHash: "h", Value: value}); err != nil {
+		t.Fatal(err)
+	}
+	value[0] = 'X'
+
+	loaded, found, err := store.Load(ctx, "run", "step")
+	if err != nil || !found || string(loaded.Value) != "12345" {
+		t.Fatalf("after the caller changed its slice, Load = %q, %v, %v", loaded.Value, found, err)
+	}
+	loaded.Value[1] = 'Y'
+	again, _, _ := store.Load(ctx, "run", "step")
+	if string(again.Value) != "12345" {
+		t.Errorf("changing a loaded value changed the store: %q", again.Value)
+	}
+}
+
+func TestMemoryCheckpointStoreDelete(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryCheckpointStore()
+	for _, step := range []string{"one", "two"} {
+		if err := store.Save(ctx, "run", step, CheckpointRecord{InputHash: "h", Value: []byte("1")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.Delete(ctx, "run", "one"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, found, _ := store.Load(ctx, "run", "one"); found {
+		t.Error("the deleted record is still there")
+	}
+	if _, found, _ := store.Load(ctx, "run", "two"); !found {
+		t.Error("deleting one step removed another")
+	}
+	if err := store.Delete(ctx, "run", "never-saved"); err != nil {
+		t.Errorf("deleting a record that is not there is not an error: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := store.Delete(cancelled, "run", "two"); err == nil {
+		t.Error("Delete ignored a cancelled context")
+	}
+	if _, found, _ := store.Load(ctx, "run", "two"); !found {
+		t.Error("a Delete refused for its context removed the record")
+	}
 }

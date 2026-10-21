@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
 )
 
 // The retry loop computed a backoff that doubles from 500ms and stops at five

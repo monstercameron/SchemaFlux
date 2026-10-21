@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The marker stands in for anything a caller would not want copied: a national
@@ -152,14 +152,7 @@ func TestClassifyErrorMessageDescribesRatherThanQuotes(t *testing.T) {
 // An operation run before the library has a provider must say what to do about
 // it. "no LLM provider configured" is true and useless.
 func TestNoProviderErrorNamesTheWayOut(t *testing.T) {
-	previous := customLLMCaller
-	customLLMCaller = nil
-	previousProvider := defaultProvider
-	defaultProvider = nil
-	defer func() {
-		customLLMCaller = previous
-		defaultProvider = previousProvider
-	}()
+	swapNoProvider(t)
 
 	type record struct {
 		Alpha string `json:"alpha"`

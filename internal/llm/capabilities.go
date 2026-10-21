@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CP-001. Today "supported provider" means an adapter compiles: mw.Fallback
@@ -88,26 +91,49 @@ const (
 // UsageQuality describes how trustworthy a route's reported token usage is.
 // A route this codebase has never measured is UsageUnknown, which every
 // requirement check treats the same as "does not meet a minimum of
-// UsageEstimated or better" -- see the "never fail open" note above.
+// UsageEstimated or better" -- see the "never fail open" note above. A
+// requirement may name only the three qualities below; any other string is
+// refused by Negotiate and met by no route.
 type UsageQuality string
 
 const (
-	UsageUnknown   UsageQuality = ""
+	// UsageUnknown is a route whose usage reporting has not been measured. As a
+	// requirement it is no requirement.
+	UsageUnknown UsageQuality = ""
+
+	// UsageEstimated is a route that reports token counts it estimated.
 	UsageEstimated UsageQuality = "estimated"
-	UsageExact     UsageQuality = "exact"
+
+	// UsageExact is a route that reports the token counts it measured.
+	UsageExact UsageQuality = "exact"
 )
 
-// meetsMinimum reports whether q is at least as good as min, using the
-// ordering unknown < estimated < exact. UsageUnknown never meets any
-// declared minimum, including UsageUnknown itself -- a requirement of
-// UsageUnknown is not a real requirement (nothing declares that as a
-// minimum), so this only matters for min in {estimated, exact}.
-func (q UsageQuality) meetsMinimum(min UsageQuality) bool {
-	if min == UsageUnknown {
+// known reports whether q is one of the three qualities there are. UsageQuality
+// is an open string type, so a value written as a literal can be any string, and
+// one that is not among these was mistyped.
+func (q UsageQuality) known() bool {
+	switch q {
+	case UsageUnknown, UsageEstimated, UsageExact:
+		return true
+	}
+	return false
+}
+
+// meetsMinimum reports whether q is at least as good as minimum, using the
+// ordering unknown < estimated < exact. A minimum of UsageUnknown is no requirement,
+// since nothing is worse than unknown, so it is met by every route. A minimum that
+// is not one of the three qualities is not met by any: it used to rank as zero
+// and so was met by every route, which turned a mistyped requirement into no
+// requirement. Negotiate says that is what happened.
+func (q UsageQuality) meetsMinimum(minimum UsageQuality) bool {
+	if !minimum.known() {
+		return false
+	}
+	if minimum == UsageUnknown {
 		return true
 	}
 	rank := map[UsageQuality]int{UsageUnknown: 0, UsageEstimated: 1, UsageExact: 2}
-	return rank[q] >= rank[min]
+	return rank[q] >= rank[minimum]
 }
 
 // ProviderCapabilities is what is actually known about one provider/model
@@ -168,23 +194,23 @@ type ProviderCapabilities struct {
 	MaxOutputTokens int
 }
 
-// HasDeclared reports whether cap has an explicit entry in c.Supports,
+// HasDeclared reports whether capability has an explicit entry in c.Supports,
 // distinguishing "declared false" from "never declared." Meets and Negotiate
 // do not need this distinction (both unmet cases refuse), but a caller
 // building a support matrix (CP-003) does: an underlying provider that was
 // tested and found lacking is a different fact from one nobody ran the
 // conformance suite against yet.
-func (c ProviderCapabilities) HasDeclared(cap Capability) bool {
-	_, ok := c.Supports[cap]
+func (c ProviderCapabilities) HasDeclared(capability Capability) bool {
+	_, ok := c.Supports[capability]
 	return ok
 }
 
-// Has reports whether cap is declared and true. An undeclared capability
+// Has reports whether capability is declared and true. An undeclared capability
 // reports false here, same as a capability explicitly declared false --
 // Meets and Negotiate both use this, not HasDeclared, because neither cares
 // why a requirement is unmet, only that it is.
-func (c ProviderCapabilities) Has(cap Capability) bool {
-	return c.Supports[cap]
+func (c ProviderCapabilities) Has(capability Capability) bool {
+	return c.Supports[capability]
 }
 
 // Requirement is what an operation or invocation needs from the route that
@@ -245,6 +271,13 @@ func Meets(caps ProviderCapabilities, req Requirement) bool {
 func Negotiate(caps ProviderCapabilities, known bool, req Requirement) error {
 	if !known {
 		return fmt.Errorf("%w: provider=%q model=%q", ErrCapabilityUnknown, caps.Provider, caps.Model)
+	}
+	// A requirement that names a quality there is not cannot be checked, and is a
+	// mistake in the requirement and not a route that falls short of it.
+	if !req.MinUsageQuality.known() {
+		return types.Newf(types.KindConfiguration, "llm.negotiate",
+			"the requirement's minimum usage quality %q is not one of %q, %q or %q",
+			string(req.MinUsageQuality), string(UsageUnknown), string(UsageEstimated), string(UsageExact))
 	}
 
 	var reasons []string
@@ -337,13 +370,19 @@ func meetsCeiling(have, want int) bool {
 
 // capabilityRegistry holds what this package has been told about specific
 // provider/model routes, plus family entries (see RegisterCapabilityFamily)
-// matched by prefix when no exact model entry exists. It is not safe for
-// concurrent registration and lookup by design -- see the doc comment on
-// RegisterCapabilities.
+// matched by prefix when no exact model entry exists.
+//
+// It is guarded by a lock. It was left without one on the reasoning that
+// routes are declared at start-up and looked up afterwards. A client's data
+// policy now looks a route up on every call, and the error it returns for an
+// undeclared route says to declare it, which a caller will do while calls are
+// running: an unguarded map read during a write is a fatal error in Go, not a
+// stale answer.
 var capabilityRegistry = struct {
-	exact    map[string]ProviderCapabilities // "provider\x1fmodel"
+	sync.RWMutex
+	exact    map[string]routeEntry // "provider\x1fmodel"
 	families []capabilityFamily
-}{exact: make(map[string]ProviderCapabilities)}
+}{exact: make(map[string]routeEntry)}
 
 type capabilityFamily struct {
 	provider string
@@ -351,21 +390,172 @@ type capabilityFamily struct {
 	caps     ProviderCapabilities
 }
 
+// routeEntry is what the registry holds for one exact route.
+//
+// An entry is one of two kinds. A whole entry (RegisterCapabilities) is the
+// route's complete declaration: no family is consulted for it. Any other entry
+// (DeclareRoute, a published conformance run) is an overlay: the fields it sets
+// win, and every other field is resolved from the route's family when the route
+// is looked up. It used to be a copy of the family's entry made when the route
+// was declared, which froze the family at that moment: a longer family
+// registered afterwards never reached the route, and a family re-registered to
+// tighten its regions did not either.
+//
+// regionsDeclared and retentionDeclared say whether caps.Regions and
+// caps.RetentionDays were set, because their zero values are meaningful ("no
+// region", "keeps nothing") and are not "unset".
+type routeEntry struct {
+	caps              ProviderCapabilities
+	whole             bool
+	regionsDeclared   bool
+	retentionDeclared bool
+}
+
 func registryKey(provider, model string) string {
 	return strings.ToLower(strings.TrimSpace(provider)) + "\x1f" + strings.ToLower(strings.TrimSpace(model))
 }
 
 // RegisterCapabilities declares what is known about one exact provider/model
-// route. It is meant to be called from package init (this package's own
-// registrations, or a caller's, before any request-serving goroutine starts)
-// -- there is no lock here on purpose, the same tradeoff internal/ops's
-// operation registry makes, because a capability declaration that could race
-// a lookup mid-request is a correctness bug no mutex placement fixes on its
-// own; the fix is "declare capabilities before serving traffic," which this
-// signature does not prevent a caller from violating but does not need to
-// guard against either.
+// route. It replaces whatever was registered for the route before.
+//
+// The registry is guarded by a lock, so this is safe to call while requests
+// are being served. What is stored is a copy: the caller's slices and map are
+// not kept, so changing them afterwards does not change the declaration. They
+// used to be kept as given.
 func RegisterCapabilities(caps ProviderCapabilities) {
-	capabilityRegistry.exact[registryKey(caps.Provider, caps.Model)] = caps
+	capabilityRegistry.Lock()
+	defer capabilityRegistry.Unlock()
+	capabilityRegistry.exact[registryKey(caps.Provider, caps.Model)] = routeEntry{caps: copyCapabilities(caps), whole: true}
+}
+
+// copyCapabilities returns caps with its slices and map copied.
+func copyCapabilities(caps ProviderCapabilities) ProviderCapabilities {
+	if caps.Supports != nil {
+		supports := make(map[Capability]bool, len(caps.Supports))
+		for capability, supported := range caps.Supports {
+			supports[capability] = supported
+		}
+		caps.Supports = supports
+	}
+	// make and copy, so that a list that is empty stays one: append onto nil
+	// gives nil back for it, and "declared, and nowhere" became "not declared".
+	if caps.SchemaKeywords != nil {
+		keywords := make([]string, len(caps.SchemaKeywords))
+		copy(keywords, caps.SchemaKeywords)
+		caps.SchemaKeywords = keywords
+	}
+	if caps.Regions != nil {
+		regions := make([]string, len(caps.Regions))
+		copy(regions, caps.Regions)
+		caps.Regions = regions
+	}
+	return caps
+}
+
+// publishObserved stores what a conformance run observed about a route, and
+// keeps what the route has declared about where it runs and what it keeps,
+// which a run knows nothing of. The read and the write are under one lock, so
+// a declaration made in between is not overwritten with the older one.
+//
+// What is stored is an overlay (see routeEntry): the fields the run observed,
+// and the placement the route had declared. A field the run did not observe, a
+// context window say, is resolved from the route's family when the route is
+// looked up. It was copied from the family into the route's own entry at this
+// point, regions and retention only, so Negotiate on a route its family covered
+// failed on every other field after a Publish, and a family changed later did
+// not reach the route.
+func publishObserved(caps ProviderCapabilities) {
+	capabilityRegistry.Lock()
+	defer capabilityRegistry.Unlock()
+	key := registryKey(caps.Provider, caps.Model)
+	// A route that was declared whole stays whole: what the run observed is merged
+	// into its declaration, capability by capability, and everything else it
+	// declared, the context window, the usage reporting, the keywords, the regions
+	// and the retention, is kept. Storing the observation as an overlay would have
+	// resolved all of those from a family, and for a route with none they became
+	// zero, so a route declared as meeting a requirement was refused for it after a
+	// run.
+	if previous, had := capabilityRegistry.exact[key]; had && previous.whole {
+		merged := copyCapabilities(previous.caps)
+		if merged.Supports == nil {
+			merged.Supports = make(map[Capability]bool, len(caps.Supports))
+		}
+		for capability, supported := range caps.Supports {
+			merged.Supports[capability] = supported
+		}
+		if betweenReadAndWriteForTest != nil {
+			betweenReadAndWriteForTest()
+		}
+		capabilityRegistry.exact[key] = routeEntry{caps: merged, whole: true}
+		return
+	}
+	entry := routeEntry{caps: copyCapabilities(caps)}
+	// Where the run observed regions or a retention, they are the route's. Where
+	// it did not, the route's own earlier declaration stands, and failing that
+	// the family's applies at lookup.
+	entry.regionsDeclared = len(caps.Regions) > 0
+	entry.retentionDeclared = caps.RetentionDays != 0
+	if previous, had := capabilityRegistry.exact[key]; had {
+		if !entry.regionsDeclared && previous.regionsDeclared {
+			entry.caps.Regions = copyCapabilities(previous.caps).Regions
+			entry.regionsDeclared = true
+		}
+		if !entry.retentionDeclared && previous.retentionDeclared {
+			entry.caps.RetentionDays = previous.caps.RetentionDays
+			entry.retentionDeclared = true
+		}
+	}
+	if betweenReadAndWriteForTest != nil {
+		betweenReadAndWriteForTest()
+	}
+	capabilityRegistry.exact[key] = entry
+}
+
+// betweenReadAndWriteForTest is nil outside this package's tests. A test sets
+// it to stand between publishObserved's read of a route and its write, and
+// show that nothing else can get to the registry there.
+var betweenReadAndWriteForTest func()
+
+// DeclareRoute declares where one provider/model route runs and how long it
+// keeps what it is sent, which is what a data policy asks of a route.
+//
+// The declaration is an overlay on whatever else is known about the route. The
+// regions and the retention are the route's own and win over its family's.
+// Every other field is resolved when the route is looked up: from an earlier
+// registration of the route, or else from its family, so a family registered
+// or changed after this call still reaches the route. The family's entry was
+// copied into the route here, and kept.
+//
+// regions is every region the route may run in. A route that may be served
+// from two regions declares both, and is allowed only by a policy that allows
+// both. An empty list stays empty, and a nil one stays nil: "declared, and
+// nowhere" is not "not declared". retentionDays is the longest the route keeps
+// content, and zero says it keeps none; a route whose retention is not known
+// should not be declared.
+//
+// Like RegisterCapabilities, it is for start-up, before requests are served.
+func DeclareRoute(provider, model string, regions []string, retentionDays int) {
+	// Read and written under one lock, so two declarations of the same route
+	// cannot each start from what the other is about to replace.
+	capabilityRegistry.Lock()
+	defer capabilityRegistry.Unlock()
+	key := registryKey(provider, model)
+	entry, had := capabilityRegistry.exact[key]
+	if !had {
+		entry.caps.Provider = provider
+		entry.caps.Model = model
+	}
+	// make and copy rather than append onto nil, which gives nil back for an
+	// empty list.
+	entry.caps.Regions = nil
+	if regions != nil {
+		entry.caps.Regions = make([]string, len(regions))
+		copy(entry.caps.Regions, regions)
+	}
+	entry.caps.RetentionDays = retentionDays
+	entry.regionsDeclared = true
+	entry.retentionDeclared = true
+	capabilityRegistry.exact[key] = entry
 }
 
 // RegisterCapabilityFamily declares what is known about every model whose
@@ -373,18 +563,39 @@ func RegisterCapabilities(caps ProviderCapabilities) {
 // "keyword stripping ... becomes declared behaviour rather than a
 // transport-layer workaround" for the gpt-5.6 family specifically (CB-02);
 // families are how one declaration covers luna/sol/terra/etc. without a
-// registration call per model name, matching the same prefix convention
-// provider.go's supportsTemperature already uses for that family.
+// registration call per model name, matching the longest-prefix convention
+// the request-shape table in models.go uses.
+//
+// Registering a family that is already registered, the same provider and the
+// same prefix, replaces it, as RegisterCapabilities does for a route. The
+// first declaration stood and the later one was ignored without a word, so a
+// family re-registered to tighten its regions or its retention left the
+// looser one in force.
 func RegisterCapabilityFamily(provider, prefix string, caps ProviderCapabilities) {
-	capabilityRegistry.families = append(capabilityRegistry.families, capabilityFamily{
+	capabilityRegistry.Lock()
+	defer capabilityRegistry.Unlock()
+	// A copy, as RegisterCapabilities keeps: the caller's map and slices were
+	// stored as given, so changing them afterwards changed the declaration.
+	family := capabilityFamily{
 		provider: strings.ToLower(strings.TrimSpace(provider)),
 		prefix:   strings.ToLower(strings.TrimSpace(prefix)),
-		caps:     caps,
-	})
+		caps:     copyCapabilities(caps),
+	}
+	for i := range capabilityRegistry.families {
+		held := &capabilityRegistry.families[i]
+		if held.provider == family.provider && held.prefix == family.prefix {
+			*held = family
+			return
+		}
+	}
+	capabilityRegistry.families = append(capabilityRegistry.families, family)
 }
 
 // CapabilitiesFor looks up what is known about provider/model: an exact
-// match first, then the longest matching family prefix, in that order. The
+// match first, then the longest matching family prefix, in that order. An exact
+// entry made by RegisterCapabilities stands alone. One made by DeclareRoute or
+// by publishing a conformance run holds only the fields it set, and the rest
+// come from the family at the time of the lookup. The
 // second return value is false when nothing matches either -- the caller
 // must treat that as "unknown," not as the zero ProviderCapabilities, which
 // is why Negotiate takes both return values rather than re-deriving `known`
@@ -393,15 +604,97 @@ func RegisterCapabilityFamily(provider, prefix string, caps ProviderCapabilities
 // every field except Provider/Model, and conflating them is exactly the
 // silent-default failure CP-001 exists to close).
 func CapabilitiesFor(provider, model string) (ProviderCapabilities, bool) {
-	key := registryKey(provider, model)
-	if caps, ok := capabilityRegistry.exact[key]; ok {
+	capabilityRegistry.RLock()
+	defer capabilityRegistry.RUnlock()
+	return capabilitiesForLocked(provider, model)
+}
+
+// capabilitiesForLocked is CapabilitiesFor for a caller that holds the lock.
+//
+// What it returns is a copy. It returned the registry's own map and slices, so
+// a caller who changed what it had looked up changed the declaration, and a
+// route declared from its family's entry shared the family's lists.
+func capabilitiesForLocked(provider, model string) (ProviderCapabilities, bool) {
+	entry, hasEntry, family := routeSourcesLocked(provider, model)
+	if hasEntry && entry.whole {
+		return copyCapabilities(entry.caps), true
+	}
+	if !hasEntry {
+		if family == nil {
+			return ProviderCapabilities{}, false
+		}
+		caps := copyCapabilities(family.caps)
+		caps.Provider = provider
+		caps.Model = model
 		return caps, true
 	}
 
+	// An overlay: the route's own fields over its family's.
+	var caps ProviderCapabilities
+	if family != nil {
+		caps = copyCapabilities(family.caps)
+	}
+	caps.Provider = entry.caps.Provider
+	caps.Model = entry.caps.Model
+	own := copyCapabilities(entry.caps)
+	if own.Supports != nil {
+		// Per capability, so a run that observed some of them does not take the
+		// family's others away, and one it observed false is false.
+		if caps.Supports == nil {
+			caps.Supports = make(map[Capability]bool, len(own.Supports))
+		}
+		for capability, supported := range own.Supports {
+			caps.Supports[capability] = supported
+		}
+	}
+	if own.SchemaKeywords != nil {
+		caps.SchemaKeywords = own.SchemaKeywords
+	}
+	if own.UsageReportingQuality != UsageUnknown {
+		caps.UsageReportingQuality = own.UsageReportingQuality
+	}
+	if own.ContextWindow > 0 {
+		caps.ContextWindow = own.ContextWindow
+	}
+	if own.MaxOutputTokens > 0 {
+		caps.MaxOutputTokens = own.MaxOutputTokens
+	}
+	regions, retention := placementOf(entry, hasEntry, family)
+	caps.Regions = nil
+	if regions != nil {
+		caps.Regions = make([]string, len(regions))
+		copy(caps.Regions, regions)
+	}
+	caps.RetentionDays = retention
+	return caps, true
+}
+
+// RoutePlacementFor returns where a route runs and how long it keeps content:
+// the two fields a data policy reads. It resolves the route as CapabilitiesFor
+// does, and it is for a caller that wants those two and nothing else:
+// CapabilitiesFor copies the route's capability map and both of its lists on
+// every call, and the policy check made it up to three times per request.
+//
+// regions is the registry's own list, not a copy, and must not be changed.
+func RoutePlacementFor(provider, model string) (regions []string, retentionDays int, known bool) {
+	capabilityRegistry.RLock()
+	defer capabilityRegistry.RUnlock()
+	entry, hasEntry, family := routeSourcesLocked(provider, model)
+	if !hasEntry && family == nil {
+		return nil, 0, false
+	}
+	regions, retentionDays = placementOf(entry, hasEntry, family)
+	return regions, retentionDays, true
+}
+
+// routeSourcesLocked finds what the registry holds for a route: its own entry,
+// if it has one, and the family that covers it, if one does. The caller holds
+// the lock.
+func routeSourcesLocked(provider, model string) (entry routeEntry, hasEntry bool, family *capabilityFamily) {
+	entry, hasEntry = capabilityRegistry.exact[registryKey(provider, model)]
+
 	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
 	normalizedModel := strings.ToLower(strings.TrimSpace(model))
-
-	var best *capabilityFamily
 	for i := range capabilityRegistry.families {
 		fam := &capabilityRegistry.families[i]
 		if fam.provider != "" && fam.provider != normalizedProvider {
@@ -410,17 +703,37 @@ func CapabilitiesFor(provider, model string) (ProviderCapabilities, bool) {
 		if !strings.HasPrefix(normalizedModel, fam.prefix) {
 			continue
 		}
-		if best == nil || len(fam.prefix) > len(best.prefix) {
-			best = fam
+		// The longest prefix wins. Two families of one length that both match
+		// differ in their provider, and the one that names the provider is the
+		// more specific. Two of the same provider and prefix cannot both be held:
+		// registering one replaces the other.
+		if family == nil || len(fam.prefix) > len(family.prefix) ||
+			len(fam.prefix) == len(family.prefix) && family.provider == "" && fam.provider != "" {
+			family = fam
 		}
 	}
-	if best == nil {
-		return ProviderCapabilities{}, false
+	return entry, hasEntry, family
+}
+
+// placementOf resolves the regions and the retention of a route from its entry
+// and its family, without copying. A whole entry stands alone; any other entry's
+// own placement wins where it declared one, field by field.
+func placementOf(entry routeEntry, hasEntry bool, family *capabilityFamily) (regions []string, retentionDays int) {
+	if hasEntry && entry.whole {
+		return entry.caps.Regions, entry.caps.RetentionDays
 	}
-	caps := best.caps
-	caps.Provider = provider
-	caps.Model = model
-	return caps, true
+	if family != nil {
+		regions, retentionDays = family.caps.Regions, family.caps.RetentionDays
+	}
+	if hasEntry {
+		if entry.regionsDeclared {
+			regions = entry.caps.Regions
+		}
+		if entry.retentionDeclared {
+			retentionDays = entry.caps.RetentionDays
+		}
+	}
+	return regions, retentionDays
 }
 
 // ResetCapabilityRegistryForTest clears every registration. Test-only (the
@@ -428,6 +741,8 @@ func CapabilitiesFor(provider, model string) (ProviderCapabilities, bool) {
 // -- see mockshape.go): production code registers capabilities once at
 // startup and never needs to un-declare one.
 func ResetCapabilityRegistryForTest() {
-	capabilityRegistry.exact = make(map[string]ProviderCapabilities)
+	capabilityRegistry.Lock()
+	defer capabilityRegistry.Unlock()
+	capabilityRegistry.exact = make(map[string]routeEntry)
 	capabilityRegistry.families = nil
 }

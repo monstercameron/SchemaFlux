@@ -47,7 +47,6 @@ func allOptionsFixtures() map[string]any {
 		"NewAnnotateOptions":    NewAnnotateOptions(),
 		"NewArbitrateOptions":   NewArbitrateOptions(),
 		"NewAuditOptions":       NewAuditOptions(),
-		"NewBatchOptions":       NewBatchOptions(),
 		"NewChooseOptions":      NewChooseOptions(),
 		"NewClassifyOptions":    NewClassifyOptions(),
 		"NewClusterOptions":     NewClusterOptions(),

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Fourteen option types embed both CommonOptions and types.OpOptions. The
@@ -85,7 +85,7 @@ func TestEmbeddedOpOptionsAreNotDiscarded(t *testing.T) {
 			return o.toOpOptions()
 		}},
 		{"Batch", func() types.OpOptions {
-			o := NewBatchOptions()
+			o := BatchOptions{}
 			o.OpOptions.RequestID = requestID
 			return o.toOpOptions()
 		}},

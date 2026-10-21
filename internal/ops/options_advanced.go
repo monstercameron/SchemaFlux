@@ -1,30 +1,18 @@
-// package ops - constructors for the "advanced" fluent surface's option types
+// Constructors for the "advanced" fluent surface's option types.
 //
-// FL-003 / F-03: eleven fluent entrypoints (fluent_advanced.go's Negotiating,
-// NegotiatingAdversarially, Resolving, Deriving, Conforming, Interpolating,
-// Arbitrating, Projecting, Auditing, Assembling, Pivoting) built their options
-// from a bare `XOptions{}` literal instead of a constructor, because no
-// constructor existed for these eleven types -- unlike ExtractOptions,
-// TransformOptions, GenerateOptions, ChooseOptions, FilterOptions, and
-// SortOptions, each of which already has a NewXOptions() in options.go. A
-// caller going through the fluent surface therefore got Mode: 0 (StrictMode)
-// and Intelligence: 0 (whichever Speed zero-values to) instead of the
-// defaults the direct functional API applies, and the two public APIs
-// disagreed on defaults purely by which spelling the caller chose.
-//
-// These constructors do not invent new defaults: each one reproduces, field
-// for field, the "Apply defaults" literal already built inside the
-// corresponding op function (Negotiate, SettleAdversarial, Resolve, Derive,
-// Conform, Interpolate, Arbitrate, Project, auditCore, Compose, Pivot) --
-// negotiate.go, resolve.go, derive.go, conform.go, interpolate.go,
-// arbitrate.go, project.go, audit.go, compose.go, pivot.go, none of which
-// this task may edit. Divergence between this file and those literals would
-// silently reopen exactly the gap FL-003 exists to close, so a test
-// (fl003_advanced_options_test.go) asserts equality against the value each
-// op function actually runs when given no caller options at all.
+// The fluent entrypoints for these types once built their options from a bare
+// `XOptions{}` literal, because no constructor existed, and so got Mode 0 and
+// Intelligence 0 instead of the defaults the direct functional API applies. A
+// constructor here is the one place a type's defaults are written. Pivot and
+// Project call theirs for the options they run with when given none; the other
+// operations still carry the same literal in their own function, and
+// internal/api/fluent's defaults test is what compares the fluent entrypoint's
+// options with the constructor, so a literal changed in only one place is a
+// divergence nothing in this package would catch.
+
 package ops
 
-import "github.com/monstercameron/schemaflux/internal/types"
+import "github.com/monstercameron/schemaflux/v2/internal/types"
 
 // NewNegotiateOptions creates NegotiateOptions with the defaults Negotiate
 // applies internally when the caller supplies none.
@@ -94,12 +82,15 @@ func NewInterpolateOptions() InterpolateOptions {
 
 // NewArbitrateOptions creates ArbitrateOptions with the defaults Arbitrate
 // applies internally when the caller supplies none.
+//
+// It used to set IncludeReasoning, which Arbitrate does not: an arbitration
+// built here, or with the fluent builder, asked for a reason with every
+// evaluation, and the same one written as a struct did not.
 func NewArbitrateOptions() ArbitrateOptions {
 	return ArbitrateOptions{
-		IncludeReasoning: true,
-		Tiebreaker:       "most-confident",
-		Mode:             types.TransformMode,
-		Intelligence:     types.Fast,
+		Tiebreaker:   "most-confident",
+		Mode:         types.TransformMode,
+		Intelligence: types.Fast,
 	}
 }
 
@@ -107,7 +98,6 @@ func NewArbitrateOptions() ArbitrateOptions {
 // internally when the caller supplies none.
 func NewProjectOptions() ProjectOptions {
 	return ProjectOptions{
-		InferMissing: false,
 		Mode:         types.TransformMode,
 		Intelligence: types.Fast,
 	}
@@ -117,8 +107,6 @@ func NewProjectOptions() ProjectOptions {
 // internally when the caller supplies none.
 func NewAuditOptions() AuditOptions {
 	return AuditOptions{
-		Threshold:    0.0,
-		Deep:         true,
 		Mode:         types.TransformMode,
 		Intelligence: types.Smart,
 	}
@@ -129,7 +117,6 @@ func NewAuditOptions() AuditOptions {
 func NewComposeOptions() ComposeOptions {
 	return ComposeOptions{
 		MergeStrategy: "smart",
-		FillGaps:      false,
 		Validate:      true,
 		Mode:          types.TransformMode,
 		Intelligence:  types.Smart,
@@ -141,7 +128,6 @@ func NewComposeOptions() ComposeOptions {
 func NewPivotOptions() PivotOptions {
 	return PivotOptions{
 		Aggregate:    "first",
-		Flatten:      false,
 		Mode:         types.TransformMode,
 		Intelligence: types.Smart,
 	}

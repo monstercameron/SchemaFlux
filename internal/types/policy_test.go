@@ -2,6 +2,7 @@ package types
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -61,15 +62,29 @@ func TestTightenAllowedProvidersIntersects(t *testing.T) {
 	}
 }
 
-func TestTightenAllowedProvidersUndeclaredDefersToOtherSide(t *testing.T) {
-	base := DataPolicy{} // undeclared
-	override := DataPolicy{AllowedProviders: []string{"openai"}}
-	got, err := base.Tighten(override)
-	if err != nil {
-		t.Fatalf("Tighten: %v", err)
-	}
-	if !got.AllowsProvider("openai") || got.AllowsProvider("anthropic") {
-		t.Fatalf("AllowedProviders = %v, want exactly [openai]", got.AllowedProviders)
+// An undeclared side allows nothing, so tightening with it allows nothing: it
+// does not lend its emptiness to the other side as "no opinion". The result used
+// to be the other side's list, which let a policy that allowed no provider be
+// tightened into one that allowed openai.
+func TestTightenAnUndeclaredProviderListDoesNotWidenTheOtherSide(t *testing.T) {
+	declared := DataPolicy{AllowedProviders: []string{"openai"}}
+	for name, pair := range map[string][2]DataPolicy{
+		"undeclared then declared": {{}, declared},
+		"declared then undeclared": {declared, {}},
+		"empty then declared":      {{AllowedProviders: []string{}}, declared},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := pair[0].Tighten(pair[1])
+			if err != nil {
+				t.Fatalf("Tighten: %v", err)
+			}
+			if got.AllowsProvider("openai") || got.AllowsProvider("anthropic") {
+				t.Fatalf("AllowedProviders = %v, want nothing allowed", got.AllowedProviders)
+			}
+			if got.AllowedProviders == nil {
+				t.Error("an empty result is nil, which reads as undeclared; it should be an empty list")
+			}
+		})
 	}
 }
 
@@ -115,15 +130,23 @@ func TestTightenRetentionPicksTheStricterCeiling(t *testing.T) {
 	}
 }
 
-func TestTightenRetentionUnspecifiedDefersToDeclaredSide(t *testing.T) {
-	base := DataPolicy{MaxRetentionDays: RetentionUnspecified}
-	override := DataPolicy{MaxRetentionDays: 14}
-	got, err := base.Tighten(override)
-	if err != nil {
-		t.Fatalf("Tighten: %v", err)
-	}
-	if got.MaxRetentionDays != 14 {
-		t.Fatalf("MaxRetentionDays = %d, want 14", got.MaxRetentionDays)
+// An unspecified ceiling allows no retention, so it is not a gap the other
+// side's number can fill.
+func TestTightenRetentionUnspecifiedStaysUnspecified(t *testing.T) {
+	for name, pair := range map[string][2]RetentionDays{
+		"unspecified then 14": {RetentionUnspecified, 14},
+		"14 then unspecified": {14, RetentionUnspecified},
+		"both unspecified":    {RetentionUnspecified, RetentionUnspecified},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := DataPolicy{MaxRetentionDays: pair[0]}.Tighten(DataPolicy{MaxRetentionDays: pair[1]})
+			if err != nil {
+				t.Fatalf("Tighten: %v", err)
+			}
+			if got.AllowsRetention(1) || got.AllowsRetention(14) || !got.AllowsRetention(0) {
+				t.Fatalf("MaxRetentionDays = %d allows retention it should not", got.MaxRetentionDays)
+			}
+		})
 	}
 }
 
@@ -246,5 +269,138 @@ func TestIntersectionThatExcludesEverythingIsARealEmptySet(t *testing.T) {
 	}
 	if got.AllowsProvider("openai") || got.AllowsProvider("anthropic") {
 		t.Fatal("a disjoint intersection allowed a provider from either side")
+	}
+}
+
+// The property in the file header, checked from both inputs over every
+// combination of a small universe: what the result allows is exactly what both
+// inputs allow, on every field the Allows methods cover.
+func TestTightenAllowsExactlyWhatBothInputsAllow(t *testing.T) {
+	lists := [][]string{nil, {}, {"a"}, {"b"}, {"a", "b"}, {"B ", "c"}, {"A", "b", "c"}}
+	retentions := []RetentionDays{RetentionUnspecified, 0, 7, 30}
+	loggings := []ContentLoggingLevel{LogNoContent, LogMetadataOnly, LogRedactedContent, LogFullContent}
+	names := []string{"a", "b", "c", "d", ""}
+
+	var policies []DataPolicy
+	for _, providers := range lists {
+		for _, retention := range retentions {
+			for _, logging := range loggings {
+				policies = append(policies, DataPolicy{
+					AllowedProviders: providers, AllowedRegions: providers,
+					MaxRetentionDays: retention, ContentLogging: logging,
+					AllowTrainingUse: len(providers)%2 == 0, AllowResultCaching: len(providers) > 1,
+				})
+			}
+		}
+	}
+
+	checked := 0
+	for _, first := range policies {
+		for _, second := range policies {
+			got, err := first.Tighten(second)
+			if err != nil {
+				t.Fatalf("Tighten: %v", err)
+			}
+			for _, name := range names {
+				if want := first.AllowsProvider(name) && second.AllowsProvider(name); got.AllowsProvider(name) != want {
+					t.Fatalf("AllowsProvider(%q) = %v, want %v\nfirst  %+v\nsecond %+v\ngot    %+v", name, got.AllowsProvider(name), want, first, second, got)
+				}
+				if want := first.AllowsRegion(name) && second.AllowsRegion(name); got.AllowsRegion(name) != want {
+					t.Fatalf("AllowsRegion(%q) = %v, want %v", name, got.AllowsRegion(name), want)
+				}
+			}
+			for days := RetentionDays(-1); days <= 40; days++ {
+				if want := first.AllowsRetention(days) && second.AllowsRetention(days); got.AllowsRetention(days) != want {
+					t.Fatalf("AllowsRetention(%d) = %v, want %v\nfirst  %+v\nsecond %+v", days, got.AllowsRetention(days), want, first, second)
+				}
+			}
+			for _, level := range loggings {
+				if want := first.AllowsContentLogging(level) && second.AllowsContentLogging(level); got.AllowsContentLogging(level) != want {
+					t.Fatalf("AllowsContentLogging(%v) = %v, want %v", level, got.AllowsContentLogging(level), want)
+				}
+			}
+			if got.AllowTrainingUse != (first.AllowTrainingUse && second.AllowTrainingUse) ||
+				got.AllowResultCaching != (first.AllowResultCaching && second.AllowResultCaching) {
+				t.Fatalf("a permission survived that one side refused: %+v", got)
+			}
+			checked++
+		}
+	}
+	if checked < 10000 {
+		t.Fatalf("only %d combinations were checked", checked)
+	}
+}
+
+// Tightening again never brings back what an earlier step removed. The empty
+// intersection of A and B used to be read as "undeclared" by the next Tighten,
+// which then returned C's list: wider than A and than B.
+func TestTightenTwiceNeverWidensAnEarlierResult(t *testing.T) {
+	a := DataPolicy{AllowedProviders: []string{"openai"}, AllowedRegions: []string{"us"}, MaxRetentionDays: 7}
+	b := DataPolicy{AllowedProviders: []string{"anthropic"}, AllowedRegions: []string{"eu"}, MaxRetentionDays: 30}
+	c := DataPolicy{AllowedProviders: []string{"openai", "anthropic", "local"}, AllowedRegions: []string{"us", "eu"}, MaxRetentionDays: 90}
+
+	ab, err := a.Tighten(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abc, err := ab.Tighten(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"openai", "anthropic", "local"} {
+		if abc.AllowsProvider(name) {
+			t.Errorf("Tighten(Tighten(A,B),C) allows provider %q, which A and B together refuse", name)
+		}
+	}
+	for _, region := range []string{"us", "eu"} {
+		if abc.AllowsRegion(region) {
+			t.Errorf("Tighten(Tighten(A,B),C) allows region %q, which A and B together refuse", region)
+		}
+	}
+	if abc.AllowsRetention(8) {
+		t.Error("the result allows 8 days of retention, above A's ceiling of 7")
+	}
+
+	// Associativity, as far as permissions go.
+	bc, _ := b.Tighten(c)
+	aThenBC, _ := a.Tighten(bc)
+	for _, name := range []string{"openai", "anthropic", "local"} {
+		if abc.AllowsProvider(name) != aThenBC.AllowsProvider(name) {
+			t.Errorf("provider %q: grouping the Tighten calls changed the result", name)
+		}
+	}
+}
+
+func TestTightenComparesProviderNamesWithoutRegardToCase(t *testing.T) {
+	got, err := DataPolicy{AllowedProviders: []string{"OpenAI", " Local "}}.Tighten(DataPolicy{AllowedProviders: []string{"openai", "LOCAL", "cerebras"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AllowsProvider("openai") || !got.AllowsProvider("local") || got.AllowsProvider("cerebras") {
+		t.Errorf("AllowedProviders = %q", got.AllowedProviders)
+	}
+	if len(got.AllowedProviders) != 2 || got.AllowedProviders[0] > got.AllowedProviders[1] {
+		t.Errorf("AllowedProviders = %q, want two names in sorted order", got.AllowedProviders)
+	}
+}
+
+func TestTightenSortsAndDeduplicatesWhateverTheInputOrder(t *testing.T) {
+	got, err := DataPolicy{AllowedProviders: []string{"c", "a", "b", "a"}}.Tighten(DataPolicy{AllowedProviders: []string{"b", "a", "c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(got.AllowedProviders, want) {
+		t.Errorf("AllowedProviders = %q, want %q", got.AllowedProviders, want)
+	}
+}
+
+func TestABlankNameIsInNoList(t *testing.T) {
+	for _, list := range [][]string{{""}, {" "}, {"a", ""}} {
+		p := DataPolicy{AllowedProviders: list, AllowedRegions: list}
+		for _, name := range []string{"", "  ", "\t"} {
+			if p.AllowsProvider(name) || p.AllowsRegion(name) {
+				t.Errorf("a blank name %q was allowed by %q", name, list)
+			}
+		}
 	}
 }

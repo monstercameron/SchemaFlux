@@ -1,0 +1,17 @@
+func Breakdown(since time.Time) Spending
+func Entries(since time.Time, filter map[string]string) []Entry
+type Entry struct{Time time.Time; RequestID string; CorrelationID string; Operation string; Model string; Provider string; Usage schemaflux.Usage; Cost schemaflux.Cost; Tags map[string]string}
+func Export(since time.Time, format string) (string, error)
+func ForRequest(requestID string) (Entry, bool)
+type Limits struct{Daily float64; Weekly float64; Monthly float64; Enforce bool; OnThreshold func(spent float64, limit float64, period string)}
+type Model struct{Provider string; Name string; Input float64; Output float64; Cached float64; Reasoning float64}
+func Models() []string
+func Price(u schemaflux.Usage, model string, provider string) schemaflux.Cost
+func Register(m Model) (restore func(), err error)
+func Reset()
+func SetHistoryLimit(n int) (restore func())
+func SetLimits(b Limits) (restore func(), err error)
+type Spending struct{ByModel map[string]float64; ByOperation map[string]float64; ByProvider map[string]float64; Total float64}
+func Spent(since time.Time, filter map[string]string) (usd float64, complete bool)
+func Summarize(since time.Time, filter map[string]string) Summary
+type Summary struct{Requests int; Unpriced int; Usage schemaflux.Usage; Cost schemaflux.Cost}

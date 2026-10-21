@@ -59,16 +59,18 @@ func TestSpansAreLocatedByTextNotByOffset(t *testing.T) {
 			// The recomputed offsets have to slice the value back out of the
 			// document, which is the property the old code assumed and did not
 			// check.
-			if got := spanDoc[span.Start:span.End]; got != tc.want {
+			if got := spanText(spanDoc, span); got != tc.want {
 				t.Errorf("the span slices %q out of the document, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// A span the model invented is dropped rather than masking something the model
-// never found.
-func TestHallucinatedSpansAreDropped(t *testing.T) {
+// A span that cannot be located fails the call. These three used to produce no
+// span and no error, on the reasoning that an invented finding should remove
+// nothing. A real value quoted inexactly looks the same from here, and dropping
+// that one returns the document with the secret in it (LX-020).
+func TestSpansThatCannotBeLocatedAreRefused(t *testing.T) {
 	responses := []string{
 		`{"spans":[{"text":"nobody@example.org","start":8,"category":"email"}]}`,
 		`{"spans":[{"text":"","start":8,"category":"email"}]}`,
@@ -77,11 +79,8 @@ func TestHallucinatedSpansAreDropped(t *testing.T) {
 
 	for _, response := range responses {
 		spans, err := parseRedactResponse(response, spanDoc)
-		if err != nil {
-			t.Fatalf("parseRedactResponse: %v", err)
-		}
-		if len(spans) != 0 {
-			t.Errorf("response %s produced %d spans, want none", response, len(spans))
+		if err == nil {
+			t.Errorf("response %s was accepted and produced %d spans", response, len(spans))
 		}
 	}
 }
@@ -103,16 +102,17 @@ func TestRepeatedValuesMapToDistinctOccurrences(t *testing.T) {
 		t.Errorf("both spans landed on the same occurrence at %d", spans[0].Start)
 	}
 	for _, span := range spans {
-		if doc[span.Start:span.End] != "ada@example.com" {
-			t.Errorf("span slices %q", doc[span.Start:span.End])
+		if got := spanText(doc, span); got != "ada@example.com" {
+			t.Errorf("span selects %q", got)
 		}
 	}
 }
 
-// Non-ASCII is where offsets and byte indices part company: the model counts
-// characters, Go slices bytes, and the two agree only for ASCII. Locating by
-// text sidesteps it, and this proves the resulting offsets are byte offsets
-// that slice correctly.
+// Non-ASCII is where character offsets and byte indices part company. This
+// used to assert that the offsets sliced the string as bytes, while
+// applyRedactions indexed []rune(text) with the same numbers. Both tests passed
+// and the two halves disagreed, which is LX-020. The offsets are characters,
+// per the repository's rule that offsets over text are counted in runes.
 func TestSpansSurviveNonASCIIText(t *testing.T) {
 	doc := "Écrire à josé@exemple.fr — merci ☕"
 	response := `{"spans":[{"text":"josé@exemple.fr","start":9,"category":"email"}]}`
@@ -124,8 +124,18 @@ func TestSpansSurviveNonASCIIText(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("got %d spans, want 1", len(spans))
 	}
-	if got := doc[spans[0].Start:spans[0].End]; got != "josé@exemple.fr" {
-		t.Errorf("the span slices %q out of the document", got)
+	if got := spanText(doc, spans[0]); got != "josé@exemple.fr" {
+		t.Errorf("the span selects %q out of the document", got)
+	}
+
+	// And the two halves agree: masking with these spans removes exactly the
+	// address and nothing else.
+	masked, err := applyRedactions(doc, spans, NewRedactLLMOptions())
+	if err != nil {
+		t.Fatalf("applyRedactions: %v", err)
+	}
+	if want := "Écrire à *************** — merci ☕"; masked != want {
+		t.Errorf("masked = %q, want %q", masked, want)
 	}
 }
 
@@ -267,4 +277,13 @@ func TestRedactedTextKeepsNoneOfTheValue(t *testing.T) {
 	if !strings.Contains(redacted, "INV-4417") {
 		t.Errorf("the redaction removed something it was not asked to: %s", redacted)
 	}
+}
+
+// spanText returns the text a span selects. The offsets are in characters.
+func spanText(doc string, span RedactSpan) string {
+	runes := []rune(doc)
+	if span.Start < 0 || span.End > len(runes) || span.Start > span.End {
+		return ""
+	}
+	return string(runes[span.Start:span.End])
 }

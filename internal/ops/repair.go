@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The defining feature of a typed LLM library is: the parse fails, the error
@@ -26,8 +25,9 @@ import (
 // mistake and ask again.
 type RepairPolicy struct {
 	// Attempts is the number of repair attempts after the first try. Zero means
-	// no repair, which is the previous behaviour and remains the default for
-	// operations that have not opted in.
+	// the caller stated no opinion, and the budget is config.GetRepairAttempts()
+	// (DefaultRepairAttempts unless configured otherwise). A negative value is
+	// no repair at all.
 	Attempts int
 }
 
@@ -37,13 +37,26 @@ type RepairPolicy struct {
 // into an unbounded spend.
 const DefaultRepairAttempts = 1
 
-// repairAttempts resolves the budget for a call.
-func repairAttempts(policy RepairPolicy) int {
+// repairAttempts resolves the budget for a call: the operation's own, then the
+// client's, then the default. A positive number is how many, a negative number
+// is none, and zero leaves the decision to the next. The operation's own comes
+// first because it is the descriptor's author who knows whether a repair can
+// mend that operation's answers; the client's applies to every operation that
+// has no opinion.
+func repairAttempts(ctx context.Context, policy RepairPolicy) int {
 	if policy.Attempts > 0 {
 		return policy.Attempts
 	}
 	if policy.Attempts < 0 {
 		return 0
+	}
+	if cfg := execConfigFrom(ctx); cfg != nil {
+		if cfg.Repairs > 0 {
+			return cfg.Repairs
+		}
+		if cfg.Repairs < 0 {
+			return 0
+		}
 	}
 	return config.GetRepairAttempts()
 }
@@ -121,8 +134,8 @@ func repairStrategyFor(kind types.ErrorKind) repairStrategy {
 //
 // validate returns nil when the body is acceptable. Its error text is what the
 // model is shown, so it has to describe the problem in terms the model can act
-// on — "the response carried none of the expected fields; it has [x], wanted
-// one of [y]" is useful, "invalid" is not.
+// on — "the response carried none of the expected fields; it has 1 field(s),
+// none of them wanted, wanted one of [y]" is useful, "invalid" is not.
 func withRepair(
 	ctx context.Context,
 	systemPrompt, userPrompt string,
@@ -131,8 +144,11 @@ func withRepair(
 	validate func(body string) error,
 ) (string, RepairResult, error) {
 
-	log := logger.GetLogger()
-	budget := repairAttempts(policy)
+	// The client the call runs on is fixed here, so the lines below and the
+	// budget are read from one client.
+	ctx, _ = PinExec(ctx)
+	log := loggerFor(ctx)
+	budget := repairAttempts(ctx, policy)
 
 	var result RepairResult
 	var lastErr error
@@ -151,7 +167,8 @@ func withRepair(
 			prompt = repairPromptFor(userPrompt, result.Failures, previousStrategy, previousBody)
 		}
 
-		body, err := callLLM(ctx, systemPrompt, prompt, opts)
+		// A request after the first is marked as a repair for the observers.
+		body, err := callLLM(repairContext(ctx, attempt), systemPrompt, prompt, opts)
 		result.Attempts++
 
 		if err != nil {
@@ -172,9 +189,11 @@ func withRepair(
 				log.Debug("repairing an unusable answer",
 					"attempt", result.Attempts,
 					"remaining", budget-attempt,
-					"problem", validateErr.Error(),
+					"kind", kind.String(),
 					"strategy", previousStrategy,
 				)
+				// The call's record says that the answer was sent back, and why.
+				noteRepair(ctx, validateErr.Error())
 				continue
 			}
 			return "", result, fmt.Errorf(
@@ -192,7 +211,13 @@ func withRepair(
 		// allowed -- expected -- to differ completely from the fabrication
 		// it replaced.
 		if attempt > 0 && previousStrategy == strategyPatch {
-			if lossErr := detectUnrelatedFieldLoss(previousBody, body); lossErr != nil {
+			// The failure the model was shown can itself ask for a field to go: an
+			// unknown field is repaired by dropping it, and that is not a loss.
+			reported := ""
+			if n := len(result.Failures); n > 0 {
+				reported = result.Failures[n-1]
+			}
+			if lossErr := detectLossExcept(previousBody, body, reported); lossErr != nil {
 				lastErr = lossErr
 				result.Failures = append(result.Failures, lossErr.Error())
 				previousBody = body
@@ -205,8 +230,9 @@ func withRepair(
 					log.Debug("rejecting a repair that dropped previously valid data",
 						"attempt", result.Attempts,
 						"remaining", budget-attempt,
-						"problem", lossErr.Error(),
+						"kind", llm.Classify(lossErr).String(),
 					)
+					noteRepair(ctx, lossErr.Error())
 					continue
 				}
 				return "", result, fmt.Errorf(
@@ -216,7 +242,12 @@ func withRepair(
 
 		result.Repaired = attempt > 0
 		if result.Repaired {
-			log.Info("an answer was repaired",
+			// A warning, not an info line: the first answer was unusable and a
+			// further paid call was made, which is the same kind of event as a
+			// retry being scheduled (llm_helper.go) and is logged at the same
+			// level. It is written at the library's default level, and only for
+			// a call that needed repairing, so an ordinary call writes nothing.
+			log.Warn("an answer was repaired",
 				"attempts", result.Attempts,
 				"problems", strings.Join(result.Failures, "; "),
 			)
@@ -224,6 +255,9 @@ func withRepair(
 		return body, result, nil
 	}
 
+	// Every iteration above returns or continues, and the last returns inside
+	// the budget test, so this is not reached; it is here because the loop
+	// condition is not a terminating statement.
 	return "", result, lastErr
 }
 
@@ -265,6 +299,10 @@ func syntaxRepairPrompt(original string, failures []string, previousBody string)
 		body = string(runes[:maxIncludedBodyRunes])
 		truncated = true
 	}
+
+	// The quote ends at the first end-marker line, so a response that contains
+	// one would end it early and leave the rest to read as instructions.
+	body = strings.ReplaceAll(body, untrustedBoundaryEnd, "[end marker removed]")
 
 	var builder strings.Builder
 	builder.WriteString(original)
@@ -317,6 +355,12 @@ func repairPrompt(original string, failures []string) string {
 	return builder.String()
 }
 
+// namedAsUnknown reports whether a failure message says key is an unknown
+// field. The decoder's message names the field in quotes.
+func namedAsUnknown(failure, key string) bool {
+	return strings.Contains(failure, "unknown field") && strings.Contains(failure, fmt.Sprintf("%q", key))
+}
+
 // detectUnrelatedFieldLoss compares a repaired response against the response
 // it replaced, and reports an error naming how many top-level fields that
 // were present with a non-null value in the previous response are simply
@@ -337,6 +381,15 @@ func repairPrompt(original string, failures []string) string {
 // has no fields for this check to reason about, and comparing anything else
 // structurally would be guessing.
 func detectUnrelatedFieldLoss(previousBody, newBody string) error {
+	return detectLossExcept(previousBody, newBody, "")
+}
+
+// detectLossExcept is detectUnrelatedFieldLoss for a repair prompted by the
+// failure text given: a field the failure names as unknown is expected to be
+// gone from the repaired answer, and is not counted. The correct repair for an
+// unknown-field failure drops exactly that field, and used to be rejected as a
+// loss, which spent another attempt or failed the call.
+func detectLossExcept(previousBody, newBody, reported string) error {
 	var previous, next map[string]any
 	if err := json.Unmarshal([]byte(previousBody), &previous); err != nil {
 		return nil
@@ -374,7 +427,7 @@ func detectUnrelatedFieldLoss(previousBody, newBody string) error {
 			continue
 		}
 		newValue, present := next[key]
-		if !present || newValue == nil {
+		if (!present || newValue == nil) && !namedAsUnknown(reported, key) {
 			lost++
 		}
 	}
@@ -385,5 +438,5 @@ func detectUnrelatedFieldLoss(previousBody, newBody string) error {
 	// Field names are the caller's own schema vocabulary; only the count is
 	// reported, the same restraint invariants.go's SameMultiset and
 	// SubsetOf already apply to which values were involved.
-	return fmt.Errorf("the repair dropped %d field(s) that were present in the previous answer and were not the reported problem", lost)
+	return types.Classified(types.KindMalformedOutput, fmt.Errorf("the repair dropped %d field(s) that were present in the previous answer and were not the reported problem", lost))
 }

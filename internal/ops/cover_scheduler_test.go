@@ -15,9 +15,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // realClock.Now() must track the wall clock -- it is the only clock a
@@ -166,39 +167,41 @@ func TestCancelWaiterReleasesReservationAdmittedDuringTheRace(t *testing.T) {
 // for a caller that cancels while queued, tying the unit-level assertions
 // above to the integration surface Submit callers actually see.
 func TestSubmitCancelledWhileQueuedReportsClassifiedError(t *testing.T) {
-	s := NewScheduler(SchedulerLimits{MaxConcurrent: 1, MaxQueued: 1})
-	defer s.Close(context.Background())
+	synctest.Test(t, func(t *testing.T) {
+		s := NewScheduler(SchedulerLimits{MaxConcurrent: 1, MaxQueued: 1})
+		defer s.Close(context.Background())
 
-	release := make(chan struct{})
-	defer close(release)
-	var current, peak int64
+		release := make(chan struct{})
+		defer close(release)
+		var current, peak int64
 
-	go Submit(context.Background(), s, SubmitRequest{}, gatedWork(&current, &peak, release))
-	waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == 1 })
+		go Submit(context.Background(), s, SubmitRequest{}, gatedWork(&current, &peak, release))
+		waitForStat(t, s, func(st SchedulerStats) bool { return st.InFlight == 1 })
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		_, err := Submit(ctx, s, SubmitRequest{}, gatedWork(&current, &peak, release))
-		done <- err
-	}()
-	waitForStat(t, s, func(st SchedulerStats) bool { return st.Queued == 1 })
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := Submit(ctx, s, SubmitRequest{}, gatedWork(&current, &peak, release))
+			done <- err
+		}()
+		waitForStat(t, s, func(st SchedulerStats) bool { return st.Queued == 1 })
 
-	cancel()
+		cancel()
 
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("expected a classified cancellation error")
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("expected a classified cancellation error")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("errors.Is(err, context.Canceled) = false: %v", err)
+			}
+			opErr := mustOpErr(t, err)
+			if opErr.Kind != types.KindCanceled {
+				t.Errorf("Kind = %v, want KindCanceled", opErr.Kind)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Submit did not return after its context was cancelled while queued")
 		}
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("errors.Is(err, context.Canceled) = false: %v", err)
-		}
-		opErr := mustOpErr(t, err)
-		if opErr.Kind != types.KindCanceled {
-			t.Errorf("Kind = %v, want KindCanceled", opErr.Kind)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Submit did not return after its context was cancelled while queued")
-	}
+	})
 }

@@ -3,10 +3,11 @@ package ops
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // IN-004's seam, tested where it lives.
@@ -40,20 +41,121 @@ func TestAClientBudgetRefusesAtItsCeilingAndNotBefore(t *testing.T) {
 	}
 }
 
-// A ceiling of zero or less means "no ceiling", which is what a client that
-// never asked for a budget gets. It must not mean "refuse everything" -- that
-// would make an unconfigured client unusable rather than unlimited.
-func TestANonPositiveCeilingEnforcesNothing(t *testing.T) {
-	for _, ceiling := range []float64{0, -1} {
-		budget := NewClientBudget(ceiling)
-		budget.Record(1000, true)
+// A ceiling of zero means "no ceiling", which is what a client that never asked
+// for a budget gets. It must not mean "refuse everything" -- that would make an
+// unconfigured client unusable rather than unlimited.
+func TestAZeroCeilingEnforcesNothing(t *testing.T) {
+	budget := NewClientBudget(0)
+	budget.Record(1000, true)
 
-		if err := budget.Check(); err != nil {
-			t.Errorf("a ceiling of %v refused a call after spending 1000; a non-positive ceiling means unlimited, not zero", ceiling)
+	if err := budget.Check(); err != nil {
+		t.Errorf("a ceiling of 0 refused a call after spending 1000; zero means unlimited: %v", err)
+	}
+	if got := budget.Ceiling(); got != 0 {
+		t.Errorf("Ceiling() = %v, want 0", got)
+	}
+}
+
+// A ceiling that is not a usable number used to switch the budget off: NaN is
+// not at or below zero and is never reached, and a negative one was read as
+// "none". The ledger now refuses every call, with a configuration error, so the
+// mistake shows on the first call and not on the invoice.
+func TestAnUnusableCeilingRefusesEveryCall(t *testing.T) {
+	for _, ceiling := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -1, -0.01, -1e300} {
+		budget := NewClientBudget(ceiling)
+
+		err := budget.Check()
+		if err == nil {
+			t.Errorf("a ceiling of %v allowed a call", ceiling)
+			continue
 		}
-		if got := budget.Ceiling(); got != ceiling {
-			t.Errorf("Ceiling() = %v, want %v", got, ceiling)
+		if types.KindOf(err) != types.KindConfiguration {
+			t.Errorf("a ceiling of %v: kind %v, want KindConfiguration (%v)", ceiling, types.KindOf(err), err)
 		}
+		// Spending nothing, or recording a cost, changes nothing.
+		budget.Record(0, true)
+		if budget.Check() == nil {
+			t.Errorf("a ceiling of %v allowed a call after a recorded cost", ceiling)
+		}
+	}
+}
+
+// A cost that is not a number, or is negative, used to be added to the total. A
+// NaN made every later comparison false, so the ledger never refused again, and
+// a negative cost lowered what had been spent. Such a cost is now a call of
+// unknown cost: it is counted, the total stays a number, and the ledger still
+// refuses at its ceiling.
+func TestAnInvalidRecordedCostIsAnUnknownCostAndKeepsTheLedgerWorking(t *testing.T) {
+	for _, cost := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.5, -1e300} {
+		budget := NewClientBudget(1)
+
+		budget.Record(0.4, true)
+		budget.Record(cost, true)
+
+		spent, complete := budget.Spent()
+		if spent != 0.4 {
+			t.Errorf("after a cost of %v the total is %v, want 0.4 unchanged", cost, spent)
+		}
+		if complete || budget.UnpricedCalls() != 1 {
+			t.Errorf("after a cost of %v: complete %v, unpriced %d, want an incomplete ledger with one unknown", cost, complete, budget.UnpricedCalls())
+		}
+
+		budget.Record(0.7, true)
+		if err := budget.Check(); !errors.Is(err, ErrClientBudgetExhausted) {
+			t.Errorf("after a cost of %v and 1.1 recorded against a ceiling of 1, Check = %v, want the ledger to refuse", cost, err)
+		}
+	}
+}
+
+// What the ledger guarantees under concurrent callers: every caller that passes
+// Check and then Records is counted, no call is admitted once the recorded spend
+// has reached the ceiling, and so the spend ends above the ceiling by at most
+// what the calls already in flight cost -- never by the cost of every caller.
+func TestConcurrentCallersOverspendByAtMostTheCallsInFlight(t *testing.T) {
+	const (
+		callers  = 64
+		inFlight = 4 // calls allowed to be running at once, as a scheduler would
+		cost     = 0.25
+		ceiling  = 2.0
+	)
+	budget := NewClientBudget(ceiling)
+
+	slots := make(chan struct{}, inFlight)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	admitted := 0
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			if budget.Check() != nil {
+				return
+			}
+			mu.Lock()
+			admitted++
+			mu.Unlock()
+			budget.Record(cost, true)
+		}()
+	}
+	wg.Wait()
+
+	spent, complete := budget.Spent()
+	if !complete {
+		t.Error("the ledger is incomplete although every cost was priced")
+	}
+	if want := float64(admitted) * cost; spent != want {
+		t.Errorf("spent %v for %d admitted calls, want %v: a recorded cost was lost", spent, admitted, want)
+	}
+	if spent < ceiling {
+		t.Errorf("spent %v: the ceiling of %v was never reached by %d callers", spent, ceiling, callers)
+	}
+	if limit := ceiling + inFlight*cost; spent > limit {
+		t.Errorf("spent %v, past the ceiling of %v by more than the %d calls in flight could cost (%v)", spent, ceiling, inFlight, limit)
+	}
+	if err := budget.Check(); !errors.Is(err, ErrClientBudgetExhausted) {
+		t.Errorf("after the ceiling was reached Check = %v, want it to refuse", err)
 	}
 }
 
@@ -192,7 +294,7 @@ func TestTheAccessorsReadNothingFromABareContext(t *testing.T) {
 // policy enforcement is on: one says "allow everything", the other says "nobody
 // has decided".
 func TestAnEmptyDataPolicyIsDistinguishableFromNone(t *testing.T) {
-	declared := WithExecConfig(context.Background(), &ExecConfig{DataPolicy: types.DataPolicy{}})
+	declared := WithExecConfig(context.Background(), &ExecConfig{DataPolicy: types.DataPolicy{}, DataPolicyDeclared: true})
 
 	policy, ok := ExecDataPolicy(declared)
 	if !ok {
@@ -215,5 +317,43 @@ func TestASchedulerTravelsOnTheSnapshot(t *testing.T) {
 
 	if got := ExecScheduler(ctx); got != scheduler {
 		t.Error("the scheduler that came back is not the one attached")
+	}
+}
+
+// budgetLockProbe is an error whose text is written while Check holds the
+// ledger's lock, because Check formats the sentinel into its refusal.
+type budgetLockProbe struct {
+	budget   *ClientBudget
+	reads    int
+	lockFree int
+}
+
+func (p *budgetLockProbe) Error() string {
+	p.reads++
+	if p.budget.mu.TryLock() {
+		p.budget.mu.Unlock()
+		p.lockFree++
+	}
+	return "probe"
+}
+
+// Check reads the spend and the ceiling under the ledger's lock, so that it sees
+// the sum of everything Recorded before it. Without a detector for races that
+// is checked at the one point Check calls out of its own code, which is the
+// text of the refusal it builds.
+func TestClientBudgetCheckHoldsTheLedgerLockWhileItDecides(t *testing.T) {
+	budget := NewClientBudget(1)
+	budget.Record(2, true)
+	probe := &budgetLockProbe{budget: budget}
+
+	previous := ErrClientBudgetExhausted
+	ErrClientBudgetExhausted = &types.OperationError{Kind: types.KindBudgetExceeded, Op: "client.budget", Cause: probe}
+	t.Cleanup(func() { ErrClientBudgetExhausted = previous })
+
+	if err := budget.Check(); err == nil {
+		t.Fatal("a ledger past its ceiling let a call through")
+	}
+	if probe.reads != 1 || probe.lockFree != 0 {
+		t.Errorf("the refusal was written %d times, and found the lock free %d times; want 1 and 0", probe.reads, probe.lockFree)
 	}
 }

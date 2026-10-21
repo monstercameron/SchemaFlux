@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fakeKey is assembled rather than written out. These tests prove a
@@ -170,5 +171,80 @@ func TestNextDiagnosticIDIsUniqueWithinAProcess(t *testing.T) {
 			t.Fatalf("nextDiagnosticID produced a duplicate: %s", id)
 		}
 		seen[id] = true
+	}
+}
+
+// The credential fixtures are assembled from pieces for the reason fakeKey is:
+// they have to look like credentials, and a literal one trips the secret scan.
+func TestRedactCredentialsReplacesEveryShapeItKnows(t *testing.T) {
+	tail := "abcdefghijklmnopqrstuvwxyz0123456789"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"an openai key", "key " + "sk-" + tail + " here", "key [redacted] here"},
+		{"a project key", "sk-" + "proj-" + tail, "[redacted]"},
+		{"a service account key", "sk-" + "svcacct-" + tail, "[redacted]"},
+		{"an anthropic key", "sk-" + "ant-" + tail, "[redacted]"},
+		{"a google key", "AI" + "za" + tail, "[redacted]"},
+		{"an aws access key", "AK" + "IA" + "ABCDEFGHIJKLMNOP", "[redacted]"},
+		{"an aws temporary key", "AS" + "IA" + "ABCDEFGHIJKLMNOP", "[redacted]"},
+		{"a github token", "gh" + "p_" + tail, "[redacted]"},
+		{"a slack token", "xo" + "xb-1234567890-abcdef", "[redacted]"},
+		{"a private key header", "-----BEGIN " + "RSA PRIVATE KEY-----", "[redacted]"},
+		{"a bearer header", "Authorization: " + "Bearer abc.def.ghi", "[redacted]"},
+		{"two keys in one text", "a " + "sk-" + tail + " b " + "AK" + "IA" + "ABCDEFGHIJKLMNOP" + " c", "a [redacted] b [redacted] c"},
+		{"text with no credential", "an invoice for 42 dollars", "an invoice for 42 dollars"},
+		{"a key that is too short", "sk-short", "sk-short"},
+		{"an email is not a credential", "mail me at a@b.example", "mail me at a@b.example"},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactCredentials(tc.in); got != tc.want {
+				t.Errorf("RedactCredentials(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// A captured body is cut at the limit on a character boundary, so it never ends
+// in half of one.
+func TestCaptureDiagnosticCutsOnACharacterBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		body  string
+		limit int
+	}{
+		{"two-byte characters, limit in the middle of one", strings.Repeat("é", 50), 7},
+		{"two-byte characters, limit on a boundary", strings.Repeat("é", 50), 8},
+		{"three-byte characters", strings.Repeat("€", 40), 10},
+		{"four-byte characters", strings.Repeat("\U0001F600", 30), 9},
+		{"ascii", strings.Repeat("a", 100), 10},
+		{"mixed", "abécd€ef\U0001F600gh", 5},
+		{"a limit of one inside a multibyte character", "éé", 1},
+		{"a limit past the end", "short", 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &captureSink{}
+			CaptureDiagnostic(sink, DiagnosticPolicy{MaxBodyBytes: tc.limit}, "op", KindMalformedOutput, tc.body)
+			if len(sink.records) != 1 {
+				t.Fatalf("%d records", len(sink.records))
+			}
+			body := sink.records[0].Body
+			if !utf8.ValidString(body) {
+				t.Errorf("the captured body is not valid UTF-8: %q", body)
+			}
+			if len(body) > tc.limit {
+				t.Errorf("the body is %d bytes, over the limit of %d", len(body), tc.limit)
+			}
+			if !strings.HasPrefix(tc.body, body) {
+				t.Errorf("the body is not a prefix of the input: %q", body)
+			}
+			if truncated := len(tc.body) > tc.limit; sink.records[0].Truncated != truncated {
+				t.Errorf("Truncated = %v, want %v", sink.records[0].Truncated, truncated)
+			}
+		})
 	}
 }

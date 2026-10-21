@@ -126,11 +126,38 @@ type Meta struct {
 	Attempts int
 	Repairs  int
 
+	// Retries is how many times a request was sent again after one that
+	// failed in transit, summed over the call's requests. It is not Attempts
+	// less one: Attempts counts repairs, which are not transport retries.
+	Retries int
+
+	// CacheHits is how many of the call's requests were answered from a cache
+	// and not by the provider.
+	CacheHits int
+
+	// Hedged reports that a second copy of a request was sent while the first
+	// was still outstanding, whichever copy answered.
+	Hedged bool
+
+	// ServiceTier is the last service tier a provider reported for the call.
+	// Empty when none reported one.
+	ServiceTier string
+
 	// Strategy names the path taken when an operation has more than one, such
 	// as a Sort that fell back to per-item scoring.
 	Strategy string
 
 	Elapsed time.Duration
+
+	// Timing is where that time went (LAT-001): the wait for a slot in the
+	// client's scheduler, the connection, the wait for the provider, and the
+	// reading of the answer, summed over every call this answer took
+	// (Timing.Calls says how many). The sum is not set against Elapsed, which
+	// is one call's for most operations: for an answer of one call what is left
+	// of Elapsed is this library's own (Timing.Outside), and for more than one
+	// Outside is zero. It is zero when nothing was timed, which
+	// Timing.Measured tells from a call that took no time.
+	Timing Timing
 
 	// --- Contract.
 

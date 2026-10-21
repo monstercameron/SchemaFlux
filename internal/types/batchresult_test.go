@@ -287,3 +287,98 @@ func TestBatchMetricsFreeModelIsPricedAndKnownNotUnpriced(t *testing.T) {
 		t.Fatalf("CostPerAcceptedItem = %v, want 0 -- a real, known zero this time, not an unset one", m.CostPerAcceptedItem)
 	}
 }
+
+// Metrics counts the items. A summary is a second record of the same facts and a
+// result can be assembled with one that disagrees with them, so a measurement
+// taken from it would be wrong in the way a caller least expects: the ratio of
+// valid items would say a run worked while the items beside it say it did not.
+func TestBatchMetricsCountTheItemsAndNotTheSummary(t *testing.T) {
+	cases := []struct {
+		name                          string
+		summary                       BatchSummary
+		items                         []ItemResult[string]
+		total, succeeded, failed, cxl int
+		ratio                         float64
+	}{
+		{"a summary that claims every item succeeded", BatchSummary{Total: 4, Succeeded: 4},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), failed(1, "atomic", 1, CostInfo{}), failed(2, "atomic", 1, CostInfo{}), failed(3, "atomic", 1, CostInfo{})},
+			4, 1, 3, 0, 0.25},
+		{"a summary that claims every item failed", BatchSummary{Total: 2, Failed: 2},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), succeeded(1, "atomic", 1, 0, CostInfo{})},
+			2, 2, 0, 0, 1},
+		{"a summary with a total larger than the items", BatchSummary{Total: 100, Succeeded: 100},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), succeeded(1, "atomic", 1, 0, CostInfo{})},
+			2, 2, 0, 0, 1},
+		{"a summary with a total smaller than the items", BatchSummary{Total: 1, Succeeded: 1},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), failed(1, "atomic", 1, CostInfo{}), failed(2, "atomic", 1, CostInfo{}), failed(3, "atomic", 1, CostInfo{})},
+			4, 1, 3, 0, 0.25},
+		{"a summary of nothing beside items that failed", BatchSummary{},
+			[]ItemResult[string]{failed(0, "atomic", 1, CostInfo{}), failed(1, "atomic", 1, CostInfo{})},
+			2, 0, 2, 0, 0},
+		{"a summary with negative counts", BatchSummary{Total: -3, Succeeded: -3, Failed: -1, Cancelled: -9},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), {Index: 1, Status: ItemCancelled}},
+			2, 1, 0, 1, 0.5},
+		{"a summary that counts cancellations as failures", BatchSummary{Total: 3, Succeeded: 1, Failed: 2},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), {Index: 1, Status: ItemCancelled}, {Index: 2, Status: ItemCancelled}},
+			3, 1, 0, 2, 1.0 / 3.0},
+		{"items with no status are counted in the total and in no outcome", BatchSummary{Total: 2, Succeeded: 2},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), {Index: 1}},
+			2, 1, 0, 0, 0.5},
+		{"no items beside a summary that has counts", BatchSummary{Total: 5, Succeeded: 5}, nil,
+			0, 0, 0, 0, 0},
+		{"a summary that agrees", BatchSummary{Total: 3, Succeeded: 2, Failed: 1},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{}), succeeded(1, "atomic", 1, 0, CostInfo{}), failed(2, "atomic", 1, CostInfo{})},
+			3, 2, 1, 0, 2.0 / 3.0},
+		{"a result with one item", BatchSummary{Total: 1, Failed: 1},
+			[]ItemResult[string]{succeeded(0, "atomic", 1, 0, CostInfo{})},
+			1, 1, 0, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := BatchResult[string]{Summary: tc.summary, Items: tc.items}.Metrics()
+			if m.Total != tc.total || m.Succeeded != tc.succeeded || m.Failed != tc.failed || m.Cancelled != tc.cxl {
+				t.Errorf("counts = %d total, %d succeeded, %d failed, %d cancelled; want %d, %d, %d, %d",
+					m.Total, m.Succeeded, m.Failed, m.Cancelled, tc.total, tc.succeeded, tc.failed, tc.cxl)
+			}
+			if m.ValidItemRatio < tc.ratio-1e-9 || m.ValidItemRatio > tc.ratio+1e-9 {
+				t.Errorf("ValidItemRatio = %v, want %v", m.ValidItemRatio, tc.ratio)
+			}
+		})
+	}
+}
+
+// BatchMetrics.Requests is what the run made, from the measured total, where
+// TotalAttempts is a sum over the items that counts a batched request once for each
+// item it carried.
+func TestBatchMetricsReportsTheRequestsTheRunMadeNotTheSumOfItsItemsAttempts(t *testing.T) {
+	cases := []struct {
+		name         string
+		itemAttempts []int
+		total        int
+	}{
+		{"one batched request for three items", []int{1, 1, 1}, 1},
+		{"a batched request and one more for two of them", []int{2, 2, 1}, 3},
+		{"every item asked alone", []int{1, 1, 1}, 3},
+		{"a run that sent nothing", []int{0, 0}, 0},
+		{"no items", nil, 0},
+		{"an item that went through three rungs", []int{3}, 3},
+		{"a total larger than the items' sum", []int{1}, 4},
+		{"a total smaller than the items' sum", []int{5, 5}, 5},
+		{"a single item", []int{1}, 1},
+		{"ten items, two requests", []int{2, 2, 2, 2, 2, 2, 2, 2, 2, 2}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := BatchResult[int]{Total: Meta{Attempts: tc.total}}
+			sum := 0
+			for i, attempts := range tc.itemAttempts {
+				result.Items = append(result.Items, ItemResult[int]{Index: i, Status: ItemSucceeded, Attempts: attempts})
+				sum += attempts
+			}
+			metrics := result.Metrics()
+			if metrics.Requests != tc.total || metrics.TotalAttempts != sum {
+				t.Errorf("Requests = %d (want %d), TotalAttempts = %d (want %d)", metrics.Requests, tc.total, metrics.TotalAttempts, sum)
+			}
+		})
+	}
+}

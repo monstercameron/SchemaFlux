@@ -13,10 +13,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/processor"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/pkg/notifier"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/processor"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/pkg/notifier"
 )
 
 // View modes
@@ -373,11 +373,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusType = "success"
 		m.addLog(fmt.Sprintf("✅ Added: %s", msg.Todo.Title))
 
-		// Log cost if tracked
-		if m.processor != nil && m.processor.LastCost > 0 {
-			m.addLog(fmt.Sprintf("💰 Cost: $%.4f (Total: $%.4f)", m.processor.LastCost, m.processor.TotalCost))
-		}
-
 		// Process next in queue if any
 		var nextCmd tea.Cmd
 		if len(m.pendingTodos) > 0 {
@@ -490,11 +485,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusType = "success"
 			m.addLog(fmt.Sprintf("✨ Reordered %d tasks with AI", len(msg.Todos)))
 
-			// Log cost for smart prioritization
-			if m.processor != nil && m.processor.LastCost > 0 {
-				m.addLog(fmt.Sprintf("💰 Cost: $%.4f (Total: $%.4f)", m.processor.LastCost, m.processor.TotalCost))
-			}
-
 			// Update list items with new order
 			items := make([]list.Item, len(msg.Todos))
 			for i, todo := range msg.Todos {
@@ -516,10 +506,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusType = "success"
 			m.addLog(fmt.Sprintf("✅ Updated todo with AI: %s", msg.Todo.Title))
 
-			// Log cost for edit processing
-			if m.processor != nil && m.processor.LastCost > 0 {
-				m.addLog(fmt.Sprintf("💰 Cost: $%.4f (Total: $%.4f)", m.processor.LastCost, m.processor.TotalCost))
-			}
 			m.selectedTodo = nil
 			m.mode = listView
 			m.editInput.SetValue("")
@@ -592,10 +578,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.addLog(fmt.Sprintf("💡 AI suggests: %s", msg.Todo.Title))
 
-		// Log cost for suggestion
-		if m.processor != nil && m.processor.LastCost > 0 {
-			m.addLog(fmt.Sprintf("💰 Cost: $%.4f (Total: $%.4f)", m.processor.LastCost, m.processor.TotalCost))
-		}
 		return m, tea.ClearScreen
 
 	case models.TaskProcessedMsg:

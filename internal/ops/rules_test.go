@@ -2,10 +2,11 @@ package ops
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type applicant struct {
@@ -162,7 +163,7 @@ func TestDeterministicFindingsSurviveTheModelCall(t *testing.T) {
 	setLLMCaller(func(_ context.Context, _, userPrompt string, _ types.OpOptions) (string, error) {
 		sawPrompt = userPrompt
 		// The model says everything is fine, and is wrong about the email.
-		return `{"valid":true,"errors":[]}`, nil
+		return `{"valid":true,"errors":[],"warnings":[],"info":[],"confidence":0.9,"summary":"s"}`, nil
 	})
 	t.Cleanup(func() {
 		setLLMCaller(previousCaller)
@@ -190,7 +191,7 @@ func TestDeterministicFindingsSurviveTheModelCall(t *testing.T) {
 	if !strings.Contains(sawPrompt, "must sound premium") {
 		t.Error("the prompt does not carry the rule the model was needed for")
 	}
-	if strings.Contains(sawPrompt, "- email:") {
+	if strings.Contains(sawPrompt, `"email":"email"`) {
 		t.Error("the prompt still asks the model about a rule already decided exactly")
 	}
 }
@@ -222,5 +223,80 @@ func TestARuleForAMissingFieldFails(t *testing.T) {
 	}
 	if !strings.Contains(issues[0].Message, "not present") {
 		t.Errorf("the issue does not say the field is missing: %s", issues[0].Message)
+	}
+}
+
+// A rule name followed by more text is a condition this layer does not check.
+// It was reduced to the plain rule, and when every rule resolved there was no
+// model call, so the condition passed unchecked.
+func TestARuleNameFollowedByMoreTextGoesToTheModel(t *testing.T) {
+	for _, expression := range []string{
+		"email: must be a company address",
+		"required: when status is active",
+		"url: https only",
+		"uuid: version 4",
+		"country: EU members only",
+		"iso3166-alpha2: no sanctioned countries",
+		"nonempty: unless the record is archived",
+		"Email: Must Be A Company Address",
+	} {
+		if _, ok := resolveDeterministicRule(expression); ok {
+			t.Errorf("resolveDeterministicRule(%q) reduced it to the plain rule", expression)
+		}
+	}
+	for _, expression := range []string{"email", "url", "uuid", "country", "required", "nonempty", "iso3166", "Email:", " email "} {
+		if _, ok := resolveDeterministicRule(expression); !ok {
+			t.Errorf("resolveDeterministicRule(%q) no longer handles the plain rule", expression)
+		}
+	}
+
+	issues, unhandled := applyDeterministicRules(applicant{Email: "ada@example.com"},
+		map[string]string{"email": "email: must be a company address"})
+	if len(issues) != 0 || unhandled["email"] == "" {
+		t.Errorf("issues = %+v, unhandled = %v: the stricter rule must reach the model", issues, unhandled)
+	}
+}
+
+func TestBuiltInRulesAcceptNoMoreThanTheirNamesSay(t *testing.T) {
+	cases := []struct {
+		name    string
+		rule    string
+		value   any
+		wantBad bool
+	}{
+		{"min with Infinity", "min:18", "Infinity", true},
+		{"min with inf", "min:18", "inf", true},
+		{"min with +Inf", "min:18", "+Inf", true},
+		{"max with -inf", "max:100", "-inf", true},
+		{"max with NaN", "max:100", "NaN", true},
+		{"min with a float infinity", "min:18", math.Inf(1), true},
+		{"max with a float NaN", "max:100", math.NaN(), true},
+		{"min with a real number string", "min:18", "21.5", false},
+		{"email with a display name", "email", "Ada <ada@example.com>", true},
+		{"email with no dot in the host", "email", "ada@localhost", true},
+		{"email with a comment", "email", "ada@example.com (Ada)", true},
+		{"a plain email", "email", "ada@example.com", false},
+		{"unassigned country ZZ", "country", "ZZ", true},
+		{"unassigned country XX", "country", "XX", true},
+		{"assigned country FR", "country", "FR", false},
+		{"assigned country GB", "iso3166", "GB", false},
+		{"lowercase country", "country", "fr", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule, ok := resolveDeterministicRule(tc.rule)
+			if !ok {
+				t.Fatalf("rule %q not recognised", tc.rule)
+			}
+			if bad := rule.Check(tc.value) != ""; bad != tc.wantBad {
+				t.Errorf("%v against %q: bad = %v, want %v", tc.value, tc.rule, bad, tc.wantBad)
+			}
+		})
+	}
+	if _, ok := resolveDeterministicRule("min:Infinity"); ok {
+		t.Error("a bound that is not finite was accepted")
+	}
+	if got := len(isoAlpha2Codes); got != 249 {
+		t.Errorf("%d assigned codes, want the 249 of ISO 3166-1", got)
 	}
 }

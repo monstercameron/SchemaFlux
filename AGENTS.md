@@ -160,17 +160,19 @@ It clears `SCHEMAFLUX_LIVE_TESTS` before anything executes, so no check can
 become a billed provider call; reports a missing tool as SKIPPED rather than
 passed; and states the `-race` skip on windows/arm64 instead of hiding it.
 
-The individual steps, for reference — this list, CONTRIBUTING.md's, and the CI
-workflow are meant to stay identical, and drifted apart once already:
+The individual steps, for reference — the local script runs three shuffled
+passes and CI runs ten. Both exclude process-wide allocation measurements from
+race and shuffled passes; the normal suite checks them:
 
 ```
 go build ./...
 go test ./...
-go test -race ./...            # not on windows/arm64; CI covers it
-go test -shuffle=on -count=10 ./...
+allocation_skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
+go test -race -skip="$allocation_skip" ./... # not on windows/arm64; see scripts/check.sh for the exclusion pattern
+go test -shuffle=on -count=3 -skip="$allocation_skip" ./... # CI runs ten shuffled passes
 go vet ./...
 gofmt -l .                     # must be empty
-staticcheck ./...              # must be clean
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tests=false -checks=inherit,-U1000 ./... # shipped packages; invalid-input fixtures and their helpers are checked by go vet/tests
 python scripts/secret_scan.py
 python scripts/coverage_floor.py
 python scripts/examples_gate.py

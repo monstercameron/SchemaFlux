@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // sampleStep returns a Step[int] that returns the next value from values on
@@ -181,10 +182,12 @@ func TestVoteReconcilerErrorIsNotTreatedAsAbstention(t *testing.T) {
 }
 
 func TestVotePartialFailuresStillReconcileTheSuccesses(t *testing.T) {
-	calls := 0
+	// The samples run at once, so the count is atomic. It was a plain int:
+	// two samples could both read 2, and the test then saw two failures where
+	// it had arranged one. It failed once in a full run of the package.
+	var calls atomic.Int32
 	step := func(context.Context) (int, error) {
-		calls++
-		if calls == 2 {
+		if calls.Add(1) == 2 {
 			return 0, &types.OperationError{Kind: types.KindProviderUnavailable, Message: "down"}
 		}
 		return 5, nil
@@ -325,5 +328,78 @@ func TestExactAgreementAbstainsBelowMinimum(t *testing.T) {
 	}
 	if len(outcome.FailedChecks) == 0 {
 		t.Error("an abstention carries no reason")
+	}
+}
+
+// A reconciler's Agree is a count over the samples it was given. One outside
+// 0..Succeeded is not, and used to be reported as an agreement rate of 1.67 or
+// of -0.33 beside an answer that was not abstained from.
+func TestVoteRefusesAnAgreeCountThatIsNotACountOfTheSamples(t *testing.T) {
+	cases := []struct {
+		name    string
+		agree   int
+		wantErr bool
+	}{
+		{"none agree", 0, false},
+		{"one agrees", 1, false},
+		{"all three agree", 3, false},
+		{"more than the samples", 4, true},
+		{"far more than the samples", 500, true},
+		{"negative", -1, true},
+		{"very negative", -1000, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			step, _ := sampleStep(1, 1, 1)
+			reconcile := func(_ context.Context, samples []int) (ReconcileOutcome[int], error) {
+				return ReconcileOutcome[int]{Winner: samples[0], Agree: tc.agree}, nil
+			}
+			value, record, err := Vote(context.Background(), 3, step, reconcile, VoteOptions{})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("an Agree of %d over 3 samples was accepted: rate %v", tc.agree, record.AgreementRate)
+				}
+				if value != 0 {
+					t.Errorf("a value %d came back beside the error", value)
+				}
+				if record.AgreementRate != 0 || record.Agree != 0 {
+					t.Errorf("an agreement of %d / %v was recorded for a count that was refused", record.Agree, record.AgreementRate)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Vote: %v", err)
+			}
+			if record.AgreementRate < 0 || record.AgreementRate > 1 {
+				t.Errorf("AgreementRate = %v is outside 0 to 1", record.AgreementRate)
+			}
+		})
+	}
+}
+
+// A minimum below one can never abstain, so the vote would certify any winner,
+// including the zero value that NaN samples leave behind.
+func TestExactAgreementRefusesAMinimumThatCannotAbstain(t *testing.T) {
+	for _, minimum := range []int{0, -1, -100} {
+		outcome, err := ExactAgreement[int](minimum)(context.Background(), []int{1, 2, 3})
+		if err == nil {
+			t.Errorf("a minimum of %d was accepted: %+v", minimum, outcome)
+		}
+		if outcome.Abstain || outcome.Agree != 0 || outcome.Winner != 0 {
+			t.Errorf("an outcome %+v came back beside the error", outcome)
+		}
+	}
+
+	step := func(context.Context) (float64, error) { return math.NaN(), nil }
+	value, _, err := Vote(context.Background(), 3, step, ExactAgreement[float64](1), VoteOptions{})
+	if err == nil {
+		t.Errorf("three NaN samples were certified as %v", value)
+	} else if !errors.Is(err, types.ErrReviewRequired) {
+		t.Errorf("err = %v, want an abstention", err)
+	}
+
+	intStep, _ := sampleStep(5, 5, 5)
+	if _, _, err := Vote(context.Background(), 3, intStep, ExactAgreement[int](0), VoteOptions{}); err == nil {
+		t.Error("Vote accepted a reconciler built with a minimum of 0")
 	}
 }

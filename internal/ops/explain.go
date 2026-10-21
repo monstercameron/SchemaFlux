@@ -1,4 +1,3 @@
-// package ops - Explain operation for generating human explanations
 package ops
 
 import (
@@ -7,9 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ExplainResult contains the explanation results
@@ -28,7 +26,7 @@ type ExplainOptions struct {
 	Audience string // Target audience: "technical", "non-technical", "children", "executive", etc.
 	Depth    int    // Explanation depth: 1=high-level, 2=moderate, 3=detailed, 4=comprehensive
 	Format   string // Output format: "paragraph", "bullet-points", "step-by-step", "qa"
-	// Background is prose for the model, not a context.Context. X-06.
+	// Background is prose for the model, not a context.Context.
 	Background string
 	Focus      string // Specific aspect to focus on: "overview", "usage", "implementation", etc.
 }
@@ -65,7 +63,7 @@ func (opts ExplainOptions) WithFormat(format string) ExplainOptions {
 	return opts
 }
 
-// WithBackground sets prose for the explanation. Not a context.Context. X-06.
+// WithBackground sets prose for the explanation. Not a context.Context.
 func (opts ExplainOptions) WithBackground(background string) ExplainOptions {
 	opts.Background = background
 	return opts
@@ -87,7 +85,7 @@ func (opts ExplainOptions) WithIntelligence(intelligence types.Speed) ExplainOpt
 func (opts ExplainOptions) Validate() error {
 	validAudiences := []string{"technical", "non-technical", "children", "executive", "beginner", "expert"}
 	if !contains(validAudiences, opts.Audience) {
-		return fmt.Errorf("invalid audience: %s", opts.Audience)
+		return fmt.Errorf("audience must be technical, non-technical, children, executive, beginner, or expert")
 	}
 
 	if opts.Depth < 1 || opts.Depth > 4 {
@@ -96,12 +94,12 @@ func (opts ExplainOptions) Validate() error {
 
 	validFormats := []string{"paragraph", "bullet-points", "step-by-step", "qa", "structured"}
 	if !contains(validFormats, opts.Format) {
-		return fmt.Errorf("invalid format: %s", opts.Format)
+		return fmt.Errorf("explanation format must be paragraph, bullet-points, step-by-step, qa, or structured")
 	}
 
 	validFocus := []string{"overview", "usage", "implementation", "benefits", "limitations", "examples"}
 	if !contains(validFocus, opts.Focus) {
-		return fmt.Errorf("invalid focus: %s", opts.Focus)
+		return fmt.Errorf("explanation focus must be overview, usage, implementation, benefits, limitations, or examples")
 	}
 
 	return nil
@@ -132,35 +130,36 @@ func Explain(data any, opts ExplainOptions) (ExplainResult, error) {
 }
 
 func explainImpl(data any, opts ExplainOptions) (ExplainResult, error) {
-	log := logger.GetLogger()
+	log := loggerFor(opts.OpOptions.Context)
 	log.Debug("Starting explain operation", "requestID", opts.RequestID, "dataType", fmt.Sprintf("%T", data))
+
+	// Every return that carries an error carries the zero result with it.
+
+	// Validate options
+	if err := opts.Validate(); err != nil {
+		log.Error("Explain operation validation failed", "requestID", opts.RequestID, "error", loggedError(err))
+		return ExplainResult{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
+	}
+
+	// Analyze the data structure
+	dataAnalysis, err := analyzeDataForExplanation(data)
+	if err != nil {
+		log.Error("Explain operation data analysis failed", "requestID", opts.RequestID, "error", loggedError(err))
+		return ExplainResult{}, fmt.Errorf("data analysis failed: %w", err)
+	}
+
+	// Generate explanation using LLM
+	explanation, err := generateExplanation(data, dataAnalysis, opts)
+	if err != nil {
+		log.Error("Explain operation explanation generation failed", "requestID", opts.RequestID, "error", loggedError(err))
+		return ExplainResult{}, fmt.Errorf("explanation generation failed: %w", err)
+	}
 
 	result := ExplainResult{
 		Audience:   opts.Audience,
 		Complexity: getComplexityLevel(opts.Depth),
 		Metadata:   make(map[string]any),
 	}
-
-	// Validate options
-	if err := opts.Validate(); err != nil {
-		log.Error("Explain operation validation failed", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("invalid options: %w", err)
-	}
-
-	// Analyze the data structure
-	dataAnalysis, err := analyzeDataForExplanation(data)
-	if err != nil {
-		log.Error("Explain operation data analysis failed", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("data analysis failed: %w", err)
-	}
-
-	// Generate explanation using LLM
-	explanation, err := generateExplanation(data, dataAnalysis, opts)
-	if err != nil {
-		log.Error("Explain operation explanation generation failed", "requestID", opts.RequestID, "error", err)
-		return result, fmt.Errorf("explanation generation failed: %w", err)
-	}
-
 	result.Explanation = explanation.Explanation
 	result.Summary = explanation.Summary
 	result.KeyPoints = explanation.KeyPoints
@@ -182,7 +181,6 @@ type dataAnalysis struct {
 	DataType   string
 	FieldCount int
 	Complexity string
-	SampleData string
 	Structure  string
 }
 
@@ -192,7 +190,7 @@ func analyzeDataForExplanation(data any) (dataAnalysis, error) {
 
 	// Handle nil data
 	if data == nil {
-		return analysis, fmt.Errorf("cannot explain nil data")
+		return analysis, types.Classified(types.KindConfiguration, fmt.Errorf("cannot explain nil data"))
 	}
 
 	v := reflect.ValueOf(data)
@@ -201,7 +199,7 @@ func analyzeDataForExplanation(data any) (dataAnalysis, error) {
 	// Handle pointers
 	if t.Kind() == reflect.Ptr {
 		if v.IsNil() {
-			return analysis, fmt.Errorf("cannot explain nil pointer")
+			return analysis, types.Classified(types.KindConfiguration, fmt.Errorf("cannot explain nil pointer"))
 		}
 		v = v.Elem()
 		t = t.Elem()
@@ -234,11 +232,6 @@ func analyzeDataForExplanation(data any) (dataAnalysis, error) {
 		analysis.Complexity = "low"
 	}
 
-	// Generate sample data representation
-	if jsonData, err := json.MarshalIndent(data, "", "  "); err == nil {
-		analysis.SampleData = string(jsonData)
-	}
-
 	return analysis, nil
 }
 
@@ -257,7 +250,7 @@ func generateExplanation(data any, analysis dataAnalysis, opts ExplainOptions) (
 	// Marshal data for prompt
 	dataJSON, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return explanationResponse{}, fmt.Errorf("failed to marshal data: %w", err)
+		return explanationResponse{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal data: %w", err))
 	}
 
 	// Build system prompt based on audience and format
@@ -274,13 +267,20 @@ func generateExplanation(data any, analysis dataAnalysis, opts ExplainOptions) (
 		return explanationResponse{}, fmt.Errorf("explanation generation failed: %w", err)
 	}
 
-	// Parse the response
+	// Parse the response. The prompt asks for all three members, so an answer
+	// that leaves one out is refused by name.
 	var result explanationResponse
-	if err := ParseJSONStrict(response, &result); err != nil {
+	if err := decodeAnswer("explain", response, &result); err != nil {
 		// Treating an unparseable body as the explanation manufactured a
 		// result out of a refusal or an error page, complete with a key point
 		// reading "Explanation generated".
 		return explanationResponse{}, fmt.Errorf("the explanation could not be parsed: %w", err)
+	}
+
+	// The explanation is the answer, and a blank one is not an explanation.
+	if strings.TrimSpace(result.Explanation) == "" {
+		return explanationResponse{}, types.Newf(types.KindSchemaViolation, "explain",
+			"explanation is blank, so there is nothing to return")
 	}
 
 	return result, nil
@@ -352,7 +352,9 @@ func buildUserPrompt(dataJSON []byte, analysis dataAnalysis, opts ExplainOptions
 		analysis.DataType, analysis.Structure, analysis.FieldCount, analysis.Complexity))
 
 	if opts.Background != "" {
-		prompt.WriteString(fmt.Sprintf("ADDITIONAL CONTEXT: %s\n\n", opts.Background))
+		// The caller's text, quoted so that it cannot read as an instruction.
+		quoted, _ := promptJSON(opts.Background)
+		prompt.WriteString(fmt.Sprintf("ADDITIONAL CONTEXT: %s\n\n", quoted))
 	}
 
 	prompt.WriteString(fmt.Sprintf("FOCUS AREA: %s\n", opts.Focus))

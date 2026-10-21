@@ -1,219 +1,170 @@
 package mw
 
 import (
-	"context"
-	"fmt"
 	"regexp"
-	"time"
+	"slices"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+
+	impl "github.com/monstercameron/schemaflux/v2/internal/runtime/mw"
 )
 
-// RedactEgress scrubs a request's prompt text before it is handed to the
-// wrapped provider -- the last point in the process before the bytes go over
-// the network to a third party. It redacts CompletionRequest.SystemPrompt
-// and CompletionRequest.UserPrompt only: those are what leaves the process
-// here. A response coming back has already left the provider on its side of
-// the call, so redacting it after the fact would not change what the
-// provider received, and this middleware is not the place that decides what
-// a caller of the library gets to see (that is internal/ops's Redact
-// operation, marked not-production-ready by F-021 pending its own fix).
+// RedactOptions are the settings of Redact. The zero value is the default: the
+// built-in rules, the marker "[redacted:NAME]", and no function of the caller's.
+type RedactOptions struct {
+	// NoBuiltins turns the built-in rules off, for a program that already
+	// redacts secrets at a proxy and would rather this middleware did not do it
+	// twice, or that wants only its own rules. The built-ins are the shapes of
+	// the credentials of Anthropic, OpenAI, Google, AWS (an access key id),
+	// GitHub (a token, and a fine-grained one), Slack and Stripe, a JWT, the token
+	// of an authorization header or of a "Bearer" that stands alone, a private key
+	// block (to the END line, or to the end of the text when it has none), and an
+	// email address, whatever script it is written in. It turns protection off, so
+	// it can be set in the first options value only: a later one is a
+	// configuration error that says so. They do not include
+	// anything shaped like an ordinary number: a rule for card numbers or phone
+	// numbers fires on invoice totals and order numbers, so a program that needs
+	// one adds it in Patterns, for its own domain.
+	NoBuiltins bool
+
+	// Patterns are rules of the caller's: a name, which appears in the marker
+	// that replaces a match, and the expression. They are looked for beside the
+	// built-ins, in every text that is sent, as the text came and not as an earlier
+	// rule left it. Where two matches overlap the one that starts first wins, the
+	// longer of two that start together, and the earlier rule of two of one length
+	// (the built-ins, then the caller's by name), so a rule is never cut by the
+	// marker of another and a short rule does not leave the tail of a longer
+	// secret. A nil expression is a mistake in the set-up, and every request fails
+	// with an error of kind schemaflux.ErrConfiguration before anything is sent: a
+	// redactor that silently does less than it was told is worse than none. The
+	// maps of every options value are joined, a later rule winning for a name both
+	// have; a later value never drops a rule an earlier one asked for.
+	Patterns map[string]*regexp.Regexp
+
+	// Marker is the text that replaces a match. Every "%s" in it is the name of
+	// the rule that matched, as plain text substitution and nothing else:
+	// a "%" or a "$" is written as it is. A marker with no "%s" is used as it is
+	// for every match. Empty is "[redacted:%s]".
+	Marker string
+
+	// Func is an extra pass for what an expression cannot express: a detector
+	// of the caller's own, a lookup in a list of known account numbers. It runs
+	// after every pattern, on the text they left, and may keep state. It is called
+	// from many goroutines at once, once for each text of each request, and has to
+	// be safe for that. Its result is sent as it is: the middleware does not bound
+	// its size. It is the caller's code, and a panic in it fails the request with
+	// an error of kind schemaflux.ErrInternal and sends nothing, since text it was
+	// meant to scrub is not known to be scrubbed. Nil is none. The functions of
+	// every options value are all run, in order.
+	Func func(string) string
+}
+
+// Redact removes what must not leave the process from a request before it is
+// handed to the wrapped provider, the last point at which that can be done. It
+// redacts the system prompt and the user message, and every text of a typed
+// Decision: its state and guidance, each question, each choice's options and
+// their criteria. A decision provider reads the Decision and never the prompts,
+// and a rule that covered the prompts alone would leave all of what it is sent in
+// the clear. A schema, a schema's name and a model are identifiers the caller
+// chose and are sent as they are: the enumerations and descriptions of a schema
+// are not redacted, so a program that puts text of its customers there redacts it
+// before it builds the schema.
 //
-// # Why this is not schemafluxtest's credentialPatterns reused
+// A choice is answered with one of its options, and the answer comes back
+// carrying the option as the caller wrote it: where a rule rewrote an option, the
+// label of the answer is given back as the caller's own, because the operation
+// accepts only a label it offered. Two options that a rule rewrote into one text
+// are sent apart by adding their positions to them, so that the answer can say
+// which was chosen. Nothing else in an answer is touched: what comes back has
+// already left the provider, and redacting it would not change what the provider
+// received.
 //
-// schemafluxtest/cassette.go already has a list of credential-shaped regexes,
-// and scripts/secret_scan.py has a third copy in Python. All three exist for
-// the same underlying worry -- a secret reaching somewhere it should not --
-// but they guard three different moments and cannot share one definition:
+// The request the caller made is not modified: a redacted copy of what changed
+// is sent.
 //
-//   - secret_scan.py runs at commit/CI time over every tracked file. It is
-//     Python; nothing here can import it, and it is not scoped to a request.
-//   - cassette.go's list runs at cassette-*write* time, guarding a file this
-//     repository is about to commit. Its whole job is catching literal
-//     vendor credential shapes before they touch disk, and it is right to be
-//     narrow: a cassette fixture is code, and false positives there block a
-//     commit.
-//   - This list runs at *every egress call*, guarding a live network request
-//     that carries a caller's arbitrary application data -- invoices,
-//     tickets, notes -- not source code. Over-redacting here does not block
-//     a commit, it silently corrupts a request in production, which is a
-//     worse failure mode than a missed secret and the reason the built-ins
-//     below stay deliberately narrow and are opt-out via WithoutBuiltins.
+// The built-in rules are deliberately narrow, because over-redacting does not
+// fail a build, it silently corrupts a request in production. What a program
+// cannot do without, such as account numbers, phone numbers and names, it adds in
+// Patterns and Func.
 //
-// Importing schemafluxtest from mw would also invert the dependency this
-// package is supposed to have: schemafluxtest is test-support machinery that
-// depends on the library, and a production middleware depending back on a
-// test-support package for its redaction rules would make "go test" behavior
-// silently load-bearing for production egress. Keeping the list local and
-// small, with this comment as the record of why it is not shared, is the
-// deliberate choice; a fourth copy of the same handful of regexes is a
-// smaller cost than either of those.
-//
-// The caller supplies whatever else needs scrubbing for their domain --
-// WithPattern for a labelled regex, WithFunc for anything a regex cannot
-// express -- because this package cannot know what a caller's business data
-// looks like, only what a leaked API credential looks like.
-func RedactEgress(opts ...RedactOption) Middleware {
-	cfg := redactConfig{builtins: true, marker: defaultRedactMarker}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
+// Where Redact goes decides what is sent unredacted to what: it goes outermost,
+// so that nothing the chain does, a cache, a retry, a second route, sees the
+// text before it is scrubbed. The package comment gives the order and why.
+// Redact does not forward streaming: a wrapped provider cannot stream.
+func Redact(opts ...RedactOptions) Middleware {
+	o, problem := mergeRedactOptions(opts)
+
+	var settings []impl.RedactOption
+	if o.NoBuiltins {
+		settings = append(settings, impl.WithoutBuiltins())
 	}
-
-	patterns := make([]redactPattern, 0, len(builtinRedactPatterns)+len(cfg.patterns))
-	if cfg.builtins {
-		patterns = append(patterns, builtinRedactPatterns...)
+	names := make([]string, 0, len(o.Patterns))
+	for name := range o.Patterns {
+		names = append(names, name)
 	}
-	patterns = append(patterns, cfg.patterns...)
-
-	return func(next Handler) Handler {
-		return &redactingProvider{
-			next:     next,
-			patterns: patterns,
-			marker:   cfg.marker,
-			extra:    cfg.fn,
-		}
-	}
-}
-
-// RedactOption configures RedactEgress beyond its always-on built-ins.
-type RedactOption func(*redactConfig)
-
-type redactConfig struct {
-	builtins bool
-	marker   string
-	patterns []redactPattern
-	fn       func(string) string
-}
-
-type redactPattern struct {
-	name    string
-	pattern *regexp.Regexp
-}
-
-// WithoutBuiltins turns off the default patterns, for a caller who wants
-// only their own rules -- e.g. a deployment that already redacts secrets at
-// a proxy layer and would rather this middleware not double up.
-func WithoutBuiltins() RedactOption {
-	return func(cfg *redactConfig) { cfg.builtins = false }
-}
-
-// WithPattern adds a caller-supplied, named regex to the redaction set. The
-// name appears in the marker that replaces a match (e.g. "[redacted:ssn]"),
-// so a caller inspecting a redacted prompt can tell which rule fired without
-// the original value ever having been logged anywhere.
-func WithPattern(name string, pattern *regexp.Regexp) RedactOption {
-	return func(cfg *redactConfig) {
+	slices.Sort(names)
+	for _, name := range names {
+		pattern := o.Patterns[name]
 		if pattern == nil {
-			return
+			problem = "Patterns holds a rule with no expression"
+			break
 		}
-		cfg.patterns = append(cfg.patterns, redactPattern{name: name, pattern: pattern})
+		settings = append(settings, impl.WithPattern(name, pattern))
+	}
+	if o.Marker != "" {
+		settings = append(settings, impl.WithMarker(o.Marker))
+	}
+	if o.Func != nil {
+		settings = append(settings, impl.WithFunc(o.Func))
+	}
+	build := impl.RedactEgress(settings...)
+
+	return func(next schemaflux.Provider) schemaflux.Provider {
+		return wrap("mw.redact", next, problem, build)
 	}
 }
 
-// WithMarker overrides the default "[redacted:NAME]" replacement text. It
-// still has NAME substituted via %s if the supplied format contains one; a
-// marker with no verb is used as a flat literal for every match, named or
-// not.
-func WithMarker(marker string) RedactOption {
-	return func(cfg *redactConfig) {
-		if marker != "" {
-			cfg.marker = marker
+// mergeRedactOptions merges option values left to right so that a later value
+// can add protection and cannot remove what an earlier one asked for. The pattern
+// maps are joined, a later rule winning for a name both have, and the functions
+// are run one after the other, the earlier first. A later Marker that is not
+// empty wins, since it changes what a match is written as and not whether it is
+// removed. NoBuiltins turns protection off, so only the first value may set it:
+// in a later one it is a problem, and the second result says so, for the caller
+// to make a configuration error of.
+func mergeRedactOptions(opts []RedactOptions) (RedactOptions, string) {
+	var merged RedactOptions
+	var problem string
+	for i, o := range opts {
+		if o.NoBuiltins {
+			if i == 0 {
+				merged.NoBuiltins = true
+			} else if problem == "" {
+				problem = "NoBuiltins is set in a later options value, which would turn off rules an earlier one asked for: set it in the first"
+			}
 		}
-	}
-}
-
-// WithFunc adds an arbitrary redaction pass run after every regex pattern,
-// for scrubbing that a regex cannot express -- a caller's own PII detector,
-// a lookup against a list of known account numbers, anything stateful. It
-// runs on the already-pattern-redacted text, so it can rely on regex-shaped
-// secrets already being gone.
-func WithFunc(fn func(string) string) RedactOption {
-	return func(cfg *redactConfig) { cfg.fn = fn }
-}
-
-const defaultRedactMarker = "[redacted:%s]"
-
-// builtinRedactPatterns are the shapes worth redacting on every request by
-// default: they are unambiguous enough that a false positive is rare, and
-// costly enough to leak that catching them by default is worth it. This is
-// deliberately smaller than schemafluxtest's credentialPatterns (see the
-// package doc comment above) and does not include anything shaped like an
-// ordinary number -- a credit-card-style regex has too high a false-positive
-// rate against invoice totals, order IDs, and phone numbers to run
-// unconditionally against arbitrary caller text; a caller who needs that
-// coverage adds it with WithPattern, deliberately, for their own domain.
-var builtinRedactPatterns = []redactPattern{
-	{"openai-key", regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}`)},
-	{"anthropic-key", regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{20,}`)},
-	{"google-api-key", regexp.MustCompile(`\bAIza[A-Za-z0-9_-]{30,}`)},
-	{"aws-access-key-id", regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)},
-	{"github-token", regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`)},
-	{"slack-token", regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`)},
-	{"private-key-block", regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----`)},
-	{"bearer-header", regexp.MustCompile(`(?i)authorization"?\s*[:=]\s*"?bearer\s+\S+`)},
-	// Email addresses are the one PII shape common enough across ordinary
-	// business text (invoices, tickets, notes) to be worth a default, and
-	// precise enough as a regex that it rarely fires on anything else.
-	{"email", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)},
-}
-
-type redactingProvider struct {
-	next     Handler
-	patterns []redactPattern
-	marker   string
-	extra    func(string) string
-}
-
-func (p *redactingProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	req.SystemPrompt = p.redact(req.SystemPrompt)
-	req.UserPrompt = p.redact(req.UserPrompt)
-	return p.next.Complete(ctx, req)
-}
-
-func (p *redactingProvider) redact(text string) string {
-	if text == "" {
-		return text
-	}
-	for _, entry := range p.patterns {
-		replacement := entry.name
-		marker := p.marker
-		if marker == "" {
-			marker = defaultRedactMarker
+		for name, pattern := range o.Patterns {
+			if merged.Patterns == nil {
+				merged.Patterns = make(map[string]*regexp.Regexp, len(o.Patterns))
+			}
+			merged.Patterns[name] = pattern
 		}
-		var out string
-		if containsVerb(marker) {
-			out = fmt.Sprintf(marker, replacement)
-		} else {
-			out = marker
+		if o.Marker != "" {
+			merged.Marker = o.Marker
 		}
-		text = entry.pattern.ReplaceAllString(text, out)
+		merged.Func = both(merged.Func, o.Func)
 	}
-	if p.extra != nil {
-		text = p.extra(text)
-	}
-	return text
+	return merged, problem
 }
 
-// containsVerb reports whether s contains a %s verb, so WithMarker can
-// accept either a template ("[gone:%s]") or a flat literal ("[gone]")
-// without a separate option for each.
-func containsVerb(s string) bool {
-	for i := 0; i < len(s)-1; i++ {
-		if s[i] == '%' && s[i+1] == 's' {
-			return true
-		}
+// both is a function that runs first and then second on what first returned, and
+// whichever of them is not nil when the other is.
+func both(first, second func(string) string) func(string) string {
+	switch {
+	case first == nil:
+		return second
+	case second == nil:
+		return first
 	}
-	return false
-}
-
-func (p *redactingProvider) Name() string { return p.next.Name() }
-
-func (p *redactingProvider) EstimateCost(req llm.CompletionRequest) float64 {
-	return p.next.EstimateCost(req)
-}
-
-func (p *redactingProvider) RetryPolicy() (int, time.Duration) {
-	return p.next.RetryPolicy()
+	return func(text string) string { return second(first(text)) }
 }

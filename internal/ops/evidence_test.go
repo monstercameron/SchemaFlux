@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-002. StrictEvidence is the enforcement half; internal/types/evidence_test.go
@@ -334,5 +334,49 @@ func TestRunOpEvidenceFailureCarriesNoPayload(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), marker) {
 		t.Fatalf("the error leaked the payload: %v", err)
+	}
+}
+
+func TestStrictEvidenceRefusesAnUnknownPolicyAndWeighsEveryClaimOfAMaterialField(t *testing.T) {
+	const doc = "The invoice total is $412.50, issued to Acme Corp."
+	sources := mustSource("doc-1", doc)
+	goodRef := validRef("doc-1", doc, "$412.50")
+	good := types.ClaimProvenance{FieldPath: "/total", Evidence: []types.EvidenceRef{goodRef}}
+	fabricated := types.ClaimProvenance{FieldPath: "/total"}
+
+	cases := []struct {
+		name     string
+		policy   types.EvidencePolicy
+		material []string
+		claims   []types.ClaimProvenance
+		wantKind types.ErrorKind
+	}{
+		{"a policy outside the four, with a good claim", types.EvidencePolicy(9), []string{"/total"}, []types.ClaimProvenance{good}, types.KindConfiguration},
+		{"a policy outside the four, with no claims", types.EvidencePolicy(4), nil, nil, types.KindConfiguration},
+		{"the largest value", types.EvidencePolicy(255), nil, []types.ClaimProvenance{fabricated}, types.KindConfiguration},
+		{"a fabricated claim followed by a good one for the same field", types.EvidenceMaterialFields, []string{"/total"}, []types.ClaimProvenance{fabricated, good}, types.KindEvidenceViolation},
+		{"a good claim followed by a fabricated one for the same field", types.EvidenceMaterialFields, []string{"/total"}, []types.ClaimProvenance{good, fabricated}, types.KindEvidenceViolation},
+		{"two good claims for the same field", types.EvidenceMaterialFields, []string{"/total"}, []types.ClaimProvenance{good, good}, types.KindUnknown},
+		{"a material field marked inferred is not exempt", types.EvidenceMaterialFields, []string{"/total"}, []types.ClaimProvenance{{FieldPath: "/total", Inferred: true}}, types.KindEvidenceViolation},
+		{"a field outside the material ones may be inferred", types.EvidenceMaterialFields, []string{"/total"}, []types.ClaimProvenance{good, {FieldPath: "/note", Inferred: true}}, types.KindUnknown},
+		{"every claim inferred under all-model-derived passes on the model's word", types.EvidenceAllModelDerived, nil, []types.ClaimProvenance{{FieldPath: "/a", Inferred: true}, {FieldPath: "/b", Inferred: true}}, types.KindUnknown},
+		{"the same claims under no-inference are refused", types.EvidenceNoInference, nil, []types.ClaimProvenance{{FieldPath: "/a", Inferred: true}, {FieldPath: "/b", Inferred: true}}, types.KindEvidenceViolation},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := StrictEvidence("test", c.policy, c.material, c.claims, sources)
+			if c.wantKind == types.KindUnknown {
+				if err != nil {
+					t.Fatalf("StrictEvidence = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("StrictEvidence accepted it")
+			}
+			if got := types.KindOf(err); got != c.wantKind {
+				t.Errorf("kind = %v, want %v (%v)", got, c.wantKind, err)
+			}
+		})
 	}
 }

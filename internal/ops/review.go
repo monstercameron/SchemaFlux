@@ -2,11 +2,10 @@ package ops
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CF-006. Approval is one use of a more general terminal outcome: automated
@@ -63,6 +62,10 @@ type ApprovalGate[T any] func(context.Context, T) (ApprovalOutcome, error)
 // exactly as it applies to an error. A caller with nothing worth naming may
 // pass nil.
 //
+// The packet's Attempts is left zero: it counts the regenerations or samples
+// spent before the candidate, and Approve runs step once and cannot see what
+// step did inside. It used to say 1 whatever had happened.
+//
 // Rejection is not retried here, on purpose: whatever automated recovery a
 // caller wanted (Until, Escalate, a repair loop) belongs inside step, with its
 // own budget, before Approve is reached. Retrying after the caller's own gate
@@ -72,13 +75,13 @@ func Approve[T any](ctx context.Context, step Step[T], gate ApprovalGate[T], inp
 	var zero T
 
 	if step == nil {
-		return zero, errors.New("approve: no step to run")
+		return zero, types.Newf(types.KindInvalidRequest, "approve", "no step to run")
 	}
 	if gate == nil {
-		return zero, errors.New("approve: no gate; approval is not a default this package chooses")
+		return zero, types.Newf(types.KindInvalidRequest, "approve", "no gate; approval is not a default this package chooses")
 	}
 	if err := ctx.Err(); err != nil {
-		return zero, err
+		return zero, classifyBlockingErr(err)
 	}
 
 	value, stepErr := step(ctx)
@@ -87,7 +90,6 @@ func Approve[T any](ctx context.Context, step Step[T], gate ApprovalGate[T], inp
 			packet := types.ReviewPacket[T]{
 				InputRefs:       inputRefs,
 				FailedChecks:    []string{reason},
-				Attempts:        1,
 				SuggestedAction: "automated recovery for this step was exhausted; a human should decide the next step",
 			}
 			return zero, types.NewReviewRequired(packet)
@@ -112,7 +114,6 @@ func Approve[T any](ctx context.Context, step Step[T], gate ApprovalGate[T], inp
 		InputRefs:       inputRefs,
 		Evidence:        outcome.Evidence,
 		FailedChecks:    outcome.FailedChecks,
-		Attempts:        1,
 		SuggestedAction: outcome.SuggestedAction,
 	}
 	return zero, types.NewReviewRequired(packet)
@@ -128,13 +129,13 @@ func reviewableFailure(err error) (bool, string) {
 	kind := llm.Classify(err)
 	switch kind {
 	case types.KindRepairExhausted:
-		return true, "repair exhausted: regeneration did not converge within budget"
+		return true, "the step failed with repair exhausted"
 	case types.KindInvariantViolation:
-		return true, "invariant violation survived its budgeted regenerations"
+		return true, "the step failed with an invariant violation"
 	case types.KindEvidenceViolation:
-		return true, "evidence contradicted the candidate"
+		return true, "the step failed with an evidence violation"
 	case types.KindSchemaViolation:
-		return true, "schema violation survived its budgeted regenerations"
+		return true, "the step failed with a schema violation"
 	default:
 		return false, ""
 	}

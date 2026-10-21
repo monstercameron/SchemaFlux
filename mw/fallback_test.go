@@ -2,334 +2,427 @@ package mw
 
 import (
 	"context"
-	"errors"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
+	"github.com/monstercameron/schemaflux/v2/provider"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
-// fallbackFakeProvider is a Handler whose failure/success and call count a
-// test controls directly.
-type fallbackFakeProvider struct {
-	name  string
-	resp  llm.CompletionResponse
-	err   error
-	calls int
+// route is a provider named name that answers every request with body, as a
+// Route of Fallback.
+func route(name, body string) (Route, *schemafluxtest.Provider) {
+	p := new(schemafluxtest.Provider)
+	p.SetName(name)
+	p.Reply(body)
+	return Route{Provider: p}, p
 }
 
-func (f *fallbackFakeProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	f.calls++
-	return f.resp, f.err
-}
-func (f *fallbackFakeProvider) Name() string                                   { return f.name }
-func (f *fallbackFakeProvider) EstimateCost(req llm.CompletionRequest) float64 { return 0 }
-func (f *fallbackFakeProvider) RetryPolicy() (int, time.Duration)              { return 0, 0 }
-
-func unavailableErr() error {
-	return llm.NewAPIError("primary", "m", 503, "")
+// failing is a provider named name that fails every request with err.
+func failingProvider(name string, err error) *schemafluxtest.Provider {
+	p := new(schemafluxtest.Provider)
+	p.SetName(name)
+	p.Fail(err)
+	return p
 }
 
-func TestFallbackReturnsPrimarySuccessWithoutTryingAlternates(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", resp: llm.CompletionResponse{Content: "ok"}}
-	alt := &fallbackFakeProvider{name: "alt", resp: llm.CompletionResponse{Content: "alt-ok"}}
+func TestFallback(t *testing.T) {
+	t.Parallel()
 
-	wrapped := Fallback([]FallbackRoute{{Handler: alt}})(primary)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "ok")
-	}
-	if alt.calls != 0 {
-		t.Fatalf("alt.calls = %d, want 0 -- a successful primary must never try an alternate", alt.calls)
-	}
-}
-
-func TestFallbackTriesAlternateOnPrimaryFailure(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	alt := &fallbackFakeProvider{name: "alt", resp: llm.CompletionResponse{Content: "alt-ok"}}
-
-	wrapped := Fallback([]FallbackRoute{{Handler: alt}})(primary)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "alt-ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "alt-ok")
-	}
-	if alt.calls != 1 {
-		t.Fatalf("alt.calls = %d, want 1", alt.calls)
-	}
-}
-
-func TestFallbackTriesAlternatesInOrder(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	first := &fallbackFakeProvider{name: "first", err: unavailableErr()}
-	second := &fallbackFakeProvider{name: "second", resp: llm.CompletionResponse{Content: "second-ok"}}
-
-	wrapped := Fallback([]FallbackRoute{{Handler: first}, {Handler: second}})(primary)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "second-ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "second-ok")
-	}
-	if first.calls != 1 || second.calls != 1 {
-		t.Fatalf("first.calls=%d second.calls=%d, want 1 and 1", first.calls, second.calls)
-	}
-}
-
-func TestFallbackReturnsLastFailureWhenEveryRouteFails(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	alt := &fallbackFakeProvider{name: "alt", err: llm.NewAPIError("alt", "m", 500, "")}
-
-	wrapped := Fallback([]FallbackRoute{{Handler: alt}})(primary)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("want an error when every route fails, got nil")
-	}
-	// The alternate's OWN failure is what comes back, not the primary's --
-	// "classified on its own terms, not hidden behind the original."
-	var apiErr *llm.APIError
-	if !errors.As(err, &apiErr) || apiErr.Provider != "alt" {
-		t.Fatalf("error does not carry the alternate's own identity: %v", err)
-	}
-}
-
-// TestFallbackNeverCallsAnAlternateLackingRequiredSchemaSupport is the core
-// safety property from the Revised line: a route that cannot deliver the
-// requested contract is never substituted in silently. The alternate's
-// Complete must not be invoked at all when it is ineligible -- not invoked
-// and its answer discarded, never invoked.
-func TestFallbackNeverCallsAnAlternateLackingRequiredSchemaSupport(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	weakAlt := &fallbackFakeProvider{name: "weak", resp: llm.CompletionResponse{Content: "should not be seen"}}
-
-	wrapped := Fallback(
-		[]FallbackRoute{{Handler: weakAlt, Capabilities: FallbackCapabilities{NativeJSONSchema: false}}},
-		WithPrimaryCapabilities(FallbackCapabilities{NativeJSONSchema: true}),
-	)(primary)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{
-		ResponseFormat: "json",
-		JSONSchema:     map[string]any{"type": "object"},
+	t.Run("a primary that answers is the answer and the alternate is not asked", func(t *testing.T) {
+		t.Parallel()
+		primary := new(schemafluxtest.Provider)
+		primary.Reply("primary's")
+		alt, altP := route("alt", "alternate's")
+		resp, err := Fallback([]Route{alt})(primary).Complete(t.Context(), ask("q"))
+		if err != nil || resp.Content != "primary's" || altP.Calls() != 0 {
+			t.Errorf("%q, %v, the alternate was asked %d times", resp.Content, err, altP.Calls())
+		}
 	})
-	if err == nil {
-		t.Fatal("want the primary's error to survive when no alternate qualifies, got nil")
-	}
-	if weakAlt.calls != 0 {
-		t.Fatalf("weakAlt.calls = %d, want 0 -- an alternate lacking native schema support must never be called for a schema request", weakAlt.calls)
-	}
-}
 
-func TestFallbackUsesAWeakerAlternateWhenSchemaDegradationIsAllowed(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	weakAlt := &fallbackFakeProvider{name: "weak", resp: llm.CompletionResponse{Content: "degraded-ok"}}
-
-	wrapped := Fallback(
-		[]FallbackRoute{{Handler: weakAlt, Capabilities: FallbackCapabilities{NativeJSONSchema: false}}},
-		WithPrimaryCapabilities(FallbackCapabilities{NativeJSONSchema: true}),
-		AllowSchemaDegradation(),
-	)(primary)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{
-		ResponseFormat: "json",
-		JSONSchema:     map[string]any{"type": "object"},
+	t.Run("a primary that fails is replaced by the alternate, which is named in the answer", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", unavailable())
+		alt, altP := route("alt", "alternate's")
+		resp, err := Fallback([]Route{alt})(primary).Complete(t.Context(), schemaflux.Request{Model: "m", User: "q"})
+		if err != nil || resp.Content != "alternate's" {
+			t.Fatalf("%q, %v", resp.Content, err)
+		}
+		if resp.Provider != "alt" || resp.Model != "m" {
+			t.Errorf("the answer names %q and %q, want the alternate and the model it was sent", resp.Provider, resp.Model)
+		}
+		if primary.Calls() != 1 || altP.Calls() != 1 {
+			t.Errorf("the primary was asked %d times and the alternate %d, want 1 each", primary.Calls(), altP.Calls())
+		}
 	})
-	if err != nil {
-		t.Fatalf("Complete returned an error with degradation explicitly allowed: %v", err)
+
+	for _, tc := range []struct {
+		kind   schemaflux.Kind
+		failed bool
+	}{
+		{schemaflux.ErrUnavailable, true},
+		{schemaflux.ErrRateLimited, true},
+		{schemaflux.ErrTimeout, true},
+		{schemaflux.ErrTooLarge, true},
+		{schemaflux.ErrTruncated, true},
+		{schemaflux.ErrInvalidAnswer, true},
+		{schemaflux.ErrUnsupported, true},
+		{schemaflux.ErrInternal, false},
+		{schemaflux.ErrBusy, false},
+		{schemaflux.ErrReviewRequired, false},
+		{schemaflux.ErrUnauthorized, false},
+		{schemaflux.ErrInvalidRequest, false},
+		{schemaflux.ErrConfiguration, false},
+		{schemaflux.ErrPolicy, false},
+		{schemaflux.ErrRefused, false},
+		{schemaflux.ErrBudgetExceeded, false},
+		{schemaflux.ErrCanceled, false},
+		{schemaflux.ErrClosed, false},
+	} {
+		name := "by default a failure of kind " + tc.kind.Error() + " is returned"
+		if tc.failed {
+			name = "by default a failure of kind " + tc.kind.Error() + " goes to the alternate"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			primary := failingProvider("primary", &schemaflux.Error{Kind: tc.kind})
+			alt, altP := route("alt", "alternate's")
+			resp, err := Fallback([]Route{alt})(primary).Complete(t.Context(), ask("q"))
+			if tc.failed {
+				if err != nil || resp.Content != "alternate's" {
+					t.Errorf("%q, %v, want the alternate's answer", resp.Content, err)
+				}
+				return
+			}
+			wantKind(t, err, tc.kind)
+			if altP.Calls() != 0 {
+				t.Errorf("the alternate was asked %d times, want 0", altP.Calls())
+			}
+		})
 	}
-	if resp.Content != "degraded-ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "degraded-ok")
-	}
-	if weakAlt.calls != 1 {
-		t.Fatalf("weakAlt.calls = %d, want 1", weakAlt.calls)
-	}
+
+	t.Run("On lists the kinds that go to the alternate and no others", func(t *testing.T) {
+		t.Parallel()
+		alt, altP := route("alt", "alternate's")
+		fallback := Fallback([]Route{alt}, FallbackOptions{On: []schemaflux.Kind{schemaflux.ErrRateLimited}})
+		_, err := fallback(failingProvider("primary", unavailable())).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrUnavailable)
+		if altP.Calls() != 0 {
+			t.Fatalf("the alternate was asked %d times for an outage not in On", altP.Calls())
+		}
+		resp, err := fallback(failingProvider("primary", rateLimited(0))).Complete(t.Context(), ask("q"))
+		if err != nil || resp.Content != "alternate's" {
+			t.Errorf("a rate limit: %q, %v", resp.Content, err)
+		}
+	})
+
+	t.Run("a kind named in On goes to the alternate even when it stops everything by default", func(t *testing.T) {
+		t.Parallel()
+		alt, _ := route("alt", "alternate's")
+		for _, kind := range []schemaflux.Kind{schemaflux.ErrUnauthorized, schemaflux.ErrInvalidRequest, schemaflux.ErrPolicy, schemaflux.ErrBudgetExceeded, schemaflux.ErrConfiguration} {
+			fallback := Fallback([]Route{alt}, FallbackOptions{On: []schemaflux.Kind{kind}})
+			resp, err := fallback(failingProvider("primary", &schemaflux.Error{Kind: kind})).Complete(t.Context(), ask("q"))
+			if err != nil || resp.Content != "alternate's" {
+				t.Errorf("%v: %q, %v", kind, resp.Content, err)
+			}
+		}
+	})
+
+	t.Run("On tells a model's refusal from the data policy's, and a recovered panic from a bad answer", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			on, failure schemaflux.Kind
+			goes        bool
+		}{
+			{schemaflux.ErrRefused, schemaflux.ErrRefused, true},
+			{schemaflux.ErrRefused, schemaflux.ErrPolicy, false},
+			{schemaflux.ErrPolicy, schemaflux.ErrPolicy, true},
+			{schemaflux.ErrPolicy, schemaflux.ErrRefused, false},
+			{schemaflux.ErrInternal, schemaflux.ErrInternal, true},
+			{schemaflux.ErrInternal, schemaflux.ErrInvalidAnswer, false},
+			{schemaflux.ErrInvalidAnswer, schemaflux.ErrInternal, false},
+			{schemaflux.ErrInvalidAnswer, schemaflux.ErrInvalidAnswer, true},
+			{schemaflux.ErrUnavailable, schemaflux.ErrUnavailable, true},
+		} {
+			alt, altP := route("alt", "alternate's")
+			fallback := Fallback([]Route{alt}, FallbackOptions{On: []schemaflux.Kind{tc.on}})
+			_, err := fallback(failingProvider("primary", &schemaflux.Error{Kind: tc.failure})).Complete(t.Context(), ask("q"))
+			if tc.goes != (altP.Calls() == 1) {
+				t.Errorf("On %v, failure %v: the alternate was asked %d times, want it asked = %v", tc.on, tc.failure, altP.Calls(), tc.goes)
+			}
+			if !tc.goes {
+				wantKind(t, err, tc.failure)
+			}
+		}
+	})
+
+	t.Run("a request is not changed by the kinds, and an error that is returned is the primary's own", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", &schemaflux.Error{Kind: schemaflux.ErrUnauthorized, Message: "the key was refused", Code: "invalid_key"})
+		alt, _ := route("alt", "x")
+		_, err := Fallback([]Route{alt}, FallbackOptions{On: []schemaflux.Kind{schemaflux.ErrRateLimited}})(primary).Complete(t.Context(), ask("q"))
+		e := wantKind(t, err, schemaflux.ErrUnauthorized)
+		if e.Message != "the key was refused" || e.Code != "invalid_key" {
+			t.Errorf("the error is %+v: the label of the wrapped package leaked or the fields were lost", e)
+		}
+	})
+
+	t.Run("the alternates are tried in order and the first that answers is the answer", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", unavailable())
+		first := failingProvider("first", unavailable())
+		second, secondP := route("second", "second's")
+		third, thirdP := route("third", "third's")
+		resp, err := Fallback([]Route{{Provider: first}, second, third})(primary).Complete(t.Context(), ask("q"))
+		if err != nil || resp.Content != "second's" || resp.Provider != "second" {
+			t.Fatalf("%q by %q, %v", resp.Content, resp.Provider, err)
+		}
+		if first.Calls() != 1 || secondP.Calls() != 1 || thirdP.Calls() != 0 {
+			t.Errorf("asked %d, %d and %d times, want 1, 1 and 0", first.Calls(), secondP.Calls(), thirdP.Calls())
+		}
+	})
+
+	t.Run("when every route fails the error is the last one's", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", rateLimited(0))
+		last := failingProvider("last", &schemaflux.Error{Kind: schemaflux.ErrTimeout})
+		_, err := Fallback([]Route{{Provider: failingProvider("first", unavailable())}, {Provider: last}})(primary).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrTimeout)
+	})
+
+	t.Run("an alternate's failure that is not one to go on from ends the search", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", unavailable())
+		stops := failingProvider("stops", &schemaflux.Error{Kind: schemaflux.ErrBudgetExceeded})
+		never, neverP := route("never", "x")
+		_, err := Fallback([]Route{{Provider: stops}, never})(primary).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		if neverP.Calls() != 0 {
+			t.Errorf("the route after the one that stopped was asked %d times", neverP.Calls())
+		}
+	})
+
+	t.Run("a route that cannot enforce a schema is skipped for a request that needs one", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", unavailable())
+		alt, altP := route("alt", "x")
+		req := schemaflux.Request{User: "q", Format: "json", Schema: map[string]any{"type": "object"}}
+		fallback := Fallback([]Route{alt}, FallbackOptions{Primary: Capabilities{NativeJSONSchema: true}})
+		_, err := fallback(primary).Complete(t.Context(), req)
+		wantKind(t, err, schemaflux.ErrUnavailable)
+		if altP.Calls() != 0 {
+			t.Errorf("the alternate was asked %d times", altP.Calls())
+		}
+	})
+
+	t.Run("a route that declares the capability serves it, and so does one the caller allowed to degrade", func(t *testing.T) {
+		t.Parallel()
+		req := schemaflux.Request{User: "q", Format: "json", Schema: map[string]any{"type": "object"}}
+		capable, capableP := route("capable", "x")
+		capable.Capabilities = Capabilities{NativeJSONSchema: true}
+		if _, err := Fallback([]Route{capable}, FallbackOptions{Primary: Capabilities{NativeJSONSchema: true}})(failingProvider("primary", unavailable())).Complete(t.Context(), req); err != nil || capableP.Calls() != 1 {
+			t.Errorf("capable: %v, %d calls", err, capableP.Calls())
+		}
+		weak, weakP := route("weak", "x")
+		if _, err := Fallback([]Route{weak}, FallbackOptions{Primary: Capabilities{NativeJSONSchema: true}, AllowSchemaDegradation: true})(failingProvider("primary", unavailable())).Complete(t.Context(), req); err != nil || weakP.Calls() != 1 {
+			t.Errorf("degraded: %v, %d calls", err, weakP.Calls())
+		}
+	})
+
+	t.Run("a primary that declares nothing leaves every alternate eligible, and a request with no schema needs none", func(t *testing.T) {
+		t.Parallel()
+		weak, weakP := route("weak", "x")
+		req := schemaflux.Request{User: "q", Format: "json", Schema: map[string]any{"type": "object"}}
+		if _, err := Fallback([]Route{weak})(failingProvider("primary", unavailable())).Complete(t.Context(), req); err != nil || weakP.Calls() != 1 {
+			t.Errorf("no declaration: %v, %d calls", err, weakP.Calls())
+		}
+		weak2, weak2P := route("weak2", "x")
+		if _, err := Fallback([]Route{weak2}, FallbackOptions{Primary: Capabilities{NativeJSONSchema: true}})(failingProvider("primary", unavailable())).Complete(t.Context(), ask("q")); err != nil || weak2P.Calls() != 1 {
+			t.Errorf("no schema asked: %v, %d calls", err, weak2P.Calls())
+		}
+	})
+
+	t.Run("a route's Model is the model it is sent", func(t *testing.T) {
+		t.Parallel()
+		alt, altP := route("alt", "x")
+		alt.Model = "the-alternate-model"
+		primary := failingProvider("primary", unavailable())
+		primary.SetName("primary")
+		resp, err := Fallback([]Route{alt})(primary).Complete(t.Context(), schemaflux.Request{Model: "the-primary-model", User: "q"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := altP.Last().Model; got != "the-alternate-model" {
+			t.Errorf("the alternate was sent model %q", got)
+		}
+		if primary.Last().Model != "the-primary-model" || resp.Model != "the-alternate-model" {
+			t.Errorf("the primary was sent %q and the answer names %q", primary.Last().Model, resp.Model)
+		}
+	})
+
+	t.Run("the client's data policy holds for an alternate: one it does not allow is never asked", func(t *testing.T) {
+		t.Parallel()
+		alt, altP := route("not-allowed-route", "x")
+		ctx := withPolicy(t.Context(), types.DataPolicy{AllowedProviders: []string{"primary"}, AllowedRegions: []string{"us"}, MaxRetentionDays: 30})
+		_, err := Fallback([]Route{alt})(failingProvider("primary", unavailable())).Complete(ctx, ask("q"))
+		wantKind(t, err, schemaflux.ErrUnavailable)
+		if altP.Calls() != 0 {
+			t.Errorf("the alternate was asked %d times, want 0", altP.Calls())
+		}
+	})
+
+	t.Run("an alternate the policy allows, on a declared route, is asked", func(t *testing.T) {
+		t.Parallel()
+		provider.DeclareRoute("mw-fallback-allowed", "route-model", []string{"us"}, 0)
+		alt, altP := route("mw-fallback-allowed", "alternate's")
+		alt.Model = "route-model"
+		ctx := withPolicy(t.Context(), types.DataPolicy{AllowedProviders: []string{"mw-fallback-allowed"}, AllowedRegions: []string{"us"}, MaxRetentionDays: 30})
+		resp, err := Fallback([]Route{alt})(failingProvider("primary", unavailable())).Complete(ctx, ask("q"))
+		if err != nil || resp.Content != "alternate's" || altP.Calls() != 1 {
+			t.Errorf("%q, %v, %d calls", resp.Content, err, altP.Calls())
+		}
+	})
+
+	t.Run("a context that has ended is the result and the alternates are not asked", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(t.Context())
+		primary := new(schemafluxtest.Provider)
+		primary.SetName("primary")
+		primary.Respond(func(int, schemaflux.Request) (schemaflux.Response, error) {
+			cancel()
+			return schemaflux.Response{}, unavailable()
+		})
+		alt, altP := route("alt", "x")
+		_, err := Fallback([]Route{alt})(primary).Complete(ctx, ask("q"))
+		if !isContextError(err) || altP.Calls() != 0 {
+			t.Errorf("err = %v, the alternate was asked %d times", err, altP.Calls())
+		}
+	})
+
+	t.Run("a route with no provider and an unknown kind are configuration errors and nothing is sent", func(t *testing.T) {
+		t.Parallel()
+		for name, fallback := range map[string]Middleware{
+			"no provider":  Fallback([]Route{{}}),
+			"unknown kind": Fallback(nil, FallbackOptions{On: []schemaflux.Kind{schemaflux.Kind(0)}}),
+			"huge kind":    Fallback(nil, FallbackOptions{On: []schemaflux.Kind{schemaflux.Kind(200)}}),
+		} {
+			var p schemafluxtest.Provider
+			_, err := fallback(&p).Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrConfiguration)
+			if e.Op != "mw.fallback" || p.Calls() != 0 {
+				t.Errorf("%s: Op %q, %d requests", name, e.Op, p.Calls())
+			}
+		}
+	})
+
+	t.Run("a fallback with no alternates is its primary", func(t *testing.T) {
+		t.Parallel()
+		primary := failingProvider("primary", unavailable())
+		_, err := Fallback(nil)(primary).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrUnavailable)
+	})
+
+	t.Run("its Unwrap and its Name are the primary's", func(t *testing.T) {
+		t.Parallel()
+		primary := new(schemafluxtest.Provider)
+		primary.SetName("the-primary")
+		alt, _ := route("alt", "x")
+		wrapped := Fallback([]Route{alt})(primary)
+		if wrapped.Name() != "the-primary" || wrapped.(provider.Unwrapper).Unwrap() != schemaflux.Provider(primary) {
+			t.Errorf("Name %q, Unwrap %v", wrapped.Name(), wrapped.(provider.Unwrapper).Unwrap())
+		}
+	})
+
+	t.Run("option values merge left to right with a later non-zero field winning", func(t *testing.T) {
+		t.Parallel()
+		alt, altP := route("alt", "alternate's")
+		fallback := Fallback([]Route{alt},
+			FallbackOptions{On: []schemaflux.Kind{schemaflux.ErrTimeout}},
+			FallbackOptions{},
+			FallbackOptions{On: []schemaflux.Kind{schemaflux.ErrUnavailable}})
+		resp, err := fallback(failingProvider("primary", unavailable())).Complete(t.Context(), ask("q"))
+		if err != nil || resp.Content != "alternate's" || altP.Calls() != 1 {
+			t.Errorf("%q, %v, %d calls", resp.Content, err, altP.Calls())
+		}
+	})
 }
 
-func TestFallbackNeverCallsAnAlternateWithAMismatchedDataPolicy(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	publicAlt := &fallbackFakeProvider{name: "public", resp: llm.CompletionResponse{Content: "should not be seen"}}
-
-	wrapped := Fallback(
-		[]FallbackRoute{{Handler: publicAlt, DataPolicy: FallbackDataPolicy{Classification: "public"}}},
-		WithPrimaryDataPolicy(FallbackDataPolicy{Classification: "private"}),
-	)(primary)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("want the primary's error to survive when no policy-compatible alternate exists, got nil")
-	}
-	if publicAlt.calls != 0 {
-		t.Fatalf("publicAlt.calls = %d, want 0 -- a private route must never fail over to a public one", publicAlt.calls)
-	}
+// isContextError reports whether err is a cancellation or a passed deadline.
+func isContextError(err error) bool {
+	k, ok := kindOf(err)
+	return ok && (k == schemaflux.ErrCanceled || k == schemaflux.ErrTimeout)
 }
 
-func TestFallbackUsesAnAlternateWithAMatchingDataPolicy(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	privateAlt := &fallbackFakeProvider{name: "private-alt", resp: llm.CompletionResponse{Content: "ok"}}
+var _ = time.Second
 
-	wrapped := Fallback(
-		[]FallbackRoute{{Handler: privateAlt, DataPolicy: FallbackDataPolicy{Classification: "private"}}},
-		WithPrimaryDataPolicy(FallbackDataPolicy{Classification: "private"}),
-	)(primary)
+// The kinds that stop a default Fallback and the kinds that go on to the next
+// route are the two lists of the doc comment of FallbackOptions.On, and between
+// them every kind of the library: a kind the doc does not list is a kind nobody
+// decided.
+func TestFallbackByDefaultStopsOrGoesOnForEveryKindAsTheDocSays(t *testing.T) {
+	t.Parallel()
 
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
+	stops := []schemaflux.Kind{
+		schemaflux.ErrConfiguration, schemaflux.ErrInvalidRequest, schemaflux.ErrUnauthorized, schemaflux.ErrPolicy,
+		schemaflux.ErrRefused, schemaflux.ErrBudgetExceeded, schemaflux.ErrBusy, schemaflux.ErrCanceled,
+		schemaflux.ErrClosed, schemaflux.ErrReviewRequired, schemaflux.ErrInternal,
 	}
-	if resp.Content != "ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "ok")
+	goesOn := []schemaflux.Kind{
+		schemaflux.ErrUnsupported, schemaflux.ErrRateLimited, schemaflux.ErrUnavailable, schemaflux.ErrTimeout,
+		schemaflux.ErrTooLarge, schemaflux.ErrTruncated, schemaflux.ErrInvalidAnswer,
 	}
-}
-
-func TestFallbackWithNoPrimaryPolicyDeclaredEnforcesNothing(t *testing.T) {
-	// Documents the honesty boundary: an undeclared requirement is not
-	// treated as "anything goes" being SAFE, it is simply not checked.
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	anyAlt := &fallbackFakeProvider{name: "any", resp: llm.CompletionResponse{Content: "ok"}}
-
-	wrapped := Fallback([]FallbackRoute{{Handler: anyAlt, DataPolicy: FallbackDataPolicy{Classification: "public"}}})(primary)
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
+	var all []schemaflux.Kind
+	for kind := schemaflux.ErrConfiguration; kind <= schemaflux.ErrInternal; kind++ {
+		all = append(all, kind)
 	}
-	if anyAlt.calls != 1 {
-		t.Fatalf("anyAlt.calls = %d, want 1 -- with no primary policy declared, nothing is enforced", anyAlt.calls)
+	if len(stops)+len(goesOn) != len(all) {
+		t.Fatalf("the doc lists %d kinds and the library has %d", len(stops)+len(goesOn), len(all))
 	}
-}
-
-func TestFallbackWithFallbackKindsRestrictsWhichFailuresTriggerFallover(t *testing.T) {
-	// A malformed-output failure is not in the allowed set, so Fallback must
-	// return it directly rather than trying the alternate.
-	primary := &fallbackFakeProvider{name: "primary", err: &types.OperationError{Kind: types.KindMalformedOutput}}
-	alt := &fallbackFakeProvider{name: "alt", resp: llm.CompletionResponse{Content: "should not be seen"}}
-
-	wrapped := Fallback(
-		[]FallbackRoute{{Handler: alt}},
-		WithFallbackKinds(types.KindProviderUnavailable, types.KindTimeout),
-	)(primary)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("want the primary's malformed-output error, got nil")
+	for _, kind := range all {
+		if slices.Contains(stops, kind) == slices.Contains(goesOn, kind) {
+			t.Errorf("%v is in both lists of the doc, or in neither", kind)
+		}
 	}
-	if types.KindOf(err) != types.KindMalformedOutput {
-		t.Fatalf("Kind = %v, want KindMalformedOutput", types.KindOf(err))
+
+	for _, kind := range all {
+		t.Run(kind.Error(), func(t *testing.T) {
+			t.Parallel()
+			primary := failingProvider("primary", &schemaflux.Error{Kind: kind})
+			alt, altP := route("alt", "alternate's")
+			resp, err := Fallback([]Route{alt})(primary).Complete(t.Context(), ask("q"))
+			if slices.Contains(goesOn, kind) {
+				if err != nil || resp.Content != "alternate's" {
+					t.Errorf("%q, %v, want the alternate's answer", resp.Content, err)
+				}
+				return
+			}
+			wantKind(t, err, kind)
+			if altP.Calls() != 0 {
+				t.Errorf("the alternate was asked %d times, want 0", altP.Calls())
+			}
+		})
 	}
-	if alt.calls != 0 {
-		t.Fatalf("alt.calls = %d, want 0 -- malformed output is not a configured fallover trigger", alt.calls)
-	}
-}
 
-func TestFallbackWithFallbackKindsAllowsAConfiguredKindThrough(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: &types.OperationError{Kind: types.KindTimeout}}
-	alt := &fallbackFakeProvider{name: "alt", resp: llm.CompletionResponse{Content: "ok"}}
+	t.Run("a failure no layer classified goes on", func(t *testing.T) {
+		t.Parallel()
+		alt, _ := route("alt", "alternate's")
+		resp, err := Fallback([]Route{alt})(failingProvider("primary", errPlain)).Complete(t.Context(), ask("q"))
+		if err != nil || resp.Content != "alternate's" {
+			t.Errorf("%q, %v", resp.Content, err)
+		}
+	})
 
-	wrapped := Fallback(
-		[]FallbackRoute{{Handler: alt}},
-		WithFallbackKinds(types.KindTimeout),
-	)(primary)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "ok")
-	}
-}
-
-func TestFallbackRespectsContextCancellationBetweenRoutes(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	alt := &fallbackFakeProvider{name: "alt", resp: llm.CompletionResponse{Content: "should not be seen"}}
-
-	wrapped := Fallback([]FallbackRoute{{Handler: alt}})(primary)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := wrapped.Complete(ctx, llm.CompletionRequest{})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
-	}
-	if alt.calls != 0 {
-		t.Fatalf("alt.calls = %d, want 0 -- a canceled context must stop the fallover loop", alt.calls)
-	}
-}
-
-func TestFallbackDelegatesNameCostAndRetryPolicyToThePrimary(t *testing.T) {
-	primary := &fakeProvider{name: "primary-fake", maxRetries: 3, backoff: 2 * time.Second}
-	alt := &fallbackFakeProvider{name: "alt"}
-
-	wrapped := Fallback([]FallbackRoute{{Handler: alt}})(primary)
-
-	if wrapped.Name() != "primary-fake" {
-		t.Fatalf("Name() = %q, want %q", wrapped.Name(), "primary-fake")
-	}
-	if got := wrapped.EstimateCost(llm.CompletionRequest{}); got != 0.01 {
-		t.Fatalf("EstimateCost() = %v, want 0.01", got)
-	}
-	retries, backoff := wrapped.RetryPolicy()
-	if retries != 3 || backoff != 2*time.Second {
-		t.Fatalf("RetryPolicy() = (%d, %v), want (3, 2s)", retries, backoff)
-	}
-}
-
-func TestFallbackWithNoAlternatesBehavesAsPassthrough(t *testing.T) {
-	primary := &fallbackFakeProvider{name: "primary", err: unavailableErr()}
-	wrapped := Fallback(nil)(primary)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("want the primary's error with no alternates configured, got nil")
-	}
-}
-
-// TestFallbackThroughChainWithScriptedProvider is the composition case: the
-// primary route wrapped by Retry first (so a transient failure is retried
-// before ever falling over), then Fallback outermost, built through
-// mw.Chain the way a caller actually wires it.
-func TestFallbackThroughChainWithScriptedProvider(t *testing.T) {
-	primary := &fakeProvider{
-		responses: []fakeResponse{
-			{err: llm.NewAPIError("primary", "m", 503, "")},
-			{err: llm.NewAPIError("primary", "m", 503, "")},
-			{err: llm.NewAPIError("primary", "m", 503, "")},
-			{err: llm.NewAPIError("primary", "m", 503, "")},
-		},
-	}
-	alt := &fallbackFakeProvider{name: "alt", resp: llm.CompletionResponse{Content: "alt-ok"}}
-
-	fc := newFakeClock(time.Unix(0, 0))
-	retrier := Retry(WithMaxAttempts(2), WithBaseDelay(time.Millisecond))
-	retried := retrier(primary)
-	rp := retried.(*retryProvider)
-	rp.sleep = fc.sleep
-
-	wrapped := Chain(retried, Fallback([]FallbackRoute{{Handler: alt}}))
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "alt-ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "alt-ok")
-	}
-	// Retry exhausts its 2 attempts against the primary before Fallback ever
-	// sees a failure to act on.
-	if primary.calls != 2 {
-		t.Fatalf("primary.calls = %d, want 2 (Retry's attempts exhausted first)", primary.calls)
-	}
-	if alt.calls != 1 {
-		t.Fatalf("alt.calls = %d, want 1", alt.calls)
-	}
+	t.Run("a panic in the primary is an internal error and the alternate does not replace it", func(t *testing.T) {
+		t.Parallel()
+		primary := Func("primary", func(context.Context, schemaflux.Request) (schemaflux.Response, error) { panic("provider bug") })
+		alt, altP := route("alt", "alternate's")
+		_, err := Fallback([]Route{alt})(primary).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrInternal)
+		if altP.Calls() != 0 {
+			t.Errorf("the alternate was asked %d times, want 0", altP.Calls())
+		}
+	})
 }

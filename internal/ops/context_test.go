@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every options struct accepts a Context and every builder exposes a
@@ -31,8 +31,7 @@ func cancelledContext() context.Context {
 func observeContext(t *testing.T, run func()) (called bool, sawCancellation bool) {
 	t.Helper()
 
-	previous := customLLMCaller
-	setLLMCaller(func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
+	swapLLMCaller(t, func(ctx context.Context, _, _ string, _ types.OpOptions) (string, error) {
 		called = true
 		if ctx != nil && ctx.Err() != nil {
 			sawCancellation = true
@@ -40,7 +39,6 @@ func observeContext(t *testing.T, run func()) (called bool, sawCancellation bool
 		}
 		return "{}", nil
 	})
-	defer func() { customLLMCaller = previous }()
 
 	run()
 	return called, sawCancellation

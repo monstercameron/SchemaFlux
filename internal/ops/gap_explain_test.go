@@ -2,9 +2,10 @@ package ops
 
 import (
 	"context"
+	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // This file closes coverage gaps in explain.go, enrich.go, and core.go
@@ -410,10 +411,10 @@ func TestExtractOnAnInterfaceTargetIsRefusedRatherThanCrashing(t *testing.T) {
 // are already covered by schema_determinism_test.go) actually puts the
 // examples into what the provider receives.
 func TestExtractWithExamplesReachesTheSteering(t *testing.T) {
-	var sawUserPrompt string
+	var sawUserPrompt, sawSteering string
 	previousCaller, previousProvider := currentHooks()
-	setLLMCaller(func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
-		sawUserPrompt = user
+	setLLMCaller(func(_ context.Context, _, user string, opts types.OpOptions) (string, error) {
+		sawUserPrompt, sawSteering = user, opts.Steering
 		return `{"name":"x","score":1}`, nil
 	})
 	t.Cleanup(func() {
@@ -428,6 +429,9 @@ func TestExtractWithExamplesReachesTheSteering(t *testing.T) {
 	}
 	if sawUserPrompt == "" {
 		t.Fatal("the LLM caller was never invoked")
+	}
+	if !strings.Contains(sawSteering, `"name":"sample"`) {
+		t.Errorf("the example did not reach the model; steering = %q", sawSteering)
 	}
 }
 
@@ -663,6 +667,21 @@ func TestGenerateStructTargetWithConstraintsAndSeedSucceeds(t *testing.T) {
 	if sawUserPrompt == "" {
 		t.Fatal("the LLM caller was never invoked")
 	}
+	// Every option has to have reached the model, not only the prompt's first
+	// line: deleting a clause from Generate must fail this.
+	for _, want := range []string{
+		"generate a computer scientist",
+		"Use this template: {{name}}",
+		"Style: formal",
+		"era=1950s",
+		"Every generated value must be distinct",
+		`Base on this seed data: {"full_name":"seed"}`,
+		`Follow these examples: [{"full_name":"example"}]`,
+	} {
+		if !strings.Contains(sawUserPrompt, want) {
+			t.Errorf("the prompt lacks %q:\n%s", want, sawUserPrompt)
+		}
+	}
 }
 
 // TestGenerateStructTargetRefusesUnparseableResponse covers the struct
@@ -698,7 +717,7 @@ type deriveEnriched struct {
 func TestDeriveSuccessPath(t *testing.T) {
 	const body = `{
 		"derived": {"generation": "millennial"},
-		"derivations": [{"field": "generation", "method": "inference", "confidence": 0.9}],
+		"derivations": [{"field": "generation", "method": "inference", "reasoning": "the birth year gives the generation", "confidence": 0.9}],
 		"field_confidence": {"generation": 0.9},
 		"overall_confidence": 0.9
 	}`
@@ -867,6 +886,11 @@ func TestArbitrateSingleOptionShortcutsWithoutCallingTheProvider(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("provider called %d times for a single option", calls)
 	}
+	// And nothing is made up about an option that was not evaluated: this
+	// returned a score of 1.0 and a model confidence of 1.0 (LX-024).
+	if len(result.Scores) != 0 || result.ModelConfidence != 0 {
+		t.Errorf("figures no model gave: scores %v, confidence %v", result.Scores, result.ModelConfidence)
+	}
 }
 
 // TestArbitrateRejectsNoRules proves the explicit rules-required guard.
@@ -879,21 +903,40 @@ func TestArbitrateRejectsNoRules(t *testing.T) {
 
 // TestArbitrateRefusesOutOfRangeWinnerIndex is a "check the answer against
 // the question" test in AGENTS.md's own sense: the model names a winner
-// index outside the slice it was given, and Arbitrate must refuse rather
-// than index out of range or silently clamp it.
+// outside the slice it was given, and Arbitrate must refuse rather than index
+// out of range or silently clamp it.
+//
+// The model is no longer asked for a winner, and this test went on passing
+// for a reason that had nothing to do with one: its answer had no "options",
+// and was refused for that. It now scripts two answers that are whole apart
+// from what the test is about: one that names a winner nobody asked for, which
+// is ignored, and one that reports on an option beyond those offered, which is
+// refused.
 func TestArbitrateRefusesOutOfRangeWinnerIndex(t *testing.T) {
+	const evaluated = `"o1": {"r1": {"passed": true, "score": 0.9}}, "o2": {"r1": {"passed": true, "score": 0.5}}`
+	response := `{"winner_index": 7, "options": {` + evaluated + `}, "reasoning": "x", "confidence": 0.9}`
 	previousCaller, previousProvider := currentHooks()
 	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		return `{"winner_index": 7, "scores": {"0": 0.9, "1": 0.5}, "confidence": 0.9}`, nil
+		return response, nil
 	})
 	t.Cleanup(func() {
 		setLLMCaller(previousCaller)
 		SetDefaultProvider(previousProvider)
 	})
+	candidates := []arbitrateCandidate{{Name: "a"}, {Name: "b"}}
+	opts := ArbitrateOptions{Rules: []string{"best value"}}
 
-	_, err := Arbitrate([]arbitrateCandidate{{Name: "a"}, {Name: "b"}}, ArbitrateOptions{Rules: []string{"best value"}})
-	if err == nil {
-		t.Fatal("expected Arbitrate to refuse a winner_index outside the options slice")
+	result, err := Arbitrate(candidates, opts)
+	if err != nil {
+		t.Fatalf("Arbitrate: %v", err)
+	}
+	if result.WinnerIndex != 0 {
+		t.Errorf("WinnerIndex = %d: a winner the model named was taken over the scores", result.WinnerIndex)
+	}
+
+	response = `{"options": {` + evaluated + `, "o8": {"r1": {"passed": true, "score": 1}}}, "reasoning": "x", "confidence": 0.9}`
+	if result, err := Arbitrate(candidates, opts); err == nil {
+		t.Fatalf("an answer that reports on an option beyond those offered was accepted: %+v", result)
 	}
 }
 
@@ -901,7 +944,7 @@ func TestArbitrateRefusesOutOfRangeWinnerIndex(t *testing.T) {
 func TestArbitrateSuccessPath(t *testing.T) {
 	previousCaller, previousProvider := currentHooks()
 	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		return `{"winner_index": 1, "scores": {"0": 0.3, "1": 0.9}, "confidence": 0.9, "reasoning": "b is cheaper"}`, nil
+		return `{"options": {"o1": {"r1": {"passed": true, "score": 0.3, "reasoning": "dearer"}}, "o2": {"r1": {"passed": true, "score": 0.9, "reasoning": "cheaper"}}}, "confidence": 0.9, "reasoning": "b is cheaper"}`, nil
 	})
 	t.Cleanup(func() {
 		setLLMCaller(previousCaller)
@@ -954,7 +997,7 @@ type composedProfile struct {
 func TestAssembleSuccessPath(t *testing.T) {
 	previousCaller, previousProvider := currentHooks()
 	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		return `{"composed": {"name": "Acme"}, "field_sources": [], "conflicts_resolved": 0, "completeness": 1.0}`, nil
+		return `{"composed": {"name": "Acme"}, "field_sources": [], "conflicts_resolved": 0, "gaps_filled": [], "unused_parts": [], "completeness": 1.0}`, nil
 	})
 	t.Cleanup(func() {
 		setLLMCaller(previousCaller)
@@ -1164,123 +1207,6 @@ func TestDecomposeToSlicePropagatesLLMCallFailure(t *testing.T) {
 	_, err := DecomposeToSlice[decomposeWhole, decomposePart](decomposeWhole{Description: "a project"}, NewDecomposeOptions())
 	if err == nil {
 		t.Fatal("expected DecomposeToSlice to fail when the LLM call errors")
-	}
-}
-
-// --- annotate.go: AnnotateStruct, previously at 0% coverage ---------------
-
-type annotateInput struct {
-	Text string `json:"text"`
-}
-
-type annotatedOutput struct {
-	Text      string `json:"text"`
-	Sentiment string `json:"sentiment"`
-}
-
-// TestAnnotateStructSuccessPath is AnnotateStruct's happy path.
-func TestAnnotateStructSuccessPath(t *testing.T) {
-	previousCaller, previousProvider := currentHooks()
-	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		return `{"text":"great product","sentiment":"positive"}`, nil
-	})
-	t.Cleanup(func() {
-		setLLMCaller(previousCaller)
-		SetDefaultProvider(previousProvider)
-	})
-
-	result, err := AnnotateStruct[annotateInput, annotatedOutput](annotateInput{Text: "great product"}, NewAnnotateOptions())
-	if err != nil {
-		t.Fatalf("AnnotateStruct: %v", err)
-	}
-	if result.Sentiment != "positive" {
-		t.Errorf("Sentiment = %q, want %q", result.Sentiment, "positive")
-	}
-}
-
-// TestAnnotateStructRefusesInvalidOptions proves Validate() runs before any
-// provider call.
-func TestAnnotateStructRefusesInvalidOptions(t *testing.T) {
-	calls := 0
-	previousCaller, previousProvider := currentHooks()
-	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		calls++
-		return `{}`, nil
-	})
-	t.Cleanup(func() {
-		setLLMCaller(previousCaller)
-		SetDefaultProvider(previousProvider)
-	})
-
-	invalid := NewAnnotateOptions()
-	invalid.AnnotationTypes = nil
-	invalid.CustomSchema = nil
-	_, err := AnnotateStruct[annotateInput, annotatedOutput](annotateInput{Text: "x"}, invalid)
-	if err == nil {
-		t.Fatal("expected AnnotateStruct to reject options with no annotation types or custom schema")
-	}
-	if calls != 0 {
-		t.Fatalf("provider called %d times despite invalid options", calls)
-	}
-}
-
-// TestAnnotateStructRefusesUnmarshalableInput covers the marshal-error
-// branch.
-func TestAnnotateStructRefusesUnmarshalableInput(t *testing.T) {
-	calls := 0
-	previousCaller, previousProvider := currentHooks()
-	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		calls++
-		return `{}`, nil
-	})
-	t.Cleanup(func() {
-		setLLMCaller(previousCaller)
-		SetDefaultProvider(previousProvider)
-	})
-
-	unmarshalable := map[string]any{"fn": func() {}}
-	_, err := AnnotateStruct[map[string]any, annotatedOutput](unmarshalable, NewAnnotateOptions())
-	if err == nil {
-		t.Fatal("expected AnnotateStruct to reject input it cannot marshal")
-	}
-	if calls != 0 {
-		t.Fatalf("provider called %d times despite a marshal failure", calls)
-	}
-}
-
-// TestAnnotateStructRefusesUnparseableResponse covers the ParseJSONStrict
-// failure branch.
-func TestAnnotateStructRefusesUnparseableResponse(t *testing.T) {
-	previousCaller, previousProvider := currentHooks()
-	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		return "not json", nil
-	})
-	t.Cleanup(func() {
-		setLLMCaller(previousCaller)
-		SetDefaultProvider(previousProvider)
-	})
-
-	_, err := AnnotateStruct[annotateInput, annotatedOutput](annotateInput{Text: "x"}, NewAnnotateOptions())
-	if err == nil {
-		t.Fatal("expected AnnotateStruct to fail on an unparseable response")
-	}
-}
-
-// TestAnnotateStructPropagatesLLMCallFailure covers the callLLM error
-// branch.
-func TestAnnotateStructPropagatesLLMCallFailure(t *testing.T) {
-	previousCaller, previousProvider := currentHooks()
-	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
-		return "", context.DeadlineExceeded
-	})
-	t.Cleanup(func() {
-		setLLMCaller(previousCaller)
-		SetDefaultProvider(previousProvider)
-	})
-
-	_, err := AnnotateStruct[annotateInput, annotatedOutput](annotateInput{Text: "x"}, NewAnnotateOptions())
-	if err == nil {
-		t.Fatal("expected AnnotateStruct to fail when the LLM call errors")
 	}
 }
 

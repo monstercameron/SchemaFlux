@@ -1,13 +1,10 @@
-// package ops - Critique operation for evaluating with actionable feedback
 package ops
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CritiqueOptions configures the Critique operation
@@ -21,10 +18,12 @@ type CritiqueOptions struct {
 	// Rubric for evaluation (criteria -> description)
 	Rubric map[string]string
 
-	// Include suggestions for improvement
+	// Include suggestions for improvement. When it is off, suggestions the
+	// model wrote anyway are removed from the issues.
 	IncludeSuggestions bool
 
-	// Include specific fixes
+	// Include specific fixes. When it is off, fixes the model wrote anyway are
+	// removed from the issues.
 	IncludeFixes bool
 
 	// Severity levels to include ("all", "major", "minor", "critical")
@@ -42,7 +41,8 @@ type CritiqueOptions struct {
 	// Critique style ("constructive", "harsh", "balanced")
 	Style string
 
-	// Include positive feedback
+	// Include positive feedback. When it is off, positives the model wrote
+	// anyway are removed from the result.
 	IncludePositives bool
 }
 
@@ -72,11 +72,11 @@ func (c CritiqueOptions) Validate() error {
 	}
 	validSeverities := map[string]bool{"all": true, "major": true, "minor": true, "critical": true}
 	if c.SeverityFilter != "" && !validSeverities[c.SeverityFilter] {
-		return fmt.Errorf("invalid severity filter: %s", c.SeverityFilter)
+		return fmt.Errorf("invalid severity filter: want all, critical, major or minor")
 	}
 	validStyles := map[string]bool{"constructive": true, "harsh": true, "balanced": true}
 	if c.Style != "" && !validStyles[c.Style] {
-		return fmt.Errorf("invalid style: %s", c.Style)
+		return fmt.Errorf("critique style must be constructive, harsh, or balanced")
 	}
 	return nil
 }
@@ -112,8 +112,8 @@ func (c CritiqueOptions) WithSeverityFilter(filter string) CritiqueOptions {
 }
 
 // WithMaxIssues sets the maximum issues to report
-func (c CritiqueOptions) WithMaxIssues(max int) CritiqueOptions {
-	c.MaxIssues = max
+func (c CritiqueOptions) WithMaxIssues(maxIssues int) CritiqueOptions {
+	c.MaxIssues = maxIssues
 	return c
 }
 
@@ -160,7 +160,11 @@ func (c CritiqueOptions) WithIntelligence(intelligence types.Speed) CritiqueOpti
 }
 
 func (c CritiqueOptions) toOpOptions() types.OpOptions {
-	return c.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(c.CommonOptions, c.OpOptions)
+}
+
+func (c CritiqueOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return c.CommonOptions, c.OpOptions
 }
 
 // CritiqueIssue represents a single issue found
@@ -219,8 +223,7 @@ type CritiqueResult struct {
 //
 // Deprecated: use CritiqueWithModel, which returns the shared
 // types.JudgmentResult and whose name says what Critique's did not -- that
-// this evaluation is model-assisted, not a deterministic check. See OP-206
-// (ARC-22, TRU-30).
+// this evaluation is model-assisted, not a deterministic check.
 func Critique[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
 	return critiqueCore(input, opts)
 }
@@ -291,57 +294,55 @@ func firstNonEmpty(fix, suggestion string) string {
 	return suggestion
 }
 
-// critiqueCore is Critique's original implementation, unchanged. The
-// deprecated Critique and the new CritiqueWithModel both call this so
-// neither can silently drift from the other.
+// critiqueCore is the implementation the deprecated Critique and
+// CritiqueWithModel both call, so neither can drift from the other.
 func critiqueCore[T any](input T, opts CritiqueOptions) (CritiqueResult, error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting critique operation")
 
-	var result CritiqueResult
-	result.CriteriaScores = make(map[string]float64)
-	result.Metadata = make(map[string]any)
+	// Every return that carries an error carries the zero result with it.
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return CritiqueResult{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	opt := opts.toOpOptions()
 
-	ctx := opt.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	var cancel context.CancelFunc
-	ctx, cancel = operationContext(ctx, 0)
+	ctx, cancel := operationContext(opt.Context, 0)
 	defer cancel()
 
 	// Convert input to string
 	inputStr, err := NormalizeInput(input)
 	if err != nil {
-		log.Error("Critique operation failed: input normalization error", "error", err)
-		return result, fmt.Errorf("failed to normalize input: %w", err)
+		log.Error("Critique operation failed: input normalization error", "error", loggedError(err))
+		return CritiqueResult{}, fmt.Errorf("failed to normalize input: %w", err)
 	}
 
-	// Build criteria list
+	// Build criteria list. Rubric entries follow in criterion order (ranging
+	// over the map wrote them in a different order on every call), and every
+	// entry is the caller's text, written as a JSON string.
 	var criteriaList []string
 	for _, c := range opts.Criteria {
-		criteriaList = append(criteriaList, fmt.Sprintf("- %s", c))
+		quoted, _ := promptJSON(c)
+		criteriaList = append(criteriaList, fmt.Sprintf("- %s", quoted))
 	}
-	for criterion, description := range opts.Rubric {
-		criteriaList = append(criteriaList, fmt.Sprintf("- %s: %s", criterion, description))
+	for _, criterion := range sortedKeys(opts.Rubric) {
+		quotedCriterion, _ := promptJSON(criterion)
+		quotedDescription, _ := promptJSON(opts.Rubric[criterion])
+		criteriaList = append(criteriaList, fmt.Sprintf("- %s: %s", quotedCriterion, quotedDescription))
 	}
 
 	domainDesc := ""
 	if opts.Domain != "" {
-		domainDesc = fmt.Sprintf("\nDomain: %s", opts.Domain)
+		quoted, _ := promptJSON(opts.Domain)
+		domainDesc = fmt.Sprintf("\nDomain: %s", quoted)
 	}
 
 	audienceDesc := ""
 	if opts.Audience != "" {
-		audienceDesc = fmt.Sprintf("\nTarget audience: %s", opts.Audience)
+		quoted, _ := promptJSON(opts.Audience)
+		audienceDesc = fmt.Sprintf("\nTarget audience: %s", quoted)
 	}
 
 	styleDesc := ""
@@ -354,8 +355,11 @@ func critiqueCore[T any](input T, opts CritiqueOptions) (CritiqueResult, error) 
 		styleDesc = "\nStyle: Balance positive and negative feedback equally."
 	}
 
+	// An empty filter means "all", as Validate and the check below treat it.
+	// Only "all" was tested here, so an empty one told the model to "Only
+	// report  issues."
 	severityDesc := ""
-	if opts.SeverityFilter != "all" {
+	if opts.SeverityFilter != "" && opts.SeverityFilter != "all" {
 		severityDesc = fmt.Sprintf("\nOnly report %s issues.", opts.SeverityFilter)
 	}
 
@@ -414,14 +418,72 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Critique operation LLM call failed", "error", err)
-		return result, fmt.Errorf("critique failed: %w", err)
+		log.Error("Critique operation LLM call failed", "error", loggedError(err))
+		return CritiqueResult{}, fmt.Errorf("critique failed: %w", err)
 	}
 
-	// Parse the response
-	if err := ParseJSONStrict(response, &result); err != nil {
-		log.Error("Critique operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse critique result: %w", err)
+	// Parse the response. Every member the prompt shows is required, and so are
+	// the criterion, the severity and the description of an issue and of a
+	// positive; the rest of an issue is asked for by an option. The positives are
+	// asked for only when IncludePositives is set, so they may be left out. A
+	// missing score used to be read as 0, and a missing issues list as "nothing
+	// was found", which made {"summary":"looks fine"} a passing verdict.
+	var answer struct {
+		ModelOverallScore float64            `json:"overall_score"`
+		CriteriaScores    map[string]float64 `json:"criteria_scores"`
+		Issues            []CritiqueIssue    `json:"issues"`
+		Positives         []CritiquePositive `json:"positives,omitempty"`
+		Summary           string             `json:"summary"`
+		TopPriorities     []string           `json:"top_priorities"`
+	}
+	if err := decodeAnswer("critique", response, &answer); err != nil {
+		log.Error("Critique operation failed: parse error", "error", loggedError(err))
+		return CritiqueResult{}, err
+	}
+	// An empty list says nothing was found. A null is a list the decoder allows
+	// for a list, and says nothing.
+	if answer.Issues == nil {
+		log.Error("Critique operation failed: the issues list is null")
+		return CritiqueResult{}, types.Newf(types.KindSchemaViolation, "critique",
+			"issues is null; an empty list says nothing was found, a null says nothing")
+	}
+	issues := answer.Issues
+
+	result := CritiqueResult{
+		CriteriaScores: answer.CriteriaScores,
+		Issues:         issues,
+		Positives:      answer.Positives,
+		Summary:        answer.Summary,
+		TopPriorities:  answer.TopPriorities,
+		Metadata:       make(map[string]any),
+	}
+	if result.CriteriaScores == nil {
+		result.CriteriaScores = make(map[string]float64)
+	}
+	result.ModelOverallScore = answer.ModelOverallScore
+	if err := onScale("critique", "the overall score", result.ModelOverallScore); err != nil {
+		return CritiqueResult{}, err
+	}
+
+	// The scores are the model's claims, and each has to be on the scale it was
+	// asked for. Every criterion that was put has to be scored: a criterion the
+	// model skipped is one the caller asked about and was not told about.
+	for _, criterion := range sortedKeys(result.CriteriaScores) {
+		if err := onScale("critique", "a criterion's score", result.CriteriaScores[criterion]); err != nil {
+			return CritiqueResult{}, err
+		}
+	}
+	scored := make(map[string]struct{}, len(result.CriteriaScores))
+	for criterion := range result.CriteriaScores {
+		scored[strings.ToLower(strings.TrimSpace(criterion))] = struct{}{}
+	}
+	asked := append(append([]string(nil), opts.Criteria...), sortedKeys(opts.Rubric)...)
+	for _, criterion := range asked {
+		if _, ok := scored[strings.ToLower(strings.TrimSpace(criterion))]; !ok {
+			log.Error("Critique operation failed: a criterion was not scored")
+			return CritiqueResult{}, types.Newf(types.KindSchemaViolation, "critique",
+				"criteria_scores does not score every criterion that was asked for")
+		}
 	}
 
 	// MaxIssues was rendered into the prompt as "Limit to top %d issues." and
@@ -430,8 +492,8 @@ Return a JSON object with:
 	// a UI, a report, a budget -- and silently getting more is the failure that
 	// cap was meant to prevent.
 	if err := AtMost(result.Issues, opts.MaxIssues); err != nil {
-		log.Error("Critique returned more issues than requested", "error", err)
-		return result, fmt.Errorf("critique: %w", err)
+		log.Error("Critique returned more issues than requested", "error", loggedError(err))
+		return CritiqueResult{}, fmt.Errorf("critique: %w", err)
 	}
 
 	// SeverityFilter narrows what the caller wants reported, and an issue
@@ -444,12 +506,32 @@ Return a JSON object with:
 			if issue.Severity == "" || issue.Severity == opts.SeverityFilter {
 				continue
 			}
+			// The issue's severity is the model's word and is neither logged nor
+			// put in the error: the position says which issue, and the filter is
+			// one of the four words Validate accepts.
 			log.Error("Critique returned an issue outside the requested severity",
-				"issueIndex", i, "severity", issue.Severity, "severityFilter", opts.SeverityFilter)
-			return result, fmt.Errorf(
-				"critique: issue %d is %q severity, but only %q issues were requested",
-				i, issue.Severity, opts.SeverityFilter)
+				"issueIndex", i, "severityFilter", opts.SeverityFilter)
+			return CritiqueResult{}, types.Newf(types.KindInvariantViolation, "critique",
+				"issue %d has a severity other than the %q that was requested",
+				i, opts.SeverityFilter)
 		}
+	}
+
+	// IncludeSuggestions, IncludeFixes and IncludePositives are requests to the
+	// model that nothing said no to when they were off, so a model that wrote
+	// them anyway returned them. What was not asked for is removed here.
+	if !opts.IncludeSuggestions || !opts.IncludeFixes {
+		for i := range result.Issues {
+			if !opts.IncludeSuggestions {
+				result.Issues[i].Suggestion = ""
+			}
+			if !opts.IncludeFixes {
+				result.Issues[i].Fix = ""
+			}
+		}
+	}
+	if !opts.IncludePositives {
+		result.Positives = nil
 	}
 
 	log.Debug("Critique operation succeeded",

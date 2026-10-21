@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"iter"
+	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -17,8 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Provider defines the interface for LLM providers
@@ -85,9 +84,13 @@ type StreamingProvider interface {
 
 // CompletionRequest represents a unified request format
 type CompletionRequest struct {
-	Model          string
-	SystemPrompt   string
-	UserPrompt     string
+	Model        string
+	SystemPrompt string
+	UserPrompt   string
+	// Temperature is the sampling temperature. Zero means unset: the field is
+	// left off the request and the provider's own default applies, so a caller
+	// cannot ask for temperature zero through it. A model that does not take
+	// the parameter is sent none whatever this holds.
 	Temperature    float64
 	MaxTokens      int
 	ResponseFormat string // "json" or "text"
@@ -97,10 +100,28 @@ type CompletionRequest struct {
 	// used to render it into the prompt as prose and ask only for a json_object,
 	// so the one artifact that could make the result structurally guaranteed
 	// never reached the API that can enforce it.
+	//
+	// The map is read-only, and it is shared: the library hands every request
+	// for the same Go type the one map it worked out for the type, to save
+	// building it again for each call, and it may be read by several requests
+	// at once. A Provider or middleware that needs a changed schema copies it
+	// first. Changing it in place would alter the schema of every later request
+	// for the type, and is a data race against the requests running now.
 	JSONSchema map[string]any
 
 	// SchemaName names the schema in the request. It is required by the API.
 	SchemaName string
+
+	// ReasoningEffort is how much the model should reason before answering:
+	// "none", "low", "medium" and so on, as the model's family names them.
+	// Empty leaves the request as it was before this field existed.
+	//
+	// ReasoningEffortPreferred says whose wish it is. False means the caller
+	// asked for it: a provider that cannot honour it refuses the request. True
+	// means the operation would like it: a provider that cannot honour it
+	// ignores it. See resolveEffort.
+	ReasoningEffort          string
+	ReasoningEffortPreferred bool
 
 	// PromptCacheKey is sent as the Responses API's `prompt_cache_key`, a hint
 	// that tells OpenAI's routing layer which backend replica is likely to
@@ -121,16 +142,22 @@ type CompletionRequest struct {
 	// caller who never mentions tools gets the exact request this library
 	// sent before tool calling existed, not an empty tools array that some
 	// vendor implementation might treat differently from no array at all.
+	//
+	// The Responses API path and the chat-completions providers send them. A
+	// provider that cannot (Anthropic, the local provider, the codex transport and
+	// the decision providers) refuses a request that sets Tools, ToolChoice or
+	// Messages with KindUnsupportedCapability before anything is sent or run, and
+	// never answers it as though they were not there. A reply that is only tool
+	// calls is a complete answer: Content empty, CompletionResponse.ToolCalls set.
 	Tools []Tool
 
 	// ToolChoice steers whether and which tool the model must use. Accepted
 	// values mirror the Responses API: "auto" (the model decides, the
 	// default when this is empty), "none" (never call a tool), "required"
 	// (call some tool), or the exact Name of one of Tools to force that one.
-	// Any other value that names one of Tools is sent as a forced choice;
-	// forcing a name that is not in Tools is a caller bug caught by
-	// buildResponsesRequestBody's caller before the request is ever sent --
-	// see Complete.
+	// Any other value is a name that is not among Tools, which is a caller bug
+	// (a misspelling, a stray space): newResponsesHTTPRequest refuses it with
+	// KindInvalidRequest before the request is sent.
 	ToolChoice string
 
 	// WebSearch declares OpenAI's built-in web_search tool on the request,
@@ -143,8 +170,9 @@ type CompletionRequest struct {
 	// the model gets ANY web access at all.
 	//
 	// False produces the exact wire body this library sent before the field
-	// existed. Providers without a built-in search tool (Anthropic path,
-	// chat/completions-compatible, local) ignore it.
+	// existed. Providers without a built-in search tool (the Anthropic path, the
+	// chat-completions providers, the local provider and the codex transport)
+	// refuse a request that sets it.
 	WebSearch bool
 
 	// Messages, when non-empty, carries an explicit multi-turn transcript
@@ -154,12 +182,25 @@ type CompletionRequest struct {
 	// turn-by-turn conversation is Messages, in order, oldest first.
 	//
 	// Left empty, a request behaves exactly as it did before this field
-	// existed: SystemPrompt/UserPrompt build the single-turn request. This is
-	// additive infrastructure for a caller building its own multi-turn loop
-	// (see internal/ops/session.go) -- it is not wired into any operation in
-	// this library today, so PromptCacheKeyFor's stable-prefix property for
-	// system+template is unaffected by its mere existence.
+	// existed: SystemPrompt/UserPrompt build the single-turn request. A provider
+	// that cannot carry a transcript refuses a request that sets it, as it does
+	// for Tools. An assistant turn that called tools is written with those calls,
+	// and a tool turn is written as the result of the call it names, in the shape
+	// each wire defines.
 	Messages []Message
+
+	// Decision, when not nil, says what is being decided, typed: the subject and
+	// the questions, each a yes or no, a choice among labels or a level on a
+	// scale. An operation whose answer is bounded fills it, beside the prompts
+	// it has always sent, which ask the same thing of a model that writes JSON.
+	//
+	// A generating provider does not read it and answers the prompts: nothing
+	// it is sent changes with this field. A decision provider reads it, never
+	// the prompts, and answers in CompletionResponse.DecisionAnswers; a request
+	// that carries none asks it for text, which it refuses as an unsupported
+	// capability before anything is sent (DecisionLimits.Check). What the
+	// pointer leads to is read-only and is shared between calls.
+	Decision *Decision
 }
 
 // Tool describes one function the model may call. It is a declaration, not
@@ -191,6 +232,13 @@ type Message struct {
 	Role       string
 	Content    string
 	ToolCallID string
+
+	// ToolCalls are the calls the model made in this turn, on an assistant turn
+	// that asked for tools. The result of each is a later turn of the role "tool"
+	// naming the call's ID. A provider writes them back into the conversation so
+	// that a result is an answer to a call the model is shown it made; without
+	// them a tool turn answers nothing. Empty on every other turn.
+	ToolCalls []ToolCall
 }
 
 // ToolCall is a request FROM the model to run one of the Tools a
@@ -232,19 +280,80 @@ type CompletionResponse struct {
 	Provider     string
 	FinishReason string
 
+	// UpstreamProvider is the provider behind Provider, when Provider is a
+	// gateway that says which one served the request: OpenRouter answers with
+	// a top-level "provider" naming the vendor it sent the request to. It is
+	// empty when the response names none, which is not the same as the request
+	// having gone nowhere else. Provider stays the name of the provider this
+	// library handed the request to, because pricing, call records and the
+	// answered route are keyed by it; this field is what a data policy reads to
+	// see where the request went from there.
+	UpstreamProvider string
+
 	// ToolCalls holds the tool calls the model asked for instead of (or
 	// alongside) answering in Content. Empty on every response that did not
 	// request a tool -- a plain text response is unaffected by this field's
 	// existence, and a caller that never passes Tools in the request never
 	// has to look at it. See ToolCall for why the arguments inside are raw.
 	ToolCalls []ToolCall
+
+	// Cached reports that this response was served from a response cache and
+	// no provider was called for it. A cache sets it on a hit. Nothing was
+	// spent on such a response, and the accounting reads this flag to know:
+	// the usage on a hit is zero, and zero usage on its own is recorded as
+	// spend of unknown size.
+	Cached bool
+
+	// ServiceTier is the service tier the provider says it served this answer
+	// on, when it says. It can differ from the one that was asked for.
+	ServiceTier string
+
+	// Hedged reports that a second copy of the request was sent while the
+	// first was still in flight, whichever copy answered. mw.Hedge sets it. A
+	// hedged request can be billed twice, and the call record says that it
+	// was hedged.
+	Hedged bool
+
+	// Timing is where the time of the HTTP call went (LAT-001): the lookup,
+	// the connection, the handshake, the wait for the first byte and the
+	// reading of the body. A provider that does not time its calls leaves it
+	// at zero, which is not a measurement of an instant call (Measured).
+	Timing types.Timing
+
+	// DecisionAnswers are a decision provider's answers to the questions of
+	// CompletionRequest.Decision: one for each question, in the questions'
+	// order, each with the probability the model reported for it when it
+	// reports one. A generating provider leaves it nil and answers in Content.
+	// A decision provider leaves Content empty: the call path writes the form
+	// the operations read from these (RenderDecisionAnswers), and refuses an
+	// answer that is not one to its question.
+	DecisionAnswers []DecisionAnswer
+
+	// DecisionEscalation is set when a decision provider was asked first and
+	// the answer here is not its own: its probability was below the floor, or
+	// it failed or refused and the generating provider answered (mw.Decisions).
+	// Provider and Model above name who did answer.
+	DecisionEscalation *DecisionEscalation
 }
 
 // ProviderConfig contains provider-specific configuration
 type ProviderConfig struct {
-	APIKey       string
-	BaseURL      string
-	OrgID        string
+	APIKey  string
+	BaseURL string
+	OrgID   string
+
+	// Models are the models the tiers mean for this provider: smart, fast and
+	// quick, in that order. An empty entry means the built-in one for the
+	// provider.
+	Models [3]string
+
+	// Timeout bounds one call, from the request to the end of the response body.
+	// Zero is no bound of the configuration's own. With no HTTPClient the
+	// client the library builds enforces it. With an HTTPClient of the caller's
+	// it is applied to each call's context, since that client is used as it is.
+	// The earliest of the call context's deadline, the HTTPClient's own Timeout
+	// and this one is the one that fires, so a caller's client with a shorter
+	// Timeout of its own keeps it.
 	Timeout      time.Duration
 	MaxRetries   int
 	RetryBackoff time.Duration
@@ -255,6 +364,29 @@ type ProviderConfig struct {
 	// to false: the zero value is the private one, so a caller who never
 	// thinks about this gets retention off rather than on.
 	Store bool
+
+	// ServiceTier is the provider's service tier for every request this
+	// configures: "priority" for a faster answer at a higher price, "flex" for
+	// a slower one at a lower price, "default", or "auto". Empty sends none and
+	// leaves the choice to the account's own setting. It is sent to OpenAI's own
+	// Responses API endpoint and to nothing else, so a tier set on any other
+	// provider, Anthropic or a chat-completions provider, or on an OpenAI
+	// provider whose base URL is another host, is a configuration error when the
+	// provider is built. The tier the provider says it served the answer on is
+	// CompletionResponse.ServiceTier. LAT-008.
+	//
+	// The cost this library reports is at its price table's rates, which are
+	// the default tier's: on another tier the provider's bill differs.
+	ServiceTier string
+
+	// OmitTemperature leaves `temperature` off every request, whatever the
+	// model and whichever provider this configures. The model table decides
+	// this for a name it knows, and for an
+	// unknown name it goes by the endpoint; neither can see through an alias,
+	// such as an Azure deployment or a proxy route for a model that rejects the
+	// parameter. Set this for such an endpoint. The cost is that Mode no longer
+	// changes the sampling temperature there.
+	OmitTemperature bool
 
 	// HTTPClient lets the caller supply their own *http.Client -- a proxy, an
 	// mTLS transport, request instrumentation, or a transport that fails on
@@ -310,15 +442,35 @@ func resolveHTTPClient(config ProviderConfig) *http.Client {
 		if base == nil {
 			base = http.DefaultTransport
 		}
-		wrapped.Transport = &customTransport{transport: base, headers: config.ExtraHeaders}
+		wrapped.Transport = newCustomTransport(base, config.ExtraHeaders)
 		return &wrapped
 	}
 
-	client := &http.Client{Timeout: config.Timeout}
+	// LAT-002: with no client of the caller's, the transport is this
+	// library's shared one, tuned for many small calls at once. It was Go's
+	// default, which keeps two idle connections to a host.
+	client := &http.Client{Timeout: config.Timeout, Transport: sharedTransport()}
 	if len(config.ExtraHeaders) > 0 {
-		client.Transport = &customTransport{transport: http.DefaultTransport, headers: config.ExtraHeaders}
+		client.Transport = newCustomTransport(sharedTransport(), config.ExtraHeaders)
 	}
 	return client
+}
+
+// callContext applies ProviderConfig.Timeout to one call's context when the
+// caller supplied their own HTTPClient. A client the library builds carries the
+// timeout itself (see resolveHTTPClient), but a caller's client is used as it is
+// and may have none, in which case a call under a context with no deadline could
+// wait for ever, with Timeout set and ignored.
+//
+// The deadlines that apply are all of them, and the earliest one wins: the
+// context's own, the supplied client's Timeout, and ProviderConfig.Timeout. The
+// returned cancel function releases the timer and must be called once the body
+// has been read.
+func callContext(ctx context.Context, config ProviderConfig) (context.Context, context.CancelFunc) {
+	if config.HTTPClient == nil || config.Timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, config.Timeout)
 }
 
 // validateConfiguredEndpoint enforces config.EndpointPolicy against
@@ -357,7 +509,6 @@ var ErrUnrequestedTool = errors.New("model requested a tool that was not offered
 
 // OpenAIProvider implements Provider for OpenAI
 type OpenAIProvider struct {
-	client     *openai.Client
 	httpClient *http.Client
 	config     ProviderConfig
 }
@@ -375,19 +526,26 @@ type OpenAICompatibleProvider struct {
 // NewOpenAIProvider creates a new OpenAI provider
 func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("OpenAI API key is required")
+		return nil, missingKeyError("OpenAI")
 	}
 	if err := validateConfiguredEndpoint("openai", config); err != nil {
 		return nil, err
 	}
-
-	client, config, err := newOpenAIClient(config, "")
+	if err := validateCostEnvironment(); err != nil {
+		return nil, err
+	}
+	tier, err := serviceTier(config.ServiceTier)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI %w", err)
+		return nil, err
+	}
+	config.ServiceTier = tier
+	if err := requireOpenAIEndpointForTier(config); err != nil {
+		return nil, err
 	}
 
+	config = settleBaseURL(config, "")
+
 	return &OpenAIProvider{
-		client: client,
 		// One client per provider, resolved by resolveHTTPClient: the
 		// caller's own *http.Client (SC-007) when config.HTTPClient is set,
 		// or the same `&http.Client{Timeout: config.Timeout}` this always
@@ -399,6 +557,24 @@ func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 	}, nil
 }
 
+// serviceTiers are the tiers the Responses API names.
+var serviceTiers = []string{"auto", "default", "flex", "priority"}
+
+// serviceTier reads a configured tier: one of the provider's, in lower case,
+// or none.
+func serviceTier(configured string) (string, error) {
+	tier := strings.ToLower(strings.TrimSpace(configured))
+	if tier == "" {
+		return "", nil
+	}
+	for _, known := range serviceTiers {
+		if tier == known {
+			return tier, nil
+		}
+	}
+	return "", types.Newf(types.KindConfiguration, "llm.configure", "OpenAI service tier is not one the API names; it takes %s", strings.Join(serviceTiers, ", "))
+}
+
 // responsesAPIResponse is the shape of a POST /v1/responses payload -- the
 // body of a buffered call, and the payload the "response.completed" /
 // "response.incomplete" SSE events carry in a streamed one. Both paths
@@ -406,8 +582,18 @@ func NewOpenAIProvider(config ProviderConfig) (*OpenAIProvider, error) {
 // so a field the streaming event forgets to mirror is a compile error
 // instead of a silent gap between "streamed" and "buffered" behaviour.
 type responsesAPIResponse struct {
-	ID               string `json:"id"`
-	Status           string `json:"status"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// Error is the vendor's account of a response whose status is "failed". The
+	// API nests it in the response, and not at the top level of the event or body
+	// that carries the response.
+	Error *struct {
+		Code    any    `json:"code"`
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
+	// ServiceTier is the tier the provider served the request on.
+	ServiceTier      string `json:"service_tier"`
 	IncompleteReason struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details"`
@@ -465,6 +651,23 @@ func (r *responsesAPIResponse) content() string {
 	return builder.String()
 }
 
+// refused reports whether a message item carries a "refusal" content part: the
+// model declining to answer. What the part holds is the model's own words, and
+// is not read.
+func (r *responsesAPIResponse) refused() bool {
+	for _, output := range r.Output {
+		if output.Type != "" && output.Type != "message" {
+			continue
+		}
+		for _, item := range output.Content {
+			if item.Type == "refusal" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // toolCalls extracts every "function_call" output item. A reasoning model
 // or a tool-calling model can emit these alongside or instead of a
 // "message" item, and unlike content() this does not require the payload
@@ -492,15 +695,17 @@ func (r *responsesAPIResponse) toolCalls() []ToolCall {
 
 // finishReason derives the finish reason the same way for a buffered
 // response and a streamed one's terminal event -- a truncated answer must
-// be distinguishable from a complete one in both.
+// be distinguishable from a complete one in both. It reads only the two
+// statuses that carry an answer; classifyResponsesResult refuses every other
+// before this is reached, so a status that did not finish is never "stop".
 func (r *responsesAPIResponse) finishReason() string {
-	if r.Status != "incomplete" {
-		return "stop"
+	if r.Status == "incomplete" {
+		if r.IncompleteReason.Reason != "" {
+			return r.IncompleteReason.Reason
+		}
+		return "incomplete"
 	}
-	if r.IncompleteReason.Reason != "" {
-		return r.IncompleteReason.Reason
-	}
-	return "incomplete"
+	return "stop"
 }
 
 func (r *responsesAPIResponse) toCompletionResponse(providerName string) CompletionResponse {
@@ -508,13 +713,15 @@ func (r *responsesAPIResponse) toCompletionResponse(providerName string) Complet
 	calls := r.toolCalls()
 
 	finishReason := r.finishReason()
-	if content == "" && len(calls) > 0 && finishReason == "stop" {
+	if len(calls) > 0 && finishReason == "stop" {
 		// "stop" is technically accurate (the response completed normally)
-		// but indistinguishable from a genuine empty text answer. A caller
-		// switching on FinishReason -- as this library's own
-		// ClassifyCompletion does for truncation -- needs to be able to
-		// tell "the model answered with nothing" apart from "the model
-		// asked for a tool instead of answering."
+		// but indistinguishable from a genuine empty text answer, or from an
+		// answer that has nothing more to say. A caller switching on
+		// FinishReason -- as this library's own ClassifyCompletion does for
+		// truncation -- needs to be able to tell "the model answered" apart
+		// from "the model asked for a tool", whether or not it said something
+		// first. The chat dialect's own reason for the same thing is
+		// "tool_calls", and this is the same word.
 		finishReason = "tool_calls"
 	}
 
@@ -523,6 +730,7 @@ func (r *responsesAPIResponse) toCompletionResponse(providerName string) Complet
 		ToolCalls:    calls,
 		Provider:     providerName,
 		Model:        r.Model,
+		ServiceTier:  r.ServiceTier,
 		FinishReason: finishReason,
 		Usage: types.TokenUsage{
 			PromptTokens:     r.Usage.InputTokens,
@@ -553,22 +761,63 @@ func (r *responsesAPIResponse) toCompletionResponse(providerName string) Complet
 // naming something the caller never declared is refused here, in Go,
 // instead of being handed to a caller who might mistake "the model
 // mentioned a tool" for "the model may run one."
-func classifyResponsesResult(r *responsesAPIResponse, providerName string, offeredTools []Tool) (CompletionResponse, error) {
-	if len(r.Output) == 0 {
-		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
+//
+// Only a status that carries an answer is read as one. "completed" is a whole
+// answer and "incomplete" one that was cut short, which the finish reason says.
+// "failed" is an error, with the code and message the vendor put in the
+// response, and any other status, or none, is a response that is not a finished
+// answer, so it is refused and not read as one that stopped normally.
+//
+// requestModel is the model the request named, for the errors this returns; the
+// response's own model field is not known to be there on a failure.
+func classifyResponsesResult(r *responsesAPIResponse, providerName, requestModel string, offeredTools []Tool, config ProviderConfig) (CompletionResponse, error) {
+	switch r.Status {
+	case "completed", "incomplete":
+	case "failed":
+		return CompletionResponse{}, responsesFailedError(providerName, requestModel, r, config)
+	case "cancelled", "queued", "in_progress":
+		return CompletionResponse{}, &types.OperationError{
+			Kind:     types.KindProviderUnavailable,
+			Op:       "llm.complete",
+			Provider: providerName,
+			Model:    requestModel,
+			Message:  fmt.Sprintf("the response did not finish (status %s)", r.Status),
+		}
+	default:
+		return CompletionResponse{}, &types.OperationError{
+			Kind:     types.KindMalformedOutput,
+			Op:       "llm.complete",
+			Provider: providerName,
+			Model:    requestModel,
+			Message:  "the response carried no status this library recognises, so it is not known to be a finished answer",
+		}
+	}
+
+	// A refusal part is the model declining. It is not an answer, and any text
+	// beside it is not trusted to be one: the part was dropped and the rest
+	// returned, which handed a caller the words of a model that had said no.
+	if r.refused() {
+		return CompletionResponse{}, refusedAnswerError(providerName, requestModel)
 	}
 
 	calls := r.toolCalls()
 
 	if r.content() == "" && len(calls) == 0 {
-		if r.Status == "incomplete" && r.IncompleteReason.Reason != "" {
-			return CompletionResponse{}, fmt.Errorf("OpenAI response incomplete: %s", r.IncompleteReason.Reason)
+		// The answer was stopped before any text. The same request would be
+		// stopped the same way, and was billed for what it spent getting there.
+		if r.Status == "incomplete" {
+			return CompletionResponse{}, incompleteAnswerError(providerName, requestModel, r.IncompleteReason.Reason)
 		}
 		return CompletionResponse{}, fmt.Errorf("openai: %w", ErrNoMessageOutput)
 	}
 
 	if len(calls) > 0 {
-		if err := validateToolCalls(calls, offeredTools); err != nil {
+		// A reply that stopped at a limit with tool calls in it has calls that were
+		// cut, whatever they look like.
+		if r.Status == "incomplete" {
+			return CompletionResponse{}, truncatedToolCallsError(providerName, requestModel, r.IncompleteReason.Reason)
+		}
+		if err := checkToolCalls(providerName, calls, offeredTools); err != nil {
 			return CompletionResponse{}, err
 		}
 	}
@@ -576,21 +825,60 @@ func classifyResponsesResult(r *responsesAPIResponse, providerName string, offer
 	return r.toCompletionResponse(providerName), nil
 }
 
+// responsesFailedError is the error for a response whose status is "failed",
+// built from the error object the vendor nested in it.
+func responsesFailedError(providerName, requestModel string, r *responsesAPIResponse, config ProviderConfig) error {
+	if r.Error == nil {
+		return NewAPIError(providerName, requestModel, statusForVendorCode(""), "")
+	}
+	return vendorFailureError(providerName, requestModel, r.Error.Type, scalarString(r.Error.Code), r.Error.Message, config)
+}
+
+// vendorFailureError builds the typed error for a failure the vendor reported
+// inside a 200 answer or a stream, where there is no status line of its own. The
+// status is the one an HTTP failure for the same code carries (see
+// statusForVendorCode), so the failure is classified, and retried or not, the
+// way the same failure would be had it arrived as a status.
+func vendorFailureError(provider, model, errType, code, message string, config ProviderConfig) *APIError {
+	scrub := newScrubber(configSecrets(config))
+	apiErr := &APIError{
+		Provider:   provider,
+		Model:      model,
+		StatusCode: statusForVendorCode(code),
+	}
+	apiErr.fill(scrub, message, errType, code, "")
+	return apiErr
+}
+
+// statusForVendorCode maps the code a vendor puts in a failure that has no
+// status line to the status that code stands for. A number from 400 to 599 is a
+// status already; a code this does not know is a 502, the provider failing to
+// produce an answer, which is retried and is not the caller's request being
+// wrong.
+func statusForVendorCode(code string) int {
+	if status, err := strconv.Atoi(code); err == nil && status >= 400 && status <= 599 {
+		return status
+	}
+	switch {
+	case code == "rate_limit_exceeded":
+		return http.StatusTooManyRequests
+	case code == "server_error":
+		return http.StatusInternalServerError
+	case code == "vector_store_timeout":
+		return http.StatusGatewayTimeout
+	case strings.HasPrefix(code, "invalid_"), strings.HasPrefix(code, "image_"),
+		strings.HasPrefix(code, "unsupported_"), strings.HasPrefix(code, "empty_"),
+		strings.HasPrefix(code, "failed_to_download"):
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
+}
+
 // validateToolCalls refuses any call naming a tool the request never
-// offered. It compares by Name only -- offeredTools is what CompletionRequest
-// declared, calls is what the model sent back -- and never touches or
-// mentions a call's Arguments, which are the caller's data.
+// offered, with the Responses API's name on the error. It is checkToolNames; the
+// reply of a call is held to more than this (checkToolCalls).
 func validateToolCalls(calls []ToolCall, offeredTools []Tool) error {
-	offered := make(map[string]struct{}, len(offeredTools))
-	for _, tool := range offeredTools {
-		offered[tool.Name] = struct{}{}
-	}
-	for _, call := range calls {
-		if _, ok := offered[call.Name]; !ok {
-			return fmt.Errorf("openai: %w: %q", ErrUnrequestedTool, call.Name)
-		}
-	}
-	return nil
+	return checkToolNames("openai", calls, offeredTools)
 }
 
 // buildResponsesRequestBody constructs the JSON body shared by the buffered
@@ -599,27 +887,16 @@ func validateToolCalls(calls []ToolCall, offeredTools []Tool) error {
 // reasoning controls, cache key -- is built identically for both, because a
 // caller streaming the exact same request as a buffered call must produce
 // the exact same request on the wire.
-func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest, stream bool) map[string]interface{} {
+func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest, stream bool) map[string]any {
 	// input is either the single UserPrompt string (unchanged from before
 	// Messages existed) or, when the caller supplied an explicit transcript,
 	// an ordered array of role/content turns. SystemPrompt still becomes
 	// "instructions" either way -- the Responses API keeps steering separate
 	// from the turn history, so a caller building a transcript is not also
 	// responsible for re-injecting the system prompt as message zero.
-	var input interface{}
+	var input any
 	if len(req.Messages) > 0 {
-		turns := make([]map[string]interface{}, 0, len(req.Messages))
-		for _, msg := range req.Messages {
-			turn := map[string]interface{}{
-				"role":    msg.Role,
-				"content": msg.Content,
-			}
-			if msg.ToolCallID != "" {
-				turn["call_id"] = msg.ToolCallID
-			}
-			turns = append(turns, turn)
-		}
-		input = turns
+		input = responsesInputItems(req.Messages)
 	} else {
 		userInput := req.UserPrompt
 		if req.ResponseFormat == "json" && !strings.Contains(strings.ToLower(userInput), "json") {
@@ -628,7 +905,7 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 		input = userInput
 	}
 
-	requestBody := map[string]interface{}{
+	requestBody := map[string]any{
 		"model":        req.Model,
 		"input":        input,
 		"instructions": req.SystemPrompt,
@@ -639,11 +916,17 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 		// into retention. Off by default; Store(true) is opt-in.
 		"store": provider.config.Store,
 	}
+	// Only to OpenAI's own endpoint: the constructor refuses a tier for any
+	// other, and this holds for a provider that was put together without it.
+	if provider.config.ServiceTier != "" && isOpenAIEndpoint(provider.config.BaseURL) {
+		requestBody["service_tier"] = provider.config.ServiceTier
+	}
 	if stream {
 		requestBody["stream"] = true
 	}
 
-	if req.Temperature > 0 && supportsTemperature(req.Model) {
+	if req.Temperature > 0 && !provider.config.OmitTemperature &&
+		supportsTemperature(req.Model, isOpenAIEndpoint(provider.config.BaseURL)) {
 		requestBody["temperature"] = req.Temperature
 	}
 
@@ -652,33 +935,33 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 	}
 
 	if req.PromptCacheKey != "" {
-		requestBody["prompt_cache_key"] = req.PromptCacheKey
+		// The API refuses a key over 64 characters, and the key an operation
+		// builds from its schema identity is longer than that (LX-002).
+		requestBody["prompt_cache_key"] = boundPromptCacheKey(req.PromptCacheKey)
 	}
 
 	// Tools/ToolChoice are omitted entirely rather than sent empty/"auto" by
 	// default, so a request that never mentions tools produces the exact
 	// same wire body it produced before tool calling existed.
 	if len(req.Tools) > 0 || req.WebSearch {
-		tools := make([]map[string]interface{}, 0, len(req.Tools)+1)
+		tools := make([]map[string]any, 0, len(req.Tools)+1)
 		for _, tool := range req.Tools {
-			parameters := tool.Parameters
-			if parameters == nil {
-				parameters = map[string]interface{}{
-					"type":       "object",
-					"properties": map[string]interface{}{},
-				}
-			}
-			tools = append(tools, map[string]interface{}{
+			parameters := toolParameters(tool)
+			tools = append(tools, map[string]any{
 				"type":        "function",
 				"name":        tool.Name,
 				"description": tool.Description,
 				"parameters":  parameters,
+				// The API reads a function with no flag as strict, and answers a
+				// schema strict mode does not accept with a 400. The flag is
+				// written out, true when the schema is one strict mode takes.
+				"strict": toolIsStrict(parameters),
 			})
 		}
 		if req.WebSearch {
 			// The built-in tool is a bare type marker: the provider hosts
 			// the implementation, so there is no name/parameters half.
-			tools = append(tools, map[string]interface{}{"type": "web_search"})
+			tools = append(tools, map[string]any{"type": "web_search"})
 		}
 		requestBody["tools"] = tools
 	}
@@ -688,14 +971,14 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 			requestBody["tool_choice"] = req.ToolChoice
 		default:
 			// Anything else names one specific tool to force.
-			requestBody["tool_choice"] = map[string]interface{}{
+			requestBody["tool_choice"] = map[string]any{
 				"type": "function",
 				"name": req.ToolChoice,
 			}
 		}
 	}
 
-	textConfig := map[string]interface{}{}
+	textConfig := map[string]any{}
 	if req.ResponseFormat == "json" {
 		if len(req.JSONSchema) > 0 {
 			name := req.SchemaName
@@ -704,7 +987,7 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 			}
 			// strict: the model must produce something the schema accepts, which
 			// is the difference between a contract and a request.
-			textConfig["format"] = map[string]interface{}{
+			textConfig["format"] = map[string]any{
 				"type":   "json_schema",
 				"name":   name,
 				"strict": true,
@@ -716,11 +999,14 @@ func (provider *OpenAIProvider) buildResponsesRequestBody(req CompletionRequest,
 			}
 		}
 	}
-	if supportsReasoningControls(req.Model) {
-		// An empty effort means "this family's accepted values are unknown".
-		// Sending the block anyway would fail the whole request, so omit it.
-		if effort := reasoningEffort(req.Model); effort != "" {
-			requestBody["reasoning"] = map[string]string{"effort": effort}
+	// A refusal is newResponsesHTTPRequest's to make, before this is called;
+	// here an effort that cannot be sent is left off.
+	if effort, _ := resolveEffort(req.Model, isOpenAIEndpoint(provider.config.BaseURL), req.ReasoningEffort, req.ReasoningEffortPreferred); effort != "" {
+		requestBody["reasoning"] = map[string]string{"effort": effort}
+		// The families that are sent a default effort are also asked to be
+		// brief. That stays with the family and not with the effort, so a
+		// request with no effort set is byte for byte what it was.
+		if supportsReasoningControls(req.Model) {
 			textConfig["verbosity"] = "low"
 		}
 	}
@@ -736,6 +1022,52 @@ func (provider *OpenAIProvider) newResponsesHTTPRequest(ctx context.Context, req
 	url := "https://api.openai.com/v1/responses"
 	if provider.config.BaseURL != "" {
 		url = strings.TrimRight(provider.config.BaseURL, "/") + "/responses"
+	}
+
+	// A schema is always sent as strict, and OpenAI answers a schema that is
+	// not strict-valid with a 400 that names neither the operation nor the
+	// field (LX-003). Refusing it here costs no network call, says where the
+	// schema is wrong, and is classified as an invalid request so the retry
+	// loop does not send the same body four times.
+	//
+	// Only for OpenAI's own endpoint. The rules checked are the ones that API
+	// was observed to enforce; another server behind an OpenAI-shaped URL may
+	// accept a schema this would refuse, and a caller whose own schema worked
+	// there should not have it taken away on OpenAI's behalf.
+	if err := checkToolChoice(req, provider.Name()); err != nil {
+		return nil, err
+	}
+	if err := checkTools(req, provider.Name(), isOpenAIEndpoint(provider.config.BaseURL)); err != nil {
+		return nil, err
+	}
+	if err := checkTranscript(req, provider.Name()); err != nil {
+		return nil, err
+	}
+
+	if req.ResponseFormat == "json" && len(req.JSONSchema) > 0 && isOpenAIEndpoint(provider.config.BaseURL) {
+		if problem := StrictSchemaProblem(req.JSONSchema); problem != "" {
+			name := req.SchemaName
+			if name == "" {
+				name = "result"
+			}
+			return nil, &types.OperationError{
+				Kind:     types.KindInvalidRequest,
+				Provider: provider.Name(),
+				Model:    req.Model,
+				Message:  fmt.Sprintf("the response schema %q is not valid for strict structured output: %s", name, problem),
+			}
+		}
+	}
+
+	// LX-105. An effort the caller asked for and the model does not take is
+	// refused here, with the values it does take.
+	if _, problem := resolveEffort(req.Model, isOpenAIEndpoint(provider.config.BaseURL), req.ReasoningEffort, req.ReasoningEffortPreferred); problem != "" {
+		return nil, &types.OperationError{
+			Kind:     types.KindInvalidRequest,
+			Provider: provider.Name(),
+			Model:    req.Model,
+			Message:  problem,
+		}
 	}
 
 	jsonData, err := json.Marshal(provider.buildResponsesRequestBody(req, stream))
@@ -759,35 +1091,57 @@ func (provider *OpenAIProvider) newResponsesHTTPRequest(ctx context.Context, req
 	return httpReq, nil
 }
 
+// Warm opens the connection the provider's calls will use (LAT-002).
+func (provider *OpenAIProvider) Warm(ctx context.Context) error {
+	endpoint := "https://api.openai.com/v1"
+	if provider.config.BaseURL != "" {
+		endpoint = strings.TrimRight(provider.config.BaseURL, "/")
+	}
+	return warmConnection(ctx, provider.httpClient, provider.Name(), endpoint)
+}
+
 // Complete sends a completion request to OpenAI using the Responses API
 func (provider *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	// Use the new Responses API (POST /v1/responses)
-	// Since go-openai v1.20.4 doesn't support this endpoint, we implement it manually.
+	ctx, cancel := callContext(ctx, provider.config)
+	defer cancel()
+
+	// POST /v1/responses, written out here because go-openai does not speak the
+	// Responses API.
 	httpReq, err := provider.newResponsesHTTPRequest(ctx, req, false)
 	if err != nil {
 		return CompletionResponse{}, err
 	}
 
-	resp, err := provider.httpClient.Do(httpReq)
+	resp, clock, err := doTimed(provider.httpClient, httpReq)
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("OpenAI request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	// Read to its end, so that the connection is kept (drainAndClose).
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		if isRateLimited(resp.StatusCode) {
-			return CompletionResponse{}, rateLimitError("openai", req.Model, resp, string(bodyBytes))
-		}
-		return CompletionResponse{}, NewAPIError("openai", req.Model, resp.StatusCode, string(bodyBytes))
+		return CompletionResponse{}, statusError("openai", req.Model, resp, provider.config)
 	}
 
+	raw, err := readBounded(resp.Body, maxResponseBodyBytes)
+	if err != nil {
+		return CompletionResponse{}, fmt.Errorf("failed to read response: %w", err)
+	}
 	var response responsesAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return CompletionResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return classifyResponsesResult(&response, provider.Name(), req.Tools)
+	// Taken once the body has been read and decoded, so that the reading is in
+	// it. It travels only on a result: a call that failed returns no result, and
+	// the error type has nowhere to carry it.
+	timing := clock.timing()
+	result, err := classifyResponsesResult(&response, provider.Name(), req.Model, req.Tools, provider.config)
+	if err != nil {
+		return CompletionResponse{}, err
+	}
+	result.Timing = timing
+	return result, nil
 }
 
 // ErrStreamIncomplete reports a stream that ended without either a terminal
@@ -811,6 +1165,9 @@ var ErrStreamIncomplete = errors.New("stream ended before a completion event arr
 // and no read-ahead buffer to drain.
 func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req CompletionRequest) iter.Seq2[StreamChunk, error] {
 	return func(yield func(StreamChunk, error) bool) {
+		ctx, cancel := callContext(ctx, provider.config)
+		defer cancel()
+
 		httpReq, err := provider.newResponsesHTTPRequest(ctx, req, true)
 		if err != nil {
 			yield(StreamChunk{}, err)
@@ -829,12 +1186,7 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 			// line arrives before any SSE framing, so a rejected request
 			// looks identical to a caller whether or not they asked to
 			// stream it.
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			if isRateLimited(resp.StatusCode) {
-				yield(StreamChunk{}, rateLimitError("openai", req.Model, resp, string(bodyBytes)))
-				return
-			}
-			yield(StreamChunk{}, NewAPIError("openai", req.Model, resp.StatusCode, string(bodyBytes)))
+			yield(StreamChunk{}, statusError("openai", req.Model, resp, provider.config))
 			return
 		}
 
@@ -842,12 +1194,16 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 		// SSE frames are small individually, but a "response.completed"
 		// event carries the whole answer as one line; the default 64KiB
 		// token limit truncates any answer longer than that silently inside
-		// bufio, which would look like a parse error three layers away. 4MiB
-		// matches the largest answer this library's own tier ceilings can
-		// produce.
-		scanner.Buffer(make([]byte, 64*1024), 4<<20)
+		// bufio, which would look like a parse error three layers away. The
+		// ceiling is the one an event as a whole is held to, below.
+		scanner.Buffer(make([]byte, 64*1024), maxStreamEventBytes)
 
 		var dataLines []string
+		// eventBytes totals the data lines collected for the event being read. A
+		// stream that never sends the blank line that ends an event would
+		// otherwise grow dataLines without limit, each line within the per-line
+		// ceiling.
+		eventBytes := 0
 		terminal := false
 
 		// flush decodes one complete SSE event (the data: lines collected
@@ -860,19 +1216,20 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 			}
 			payload := strings.Join(dataLines, "\n")
 			dataLines = nil
+			eventBytes = 0
 			if payload == "[DONE]" {
 				return true
 			}
 
+			// An "error" event carries its code and message at the top level of
+			// the event; a "response.failed" event carries them inside its
+			// response, as Response.Error. Neither is under a top-level "error".
 			var envelope struct {
 				Type     string                `json:"type"`
 				Delta    string                `json:"delta"`
 				Response *responsesAPIResponse `json:"response"`
-				Error    *struct {
-					Message string `json:"message"`
-					Type    string `json:"type"`
-					Code    any    `json:"code"`
-				} `json:"error"`
+				Code     any                   `json:"code"`
+				Message  string                `json:"message"`
 			}
 			if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
 				// A frame that is not JSON at all is a framing bug, not a
@@ -893,21 +1250,22 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 				if envelope.Response == nil {
 					return yield(StreamChunk{}, fmt.Errorf("openai: %s carried no response", envelope.Type))
 				}
-				completion, err := classifyResponsesResult(envelope.Response, provider.Name(), req.Tools)
+				completion, err := classifyResponsesResult(envelope.Response, provider.Name(), req.Model, req.Tools, provider.config)
 				if err != nil {
 					return yield(StreamChunk{}, err)
 				}
 				return yield(StreamChunk{Done: true, Response: completion}, nil)
 
-			case "response.failed", "error":
+			case "response.failed":
 				terminal = true
-				apiErr := NewAPIError("openai", req.Model, 0, payload)
-				if envelope.Error != nil && apiErr.Message == "" {
-					apiErr.Message = truncateMessage(envelope.Error.Message)
-					apiErr.Type = envelope.Error.Type
-					apiErr.Code = scalarString(envelope.Error.Code)
+				if envelope.Response == nil {
+					return yield(StreamChunk{}, vendorFailureError(provider.Name(), req.Model, envelope.Type, "", "", provider.config))
 				}
-				return yield(StreamChunk{}, apiErr)
+				return yield(StreamChunk{}, responsesFailedError(provider.Name(), req.Model, envelope.Response, provider.config))
+
+			case "error":
+				terminal = true
+				return yield(StreamChunk{}, vendorFailureError(provider.Name(), req.Model, envelope.Type, scalarString(envelope.Code), envelope.Message, provider.config))
 
 			default:
 				// Every other event type (response.created,
@@ -931,6 +1289,11 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 				continue
 			}
 			if after, ok := strings.CutPrefix(line, "data:"); ok {
+				eventBytes += len(after) + 1
+				if eventBytes > maxStreamEventBytes {
+					yield(StreamChunk{}, streamEventTooLongError())
+					return
+				}
 				dataLines = append(dataLines, strings.TrimPrefix(after, " "))
 			}
 			// Any other field (event:, id:, retry:, or a comment line
@@ -940,6 +1303,10 @@ func (provider *OpenAIProvider) CompleteStream(ctx context.Context, req Completi
 		}
 
 		if err := scanner.Err(); err != nil {
+			if errors.Is(err, bufio.ErrTooLong) {
+				yield(StreamChunk{}, streamEventTooLongError())
+				return
+			}
 			yield(StreamChunk{}, fmt.Errorf("openai stream read failed: %w", err))
 			return
 		}
@@ -973,10 +1340,19 @@ func (provider *OpenAIProvider) RetryPolicy() (int, time.Duration) {
 
 // EstimateCost estimates the cost for OpenAI
 func (provider *OpenAIProvider) EstimateCost(req CompletionRequest) float64 {
-	inputRate, outputRate := getModelRates("openai", req.Model)
+	return estimateCost("openai", req)
+}
 
-	estimatedPromptTokens := len(req.SystemPrompt+req.UserPrompt) / 4
-	estimatedCompletionTokens := 500 // Default estimate
+// estimateCost is the estimate every provider makes: the prompt at four
+// characters to a token, and a completion of the request's ceiling, or 500 tokens
+// when it names none, each at the provider's rate for the model. The prompt is
+// everything the request sends: the system and user prompts, the turns of a
+// conversation, and the tools declared.
+func estimateCost(provider string, req CompletionRequest) float64 {
+	inputRate, outputRate := getModelRates(provider, req.Model)
+
+	estimatedPromptTokens := requestPromptBytes(req) / 4
+	estimatedCompletionTokens := 500
 	if req.MaxTokens > 0 {
 		estimatedCompletionTokens = req.MaxTokens
 	}
@@ -995,119 +1371,73 @@ func (provider *OpenAIProvider) EstimateCost(req CompletionRequest) float64 {
 // This matters more than a normal default would, because these parameters are
 // not negotiated: an unaccepted one fails the WHOLE request with a 400, so a
 // wrong guess is not a degraded call, it is no call at all.
-
-func supportsTemperature(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	// Measured: all three 5.6 models reject `temperature` outright, including
-	// a temperature of zero -- "Unsupported parameter: 'temperature' is not
-	// supported with this model."
-	if strings.HasPrefix(model, "gpt-5") {
-		return false
-	}
-	return true
-}
-
-func supportsReasoningControls(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-
-	// The 5.6 family accepts a reasoning block, so this is not about what the
-	// API allows. It is about what the answer is worth afterwards.
-	//
-	// Measured on a proration with a distractor figure, four runs per arm:
-	//
-	//	                 omitted        effort=none      effort=low
-	//	luna             4/4  2304ms    0/4  3682ms      4/4  2339ms
-	//	sol              4/4  6808ms    0/4  2959ms      4/4  3375ms
-	//	terra            4/4  2174ms    4/4  1884ms      4/4  2232ms
-	//
-	// `effort: none` takes luna and sol from four correct to none correct --
-	// answers of 650 and 2600 against a correct 500. `effort: low` matches the
-	// omitted case on accuracy and beats it on latency nowhere that matters.
-	// So the block buys nothing and can cost everything: omit it, and let the
-	// server's own default stand.
-	if strings.HasPrefix(model, "gpt-5.6") {
-		return false
-	}
-	return strings.HasPrefix(model, "gpt-5")
-}
-
-// reasoningEffort returns an effort value the model accepts, or "" to omit the
-// block entirely.
 //
-// It used to return "minimal" for everything that was not gpt-5.4. The 5.6
-// family rejects "minimal" -- accepted values are none/low/medium/high/xhigh/
-// max -- so the pair of functions was one flag away from 400ing every request,
-// and supportsReasoningControls returning false was the only thing hiding it.
-// Returning "" for a family whose accepted values are not known keeps the
-// failure mode at "no reasoning control" rather than "no requests".
-func reasoningEffort(model string) string {
-	model = strings.ToLower(strings.TrimSpace(model))
-	switch {
-	case strings.HasPrefix(model, "gpt-5.6"):
-		// Accepted, but measured to be harmful at "none" and neutral at "low";
-		// see supportsReasoningControls. Named here so that flipping that
-		// predicate produces a valid request rather than a 400.
-		return "low"
-	case strings.HasPrefix(model, "gpt-5.4"):
-		return "none"
-	case strings.HasPrefix(model, "gpt-5"):
-		return "minimal"
-	default:
-		return ""
-	}
+// The three predicates read one table, modelFamilies in models.go, which is
+// also where the measurements behind each row are recorded. They used to carry
+// a prefix comparison each, and all three answered for a model none of them
+// named, which is how a new family got `temperature` and failed every request
+// (LX-001).
+
+// supportsTemperature reports whether `temperature` is sent for the model.
+// openAIEndpoint says whether the request goes to OpenAI's own API, which
+// decides the answer for a name the table does not know; see traitsFor.
+func supportsTemperature(model string, openAIEndpoint bool) bool {
+	return traitsFor(model, openAIEndpoint).temperature
 }
 
-func normalizeProviderName(name string) string {
+// supportsReasoningControls reports whether a reasoning block is sent when the
+// caller has not asked for a particular effort. A name the table does not know
+// gets no block on any endpoint, so the endpoint does not enter into it.
+func supportsReasoningControls(model string) bool {
+	return traitsFor(model, true).reasoningBlock
+}
+
+// NormalizeProviderName is the one spelling of a provider's name: trimmed of
+// space and in lower case. The client package matches names the same way when it
+// picks a provider by name, and two copies of the rule would let " OpenAI" be
+// one provider in one place and an unknown one in the other.
+func NormalizeProviderName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
-func newOpenAIClient(config ProviderConfig, defaultBaseURL string) (*openai.Client, ProviderConfig, error) {
-	if config.APIKey == "" {
-		return nil, config, fmt.Errorf("API key is required")
-	}
-
-	clientConfig := openai.DefaultConfig(config.APIKey)
-
+// settleBaseURL returns config with its base URL trimmed of space and of a
+// trailing slash, or defaultBaseURL when it names none. A provider with neither
+// keeps an empty one, which the Responses path reads as OpenAI's own endpoint.
+func settleBaseURL(config ProviderConfig, defaultBaseURL string) ProviderConfig {
 	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	if baseURL == "" {
 		baseURL = strings.TrimRight(defaultBaseURL, "/")
 	}
 	if baseURL != "" {
-		clientConfig.BaseURL = baseURL
 		config.BaseURL = baseURL
 	}
+	return config
+}
 
-	if config.OrgID != "" {
-		clientConfig.OrgID = config.OrgID
-	}
-
-	if len(config.ExtraHeaders) > 0 {
-		clientConfig.HTTPClient = &http.Client{
-			Transport: &customTransport{
-				transport: http.DefaultTransport,
-				headers:   config.ExtraHeaders,
-			},
-			Timeout: config.Timeout,
-		}
-	}
-
-	return openai.NewClientWithConfig(clientConfig), config, nil
+// missingKeyError is the configuration error for a provider built with no API
+// key, which would otherwise be built and answer every call with a 401.
+func missingKeyError(provider string) error {
+	return types.Newf(types.KindConfiguration, "llm.configure", "%s API key is required", provider)
 }
 
 func newOpenAICompatibleProvider(name string, config ProviderConfig, defaultBaseURL string) (*OpenAICompatibleProvider, error) {
 	if err := validateConfiguredEndpoint(name, config); err != nil {
 		return nil, err
 	}
-
-	// newOpenAIClient is still what validates the key and settles the base URL,
-	// even though the SDK client it builds is no longer used to send the call.
-	_, config, err := newOpenAIClient(config, defaultBaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("%s %w", name, err)
+	if err := validateCostEnvironment(); err != nil {
+		return nil, err
+	}
+	if err := refuseServiceTier(NormalizeProviderName(name), config); err != nil {
+		return nil, err
 	}
 
+	if config.APIKey == "" {
+		return nil, missingKeyError(name)
+	}
+	config = settleBaseURL(config, defaultBaseURL)
+
 	return &OpenAICompatibleProvider{
-		name: normalizeProviderName(name),
+		name: NormalizeProviderName(name),
 		// resolveHTTPClient (SC-007): the caller's own *http.Client when
 		// config.HTTPClient is set, otherwise the same
 		// `&http.Client{Timeout: config.Timeout}` this always built.
@@ -1127,9 +1457,15 @@ type AnthropicProvider struct {
 // NewAnthropicProvider creates a new Anthropic provider
 func NewAnthropicProvider(config ProviderConfig) (*AnthropicProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("anthropic API key is required")
+		return nil, missingKeyError("anthropic")
 	}
 	if err := validateConfiguredEndpoint("anthropic", config); err != nil {
+		return nil, err
+	}
+	if err := validateCostEnvironment(); err != nil {
+		return nil, err
+	}
+	if err := refuseServiceTier("anthropic", config); err != nil {
 		return nil, err
 	}
 
@@ -1153,24 +1489,48 @@ func NewAnthropicProvider(config ProviderConfig) (*AnthropicProvider, error) {
 	}, nil
 }
 
+// anthropicDefaultModel is what this provider sends when the request names no
+// Claude model.
+const anthropicDefaultModel = "claude-3-5-sonnet-20240620"
+
+// ModelSentFor returns the model this provider sends for a requested one. An
+// empty model, and a "gpt" one, which the library's default model settings
+// produce for every provider and Anthropic cannot serve, are sent as
+// anthropicDefaultModel; any other name is sent as it is.
+//
+// It is exported so that the route can be known before the call. The data
+// policy checked "anthropic/<the requested name>" while the request went to the
+// default model, so content was sent over a route that was never checked, and
+// the answer was then refused for naming one (see ModelSentBy).
+func (provider *AnthropicProvider) ModelSentFor(requested string) string {
+	name := strings.TrimSpace(requested)
+	if name == "" || strings.HasPrefix(strings.ToLower(name), "gpt") {
+		return anthropicDefaultModel
+	}
+	return name
+}
+
 // Complete sends a completion request to Anthropic
 func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	url := strings.TrimRight(provider.baseURL, "/") + "/v1/messages"
-
-	model := req.Model
-	if model == "" || strings.HasPrefix(model, "gpt") {
-		// Default to Sonnet 3.5 if no valid model specified
-		model = "claude-3-5-sonnet-20240620"
+	// This provider sends a system prompt, one user prompt, a ceiling and a
+	// temperature, and nothing else. A request that asks for more is refused
+	// before anything is sent: a tool the model was never offered, or a transcript
+	// replaced by an empty prompt, is an answer to a different question.
+	if err := unsupportedRequestFields(req, provider.Name(), "Tools", "ToolChoice", "WebSearch", "Messages"); err != nil {
+		return CompletionResponse{}, err
 	}
 
-	// anthropicFallbackMaxTokens is used only when the caller never set a
-	// ceiling at all. It used to be sent unconditionally and then
-	// conditionally overridden -- which happened to work today because
-	// config.GetMaxTokens always returns a tier default, but it meant a
-	// request built outside that path (a direct CompletionRequest, a test, a
-	// future caller) silently got 1024 with no link to anything the caller
-	// configured. The real ceiling now always wins when it is set; this is
-	// only the floor for when it is not.
+	ctx, cancel := callContext(ctx, provider.config)
+	defer cancel()
+
+	url := strings.TrimRight(provider.baseURL, "/") + "/v1/messages"
+
+	model := provider.ModelSentFor(req.Model)
+
+	// anthropicFallbackMaxTokens is the ceiling sent when the request names none.
+	// A ceiling the caller set always wins; this is only the floor for a request
+	// built outside the configuration path, which would otherwise be sent no
+	// max_tokens at all, and the API requires one.
 	const anthropicFallbackMaxTokens = 1024
 
 	maxTokens := req.MaxTokens
@@ -1187,26 +1547,26 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 	// (the CA-002 split has not landed, so the system prompt today can still
 	// carry per-call steering) caches nothing because the block never repeats.
 	// Anthropic allows up to four of these; sending one is well inside that.
-	cacheBreakpoint := map[string]interface{}{"type": "ephemeral"}
+	cacheBreakpoint := map[string]any{"type": "ephemeral"}
 
 	// Construct messages. When there is a system prompt, it is the last stable
 	// block and gets the breakpoint. When there is not, the user message is
 	// the only block there is, so the breakpoint goes there instead -- an
 	// Anthropic request with no cache_control anywhere never reads or writes
 	// the cache at all, silently.
-	var messages []map[string]interface{}
+	var messages []map[string]any
 	if req.SystemPrompt != "" {
-		messages = []map[string]interface{}{
+		messages = []map[string]any{
 			{
 				"role":    "user",
 				"content": req.UserPrompt,
 			},
 		}
 	} else {
-		messages = []map[string]interface{}{
+		messages = []map[string]any{
 			{
 				"role": "user",
-				"content": []map[string]interface{}{
+				"content": []map[string]any{
 					{
 						"type":          "text",
 						"text":          req.UserPrompt,
@@ -1217,15 +1577,22 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 		}
 	}
 
+	// LX-105. This provider does not set a reasoning effort. A caller who asked
+	// for one is told so; an operation's preference is not a request and is
+	// left out.
+	if err := effortNotSupported(req, provider.Name()); err != nil {
+		return CompletionResponse{}, err
+	}
+
 	// Construct request body
-	requestBody := map[string]interface{}{
+	requestBody := map[string]any{
 		"model":      model,
 		"messages":   messages,
 		"max_tokens": maxTokens,
 	}
 
 	if req.SystemPrompt != "" {
-		requestBody["system"] = []map[string]interface{}{
+		requestBody["system"] = []map[string]any{
 			{
 				"type":          "text",
 				"text":          req.SystemPrompt,
@@ -1234,7 +1601,7 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 		}
 	}
 
-	if req.Temperature > 0 {
+	if req.Temperature > 0 && !provider.config.OmitTemperature {
 		requestBody["temperature"] = req.Temperature
 	}
 
@@ -1253,20 +1620,18 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 	httpReq.Header.Set("x-api-key", provider.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	// provider.httpClient (SC-007, resolveHTTPClient at construction): the
-	// caller's own *http.Client when supplied, otherwise the same
-	// `&http.Client{Timeout: provider.config.Timeout}` this used to build
-	// fresh on every call here -- which defeated connection reuse and gave a
-	// caller-supplied client nowhere to land.
-	resp, err := provider.httpClient.Do(httpReq)
+	// provider.httpClient is resolved once, at construction (resolveHTTPClient):
+	// the caller's own *http.Client when supplied, else the library's, so that
+	// connections are reused between calls.
+	resp, clock, err := doTimed(provider.httpClient, httpReq)
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("anthropic request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	// Read to its end, so that the connection is kept (drainAndClose).
+	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return CompletionResponse{}, fmt.Errorf("anthropic API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+		return CompletionResponse{}, statusError(provider.Name(), model, resp, provider.config)
 	}
 
 	// Parse response
@@ -1289,38 +1654,63 @@ func (provider *AnthropicProvider) Complete(ctx context.Context, req CompletionR
 		Model string `json:"model"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+	raw, err := readBounded(resp.Body, maxResponseBodyBytes)
+	if err != nil {
+		return CompletionResponse{}, fmt.Errorf("failed to read response: %w", err)
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return CompletionResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if len(response.Content) == 0 {
-		return CompletionResponse{}, fmt.Errorf("empty response from Anthropic")
-	}
-
-	// Extract text content
-	content := ""
-	for _, item := range response.Content {
-		if item.Type == "text" {
-			content += item.Text
+	// A stop reason says whether the text is the whole answer, and only the ones
+	// below are known to. "refusal" is the model declining, which is an answer
+	// that is not an answer; a stop reason that is missing, or one this library
+	// does not know, is not read as a normal end.
+	switch response.StopReason {
+	case "end_turn", "stop_sequence", "max_tokens":
+	case "refusal":
+		return CompletionResponse{}, refusedAnswerError(provider.Name(), model)
+	default:
+		return CompletionResponse{}, &types.OperationError{
+			Kind:     types.KindMalformedOutput,
+			Op:       "llm.complete",
+			Provider: provider.Name(),
+			Model:    model,
+			Message:  "the response carried no stop reason this library recognises, so it is not known to be a finished answer",
 		}
 	}
 
-	finishReason := response.StopReason
-	if finishReason == "" {
-		finishReason = "stop"
+	// Extract text content
+	var content strings.Builder
+	for _, item := range response.Content {
+		if item.Type == "text" {
+			content.WriteString(item.Text)
+		}
+	}
+	if content.Len() == 0 {
+		if response.StopReason == "max_tokens" {
+			return CompletionResponse{}, incompleteAnswerError(provider.Name(), model, "max_tokens")
+		}
+		return CompletionResponse{}, fmt.Errorf("anthropic: %w", ErrNoMessageOutput)
 	}
 
 	return CompletionResponse{
-		Content:      content,
+		Timing:       clock.timing(),
+		Content:      content.String(),
 		Provider:     provider.Name(),
 		Model:        response.Model,
-		FinishReason: finishReason,
+		FinishReason: response.StopReason,
 		Usage: types.TokenUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 		},
 	}, nil
+}
+
+// Warm opens the connection the provider's calls will use (LAT-002).
+func (provider *AnthropicProvider) Warm(ctx context.Context) error {
+	return warmConnection(ctx, provider.httpClient, provider.Name(), strings.TrimRight(provider.baseURL, "/"))
 }
 
 // Name returns the provider name
@@ -1335,18 +1725,7 @@ func (provider *AnthropicProvider) RetryPolicy() (int, time.Duration) {
 
 // EstimateCost estimates the cost for Anthropic
 func (provider *AnthropicProvider) EstimateCost(req CompletionRequest) float64 {
-	inputRate, outputRate := getModelRates("anthropic", req.Model)
-
-	estimatedPromptTokens := len(req.SystemPrompt+req.UserPrompt) / 4
-	estimatedCompletionTokens := 500
-	if req.MaxTokens > 0 {
-		estimatedCompletionTokens = req.MaxTokens
-	}
-
-	promptCost := float64(estimatedPromptTokens) * inputRate
-	completionCost := float64(estimatedCompletionTokens) * outputRate
-
-	return promptCost + completionCost
+	return estimateCost("anthropic", req)
 }
 
 // OpenRouterProvider implements Provider for OpenRouter
@@ -1354,17 +1733,32 @@ type OpenRouterProvider struct {
 	*OpenAICompatibleProvider
 }
 
-// customTransport is a http.RoundTripper that adds custom headers
+// customTransport is a http.RoundTripper that adds custom headers.
 type customTransport struct {
 	transport http.RoundTripper
 	headers   map[string]string
 }
 
-func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
+// newCustomTransport wraps transport so that every request carries headers. The
+// headers are copied: the map is the caller's, and a write to it after the
+// provider was built would race with the reads here.
+func newCustomTransport(transport http.RoundTripper, headers map[string]string) *customTransport {
+	copied := make(map[string]string, len(headers))
+	for name, value := range headers {
+		copied[name] = value
 	}
-	return t.transport.RoundTrip(req)
+	return &customTransport{transport: transport, headers: copied}
+}
+
+// RoundTrip adds the headers to a clone of the request. A RoundTripper must not
+// modify the request it is given, and the transport underneath may retry or
+// inspect it afterwards.
+func (t *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	for name, value := range t.headers {
+		clone.Header.Set(name, value)
+	}
+	return t.transport.RoundTrip(clone)
 }
 
 // NewOpenAICompatibleProvider creates a provider for OpenAI-compatible chat completion APIs.
@@ -1384,6 +1778,11 @@ func (provider *OpenAICompatibleProvider) Complete(ctx context.Context, req Comp
 	return completeViaChatCompletions(ctx, provider.httpClient, provider.name, provider.config, req)
 }
 
+// Warm opens the connection the provider's calls will use (LAT-002).
+func (provider *OpenAICompatibleProvider) Warm(ctx context.Context) error {
+	return warmConnection(ctx, provider.httpClient, provider.name, strings.TrimRight(strings.TrimSpace(provider.config.BaseURL), "/"))
+}
+
 // Name returns the provider name.
 func (provider *OpenAICompatibleProvider) Name() string {
 	return provider.name
@@ -1396,24 +1795,13 @@ func (provider *OpenAICompatibleProvider) RetryPolicy() (int, time.Duration) {
 
 // EstimateCost estimates the cost for an OpenAI-compatible provider.
 func (provider *OpenAICompatibleProvider) EstimateCost(req CompletionRequest) float64 {
-	inputRate, outputRate := getModelRates(provider.name, req.Model)
-
-	estimatedPromptTokens := len(req.SystemPrompt+req.UserPrompt) / 4
-	estimatedCompletionTokens := 500
-	if req.MaxTokens > 0 {
-		estimatedCompletionTokens = req.MaxTokens
-	}
-
-	promptCost := float64(estimatedPromptTokens) * inputRate
-	completionCost := float64(estimatedCompletionTokens) * outputRate
-
-	return promptCost + completionCost
+	return estimateCost(provider.name, req)
 }
 
 // NewOpenRouterProvider creates a new OpenRouter provider
 func NewOpenRouterProvider(config ProviderConfig) (*OpenRouterProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("OpenRouter API key is required")
+		return nil, missingKeyError("OpenRouter")
 	}
 	compatible, err := newOpenAICompatibleProvider("openrouter", config, "https://openrouter.ai/api/v1")
 	if err != nil {
@@ -1430,7 +1818,7 @@ type CerebrasProvider struct {
 // NewCerebrasProvider creates a new Cerebras provider
 func NewCerebrasProvider(config ProviderConfig) (*CerebrasProvider, error) {
 	if config.APIKey == "" {
-		return nil, errors.New("cerebras API key is required")
+		return nil, missingKeyError("cerebras")
 	}
 	compatible, err := newOpenAICompatibleProvider("cerebras", config, "https://api.cerebras.ai/v1")
 	if err != nil {
@@ -1447,7 +1835,7 @@ type DeepSeekProvider struct {
 // NewDeepSeekProvider creates a new DeepSeek provider.
 func NewDeepSeekProvider(config ProviderConfig) (*DeepSeekProvider, error) {
 	if config.APIKey == "" {
-		return nil, fmt.Errorf("DeepSeek API key is required")
+		return nil, missingKeyError("DeepSeek")
 	}
 	compatible, err := newOpenAICompatibleProvider("deepseek", config, "https://api.deepseek.com/v1")
 	if err != nil {
@@ -1464,7 +1852,7 @@ type QwenProvider struct {
 // NewQwenProvider creates a new Qwen provider.
 func NewQwenProvider(config ProviderConfig) (*QwenProvider, error) {
 	if config.APIKey == "" {
-		return nil, errors.New("qwen API key is required")
+		return nil, missingKeyError("qwen")
 	}
 	compatible, err := newOpenAICompatibleProvider("qwen", config, "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
 	if err != nil {
@@ -1481,7 +1869,7 @@ type ZAIProvider struct {
 // NewZAIProvider creates a new Z.ai provider.
 func NewZAIProvider(config ProviderConfig) (*ZAIProvider, error) {
 	if config.APIKey == "" {
-		return nil, errors.New("z.ai API key is required")
+		return nil, missingKeyError("z.ai")
 	}
 	compatible, err := newOpenAICompatibleProvider("zai", config, "https://api.z.ai/api/paas/v4")
 	if err != nil {
@@ -1511,6 +1899,15 @@ func (provider *LocalProvider) WithHandler(handler func(context.Context, Complet
 
 // Complete processes a request locally
 func (provider *LocalProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
+	// The handler returns text, so it cannot ask for a tool, and the shape the
+	// default answer is built from is read from the prompts, so it cannot read a
+	// conversation. A request that sets either was answered as if it had not: a
+	// transcript in Messages as the empty user prompt. It is refused before the
+	// handler runs, as a provider that speaks a wire refuses what it cannot send.
+	if err := unsupportedRequestFields(req, provider.Name(), "Tools", "ToolChoice", "WebSearch", "Messages"); err != nil {
+		return CompletionResponse{}, err
+	}
+
 	var content string
 	var err error
 
@@ -1524,10 +1921,18 @@ func (provider *LocalProvider) Complete(ctx context.Context, req CompletionReque
 		content = provider.mockResponse(req)
 	}
 
+	// The answer names the model that was asked for, when one was. It named
+	// "local-model" whatever was asked, which a client's data policy now reads
+	// as an answer from a route other than the one it allowed.
+	model := req.Model
+	if model == "" {
+		model = "local-model"
+	}
+
 	return CompletionResponse{
 		Content:      content,
 		Provider:     provider.Name(),
-		Model:        "local-model",
+		Model:        model,
 		FinishReason: "stop",
 		Usage: types.TokenUsage{
 			PromptTokens:     len(req.SystemPrompt+req.UserPrompt) / 4,
@@ -1537,46 +1942,33 @@ func (provider *LocalProvider) Complete(ctx context.Context, req CompletionReque
 	}, nil
 }
 
-// mockResponse generates a mock response for testing.
+// unscriptedAnswerText is what the local provider answers when nothing scripted
+// it and the request declared no shape to answer in. It is plainly not an answer:
+// it names no field any operation reads and carries no verdict, so an operation
+// that asked for a structure fails its own checks on it, and one that asked for
+// text can see where the text came from. The provider used to guess from words in
+// the prompt and answer `{"valid": true, "confidence": 0.95}` to "validate", which
+// is a judgment made by nobody and reported as one.
+const unscriptedAnswerText = "[the local provider has no scripted answer for this request; script one with WithHandler or schemafluxtest]"
+
+// mockResponse answers a request that no handler scripted.
 //
 // The shape comes from what the request declared -- a JSON Schema, or the JSON
 // template the prompt-only operations embed in their system prompt -- because
 // guessing from keywords is what made this provider answer
 // `Mock response for: ...` to nineteen of the forty-five numbered examples. See
-// mockshape.go. The keyword branches below remain as the fallback for requests
-// that declare neither.
+// mockshape.go: those values are obviously synthetic placeholders and only make
+// the plumbing run. A request that declared nothing is answered with
+// unscriptedAnswerText, in JSON when JSON was asked for.
 func (provider *LocalProvider) mockResponse(req CompletionRequest) string {
 	if shaped := mockShapedResponse(req); shaped != "" {
 		return shaped
 	}
-
-	// Analyze the prompt to generate appropriate mock responses
-	userPrompt := strings.ToLower(req.UserPrompt)
-
-	// Check for extraction patterns
-	if strings.Contains(userPrompt, "extract") || strings.Contains(req.SystemPrompt, "extraction") {
-		if req.ResponseFormat == "json" {
-			return `{"name": "John Doe", "age": 30, "email": "john@example.com"}`
-		}
-		return "Extracted data: John Doe, 30 years old"
-	}
-
-	// Check for validation patterns
-	if strings.Contains(userPrompt, "validate") || strings.Contains(req.SystemPrompt, "validation") {
-		return `{"valid": true, "issues": [], "confidence": 0.95}`
-	}
-
-	// Check for transformation patterns
-	if strings.Contains(userPrompt, "transform") || strings.Contains(req.SystemPrompt, "transform") {
-		return `{"result": "transformed data", "success": true}`
-	}
-
-	// Default response
 	if req.ResponseFormat == "json" {
-		return `{"response": "Mock response for testing", "success": true}`
+		encoded, _ := json.Marshal(map[string]string{"unscripted_local_provider_answer": unscriptedAnswerText})
+		return string(encoded)
 	}
-
-	return "Mock response for: " + req.UserPrompt
+	return unscriptedAnswerText
 }
 
 // Name returns the provider name
@@ -1615,7 +2007,7 @@ func (registry *ProviderRegistry) Register(name string, provider Provider) error
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 
-	name = normalizeProviderName(name)
+	name = NormalizeProviderName(name)
 	if provider == nil {
 		return fmt.Errorf("provider cannot be nil")
 	}
@@ -1629,12 +2021,22 @@ func (registry *ProviderRegistry) Register(name string, provider Provider) error
 	return nil
 }
 
-// RegisterFactory adds a provider factory to the registry.
+// RegisterFactory adds a provider factory to the registry. The first provider or
+// factory a caller registers becomes the registry's default until SetDefault says
+// otherwise.
 func (registry *ProviderRegistry) RegisterFactory(name string, factory ProviderFactory) error {
+	return registry.registerFactory(name, factory, true)
+}
+
+// registerFactory is RegisterFactory with the choice of whether the factory may
+// become the default. The built-in providers are registered without it: which one
+// is registered first is an accident of start-up order and not a choice, and
+// being the default is a choice.
+func (registry *ProviderRegistry) registerFactory(name string, factory ProviderFactory, mayBeDefault bool) error {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 
-	name = normalizeProviderName(name)
+	name = NormalizeProviderName(name)
 	if factory == nil {
 		return fmt.Errorf("provider factory cannot be nil")
 	}
@@ -1642,7 +2044,7 @@ func (registry *ProviderRegistry) RegisterFactory(name string, factory ProviderF
 		return fmt.Errorf("provider name cannot be empty")
 	}
 	registry.factories[name] = factory
-	if registry.defaultProvider == "" {
+	if mayBeDefault && registry.defaultProvider == "" {
 		registry.defaultProvider = name
 	}
 	return nil
@@ -1653,12 +2055,21 @@ func (registry *ProviderRegistry) Get(name string) (Provider, error) {
 	return registry.Create(name, ProviderConfig{})
 }
 
-// Create creates or retrieves a provider by name and configuration.
+// Create creates or retrieves a provider by name and configuration. An empty
+// name asks for the registry's default, and a registry with none is a
+// configuration error that says what to configure: guessing a provider from the
+// ones that happen to be registered would send the caller's data to a vendor they
+// did not choose, or answer from the local mock.
 func (registry *ProviderRegistry) Create(name string, config ProviderConfig) (Provider, error) {
 	registry.mu.RLock()
-	name = normalizeProviderName(name)
+	name = NormalizeProviderName(name)
 	if name == "" {
 		name = registry.defaultProvider
+	}
+	if name == "" {
+		registry.mu.RUnlock()
+		return nil, types.Newf(types.KindConfiguration, "llm.provider",
+			"no LLM provider configured: name one when creating the provider, or choose a default with SetDefaultProvider")
 	}
 
 	provider, ok := registry.providers[name]
@@ -1679,7 +2090,7 @@ func (registry *ProviderRegistry) SetDefault(name string) error {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 
-	name = normalizeProviderName(name)
+	name = NormalizeProviderName(name)
 	if name == "" {
 		return fmt.Errorf("provider name cannot be empty")
 	}
@@ -1743,7 +2154,12 @@ func ListProviders() []string {
 	return globalRegistry.List()
 }
 
-func registerBuiltInProviderFactories() {
+// registerBuiltInProviderFactories registers the providers this library ships.
+// None of them becomes the registry's default: the order they are registered in
+// is not a choice anyone made, and a default picked by it was a different vendor,
+// or the local mock, on each start. The names are walked in sorted order so that
+// registration is deterministic whatever else is done with the result.
+func registerBuiltInProviderFactories(registry *ProviderRegistry) {
 	builtIns := map[string]ProviderFactory{
 		"openai":     func(config ProviderConfig) (Provider, error) { return NewOpenAIProvider(config) },
 		"anthropic":  func(config ProviderConfig) (Provider, error) { return NewAnthropicProvider(config) },
@@ -1754,119 +2170,131 @@ func registerBuiltInProviderFactories() {
 		"zai":        func(config ProviderConfig) (Provider, error) { return NewZAIProvider(config) },
 		"local":      func(config ProviderConfig) (Provider, error) { return NewLocalProvider(config) },
 		"mock":       func(config ProviderConfig) (Provider, error) { return NewLocalProvider(config) },
+
+		// The decision providers: one protocol, at the three places it is served
+		// (systemone.go). They answer a request that carries a Decision and refuse
+		// any other.
+		SystemOneTypeSafe.Name:   systemOneFactory(SystemOneTypeSafe),
+		SystemOneOpenRouter.Name: systemOneFactory(SystemOneOpenRouter),
+		SystemOneLiteLLM.Name:    systemOneFactory(SystemOneLiteLLM),
 	}
 
-	for name, factory := range builtIns {
-		if err := globalRegistry.RegisterFactory(name, factory); err != nil {
+	names := make([]string, 0, len(builtIns))
+	for name := range builtIns {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := registry.registerFactory(name, builtIns[name], false); err != nil {
 			panic(fmt.Sprintf("failed to register built-in provider %s: %v", name, err))
 		}
 	}
 }
 
 func init() {
-	registerBuiltInProviderFactories()
+	registerBuiltInProviderFactories(globalRegistry)
 }
 
-// getModelRates returns the input and output cost per token for a given model
-// It checks environment variables first, then falls back to provider defaults.
-// Environment variables format: SCHEMAFLUX_COST_INPUT_<MODEL> and SCHEMAFLUX_COST_OUTPUT_<MODEL>
-// where <MODEL> is the sanitized model name (uppercase, dots/dashes replaced with underscores).
-// The value should be the cost per 1,000,000 (1M) tokens.
-func getModelRates(provider, model string) (float64, float64) {
-	// Check for intelligence level overrides first if the model matches a known level env var
-	// Note: This is tricky because we don't know the intelligence level here, only the model name.
-	// However, if the user set SCHEMAFLUX_MODEL_SMART="gpt-4", they might also set SCHEMAFLUX_COST_INPUT_SMART.
-	// But the request was "map the models and cost/token at the levels in the env vars".
-	// This implies we should check SCHEMAFLUX_COST_INPUT_SMART if the current model IS the smart model.
-	// Since we don't have the level context here easily without circular dependency or API change,
-	// we will stick to model-based lookup which is robust.
-	// If the user sets SCHEMAFLUX_MODEL_SMART="my-model", they can set SCHEMAFLUX_COST_INPUT_MY_MODEL.
+// costEnvPrefixes are the prefixes of the environment variables that override a
+// price: SCHEMAFLUX_COST_INPUT_<NAME> and SCHEMAFLUX_COST_OUTPUT_<NAME>, where
+// <NAME> is a model name with its dashes and dots written as underscores, in
+// capitals, or SMART, FAST or QUICK for the model mapped to that level by
+// SCHEMAFLUX_MODEL_<LEVEL>. The value is a price in dollars per million tokens.
+var costEnvPrefixes = []string{"SCHEMAFLUX_COST_INPUT_", "SCHEMAFLUX_COST_OUTPUT_"}
 
-	// Wait, the user specifically asked: "map the models and cost/token at the levels in the env vars"
-	// This could mean: SCHEMAFLUX_COST_INPUT_SMART=30.0
-	// If we can't know if "model" is "Smart", we can't apply "Smart" pricing.
-	// But wait, the caller of EstimateCost knows the model, but not necessarily the level used to select it.
-	// Let's support looking up by the exact model name first (as implemented),
-	// AND also support looking up by "SMART", "FAST", "QUICK" if the model name matches one of those keywords (unlikely)
-	// OR, we can just rely on the user setting the cost for the *model* they mapped to the level.
-
-	// However, if the user wants to say "Smart level costs X", and they mapped Smart -> GPT-4,
-	// they probably want to set cost for GPT-4.
-	// BUT, if they want to abstract it:
-	// SCHEMAFLUX_MODEL_SMART=gpt-4
-	// SCHEMAFLUX_COST_INPUT_SMART=30.0
-
-	// To support this, we'd need to know if 'model' == os.Getenv("SCHEMAFLUX_MODEL_SMART").
-
-	smartModel := os.Getenv("SCHEMAFLUX_MODEL_SMART")
-	fastModel := os.Getenv("SCHEMAFLUX_MODEL_FAST")
-	quickModel := os.Getenv("SCHEMAFLUX_MODEL_QUICK")
-
-	var levelSuffix string
-	if model == smartModel && smartModel != "" {
-		levelSuffix = "SMART"
-	} else if model == fastModel && fastModel != "" {
-		levelSuffix = "FAST"
-	} else if model == quickModel && quickModel != "" {
-		levelSuffix = "QUICK"
+// priceFromEnv reads one price variable. set is false for a variable that is not
+// set or is empty. A value that is set must be a finite number that is not
+// negative: NaN and infinity make every estimate NaN or infinite, and a negative
+// price makes a call spend the budget down. The error names the variable and not
+// its value.
+func priceFromEnv(name string) (perToken float64, set bool, err error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, false, nil
 	}
+	perMillion, parseErr := strconv.ParseFloat(raw, 64)
+	if parseErr != nil || math.IsNaN(perMillion) || math.IsInf(perMillion, 0) || perMillion < 0 {
+		return 0, false, fmt.Errorf("%s is not a finite price per million tokens of zero or more", name)
+	}
+	return perMillion / 1_000_000, true, nil
+}
 
-	if levelSuffix != "" {
-		inputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_INPUT_%s", levelSuffix))
-		outputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_OUTPUT_%s", levelSuffix))
-
-		if inputEnv != "" && outputEnv != "" {
-			inputVal, err1 := strconv.ParseFloat(inputEnv, 64)
-			outputVal, err2 := strconv.ParseFloat(outputEnv, 64)
-			if err1 == nil && err2 == nil {
-				return inputVal / 1_000_000, outputVal / 1_000_000
+// validateCostEnvironment refuses a price variable whose value is not a usable
+// price. It runs when a provider is built, so that the mistake is reported as a
+// configuration error where it was made. EstimateCost cannot report one, since it
+// returns a number, so a variable that is invalid by the time an estimate is made
+// is not used.
+func validateCostEnvironment() error {
+	for _, entry := range os.Environ() {
+		name, _, found := strings.Cut(entry, "=")
+		if !found {
+			continue
+		}
+		for _, prefix := range costEnvPrefixes {
+			if !strings.HasPrefix(name, prefix) {
+				continue
 			}
+			if _, _, err := priceFromEnv(name); err != nil {
+				return types.Newf(types.KindConfiguration, "llm.configure", "%s", err.Error())
+			}
+		}
+	}
+	return nil
+}
+
+// getModelRates returns the input and output cost per token for a model.
+//
+// A price the environment sets wins: for the model's own name, and for the level
+// (SMART, FAST or QUICK) the model is mapped to. A price it does not set is the
+// provider's table price (see getDefaultRates). A variable that is set to
+// something that is not a price is not used: validateCostEnvironment reports it
+// when the provider is built.
+func getModelRates(provider, model string) (float64, float64) {
+	if suffix := levelOf(model); suffix != "" {
+		input, inputSet, _ := priceFromEnv("SCHEMAFLUX_COST_INPUT_" + suffix)
+		output, outputSet, _ := priceFromEnv("SCHEMAFLUX_COST_OUTPUT_" + suffix)
+		if inputSet && outputSet {
+			return input, output
 		}
 	}
 
 	sanitizedModel := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(model, "-", "_"), ".", "_"))
-
-	inputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_INPUT_%s", sanitizedModel))
-	outputEnv := os.Getenv(fmt.Sprintf("SCHEMAFLUX_COST_OUTPUT_%s", sanitizedModel))
-
-	var inputRate, outputRate float64
-	var inputFound, outputFound bool
-
-	if inputEnv != "" {
-		if val, err := strconv.ParseFloat(inputEnv, 64); err == nil {
-			inputRate = val / 1_000_000
-			inputFound = true
-		}
-	}
-
-	if outputEnv != "" {
-		if val, err := strconv.ParseFloat(outputEnv, 64); err == nil {
-			outputRate = val / 1_000_000
-			outputFound = true
-		}
-	}
-
+	inputRate, inputFound, _ := priceFromEnv("SCHEMAFLUX_COST_INPUT_" + sanitizedModel)
+	outputRate, outputFound, _ := priceFromEnv("SCHEMAFLUX_COST_OUTPUT_" + sanitizedModel)
 	if inputFound && outputFound {
 		return inputRate, outputRate
 	}
 
-	// Defaults if not fully specified in env vars
-	defaultInput, defaultOutput := getDefaultRates(provider, model)
-
+	defaultInput, defaultOutput := getDefaultRates(provider)
 	if !inputFound {
 		inputRate = defaultInput
 	}
 	if !outputFound {
 		outputRate = defaultOutput
 	}
-
 	return inputRate, outputRate
 }
 
-func getDefaultRates(provider, _ string) (float64, float64) {
+// levelOf names the level, SMART, FAST or QUICK, that the environment maps the
+// model to, or "" for a model that is mapped to none.
+func levelOf(model string) string {
+	for _, level := range []string{"SMART", "FAST", "QUICK"} {
+		if mapped := os.Getenv("SCHEMAFLUX_MODEL_" + level); mapped != "" && model == mapped {
+			return level
+		}
+	}
+	return ""
+}
+
+// getDefaultRates is the price table: dollars per token for a provider, whatever
+// the model. It is a table of the provider and not of the model, so it is a rough
+// figure at best, and a provider that is not in it is priced at zero, which says
+// nothing about what it costs. EstimateCost returns a number and has no way to say
+// "unknown".
+func getDefaultRates(provider string) (float64, float64) {
 	switch provider {
 	case "openai":
-		// Default to GPT-4 pricing ($30/1M input, $60/1M output)
+		// GPT-4 pricing ($30/1M input, $60/1M output).
 		return 30.0 / 1_000_000, 60.0 / 1_000_000
 	case "anthropic":
 		// Claude 3 Opus: $15/1M, $75/1M
@@ -1879,5 +2307,94 @@ func getDefaultRates(provider, _ string) (float64, float64) {
 		return 0.10 / 1_000_000, 0.10 / 1_000_000
 	default:
 		return 0, 0
+	}
+}
+
+// checkToolChoice refuses a ToolChoice that is none of the three words the API
+// takes and names none of the tools the request offers. It would be sent as a
+// forced function name, and the API answers a name it does not know with a 400
+// that costs a round trip. The error lists the tools the request offers, which
+// are the caller's own names, and not the choice.
+func checkToolChoice(req CompletionRequest, provider string) error {
+	switch req.ToolChoice {
+	case "", "auto", "none", "required":
+		return nil
+	}
+	offered := make([]string, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		if tool.Name == req.ToolChoice {
+			return nil
+		}
+		offered = append(offered, fmt.Sprintf("%q", tool.Name))
+	}
+	sort.Strings(offered)
+	list := "none"
+	if len(offered) > 0 {
+		list = strings.Join(offered, ", ")
+	}
+	return &types.OperationError{
+		Kind:     types.KindInvalidRequest,
+		Op:       "llm.complete",
+		Provider: provider,
+		Model:    req.Model,
+		Message:  fmt.Sprintf("ToolChoice is not auto, none or required, and names no tool the request offers (offered: %s)", list),
+	}
+}
+
+// unsupportedRequestFields refuses a request that sets a field the provider
+// path has no way to send. A field that is dropped without a word changes what
+// was asked: the caller who offered Tools gets a plain answer with no calls in
+// it, and one who passed a transcript has an empty prompt sent in its place. The
+// error names the field, and never its value, which is the caller's data.
+//
+// fields lists the CompletionRequest fields the provider cannot send; only those
+// that the request actually sets are reported.
+func unsupportedRequestFields(req CompletionRequest, provider string, fields ...string) error {
+	set := map[string]bool{
+		"Tools":      len(req.Tools) > 0,
+		"ToolChoice": req.ToolChoice != "",
+		"WebSearch":  req.WebSearch,
+		"Messages":   len(req.Messages) > 0,
+	}
+	var named []string
+	for _, field := range fields {
+		if set[field] {
+			named = append(named, field)
+		}
+	}
+	if len(named) == 0 {
+		return nil
+	}
+	return &types.OperationError{
+		Kind:     types.KindUnsupportedCapability,
+		Op:       "llm.complete",
+		Provider: provider,
+		Model:    req.Model,
+		Message:  fmt.Sprintf("%s cannot send %s, which the request sets; it would be dropped and the call answered without it", provider, strings.Join(named, ", ")),
+	}
+}
+
+// RefuseUnsupportedFields is unsupportedRequestFields for a provider that lives
+// outside this package, such as the codex transport: it refuses with
+// KindUnsupportedCapability, before anything is sent or run, a request that sets
+// any of fields ("Tools", "ToolChoice", "WebSearch", "Messages") that the
+// provider has no way to carry. A provider that cannot carry a field says so
+// here, in the one wording every provider uses, and never drops it.
+func RefuseUnsupportedFields(req CompletionRequest, provider string, fields ...string) error {
+	return unsupportedRequestFields(req, provider, fields...)
+}
+
+// effortNotSupported refuses a request that asks for a reasoning effort on a
+// provider path that cannot set one. An operation's preference is not a
+// request, and passes.
+func effortNotSupported(req CompletionRequest, provider string) error {
+	if req.ReasoningEffort == "" || req.ReasoningEffortPreferred {
+		return nil
+	}
+	return &types.OperationError{
+		Kind:     types.KindUnsupportedCapability,
+		Provider: provider,
+		Model:    req.Model,
+		Message:  "reasoning effort \"" + req.ReasoningEffort + "\" was asked for, and this provider cannot set one",
 	}
 }

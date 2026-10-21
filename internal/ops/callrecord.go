@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Carrying the execution record back to the caller.
@@ -31,6 +31,10 @@ type callRecordKey struct{}
 type callRecords struct {
 	mu      sync.Mutex
 	records []*types.ResultMetadata
+
+	// repairs are the failures the operation fed back to the model, in order,
+	// one for each repair it asked for.
+	repairs []string
 }
 
 func (c *callRecords) add(metadata *types.ResultMetadata) {
@@ -52,11 +56,49 @@ func (c *callRecords) collect() []*types.ResultMetadata {
 	return append([]*types.ResultMetadata(nil), c.records...)
 }
 
+// noteRepair tells the call's collector that an answer was refused and sent
+// back to the model, with the failure it was shown. It is told by withRepair
+// each time it asks again, and does nothing when nothing collects.
+func noteRepair(ctx context.Context, failure string) {
+	if ctx == nil {
+		return
+	}
+	records, ok := ctx.Value(callRecordKey{}).(*callRecords)
+	if !ok || records == nil {
+		return
+	}
+	records.mu.Lock()
+	defer records.mu.Unlock()
+	records.repairs = append(records.repairs, failure)
+}
+
+// meta is the call's record: the envelope of the requests it made, with the
+// repairs it asked for. Repairs is how many answers were sent back, and each is
+// a check that did not pass, with the failure the model was shown, so that a
+// call that was rescued by a repair says what the first answer was refused for.
+func (c *callRecords) meta(operation string) types.Meta {
+	meta := envelopeFrom(c.collect(), operation)
+	if c == nil {
+		return meta
+	}
+	c.mu.Lock()
+	repairs := append([]string(nil), c.repairs...)
+	c.mu.Unlock()
+	meta.Repairs = len(repairs)
+	for _, failure := range repairs {
+		meta.Checks = append(meta.Checks, types.Check{Name: "repair", Passed: false, Detail: failure})
+	}
+	return meta
+}
+
 // withCallRecording returns a context that collects provider-call records.
 func withCallRecording(ctx context.Context) (context.Context, *callRecords) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Every call that is recorded fixes the client it runs on here, before its
+	// floor is checked and its first request is made.
+	ctx, _ = PinExec(ctx)
 	records := &callRecords{}
 	return context.WithValue(ctx, callRecordKey{}, records), records
 }
@@ -82,9 +124,19 @@ func envelopeFrom(records []*types.ResultMetadata, operation string) types.Meta 
 	}
 
 	// The last record carries the identity of the call that actually produced
-	// the answer -- model, provider, request ID.
-	meta := types.MetaFrom(records[len(records)-1])
+	// the answer -- model, provider, request ID. A record that only reports what
+	// a refused answer cost (UsageOnly) is not that call, and is passed over: the
+	// record of the request it belonged to comes after it.
+	identity := records[len(records)-1]
+	for i := len(records) - 1; i >= 0; i-- {
+		if !records[i].UsageOnly {
+			identity = records[i]
+			break
+		}
+	}
+	meta := types.MetaFrom(identity)
 	meta.Operation = operation
+	meta.Retries, meta.CacheHits, meta.Hedged, meta.ServiceTier = 0, 0, false, ""
 
 	// Everything the loop below accumulates has to start at zero, because
 	// MetaFrom already copied the last record's figures in as the seed. It did
@@ -115,8 +167,40 @@ func envelopeFrom(records []*types.ResultMetadata, operation string) types.Meta 
 	priced := true
 	sawCost := false
 
+	// Where the time went, summed over the calls, and Calls says how many. It
+	// is a sum and not a duration: the Elapsed above is the last call's, so for
+	// more than one call Timing.Outside has nothing to subtract, and calls that
+	// ran together add up to more than the time that passed. Reused is true
+	// only when every call that was timed reused a connection; a record of
+	// nothing but a wait for a slot has no vote (Timing.Add).
+	timed := false
 	for _, record := range records {
-		meta.Attempts += record.RetryCount + 1
+		if record.Timing == nil || record.UsageOnly {
+			continue
+		}
+		if !timed {
+			meta.Timing, timed = *record.Timing, true
+			continue
+		}
+		meta.Timing = meta.Timing.Add(*record.Timing)
+	}
+
+	for _, record := range records {
+		// What a refused answer cost counts, and nothing else of it does: its
+		// request is the record that follows it, and counts once.
+		if !record.UsageOnly {
+			meta.Attempts += record.RetryCount + 1
+			meta.Retries += record.RetryCount
+			if record.CacheHit {
+				meta.CacheHits++
+			}
+			if record.Hedged {
+				meta.Hedged = true
+			}
+			if record.ServiceTier != "" {
+				meta.ServiceTier = record.ServiceTier
+			}
+		}
 
 		if record.TokenUsage != nil {
 			meta.Usage.PromptTokens += record.TokenUsage.PromptTokens

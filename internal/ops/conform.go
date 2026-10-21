@@ -1,26 +1,37 @@
-// package ops - Conform operation for transforming data to match standards
 package ops
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// ConformOptions configures the Conform operation
+// ConformOptions configures the Conform operation.
+//
+// Passing a ConformOptions value to Conform replaces the defaults of its boolean
+// fields with the value's own: Conform with no options keeps PreserveUnknown and
+// Validate on, but Conform(x, std, ConformOptions{Steering: "..."}) has both
+// off, because a bool that is false cannot be told from one the caller never
+// set. A caller who passes options and wants those defaults sets
+// PreserveUnknown: true and Validate: true. Telling "unset" from "false" needs
+// the options redesigned; until then the behaviour is this.
 type ConformOptions struct {
-	// Strict fails if data cannot fully conform to the standard
+	// Strict fails if data cannot fully conform to the standard: Conform
+	// returns an error when the model reports any violation.
 	Strict bool
 
-	// PreserveUnknown keeps fields not covered by the standard
+	// PreserveUnknown asks the model to keep fields the standard does not
+	// cover rather than drop them. It is a request: nothing checks the answer,
+	// since which fields the standard covers is the model's judgement.
 	PreserveUnknown bool
 
-	// Validate performs validation after conforming
+	// Validate is not read by Conform. It is kept for callers that set it and
+	// is the default-on field described above.
 	Validate bool
 
 	// CustomRules adds custom conformance rules
@@ -32,11 +43,20 @@ type ConformOptions struct {
 	Intelligence types.Speed
 
 	// Model pins the exact model for this call, bypassing the Intelligence
-	// tier's mapping (TC-005). These option types spell their common fields
+	// tier's mapping. These option types spell their common fields
 	// out rather than embedding CommonOptions, so the pin has to be declared
 	// here too -- otherwise `.Model(...)` on the builder would be a setter
 	// that changes nothing, which this repository fails the build over.
-	Model         string
+	Model string
+	// Effort is how much the model reasons before it answers. The
+	// builder sets it here for the same reason it sets Model here.
+	Effort types.Effort
+
+	// MaxOutputTokens is the ceiling on the answer's length. Zero means the tier's.
+	MaxOutputTokens int
+	// WebSearch declares the provider's web-search tool on the call.
+	WebSearch bool
+
 	Context       context.Context
 	RequestID     string
 	CorrelationID string
@@ -112,7 +132,7 @@ type ConformResult[T any] struct {
 //	    AltPhone string `json:"alt_phone"`
 //	}
 //	result, err := Conform(Contact{Phone: "(555) 123-4567", AltPhone: "1-800-FLOWERS"},
-//	    "E164", ConformOptions{Steering: "Assume US country code +1"})
+//	    "E164", ConformOptions{PreserveUnknown: true, Validate: true, Steering: "Assume US country code +1"})
 //	// Result: {Phone: "+15551234567", AltPhone: "+18003569377"}
 //
 //	// Example 3: Standardize dates to ISO8601
@@ -128,15 +148,18 @@ type ConformResult[T any] struct {
 //	// Example 4: Custom standard
 //	result, err := Conform(product, "SKU format: CAT-BRAND-NUM (uppercase, max 20 chars)")
 func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformResult[T], error) {
-	log := logger.GetLogger()
-	log.Debug("Starting conform operation", "standard", standard)
+	// The first line is written before the options are looked at, so the client is
+	// found from the context they carry.
+	var callerCtx context.Context
+	if len(opts) > 0 {
+		callerCtx = opts[0].Context
+	}
+	log := loggerFor(callerCtx)
+	log.Debug("Starting conform operation")
 
-	var result ConformResult[T]
-	result.Standard = standard
-	result.Metadata = make(map[string]any)
-
+	// Every return that carries an error carries the zero result with it.
 	if standard == "" {
-		return result, fmt.Errorf("standard cannot be empty")
+		return ConformResult[T]{}, types.Classified(types.KindConfiguration, errors.New("standard cannot be empty"))
 	}
 
 	// Apply defaults
@@ -148,6 +171,9 @@ func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformRe
 	}
 	if len(opts) > 0 {
 		opt = mergeConformOptions(opt, opts[0])
+	}
+	if err := checkFlatLockedLimits(opt.Context, opt.Mode, opt.Intelligence, opt.MaxOutputTokens); err != nil {
+		return ConformResult[T]{}, err
 	}
 
 	// Get context
@@ -161,19 +187,27 @@ func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformRe
 	// Convert input to JSON
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Conform operation failed: marshal error", "error", err)
-		return result, fmt.Errorf("failed to marshal input: %w", err)
+		log.Error("Conform operation failed: marshal error", "error", loggedError(err))
+		return ConformResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
 	// Get type schema
 	typeSchema := GenerateTypeSchema(reflect.TypeOf(input))
 
-	// Build custom rules description
+	// The standard is the caller's text, so it is written as a JSON string
+	// wherever the prompt uses it.
+	quotedStandard, _ := promptJSON(standard)
+
+	// Build custom rules description, in field order: ranging over the map
+	// wrote the rules in a different order on every call. Both halves are the
+	// caller's text and are quoted.
 	customRulesDesc := ""
 	if len(opt.CustomRules) > 0 {
 		var parts []string
-		for field, rule := range opt.CustomRules {
-			parts = append(parts, fmt.Sprintf("- %s: %s", field, rule))
+		for _, field := range sortedKeys(opt.CustomRules) {
+			quotedField, _ := promptJSON(field)
+			quotedRule, _ := promptJSON(opt.CustomRules[field])
+			parts = append(parts, fmt.Sprintf("- %s: %s", quotedField, quotedRule))
 		}
 		customRulesDesc = fmt.Sprintf("\n\nCustom rules:\n%s", strings.Join(parts, "\n"))
 	}
@@ -223,7 +257,7 @@ Rules:
 - Document all changes in adjustments
 - List any violations that couldn't be fixed
 - Calculate compliance as ratio of conforming fields`,
-		standard, typeSchema, customRulesDesc, strictNote, typeSchema, standard)
+		quotedStandard, typeSchema, customRulesDesc, strictNote, typeSchema, quotedStandard)
 
 	steeringNote := ""
 	if opt.Steering != "" {
@@ -232,25 +266,31 @@ Rules:
 
 	userPrompt := fmt.Sprintf(`Conform this data to the %s standard:
 
-%s%s`, standard, string(inputJSON), steeringNote)
+%s%s`, quotedStandard, string(inputJSON), steeringNote)
 
 	// Build OpOptions for LLM call
 	opOpts := types.OpOptions{
-		Mode:          opt.Mode,
-		Intelligence:  opt.Intelligence,
-		Model:         opt.Model,
-		Context:       ctx,
-		RequestID:     opt.RequestID,
-		CorrelationID: opt.CorrelationID,
+		Mode:            opt.Mode,
+		Intelligence:    opt.Intelligence,
+		Model:           opt.Model,
+		Effort:          opt.Effort,
+		MaxOutputTokens: opt.MaxOutputTokens,
+		WebSearch:       opt.WebSearch,
+		Context:         ctx,
+		RequestID:       opt.RequestID,
+		CorrelationID:   opt.CorrelationID,
 	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Conform operation LLM call failed", "error", err)
-		return result, fmt.Errorf("conformance failed: %w", err)
+		log.Error("Conform operation LLM call failed", "error", loggedError(err))
+		return ConformResult[T]{}, fmt.Errorf("conformance failed: %w", err)
 	}
 
-	// Parse response
+	// Parse the response. The prompt asks for every member, so an answer that
+	// leaves one out is refused by name, and a compliance of zero is the model
+	// saying zero. An empty list is how it says there was nothing to adjust or
+	// nothing it could not fix.
 	var parsed struct {
 		Conformed   json.RawMessage `json:"conformed"`
 		Adjustments []Adjustment    `json:"adjustments"`
@@ -258,43 +298,51 @@ Rules:
 		Compliance  float64         `json:"compliance"`
 	}
 
-	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Conform operation failed: parse error", "error", err, "response", response)
-		return result, fmt.Errorf("failed to parse conformance result: %w", err)
+	// The log line carries the error, which describes the shape of the answer,
+	// and not the answer.
+	if err := decodeAnswer("conform", response, &parsed); err != nil {
+		log.Error("Conform operation failed: parse error", "error", loggedError(err))
+		return ConformResult[T]{}, fmt.Errorf("failed to parse conformance result: %w", err)
 	}
 
-	// Check strict mode violations
+	// Check strict mode violations. The error counts them: what they say is the
+	// model's description of the caller's data, and the error is logged.
 	if opt.Strict && len(parsed.Violations) > 0 {
-		return result, fmt.Errorf("strict conformance failed: %v", parsed.Violations)
+		return ConformResult[T]{}, types.Newf(types.KindInvariantViolation, "conform",
+			"strict conformance failed: the model reported %d violation(s)", len(parsed.Violations))
 	}
 
-	// The conformed value is the answer. A response without one is a failure,
-	// not a success that produced nothing.
-	//
-	// This was guarded by `if len(parsed.Conformed) > 0`, so a response
-	// carrying any other recognised field -- `{"compliance":0.9}` was enough to
-	// satisfy the decoder's field check -- returned a nil error with
-	// result.Conformed left at T's zero value. A caller reading
-	// `if err == nil { use(result.Conformed) }` got an empty struct and no
-	// indication anything was wrong, which is the shape of failure this
-	// library exists to refuse: reporting success while being wrong.
-	if len(parsed.Conformed) == 0 || string(parsed.Conformed) == "null" {
-		log.Error("Conform operation failed: the response carried no conformed value",
-			"standard", standard)
-		return result, fmt.Errorf(
-			"conform: the response carried no `conformed` value, so there is nothing to return")
-	}
-	if err := json.Unmarshal(parsed.Conformed, &result.Conformed); err != nil {
-		log.Error("Conform operation failed: conformed data parse error", "error", err)
-		return result, fmt.Errorf("failed to parse conformed data: %w", err)
+	// The conformed value is the answer. The reader refuses one that is missing;
+	// a RawMessage can hold a null, which would leave result.Conformed at T's
+	// zero value under a nil error, so a null is refused here.
+	if isJSONNull(parsed.Conformed) {
+		log.Error("Conform operation failed: the conformed value is null")
+		return ConformResult[T]{}, types.Newf(types.KindSchemaViolation, "conform",
+			"conformed is null, so there is nothing to return")
 	}
 
-	result.Adjustments = parsed.Adjustments
-	result.Violations = parsed.Violations
-	result.Compliance = parsed.Compliance
+	// The score is the model's claim about its own work. One that is not on the
+	// scale it was asked for is refused.
+	if err := onScale("conform", "the compliance score", parsed.Compliance); err != nil {
+		return ConformResult[T]{}, err
+	}
+
+	var conformed T
+	if err := decodeCallerAnswer("conform", string(parsed.Conformed), &conformed); err != nil {
+		log.Error("Conform operation failed: conformed data parse error", "error", loggedError(err))
+		return ConformResult[T]{}, fmt.Errorf("failed to parse conformed data: %w", err)
+	}
+
+	result := ConformResult[T]{
+		Conformed:   conformed,
+		Adjustments: parsed.Adjustments,
+		Violations:  parsed.Violations,
+		Compliance:  parsed.Compliance,
+		Standard:    standard,
+		Metadata:    make(map[string]any),
+	}
 
 	log.Debug("Conform operation succeeded",
-		"standard", standard,
 		"adjustments", len(result.Adjustments),
 		"violations", len(result.Violations),
 		"compliance", result.Compliance)
@@ -323,8 +371,23 @@ func mergeConformOptions(defaults, user ConformOptions) ConformOptions {
 	if user.Model != "" {
 		defaults.Model = user.Model
 	}
+	if user.Effort != types.EffortDefault {
+		defaults.Effort = user.Effort
+	}
+	if user.MaxOutputTokens > 0 {
+		defaults.MaxOutputTokens = user.MaxOutputTokens
+	}
+	if user.WebSearch {
+		defaults.WebSearch = true
+	}
 	if user.Context != nil {
 		defaults.Context = user.Context
+	}
+	if user.RequestID != "" {
+		defaults.RequestID = user.RequestID
+	}
+	if user.CorrelationID != "" {
+		defaults.CorrelationID = user.CorrelationID
 	}
 	return defaults
 }

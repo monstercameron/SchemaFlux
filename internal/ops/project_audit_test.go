@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type sourceRecord struct {
@@ -97,6 +97,8 @@ func TestAFaithfulProjectionReportsNothingLost(t *testing.T) {
 	installProjectResponse(t, `{
 		"projected": {"email":"ada@example.com"},
 		"mappings": [],
+		"lost": [],
+		"inferred": [],
 		"confidence": 0.99
 	}`)
 
@@ -124,6 +126,8 @@ func TestTheDiffReadsWhatIsPresentNotWhatIsDeclared(t *testing.T) {
 	installProjectResponse(t, `{
 		"projected": {"kept":"value"},
 		"mappings": [],
+		"lost": [],
+		"inferred": [],
 		"confidence": 0.9
 	}`)
 

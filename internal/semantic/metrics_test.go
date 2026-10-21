@@ -183,3 +183,85 @@ func TestNoNumberOfTrialsRescuesAWorseModel(t *testing.T) {
 		t.Errorf("NeededTrials = %d for a rate exactly at its threshold", got)
 	}
 }
+
+// Counts that cannot be one measurement are not a measurement: more successes
+// than trials, or a negative count. The rate would be above 1 and the interval's
+// square root of a negative, and a NaN there was read by MeetsAtMost as "not
+// known" only by accident.
+func TestCountsThatCannotBeAMeasurementAreNotKnown(t *testing.T) {
+	cases := []Proportion{
+		{Successes: 11, Trials: 10},
+		{Successes: 1, Trials: 0},
+		{Successes: -1, Trials: 10},
+		{Successes: 5, Trials: -10},
+		{Successes: -5, Trials: -10},
+		{Successes: math.MaxInt, Trials: 1},
+	}
+	for _, p := range cases {
+		if p.Known() {
+			t.Errorf("%+v is Known", p)
+		}
+		if !math.IsNaN(p.Rate()) {
+			t.Errorf("%+v has a Rate of %v", p, p.Rate())
+		}
+		low, high := p.Interval()
+		if !math.IsNaN(low) || !math.IsNaN(high) {
+			t.Errorf("%+v has an interval [%v, %v]", p, low, high)
+		}
+		if p.MeetsAtLeast(0) || p.MeetsAtMost(1) {
+			t.Errorf("%+v clears a threshold", p)
+		}
+		if p.Regressed(Proportion{Successes: 90, Trials: 100}, 0) {
+			t.Errorf("%+v was called a regression", p)
+		}
+	}
+
+	for _, p := range []Proportion{{Successes: 0, Trials: 1}, {Successes: 1, Trials: 1}, {Successes: 5, Trials: 10}} {
+		if !p.Known() || math.IsNaN(p.Rate()) {
+			t.Errorf("%+v is not known", p)
+		}
+	}
+}
+
+// "0" meant three different things: a rate that can never pass, one that would
+// need more than 65,536 trials, and arguments that are not rates.
+func TestTrialsNeededSaysWhenNoNumberOfTrialsWillDo(t *testing.T) {
+	cases := []struct {
+		name      string
+		expected  float64
+		threshold float64
+		reachable bool
+	}{
+		{"a clear margin", 0.9, 0.75, true},
+		{"a thin margin", 0.80, 0.75, true},
+		{"a perfect rate", 1.0, 0.9, true},
+		{"below the threshold", 0.7, 0.75, false},
+		{"at the threshold", 0.75, 0.75, false},
+		{"a margin too thin for 65,536 trials", 0.95001, 0.95, false},
+		{"NaN expected", math.NaN(), 0.5, false},
+		{"NaN threshold", 0.9, math.NaN(), false},
+		{"expected above 1", 1.5, 0.5, false},
+		{"negative threshold", 0.9, -0.1, false},
+		{"infinite expected", math.Inf(1), 0.5, false},
+		// A threshold of zero is cleared by any measurement, so only the checks
+		// that come before the search stop these two: a NaN rate, whose
+		// conversion to a count is not defined by the language, and a rate that
+		// does not exceed the threshold.
+		{"NaN expected against a threshold of zero", math.NaN(), 0, false},
+		{"a rate of zero against a threshold of zero", 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trials, reachable := TrialsNeeded(tc.expected, tc.threshold)
+			if reachable != tc.reachable {
+				t.Fatalf("TrialsNeeded = %d, %v; want reachable %v", trials, reachable, tc.reachable)
+			}
+			if reachable != (trials > 0) {
+				t.Errorf("TrialsNeeded = %d, %v: reachable and a positive count disagree", trials, reachable)
+			}
+			if got := NeededTrials(tc.expected, tc.threshold); got != trials {
+				t.Errorf("NeededTrials = %d, want %d", got, trials)
+			}
+		})
+	}
+}

@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// RC-005: load and chaos coverage for RunOpManyRecover (recover.go), PL-009's
+// Load and chaos coverage for RunOpManyRecover (recover.go), the
 // progressive MDSP-to-atomic cascade -- "large schemas and near-limit
 // chunks, partial MDSP failures forcing atomic fallback" from the task's own
 // list. recover_test.go already pins the cascade's mechanics one failure
@@ -126,6 +127,8 @@ func TestLoadRunOpManyRecoverLargeStreamNearLimitChunksWithRandomPartialMDSPFail
 			mdspCount++
 		case types.ModeAtomicFallback:
 			atomicCount++
+		case types.ShapeAtomic.String():
+			// A chunk the sizing had shrunk to one item is that item's own request.
 		default:
 			t.Fatalf("item %d: Mode = %q, unrecognised", i, item.Mode)
 		}
@@ -158,7 +161,9 @@ func TestLoadRunOpManyRecoverTransportFailureBurstsDuringMDSPPassesFallBackClean
 	items := recoverWidgets(n)
 	provider := newRecoverFakeProvider("fake-model")
 
-	var remaining int32 = 5 // the first 5 batch calls (top-level + isolate) fail
+	// The first two batch calls fail. Three in a row would be an outage, which stops
+	// the run (outageRequestLimit), so a burst that is recovered from is a shorter one.
+	var remaining int32 = 2
 	provider.batchDefault = func(tagged []taggedItem[recoverWidget]) (string, error) {
 		if atomic.AddInt32(&remaining, -1) >= 0 {
 			return "", &llm.RateLimitError{
@@ -219,7 +224,7 @@ func TestLoadRunOpManyRecoverManyConcurrentCascadesDoNotCrossContaminate(t *test
 	// nothing about this test needs them to differ -- the contamination this
 	// test is checking for is between cascades' own item slices and results,
 	// not between distinct models.
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	const cascades = 16
 	const itemsPerCascade = 40

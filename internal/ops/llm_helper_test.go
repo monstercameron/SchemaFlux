@@ -4,16 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type captureProvider struct {
@@ -221,7 +225,7 @@ func TestCallLLMTracksTokensAndCosts(t *testing.T) {
 		CorrelationIDStrategy: requesttracking.CorrelationStrategyInherit,
 	})
 	t.Cleanup(func() { requesttracking.Configure(requesttracking.DefaultConfig()) })
-	t.Setenv("SCHEMAFLUX_METRICS", "")
+	configtest.Setenv(t, "SCHEMAFLUX_METRICS", "")
 	originalMetrics := config.IsMetricsEnabled()
 	t.Cleanup(func() { config.SetMetricsEnabled(originalMetrics) })
 	config.SetMetricsEnabled(true)
@@ -689,5 +693,279 @@ func TestCallLLMRetriesEmptyContent(t *testing.T) {
 	}
 	if provider.attempts != 2 {
 		t.Fatalf("expected 2 attempts, got %d", provider.attempts)
+	}
+}
+
+// A threshold that is not a number is refused before anything is sent. The
+// options reach here from every path, those that have a Validate and those
+// that take a bare types.OpOptions.
+func TestCheckCallOptionsRefusesAThresholdThatIsNotANumber(t *testing.T) {
+	cases := []struct {
+		name      string
+		threshold float64
+		refused   bool
+	}{
+		{"unset", 0, false},
+		{"a half", 0.5, false},
+		{"one", 1, false},
+		{"negative", -0.5, false},
+		{"above one", 7, false},
+		{"the largest finite number", math.MaxFloat64, false},
+		{"NaN", math.NaN(), true},
+		{"positive infinity", math.Inf(1), true},
+		{"negative infinity", math.Inf(-1), true},
+		{"a NaN made by arithmetic", math.Inf(1) - math.Inf(1), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkCallOptions(types.OpOptions{Threshold: tc.threshold})
+			if (err != nil) != tc.refused {
+				t.Fatalf("checkCallOptions = %v for %v, want an error: %v", err, tc.threshold, tc.refused)
+			}
+			if err != nil && types.KindOf(err) != types.KindConfiguration {
+				t.Errorf("kind = %v, want configuration", types.KindOf(err))
+			}
+		})
+	}
+}
+
+func TestCallLLMAndCallLLMRefuseANonFiniteThresholdBeforeTheProvider(t *testing.T) {
+	for _, threshold := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		t.Run(fmt.Sprintf("threshold %v", threshold), func(t *testing.T) {
+			provider := &captureProvider{resp: llm.CompletionResponse{Content: "{}"}}
+			_, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{Threshold: threshold})
+			if types.KindOf(err) != types.KindConfiguration {
+				t.Errorf("CallLLM: err = %v, want a configuration error", err)
+			}
+			if provider.attempts != 0 {
+				t.Errorf("CallLLM reached the provider %d times", provider.attempts)
+			}
+
+			calls := 0
+			swapLLMCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
+				calls++
+				return "{}", nil
+			})
+			_, err = callLLM(context.Background(), "system", "user", types.OpOptions{Threshold: threshold})
+			if types.KindOf(err) != types.KindConfiguration {
+				t.Errorf("callLLM: err = %v, want a configuration error", err)
+			}
+			if calls != 0 {
+				t.Errorf("callLLM reached the caller %d times", calls)
+			}
+		})
+	}
+}
+
+// modelRecordingProvider answers at once and remembers the model it was asked
+// for.
+type modelRecordingProvider struct {
+	benchInstantProvider
+	models []string
+}
+
+func (p *modelRecordingProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	p.models = append(p.models, req.Model)
+	return p.benchInstantProvider.Complete(ctx, req)
+}
+
+// loggerAt puts a logger at level on the process for one test, writing to a
+// buffer and keeping what it logs, and returns the buffer's text.
+func loggerAt(t *testing.T, level logger.LogLevel) (read func() string, entries func() []logger.LogEntry) {
+	t.Helper()
+	var out strings.Builder
+	previous := logger.GetLogger()
+	cfg := logger.DefaultLoggerConfig()
+	cfg.Level = level
+	cfg.Output = &out
+	cfg.Capture = true
+	made := logger.ConfigureLogger(cfg)
+	// The warning that a prompt cache reports nothing for a prefix that keeps
+	// repeating counts the calls of the whole process, so a test that asks what
+	// a call wrote has to start the count over: after two calls of an earlier
+	// test with the same prompt, its first one wrote the warning.
+	resetCacheReadTracking()
+	t.Cleanup(func() {
+		resetCacheReadTracking()
+		logger.SetLogger(previous)
+	})
+	return out.String, made.Entries
+}
+
+func quietCallOptions() types.OpOptions {
+	return types.OpOptions{
+		Context:        context.Background(),
+		Mode:           types.TransformMode,
+		Intelligence:   types.Fast,
+		ResponseFormat: "json",
+	}
+}
+
+// A call that goes well writes nothing at info, and at the default level writes
+// nothing at all. The two lines it used to write, that the request started and
+// that it completed, are debug lines: the second was written to standard error
+// under the logger's lock before the answer was returned.
+func TestASuccessfulCallWritesNothingAtInfoOrWarn(t *testing.T) {
+	provider := benchInstantProvider{answer: `{"ok":true}`}
+	for _, level := range []logger.LogLevel{logger.InfoLevel, logger.WarnLevel, logger.ErrorLevel} {
+		t.Run(fmt.Sprint(level), func(t *testing.T) {
+			text, entries := loggerAt(t, level)
+			if _, err := CallLLM(context.Background(), provider, "Return only valid JSON.", "user", quietCallOptions()); err != nil {
+				t.Fatal(err)
+			}
+			if text() != "" || len(entries()) != 0 {
+				t.Errorf("a successful call wrote %q and kept %d entries at level %v", text(), len(entries()), level)
+			}
+		})
+	}
+}
+
+func TestASuccessfulCallWritesItsTwoLinesAtDebug(t *testing.T) {
+	provider := benchInstantProvider{answer: `{"ok":true}`}
+	text, entries := loggerAt(t, logger.DebugLevel)
+	if _, err := CallLLM(context.Background(), provider, "Return only valid JSON.", "user", quietCallOptions()); err != nil {
+		t.Fatal(err)
+	}
+	var messages []string
+	for _, entry := range entries() {
+		if entry.Level != "DEBUG" {
+			t.Errorf("the line %q was written at %s, want DEBUG", entry.Message, entry.Level)
+		}
+		messages = append(messages, entry.Message)
+	}
+	want := []string{"LLM request started", "LLM request completed"}
+	if strings.Join(messages, "|") != strings.Join(want, "|") {
+		t.Errorf("lines = %v, want %v", messages, want)
+	}
+	for _, field := range []string{"requestID=", "provider=openai", "model=", "duration_ms=", "tokens_total=144", "finishReason=stop"} {
+		if !strings.Contains(text(), field) {
+			t.Errorf("the completed line does not carry %s:\n%s", field, text())
+		}
+	}
+}
+
+func TestAFailedCallStillLogsAtError(t *testing.T) {
+	provider := &captureProvider{errors: []error{llm.NewAPIError("openai", "gpt-5-mini", 400, `{"error":{"message":"invalid request"}}`)}}
+	text, _ := loggerAt(t, logger.WarnLevel)
+	if _, err := CallLLM(context.Background(), provider, "Return only valid JSON.", "user", quietCallOptions()); err == nil {
+		t.Fatal("the call succeeded")
+	}
+	if !strings.Contains(text(), "LLM request failed") {
+		t.Errorf("a failed call wrote nothing at warn:\n%s", text())
+	}
+}
+
+// What a call costs before the provider and after it, so that the win cannot
+// rot. Measured at 22 on 2026-10-03, down from 72.
+func TestCallLLMAllocationsStayWithinBudget(t *testing.T) {
+	loggerAt(t, logger.WarnLevel)
+	provider := benchInstantProvider{answer: `{"order_id":"A-2207"}`}
+	system := "Return only valid JSON matching the schema."
+	opts := quietCallOptions()
+	if _, err := CallLLM(context.Background(), provider, system, "user", opts); err != nil {
+		t.Fatal(err)
+	}
+	got := testing.AllocsPerRun(200, func() {
+		if _, err := CallLLM(context.Background(), provider, system, "user", opts); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got > 24 {
+		t.Errorf("CallLLM allocates %v times, budget 24", got)
+	}
+
+	// The same with the identity already on the options, as every operation
+	// passes it: the context is not wrapped again.
+	opts.RequestID, opts.CorrelationID = "req_0123456789abcdef", "req_0123456789abcdef"
+	opts.Context = requesttracking.WithMetadata(context.Background(), requesttracking.Metadata{
+		RequestID: opts.RequestID, CorrelationID: opts.CorrelationID,
+	})
+	carried := testing.AllocsPerRun(200, func() {
+		if _, err := CallLLM(opts.Context, provider, system, "user", opts); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if carried > got-4 {
+		t.Errorf("CallLLM with the IDs already carried allocates %v times against %v without them; the context should not be wrapped again", carried, got)
+	}
+}
+
+// The model, and the other settings the call reads from the environment, are
+// read once: a variable changed afterwards is seen when the environment is
+// reloaded, and not before.
+func TestCallLLMReadsTheEnvironmentOnce(t *testing.T) {
+	loggerAt(t, logger.WarnLevel)
+	provider := &modelRecordingProvider{benchInstantProvider: benchInstantProvider{answer: `{"ok":true}`}}
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "model-first")
+	call := func() {
+		t.Helper()
+		if _, err := CallLLM(context.Background(), provider, "Return only valid JSON.", "user", quietCallOptions()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	call()
+	t.Setenv("SCHEMAFLUX_MODEL", "model-second")
+	call()
+	config.ReloadEnvironment()
+	call()
+
+	want := []string{"model-first", "model-first", "model-second"}
+	if strings.Join(provider.models, ",") != strings.Join(want, ",") {
+		t.Errorf("models = %v, want %v", provider.models, want)
+	}
+}
+
+func TestACallWithMetricsOnRecordsItsSeries(t *testing.T) {
+	loggerAt(t, logger.WarnLevel)
+	configtest.Setenv(t, "SCHEMAFLUX_METRICS", "")
+	telemetry.ResetMetrics()
+	config.SetMetricsEnabled(true)
+	t.Cleanup(func() { config.SetMetricsEnabled(false); telemetry.ResetMetrics() })
+	provider := benchInstantProvider{answer: `{"ok":true}`}
+	if _, err := CallLLM(context.Background(), provider, "Return only valid JSON.", "user", quietCallOptions()); err != nil {
+		t.Fatal(err)
+	}
+	if got := telemetry.SnapshotMetrics(); len(got) == 0 {
+		t.Error("a call with metrics on recorded nothing")
+	}
+}
+
+// nameCountingProvider counts how often it is asked its name. CallLLM asks it
+// for the "request started" line, so the count shows whether the arguments of
+// that line were evaluated.
+type nameCountingProvider struct {
+	benchInstantProvider
+	names *atomic.Int64
+}
+
+func (p nameCountingProvider) Name() string {
+	p.names.Add(1)
+	return p.benchInstantProvider.Name()
+}
+
+// The arguments of a log line are evaluated before the call checks the level, so
+// a line that is off has to be skipped before they are built, not inside the call
+// that drops it. Asking the provider its name is an argument of the "request
+// started" line: a call at debug asks one more time than a call at warn, and with
+// the check in front of the line removed the two counts are equal.
+func TestADebugLineThatIsOffHasNoArgumentEvaluated(t *testing.T) {
+	namesAsked := func(level logger.LogLevel) int64 {
+		t.Helper()
+		loggerAt(t, level)
+		var names atomic.Int64
+		provider := nameCountingProvider{benchInstantProvider{answer: `{"ok":true}`}, &names}
+		if _, err := CallLLM(context.Background(), provider, "Return only valid JSON.", "user", quietCallOptions()); err != nil {
+			t.Fatal(err)
+		}
+		return names.Load()
+	}
+
+	atDebug, atWarn, atInfo, atError := namesAsked(logger.DebugLevel), namesAsked(logger.WarnLevel), namesAsked(logger.InfoLevel), namesAsked(logger.ErrorLevel)
+	if atDebug != atWarn+1 {
+		t.Errorf("the provider was asked its name %d times at debug and %d at warn, want one more at debug: the line's arguments are built when the line is off", atDebug, atWarn)
+	}
+	if atInfo != atWarn || atError != atWarn {
+		t.Errorf("the provider was asked its name %d times at info and %d at error, want the %d of warn", atInfo, atError, atWarn)
 	}
 }

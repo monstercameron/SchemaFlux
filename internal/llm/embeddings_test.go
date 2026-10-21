@@ -3,87 +3,16 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
-
-// nonEmbeddingProvider implements Provider (the minimum), and deliberately
-// nothing more -- it stands in for every Provider in this repository that
-// predates PS-006 and has no Embed method.
-type nonEmbeddingProvider struct{ calls int }
-
-func (p *nonEmbeddingProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	p.calls++
-	return CompletionResponse{}, nil
-}
-func (p *nonEmbeddingProvider) Name() string                               { return "non-embedding" }
-func (p *nonEmbeddingProvider) EstimateCost(req CompletionRequest) float64 { return 0 }
-func (p *nonEmbeddingProvider) RetryPolicy() (int, time.Duration)          { return 0, 0 }
-
-// TestRequestEmbeddingReportsUnsupportedCapability proves a provider that
-// cannot embed is refused with KindUnsupportedCapability rather than
-// silently degrading into a chat call -- the exact failure mode PS-006
-// warns against (an embedding-similarity number and a model's self-reported
-// score are different kinds of number, and falling back would blur them).
-func TestRequestEmbeddingReportsUnsupportedCapability(t *testing.T) {
-	provider := &nonEmbeddingProvider{}
-	_, err := RequestEmbedding(context.Background(), provider, EmbeddingRequest{Input: []string{"hello"}})
-	if err == nil {
-		t.Fatal("expected an error, got nil")
-	}
-	if got := types.KindOf(err); got != types.KindUnsupportedCapability {
-		t.Errorf("KindOf(err) = %v, want KindUnsupportedCapability", got)
-	}
-	// Never a fallback: Complete must not have been called on the way to
-	// reporting the capability is missing.
-	if provider.calls != 0 {
-		t.Errorf("Complete was called %d times; RequestEmbedding must never fall back to a chat call", provider.calls)
-	}
-}
-
-// TestRequestEmbeddingNilProviderIsConfiguration proves a nil provider is
-// reported as a configuration problem, distinct from KindUnsupportedCapability
-// -- the caller has not chosen a provider at all, rather than having chosen
-// one that lacks the capability.
-func TestRequestEmbeddingNilProviderIsConfiguration(t *testing.T) {
-	_, err := RequestEmbedding(context.Background(), nil, EmbeddingRequest{Input: []string{"hello"}})
-	if got := types.KindOf(err); got != types.KindConfiguration {
-		t.Errorf("KindOf(err) = %v, want KindConfiguration", got)
-	}
-}
-
-// fakeEmbeddingProvider implements EmbeddingProvider directly (no network),
-// so tests of RequestEmbedding's happy path make zero HTTP calls.
-type fakeEmbeddingProvider struct{ nonEmbeddingProvider }
-
-func (p *fakeEmbeddingProvider) Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error) {
-	vectors := make([][]float64, len(req.Input))
-	for i := range req.Input {
-		vectors[i] = []float64{float64(i), 1}
-	}
-	return EmbeddingResponse{Vectors: vectors, Provider: p.Name(), Model: "fake"}, nil
-}
-
-// TestRequestEmbeddingDispatchesToCapableProvider proves a provider that
-// does implement EmbeddingProvider is used directly, with the response
-// passed through unchanged.
-func TestRequestEmbeddingDispatchesToCapableProvider(t *testing.T) {
-	provider := &fakeEmbeddingProvider{}
-	resp, err := RequestEmbedding(context.Background(), provider, EmbeddingRequest{Input: []string{"a", "b", "c"}})
-	if err != nil {
-		t.Fatalf("RequestEmbedding: %v", err)
-	}
-	if len(resp.Vectors) != 3 {
-		t.Fatalf("expected 3 vectors, got %d", len(resp.Vectors))
-	}
-	if resp.Vectors[1][0] != 1 {
-		t.Errorf("expected vector 1 to preserve its identity, got %v", resp.Vectors[1])
-	}
-}
 
 // newEmbeddingTestServer returns an httptest.Server that decodes the
 // request body into capturedBody and answers with responseBody -- mirrors
@@ -186,10 +115,104 @@ func TestOpenAIEmbedMismatchedCountIsAnError(t *testing.T) {
 // before any request is sent -- a zero-length batch has no defined
 // embedding to ask for.
 func TestOpenAIEmbedEmptyInputIsAnError(t *testing.T) {
-	provider := newTestOpenAIProvider(t, "http://unused.invalid")
-	_, err := provider.Embed(context.Background(), EmbeddingRequest{})
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"data":[],"model":"m"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := newTestOpenAIProvider(t, server.URL)
+	for _, input := range [][]string{nil, {}} {
+		if _, err := provider.Embed(context.Background(), EmbeddingRequest{Input: input}); err == nil {
+			t.Errorf("Input %#v was accepted", input)
+		}
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("%d request(s) reached the server for an embedding request with no input", got)
+	}
+}
+
+// Every input gets a vector, and every vector has the same non-zero length.
+func TestOpenAIEmbedRefusesAnEmptyVectorAndVectorsOfDifferentLengths(t *testing.T) {
+	cases := []struct {
+		name   string
+		inputs []string
+		body   string
+	}{
+		{"a single empty vector", []string{"a"}, `{"data":[{"embedding":[],"index":0}],"model":"m"}`},
+		{"an empty vector among others", []string{"a", "b"}, `{"data":[{"embedding":[1,2],"index":0},{"embedding":[],"index":1}],"model":"m"}`},
+		{"two lengths", []string{"a", "b"}, `{"data":[{"embedding":[1,2],"index":0},{"embedding":[1,2,3],"index":1}],"model":"m"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newEmbeddingTestServer(t, tc.body, nil)
+			provider := newTestOpenAIProvider(t, server.URL)
+			resp, err := provider.Embed(context.Background(), EmbeddingRequest{Input: tc.inputs})
+			if err == nil {
+				t.Fatalf("accepted %v", resp.Vectors)
+			}
+		})
+	}
+}
+
+// An error body longer than the part of it that is read is still read to the end
+// (up to the drain bound), so the connection goes back to the pool and the next
+// call does not pay for a new one.
+func TestOpenAIEmbedKeepsItsConnectionAfterAnErrorBodyLongerThanItReads(t *testing.T) {
+	var conns atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(strings.Repeat("e", maxErrorBodyBytes+10<<10)))
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	previous := drainTimeout
+	drainTimeout = 10 * time.Second
+	t.Cleanup(func() { drainTimeout = previous })
+
+	provider := newTestOpenAIProvider(t, server.URL)
+	for i := 0; i < 3; i++ {
+		if _, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"x"}}); err == nil {
+			t.Fatal("a 400 produced a result")
+		}
+	}
+	if got := conns.Load(); got != 1 {
+		t.Errorf("3 calls opened %d connections, want 1: the body was closed with its end not read", got)
+	}
+}
+
+// An embeddings answer is read under its own, larger, ceiling: a body past it is
+// refused whole, even when what precedes the excess is a well-formed answer.
+// The ceiling is a constant, so the body written is its size.
+func TestOpenAIEmbedBodyIsBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes a body of about 192 MiB")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[1,2],"index":0}],"model":"m"}`))
+		pad := []byte(strings.Repeat(" ", 1<<20))
+		for written := 0; written <= maxEmbeddingBodyBytes; written += len(pad) {
+			if _, err := w.Write(pad); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	provider := newTestOpenAIProvider(t, server.URL)
+	resp, err := provider.Embed(context.Background(), EmbeddingRequest{Input: []string{"x"}})
 	if err == nil {
-		t.Fatal("expected an error for empty input, got nil")
+		t.Fatalf("a body past the ceiling was accepted: %v", resp.Vectors)
+	}
+	if got := Classify(err); got != types.KindMalformedOutput {
+		t.Errorf("Classify = %v, want %v (%v)", got, types.KindMalformedOutput, err)
 	}
 }
 
@@ -209,15 +232,4 @@ func TestOpenAIEmbedNon200IsClassifiedError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a 400 response, got nil")
 	}
-}
-
-// TestEmbeddingProviderIsAStreamingProviderRelative documents, rather than
-// tests behavior of, the two capability interfaces' independence: an
-// OpenAIProvider implements both EmbeddingProvider and StreamingProvider,
-// but nothing about implementing one requires implementing the other -- see
-// nonEmbeddingProvider, which is a Provider and nothing else.
-func TestEmbeddingProviderIsAStreamingProviderRelative(t *testing.T) {
-	var _ EmbeddingProvider = (*OpenAIProvider)(nil)
-	var _ StreamingProvider = (*OpenAIProvider)(nil)
-	var _ Provider = (*nonEmbeddingProvider)(nil)
 }

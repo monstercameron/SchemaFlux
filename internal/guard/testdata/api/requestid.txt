@@ -1,0 +1,18 @@
+type Config struct{Disabled bool; Strategy Strategy; Correlation Correlation; Header string; CorrelationHeader string}
+func Configure(c Config) (restore func(), err error)
+type Correlation uint8
+const CorrelationGenerate Correlation
+const CorrelationInherit Correlation
+const CorrelationNone Correlation
+func Extract(ctx context.Context, h http.Header) context.Context
+func From(ctx context.Context) IDs
+type IDs struct{Request string; Correlation string}
+func Inject(ctx context.Context, h http.Header)
+type Strategy uint8
+const StrategyAuto Strategy
+const StrategyNone Strategy
+const StrategyTimestamp Strategy
+const StrategyTrace Strategy
+const StrategyUUID Strategy
+func With(ctx context.Context, id string) context.Context
+func WithCorrelation(ctx context.Context, id string) context.Context

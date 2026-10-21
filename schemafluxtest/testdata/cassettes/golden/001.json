@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "provider": "golden",
+  "request": {
+    "model": "gold-1",
+    "web_search": true,
+    "decision": {
+      "state": "\"a ticket\"",
+      "guidance": "strict",
+      "questions": [
+        {
+          "kind": "yes_no",
+          "ask": "Urgent?"
+        },
+        {
+          "kind": "choice",
+          "ask": "Queue?",
+          "options": [
+            "billing",
+            "tech"
+          ],
+          "criteria": [
+            "money",
+            ""
+          ]
+        },
+        {
+          "kind": "scale",
+          "ask": "Anger?",
+          "low": 1,
+          "high": 5
+        }
+      ]
+    }
+  },
+  "response": {
+    "content": "",
+    "usage": {},
+    "model": "gold-1",
+    "answers": [
+      {
+        "kind": "yes_no",
+        "yes": true,
+        "model_confidence": 0.75,
+        "confidence_reported": true
+      },
+      {
+        "kind": "choice",
+        "label": "billing"
+      },
+      {
+        "kind": "scale",
+        "level": 4
+      }
+    ],
+    "escalation": {
+      "provider": "jev",
+      "model": "jev-1",
+      "reason": "below the floor",
+      "model_confidence": 0.25,
+      "confidence_reported": true
+    }
+  }
+}

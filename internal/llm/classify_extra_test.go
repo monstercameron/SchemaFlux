@@ -3,7 +3,7 @@ package llm
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TestKindForStatusEveryBranch pins every named branch in kindForStatus,
@@ -56,8 +56,10 @@ func TestKindFromTextEveryBranch(t *testing.T) {
 		{"no model mapping", "provider has no model mapping for this tier", types.KindConfiguration},
 		{"deadline exceeded text", "operation failed: context deadline exceeded", types.KindTimeout},
 		{"canceled text", "operation failed: context canceled", types.KindCanceled},
-		{"budget", "monthly budget exceeded for this account", types.KindBudgetExceeded},
-		{"budget case insensitive", "BUDGET limit hit", types.KindBudgetExceeded},
+		{"the library's own budget phrase", "cost budget exceeded: daily spend 5.00 of limit 4.00", types.KindBudgetExceeded},
+		{"the library's own budget phrase, upper case", "COST BUDGET EXCEEDED", types.KindBudgetExceeded},
+		{"a vendor's budget sentence is not ours", "monthly budget exceeded for this account", types.KindUnknown},
+		{"the word alone is not ours", "BUDGET limit hit", types.KindUnknown},
 		{"unrecognised", "the printer is on fire", types.KindUnknown},
 		{"empty", "", types.KindUnknown},
 	}

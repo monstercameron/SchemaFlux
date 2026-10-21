@@ -2,7 +2,7 @@ package ops
 
 // This file drives redact_llm.go (RedactLLM's Validate, RedactLLM itself,
 // buildRedactSystemPrompt, buildRedactUserPrompt, containsCategory) and
-// negotiate.go (Negotiate/Settle, mergeNegotiateOptions, normalizeFloat,
+// negotiate.go (Negotiate/Settle, mergeNegotiateOptions,
 // NegotiateAdversarial/SettleAdversarial), all of which showed 0.0% coverage
 // (mergeNegotiateOptions was partially covered, at 61.9%) before this file.
 // RedactLLM specifically had no test anywhere in the package: `RedactLLM(`
@@ -10,14 +10,14 @@ package ops
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // erroringProvider always fails the call, for exercising an operation's
@@ -30,8 +30,6 @@ func (p *erroringProvider) Complete(context.Context, llm.CompletionRequest) (llm
 func (p *erroringProvider) Name() string                               { return "erroring" }
 func (p *erroringProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
 func (p *erroringProvider) RetryPolicy() (int, time.Duration)          { return 0, time.Millisecond }
-
-func jsonNumber(s string) json.Number { return json.Number(s) }
 
 // --- RedactLLMOptions.Validate ---
 
@@ -142,10 +140,13 @@ func TestRedactLLMRefusesAMalformedResponse(t *testing.T) {
 	}
 }
 
-// TestRedactLLMDropsAHallucinatedSpan: a span whose text is not actually in
-// the document must not be applied -- the wrapper's own doc comment names
-// this as the reason offsets stopped being trusted.
-func TestRedactLLMDropsAHallucinatedSpan(t *testing.T) {
+// TestRedactLLMRefusesASpanItCannotFind replaces a test that asserted the
+// opposite: a span whose text is not in the document was dropped, and the call
+// returned the text unchanged with a nil error. That is right if the span was
+// invented and wrong if it was a real value quoted inexactly, and the two look
+// the same from here. A redaction that could not be carried out is reported as
+// one (LX-020).
+func TestRedactLLMRefusesASpanItCannotFind(t *testing.T) {
 	text := "Nothing sensitive here."
 	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
 		return `{"spans": [{"text": "555-000-1234", "start": 0, "category": "phone"}]}`, nil
@@ -153,14 +154,11 @@ func TestRedactLLMDropsAHallucinatedSpan(t *testing.T) {
 	t.Cleanup(func() { setLLMCaller(nil) })
 
 	result, err := RedactLLM(context.Background(), text, NewRedactLLMOptions())
-	if err != nil {
-		t.Fatalf("RedactLLM: %v", err)
+	if err == nil {
+		t.Fatalf("a span that could not be located was accepted; Text = %q", result.Text)
 	}
-	if result.Text != text {
-		t.Errorf("Text = %q, want the original text unchanged (hallucinated span must be dropped)", result.Text)
-	}
-	if len(result.Spans) != 0 {
-		t.Errorf("Spans = %v, want none", result.Spans)
+	if result.Text != "" {
+		t.Errorf("Text = %q, want nothing a caller could mistake for a redacted document", result.Text)
 	}
 }
 
@@ -188,63 +186,44 @@ func TestBuildRedactUserPromptCarriesTheText(t *testing.T) {
 	}
 }
 
-// --- mergeOverlappingSpans ---
+// --- mergeByteSpans ---
 
-// TestMergeOverlappingSpansExtendsAndConcatenatesCategories exercises the
-// branch parseRedactResponse's own tests never reach through the public
-// entry point: a second span that overlaps the first and extends past its
-// end must widen the merged span and concatenate both categories, since
-// neither original category alone still describes the merged range.
-func TestMergeOverlappingSpansExtendsAndConcatenatesCategories(t *testing.T) {
-	in := []RedactSpan{
-		{Start: 5, End: 10, Category: "email"},
-		{Start: 8, End: 15, Category: "name"}, // overlaps and extends past the first
-		{Start: 20, End: 25, Category: "ssn"}, // does not overlap either
+func TestMergeByteSpans(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byteSpan
+		want []byteSpan
+	}{
+		{"empty", nil, nil},
+		{"single", []byteSpan{{0, 3, "x"}}, []byteSpan{{0, 3, "x"}}},
+		{"disjoint, already ordered", []byteSpan{{0, 3, "a"}, {5, 8, "b"}}, []byteSpan{{0, 3, "a"}, {5, 8, "b"}}},
+		{"disjoint, out of order", []byteSpan{{5, 8, "b"}, {0, 3, "a"}}, []byteSpan{{0, 3, "a"}, {5, 8, "b"}}},
+		{"overlap extends and keeps both categories", []byteSpan{{5, 10, "email"}, {8, 15, "name"}, {20, 25, "ssn"}},
+			[]byteSpan{{5, 15, "email,name"}, {20, 25, "ssn"}}},
+		{"contained span does not shrink the outer one", []byteSpan{{0, 20, "address"}, {5, 10, "name"}},
+			[]byteSpan{{0, 20, "address,name"}}},
+		{"same category twice is named once", []byteSpan{{0, 10, "email"}, {4, 12, "email"}}, []byteSpan{{0, 12, "email"}}},
+		{"touching spans join", []byteSpan{{0, 5, "a"}, {5, 9, "b"}}, []byteSpan{{0, 9, "a,b"}}},
+		{"a gap of one byte keeps them apart", []byteSpan{{0, 5, "a"}, {6, 9, "b"}}, []byteSpan{{0, 5, "a"}, {6, 9, "b"}}},
+		{"a category that is itself a list is split", []byteSpan{{0, 5, "a, b"}, {3, 9, "b ,c"}}, []byteSpan{{0, 9, "a,b,c"}}},
+		{"identical spans collapse", []byteSpan{{3, 7, "a"}, {3, 7, "a"}}, []byteSpan{{3, 7, "a"}}},
+		{"an empty category does not add a comma", []byteSpan{{0, 10, "email"}, {4, 12, ""}}, []byteSpan{{0, 12, "email"}}},
+		{"an empty first category takes the second", []byteSpan{{0, 10, ""}, {4, 12, "name"}}, []byteSpan{{0, 12, "name"}}},
+		{"three-way chain", []byteSpan{{0, 5, "a"}, {4, 9, "b"}, {8, 12, "c"}}, []byteSpan{{0, 12, "a,b,c"}}},
+		{"same start, longer one first", []byteSpan{{2, 4, "short"}, {2, 9, "long"}}, []byteSpan{{2, 9, "long,short"}}},
 	}
-	merged := mergeOverlappingSpans(in)
-	if len(merged) != 2 {
-		t.Fatalf("merged = %+v, want 2 spans (the first two merge, the third stands alone)", merged)
-	}
-	if merged[0].Start != 5 || merged[0].End != 15 {
-		t.Errorf("merged[0] = %+v, want [5:15]", merged[0])
-	}
-	if merged[0].Category != "email,name" {
-		t.Errorf("merged[0].Category = %q, want %q", merged[0].Category, "email,name")
-	}
-	if merged[0].Original != "" {
-		t.Errorf("merged[0].Original = %q, want empty (cannot preserve original text across a merge)", merged[0].Original)
-	}
-	if merged[1].Start != 20 || merged[1].End != 25 {
-		t.Errorf("merged[1] = %+v, want [20:25] unchanged", merged[1])
-	}
-}
-
-// TestMergeOverlappingSpansContainedSpanDoesNotShrink: a span fully inside
-// an earlier, larger one must not shrink the merged span's end.
-func TestMergeOverlappingSpansContainedSpanDoesNotShrink(t *testing.T) {
-	in := []RedactSpan{
-		{Start: 0, End: 20, Category: "address"},
-		{Start: 5, End: 10, Category: "name"}, // fully contained
-	}
-	merged := mergeOverlappingSpans(in)
-	if len(merged) != 1 {
-		t.Fatalf("merged = %+v, want a single span", merged)
-	}
-	if merged[0].End != 20 {
-		t.Errorf("merged[0].End = %d, want 20 (a contained span must not shrink it)", merged[0].End)
-	}
-	if merged[0].Category != "address" {
-		t.Errorf("merged[0].Category = %q, want %q (a contained span's category is not appended when it adds no range)", merged[0].Category, "address")
-	}
-}
-
-func TestMergeOverlappingSpansEmptyAndSingle(t *testing.T) {
-	if got := mergeOverlappingSpans(nil); len(got) != 0 {
-		t.Errorf("mergeOverlappingSpans(nil) = %v, want empty", got)
-	}
-	one := []RedactSpan{{Start: 0, End: 3, Category: "x"}}
-	if got := mergeOverlappingSpans(one); len(got) != 1 {
-		t.Errorf("mergeOverlappingSpans(single) = %v, want the one span unchanged", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeByteSpans(append([]byteSpan(nil), tc.in...))
+			if len(got) != len(tc.want) {
+				t.Fatalf("merged = %+v, want %+v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("merged[%d] = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -277,32 +256,95 @@ func TestMaskTextClampsNegativeShowValues(t *testing.T) {
 	if strings.Contains(got, "secret") {
 		t.Errorf("maskText = %q, still contains the original value", got)
 	}
-}
 
-// --- locateSpan ---
-
-func TestLocateSpanPicksNearestToHint(t *testing.T) {
-	text := "aaXbbXccXdd" // "X" at indices 2, 5, 8
-	// The hint sits exactly on the middle occurrence, which must win over the
-	// first and last even though the first is also a valid candidate.
-	if got := locateSpan(text, "X", 5, 0); got != 5 {
-		t.Fatalf("locateSpan = %d, want 5 (the occurrence matching the hint exactly)", got)
-	}
-	// A hint that lands between two candidates picks the nearer one.
-	if got := locateSpan(text, "X", 7, 0); got != 8 {
-		t.Fatalf("locateSpan = %d, want 8 (nearer to hint 7 than candidate 5)", got)
+	// A negative count must not cancel a positive one in the sum that decides
+	// whether the whole value would show: the sum here is 4, under the length of
+	// 12, yet clamped it is 14 and the value is masked entirely. RedactLLM
+	// refuses negative counts before it gets here, so only a direct call sees this.
+	opts = NewRedactLLMOptions()
+	opts.ShowFirst, opts.ShowLast, opts.MinMask = -10, 14, 1
+	text := "abcdefghijkl"
+	if got, want := maskText(text, opts), strings.Repeat("*", len(text)); got != want {
+		t.Errorf("maskText = %q, want %q", got, want)
 	}
 }
 
-func TestLocateSpanReturnsMinusOneWhenNotFound(t *testing.T) {
-	if got := locateSpan("no match here", "zzz", 0, 0); got != -1 {
-		t.Errorf("locateSpan = %d, want -1", got)
+// --- occurrencesOf ---
+
+func TestOccurrencesOf(t *testing.T) {
+	cases := []struct {
+		name, text, value string
+		want              [][2]int
+	}{
+		{"one exact", "call 555-0142 now", "555-0142", [][2]int{{5, 13}}},
+		{"three exact", "aaXbbXccXdd", "X", [][2]int{{2, 3}, {5, 6}, {8, 9}}},
+		{"overlapping candidates are all found", "aaaa", "aa", [][2]int{{0, 2}, {1, 3}, {2, 4}}},
+		{"not there", "no match here", "zzz", nil},
+		{"empty value", "some text", "", nil},
+		{"whitespace-only value", "some text", "   ", nil},
+		{"offsets are bytes: one two-byte letter before", "Zo\u00eb zoe@example.com", "zoe@example.com", [][2]int{{5, 20}}},
+		{"spacing differs", "Call 555  014   2298 today", "555 014 2298", [][2]int{{5, 20}}},
+		{"line break in the text", "Name: Dana\nKim, age 40", "Dana Kim", [][2]int{{6, 14}}},
+		{"case differs", "Email DANA@EXAMPLE.COM now", "dana@example.com", [][2]int{{6, 22}}},
+		{"a looser copy is found beside an exact one", "Dana Kim and dana  kim", "Dana Kim", [][2]int{{0, 8}, {13, 22}}},
+		{"the end of a longer word is skipped when one stands alone", "Al, Hal", "Al", [][2]int{{0, 2}}},
+		{"the start of a longer word is not skipped", "Al, Also", "Al", [][2]int{{0, 2}, {4, 6}}},
+		{"the end of a longer word is kept when none stands alone", "Hal", "Al", [][2]int{{1, 3}}},
+		{"a no-break space matches a space", "Dana\u00a0Kim", "Dana Kim", [][2]int{{0, 9}}},
+		{"regex characters in the value are literal", "cost is $5.00 (net)", "$5.00 (net)", [][2]int{{8, 19}}},
+		{"regex characters with different spacing", "a.b  c", "A.B C", [][2]int{{0, 6}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := occurrencesOf(tc.text, tc.value)
+			if len(got) != len(tc.want) {
+				t.Fatalf("occurrencesOf = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("occurrence %d = %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
-func TestLocateSpanEmptyValueReturnsMinusOne(t *testing.T) {
-	if got := locateSpan("some text", "", 0, 0); got != -1 {
-		t.Errorf("locateSpan = %d, want -1 for an empty value", got)
+// --- spansInCharacters ---
+
+func TestSpansInCharacters(t *testing.T) {
+	cases := []struct {
+		name    string
+		text    string
+		located []byteSpan
+		want    []RedactSpan
+	}{
+		{"ascii", "ab cd ef", []byteSpan{{3, 5, "x"}}, []RedactSpan{{Start: 3, End: 5, Category: "x", Original: "cd"}}},
+		{"a two-byte letter before", "Zo\u00eb cd", []byteSpan{{5, 7, "x"}}, []RedactSpan{{Start: 4, End: 6, Category: "x", Original: "cd"}}},
+		{"a four-byte emoji before", "\U0001F4DE cd", []byteSpan{{5, 7, "x"}}, []RedactSpan{{Start: 2, End: 4, Category: "x", Original: "cd"}}},
+		{"the span itself is multi-byte", "a J\u00fcrgen b", []byteSpan{{2, 9, "name"}}, []RedactSpan{{Start: 2, End: 8, Category: "name", Original: "J\u00fcrgen"}}},
+		{"two spans, multi-byte between them", "ab \u00e9\u00e9 cd", []byteSpan{{0, 2, "a"}, {8, 10, "b"}},
+			[]RedactSpan{{Start: 0, End: 2, Category: "a", Original: "ab"}, {Start: 6, End: 8, Category: "b", Original: "cd"}}},
+		{"at the very start", "\u00e9x", []byteSpan{{0, 2, "a"}}, []RedactSpan{{Start: 0, End: 1, Category: "a", Original: "\u00e9"}}},
+		{"at the very end", "x\u00e9", []byteSpan{{1, 3, "a"}}, []RedactSpan{{Start: 1, End: 2, Category: "a", Original: "\u00e9"}}},
+		{"whole text", "\u00e9\u00e9", []byteSpan{{0, 4, "a"}}, []RedactSpan{{Start: 0, End: 2, Category: "a", Original: "\u00e9\u00e9"}}},
+		{"none", "abc", nil, nil},
+		{"cjk", "\u9023\u7d61 ab", []byteSpan{{7, 9, "a"}}, []RedactSpan{{Start: 3, End: 5, Category: "a", Original: "ab"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := spansInCharacters(tc.text, tc.located)
+			if len(got) != len(tc.want) {
+				t.Fatalf("spans = %+v, want %+v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("span %d = %+v, want %+v", i, got[i], tc.want[i])
+				}
+				if selected := string([]rune(tc.text)[got[i].Start:got[i].End]); selected != got[i].Original {
+					t.Fatalf("span %d selects %q in characters, but Original is %q", i, selected, got[i].Original)
+				}
+			}
+		})
 	}
 }
 
@@ -341,7 +383,7 @@ type negotiatedPlan struct {
 // --- Settle / Negotiate ---
 
 func TestSettleHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"solution": {"duration_weeks": 6, "features": ["auth"]}, "satisfaction": {"budget": 0.8}, "overall_satisfaction": 0.8, "tradeoffs": [{"sacrificed": "scope", "gained": "speed", "impact": "medium"}], "alternatives": [{"duration_weeks": 8, "features": ["auth", "analytics"]}], "reasoning": "balanced", "confidence": 0.75}`,
 	}}
@@ -376,11 +418,11 @@ func TestSettleHappyPath(t *testing.T) {
 // TestNegotiateDelegatesToSettle exercises the deprecated alias: it must
 // produce the same answer, not a second implementation that can drift.
 func TestNegotiateDelegatesToSettle(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	// Above NegotiateOptions' default MinSatisfaction of 0.6, which Settle now
 	// enforces -- this test is about the delegation, not about the floor.
 	provider := &scriptedProvider{bodies: []string{
-		`{"solution": {"duration_weeks": 4, "features": []}, "satisfaction": {}, "overall_satisfaction": 0.8, "confidence": 0.5}`,
+		`{"solution": {"duration_weeks": 4, "features": []}, "satisfaction": {}, "overall_satisfaction": 0.8, "tradeoffs": [], "alternatives": [], "reasoning": "balanced", "confidence": 0.5}`,
 	}}
 	ctx := WithProvider(context.Background(), provider)
 
@@ -397,7 +439,7 @@ func TestNegotiateDelegatesToSettle(t *testing.T) {
 // that has to come back as an error, not a zero-value plan that looks like a
 // deliberate "no changes needed" answer.
 func TestSettleRefusesOnProviderError(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &erroringProvider{err: errors.New("provider down")}
 	ctx := WithProvider(context.Background(), provider)
 
@@ -410,7 +452,7 @@ func TestSettleRefusesOnProviderError(t *testing.T) {
 // TestSettleRefusesAMalformedResponse: a response that doesn't parse must
 // not produce a zero-value "solution" silently.
 func TestSettleRefusesAMalformedResponse(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{"not json"}}
 	ctx := WithProvider(context.Background(), provider)
 
@@ -480,41 +522,6 @@ func TestMergeNegotiateOptionsZeroUserLeavesDefaults(t *testing.T) {
 	}
 }
 
-// --- normalizeFloat ---
-
-func TestNormalizeFloat(t *testing.T) {
-	cases := []struct {
-		name  string
-		value any
-		want  float64
-		ok    bool
-	}{
-		{"float64", float64(1.5), 1.5, true},
-		{"float32", float32(2.5), 2.5, true},
-		{"int", int(3), 3, true},
-		{"int32", int32(4), 4, true},
-		{"int64", int64(5), 5, true},
-		{"json.Number valid", jsonNumber("6.5"), 6.5, true},
-		{"json.Number invalid", jsonNumber("not-a-number"), 0, false},
-		{"string valid", "7.5", 7.5, true},
-		{"string with whitespace", "  8  ", 8, true},
-		{"string invalid", "not-a-number", 0, false},
-		{"unsupported type", []int{1}, 0, false},
-		{"nil", nil, 0, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := normalizeFloat(tc.value)
-			if ok != tc.ok {
-				t.Fatalf("normalizeFloat(%v) ok = %v, want %v", tc.value, ok, tc.ok)
-			}
-			if ok && got != tc.want {
-				t.Errorf("normalizeFloat(%v) = %v, want %v", tc.value, got, tc.want)
-			}
-		})
-	}
-}
-
 // --- SettleAdversarial / NegotiateAdversarial ---
 
 type salaryTerms struct {
@@ -522,7 +529,7 @@ type salaryTerms struct {
 }
 
 func TestSettleAdversarialHappyPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"deal": {"base_salary": 150000}, "deal_reached": true, "term_movements": [{"term": "base_salary", "our_ask": 160000, "their_offer": 130000, "final_value": 150000, "movement": "split"}], "who_conceded_more": "they", "our_satisfaction": 0.8, "their_satisfaction": 0.6, "confidence": 0.7}`,
 	}}
@@ -552,7 +559,7 @@ func TestSettleAdversarialHappyPath(t *testing.T) {
 // TestNegotiateAdversarialDelegatesToSettleAdversarial exercises the
 // deprecated alias.
 func TestNegotiateAdversarialDelegatesToSettleAdversarial(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{
 		`{"deal": {"base_salary": 140000}, "deal_reached": false, "term_movements": [], "who_conceded_more": "equal", "our_satisfaction": 0.5, "their_satisfaction": 0.5, "confidence": 0.5}`,
 	}}
@@ -573,7 +580,7 @@ func TestNegotiateAdversarialDelegatesToSettleAdversarial(t *testing.T) {
 
 // TestSettleAdversarialRefusesOnProviderError.
 func TestSettleAdversarialRefusesOnProviderError(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &erroringProvider{err: errors.New("provider down")}
 	ctx := WithProvider(context.Background(), provider)
 
@@ -589,7 +596,7 @@ func TestSettleAdversarialRefusesOnProviderError(t *testing.T) {
 
 // TestSettleAdversarialRefusesAMalformedResponse.
 func TestSettleAdversarialRefusesAMalformedResponse(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	provider := &scriptedProvider{bodies: []string{"not json"}}
 	ctx := WithProvider(context.Background(), provider)
 

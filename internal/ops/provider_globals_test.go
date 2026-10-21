@@ -2,11 +2,12 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The two package-level hooks -- defaultProvider and customLLMCaller -- are
@@ -83,40 +84,6 @@ func currentHooksProbe() (LLMCaller, llm.Provider, error) {
 	return caller, provider, nil
 }
 
-// Batch() reads the same global and had its own unguarded access.
-func TestBatchReadsTheProviderUnderTheLock(t *testing.T) {
-	originalCaller, originalProvider := currentHooks()
-	t.Cleanup(func() {
-		setLLMCaller(originalCaller)
-		SetDefaultProvider(originalProvider)
-	})
-
-	provider := &captureProvider{}
-	SetDefaultProvider(provider)
-
-	var wg sync.WaitGroup
-	for w := 0; w < 4; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 100; i++ {
-				if Batch() == nil {
-					t.Error("Batch() returned nil")
-					return
-				}
-			}
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 100; i++ {
-				SetDefaultProvider(&captureProvider{})
-			}
-		}()
-	}
-	wg.Wait()
-}
-
 // An operation run while no provider is installed still reports the error that
 // names the way out, rather than reading a half-written variable.
 func TestNoProviderIsStillReportedUnderConcurrency(t *testing.T) {
@@ -133,7 +100,7 @@ func TestNoProviderIsStillReportedUnderConcurrency(t *testing.T) {
 	if err == nil {
 		t.Fatal("callLLM with no provider must fail")
 	}
-	if err != ErrNoProvider {
+	if !errors.Is(err, ErrNoProvider) {
 		t.Errorf("err = %v, want ErrNoProvider", err)
 	}
 }

@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A-009's Revised line ("a caller must be able to register their own ...
@@ -187,7 +188,7 @@ func TestMultipleCallerInvariantsAllMustPass(t *testing.T) {
 // attempts no matter what RunOp did. Going through the real provider path is
 // what makes "billed" checkable at all.
 func TestCallerInvariantRepairVisibleInEnvelope(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"draft", "final"}}
 	ctx := WithProvider(context.Background(), provider)
@@ -225,7 +226,7 @@ func TestCallerInvariantRepairVisibleInEnvelope(t *testing.T) {
 // attempt and zero repairs, so "visible as a repair" is a real distinction
 // and not just Attempts always being nonzero.
 func TestCallerInvariantFirstTryReportsNoRepairInEnvelope(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"final"}}
 	ctx := WithProvider(context.Background(), provider)

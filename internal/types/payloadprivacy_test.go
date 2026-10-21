@@ -2,6 +2,7 @@ package types
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,35 +18,75 @@ import (
 
 const payloadMarker = "MARKER-SSN-123-45-6789"
 
-// describedShapes are the error types that carry a described input. Each is
-// constructed with the marker in the position a caller's value would reach if
-// somebody wired one through, so the assertion is about the type rather than
-// about today's construction site.
-func TestNoErrorTypePrintsTheCallersValue(t *testing.T) {
-	cause := errors.New("underlying failure")
-
-	cases := []struct {
-		name string
-		err  error
-	}{
-		{"extract", ExtractError{InputShape: DescribeValue(payloadMarker), Reason: "unparseable", Err: cause}},
-		{"transform", TransformError{InputShape: DescribeValue(payloadMarker), FromType: "Source", ToType: "Target", Reason: "no mapping", Err: cause}},
-		{"generate", GenerateError{TargetType: "Target", Reason: "refused", Err: cause}},
-		{"classify", ClassifyError{InputShape: DescribeValue(payloadMarker), Reason: "not in set", Err: cause}},
-		{"summarize", SummarizeError{InputShape: DescribeValue(payloadMarker), Length: 42, Reason: "too long", Err: cause}},
-		{"operation", &OperationError{Kind: KindMalformedOutput, Op: "extract", Message: "the response could not be parsed"}},
+// An error's text is its reason and, for classification, the shape of its
+// input. Every other field of every error type is filled here with the marker,
+// the way a value would arrive if somebody wired one through, and the message
+// must still not contain it: a field that reaches Error() fails this test, where
+// a marker passed through DescribeValue could never have.
+func TestNoErrorTypePrintsAFieldThatIsNotItsReasonOrShape(t *testing.T) {
+	types := map[string]reflect.Type{
+		"classify":  reflect.TypeOf(ClassifyError{}),
+		"score":     reflect.TypeOf(ScoreError{}),
+		"compare":   reflect.TypeOf(CompareError{}),
+		"choose":    reflect.TypeOf(ChooseError{}),
+		"filter":    reflect.TypeOf(FilterError{}),
+		"sort":      reflect.TypeOf(SortError{}),
+		"extract":   reflect.TypeOf(ExtractError{}),
+		"transform": reflect.TypeOf(TransformError{}),
+		"generate":  reflect.TypeOf(GenerateError{}),
+		"summarize": reflect.TypeOf(SummarizeError{}),
+		"rewrite":   reflect.TypeOf(RewriteError{}),
+		"translate": reflect.TypeOf(TranslateError{}),
+		"expand":    reflect.TypeOf(ExpandError{}),
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			message := tc.err.Error()
-			if message == "" {
-				t.Fatal("the error prints nothing at all")
+	for name, typ := range types {
+		t.Run(name, func(t *testing.T) {
+			value := reflect.New(typ).Elem()
+			for i := 0; i < typ.NumField(); i++ {
+				field := typ.Field(i)
+				target := value.Field(i)
+				switch {
+				case field.Name == "Reason":
+					target.SetString("the reason")
+				case field.Name == "InputShape":
+					target.SetString("text, 5 bytes")
+				case field.Name == "Err":
+					target.Set(reflect.ValueOf(errors.New(payloadMarker)))
+				case field.Type.Kind() == reflect.String:
+					target.SetString(payloadMarker)
+				case field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.String:
+					target.Set(reflect.ValueOf([]string{payloadMarker}))
+				case field.Type.Kind() == reflect.Interface:
+					target.Set(reflect.ValueOf(payloadMarker))
+				case field.Type.Kind() == reflect.Int:
+					target.SetInt(424242)
+				case field.Type.Kind() == reflect.Float64:
+					target.SetFloat(0.424242)
+				default:
+					t.Fatalf("%s.%s is a %s, which this test does not know how to fill", name, field.Name, field.Type.Kind())
+				}
 			}
-			if strings.Contains(message, payloadMarker) {
-				t.Errorf("the caller's value reached the error string: %s", message)
+
+			message := value.Interface().(error).Error()
+			if strings.Contains(message, payloadMarker) || strings.Contains(message, "424242") {
+				t.Errorf("a field other than the reason or the shape reached the error string: %s", message)
+			}
+			if !strings.Contains(message, "the reason") {
+				t.Errorf("the error does not print its reason: %s", message)
 			}
 		})
+	}
+
+	// The same for the classified error, which prints its message and not the
+	// provider, model, request IDs or item IDs it carries.
+	err := &OperationError{
+		Kind: KindMalformedOutput, Op: "extract", Message: "the response could not be parsed",
+		Provider: payloadMarker, Model: payloadMarker, RequestID: payloadMarker,
+		CorrelationID: payloadMarker, AttemptID: payloadMarker, ItemIDs: []string{payloadMarker},
+		Cause: errors.New(payloadMarker),
+	}
+	if message := err.Error(); strings.Contains(message, payloadMarker) {
+		t.Errorf("a field other than the message reached the error string: %s", message)
 	}
 }
 
@@ -143,9 +184,12 @@ func TestOperationErrorReachesItsSentinel(t *testing.T) {
 }
 
 // The three dispositions are mutually exclusive by design: a caller asking
-// "should I retry this" must not get yes and no from the same error.
-func TestEveryKindHasExactlyOneDisposition(t *testing.T) {
-	for kind := KindUnknown; kind <= KindReviewRequired; kind++ {
+// "should I retry this" must not get yes and no from the same error. A kind has
+// at most one; the kinds with none are listed, so that adding a kind without
+// deciding is a failure here.
+func TestEveryKindHasAtMostOneDisposition(t *testing.T) {
+	noDisposition := map[ErrorKind]bool{KindUnknown: true, KindContextTooLarge: true, KindAdmissionRejected: true}
+	for kind := KindUnknown; kind <= lastKind; kind++ {
 		err := &OperationError{Kind: kind}
 
 		count := 0
@@ -156,6 +200,9 @@ func TestEveryKindHasExactlyOneDisposition(t *testing.T) {
 		}
 		if count > 1 {
 			t.Errorf("%v reports %d dispositions; they are meant to be mutually exclusive", kind, count)
+		}
+		if (count == 0) != noDisposition[kind] {
+			t.Errorf("%v has %d dispositions; the kinds with none are KindUnknown, KindContextTooLarge and KindAdmissionRejected", kind, count)
 		}
 	}
 }

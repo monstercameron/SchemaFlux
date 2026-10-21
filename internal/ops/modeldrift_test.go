@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-005. Two facts were being collapsed into one field: the model a call asked
@@ -60,7 +61,7 @@ func (p *modelReportingProvider) requestedModel() string {
 }
 
 func TestAPinBeatsTheTierMapping(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "tier-chosen-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "tier-chosen-model")
 
 	provider := &modelReportingProvider{claim: "pinned-model"}
 	if _, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{
@@ -76,7 +77,7 @@ func TestAPinBeatsTheTierMapping(t *testing.T) {
 }
 
 func TestNoPinStillUsesTheTierMapping(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "tier-chosen-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "tier-chosen-model")
 
 	provider := &modelReportingProvider{claim: "tier-chosen-model"}
 	if _, err := CallLLM(context.Background(), provider, "system", "user", types.OpOptions{
@@ -158,7 +159,7 @@ func TestModelDriftIsDerivedAndNeverGuessed(t *testing.T) {
 // End to end through the real call path, so the wiring is checked and not only
 // the derivation.
 func TestAHonouredPinReportsNoDriftThroughTheRealCallPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	ctx, records := withCallRecording(context.Background())
 	provider := &modelReportingProvider{claim: "pinned-model"}
@@ -187,7 +188,7 @@ func TestAHonouredPinReportsNoDriftThroughTheRealCallPath(t *testing.T) {
 }
 
 func TestASubstitutingProviderIsVisibleThroughTheRealCallPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	ctx, records := withCallRecording(context.Background())
 	provider := &modelReportingProvider{claim: "something-else-entirely"}
@@ -213,7 +214,7 @@ func TestASubstitutingProviderIsVisibleThroughTheRealCallPath(t *testing.T) {
 }
 
 func TestAProviderThatEchoesNothingLeavesDriftUnknown(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	ctx, records := withCallRecording(context.Background())
 	provider := &modelReportingProvider{claim: ""}

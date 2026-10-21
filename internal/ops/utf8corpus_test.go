@@ -146,8 +146,19 @@ func TestSpanLocationOverTheCorpus(t *testing.T) {
 			if len(spans) != 1 {
 				t.Fatalf("got %d spans, want 1", len(spans))
 			}
-			if got := doc[spans[0].Start:spans[0].End]; got != "ada@example.com" {
-				t.Errorf("the span slices %q out of a document beginning with %s text", got, tc.Name)
+			if got := spanText(doc, spans[0]); got != "ada@example.com" {
+				t.Errorf("the span selects %q out of a document beginning with %s text", got, tc.Name)
+			}
+
+			// Locating and masking are checked together. They were checked
+			// apart, in different units, and both passed while the output
+			// leaked (LX-020).
+			masked, err := applyRedactions(doc, spans, NewRedactLLMOptions())
+			if err != nil {
+				t.Fatalf("applyRedactions: %v", err)
+			}
+			if want := tc.Text + " contact *************** now"; masked != want {
+				t.Errorf("masked = %q, want %q", masked, want)
 			}
 		})
 	}

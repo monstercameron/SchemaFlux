@@ -1,24 +1,22 @@
 package processor
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/intelligence"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/intelligence"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 // TodoProcessor handles AI-powered todo processing
 type TodoProcessor struct {
-	TotalCost  float64 // Track total API costs for session
-	LastCost   float64 // Last operation cost
-	FastCalls  int     // Number of fast model calls
-	SmartCalls int     // Number of smart model calls
-	service    *intelligence.Service
+	service *intelligence.Service
 }
 
 // NewTodoProcessor creates a new TodoProcessor instance
@@ -57,17 +55,12 @@ func (tp *TodoProcessor) RefineTaskText(taskText string) string {
 
 // FixTaskGrammar uses AI to fix grammatical errors in task text
 func (tp *TodoProcessor) FixTaskGrammar(taskText string) (string, error) {
-	// Track cost
-	tp.FastCalls++
-	tp.LastCost = 0.0001 // Minimal cost for fast model
-	tp.TotalCost += tp.LastCost
-
-	fixed, err := schemaflux.Transform[string, string](
-		taskText,
-		schemaflux.NewTransformOptions().
-			WithIntelligence(schemaflux.Fast).
-			WithMode(schemaflux.TransformMode).
-			WithSteering("Fix any grammatical errors and improve clarity. Keep it concise."),
+	fixed, err := schemaflux.Transform[string](
+		appclient.Context(context.Background()), taskText,
+		schemaflux.TransformOptions{Options: schemaflux.Options{
+			Tier: schemaflux.TierFast, Mode: schemaflux.ModeTransform,
+			Steering: "Fix any grammatical errors and improve clarity. Keep it concise.",
+		}},
 	)
 
 	if err != nil {
@@ -84,15 +77,10 @@ func (tp *TodoProcessor) FixTaskGrammar(taskText string) (string, error) {
 }
 
 func (tp *TodoProcessor) ProcessNote(input string) (*models.SmartTodo, error) {
-	// Track cost - estimate for fast model
-	tp.FastCalls += 4
-	tp.LastCost = 0.0006
-	tp.TotalCost += tp.LastCost
 	todo, err := tp.service.CaptureTodo(input)
 	if err != nil {
 		return nil, err
 	}
-	todo.Cost = tp.LastCost
 	return todo, nil
 }
 
@@ -106,11 +94,6 @@ func (tp *TodoProcessor) SuggestNext(todos []*models.SmartTodo) (*models.SmartTo
 		return todos[0], nil
 	}
 
-	// Track cost
-	tp.FastCalls++
-	tp.SmartCalls++
-	tp.LastCost = 0.0005
-	tp.TotalCost += tp.LastCost
 	return tp.service.RecommendNext(todos)
 }
 
@@ -184,16 +167,10 @@ func (tp *TodoProcessor) SortByPriority(todos []*models.SmartTodo) []*models.Sma
 
 // ProcessEditContext merges edit context with existing todo using AI
 func (tp *TodoProcessor) ProcessEditContext(todo *models.SmartTodo, context string) (*models.SmartTodo, error) {
-	// Track cost
-	tp.FastCalls++
-	tp.LastCost = 0.0003 // Approximate cost
-	tp.TotalCost += tp.LastCost
-
 	updatedTodo, err := tp.service.ReviseTodo(todo, context)
 	if err != nil {
 		return todo, fmt.Errorf("failed to process edit: %w", err)
 	}
-	updatedTodo.Cost = todo.Cost + tp.LastCost
 	return updatedTodo, nil
 }
 
@@ -226,10 +203,6 @@ func (tp *TodoProcessor) SmartPrioritize(todos []*models.SmartTodo) ([]*models.S
 		return todos, nil
 	}
 
-	// Track cost for smart model
-	tp.SmartCalls += 2
-	tp.LastCost = 0.0012
-	tp.TotalCost += tp.LastCost
 	return tp.service.PrioritizeBoard(todos)
 }
 
@@ -239,26 +212,14 @@ func (tp *TodoProcessor) SemanticFilter(todos []*models.SmartTodo, query string)
 		return todos, nil
 	}
 
-	// Track cost
-	tp.FastCalls++
-	tp.LastCost = 0.0002
-	tp.TotalCost += tp.LastCost
 	return tp.service.FilterBoard(todos, query)
 }
 
 func (tp *TodoProcessor) BuildReview(todos []*models.SmartTodo) (intelligence.BoardReview, error) {
-	tp.FastCalls += 2
-	tp.SmartCalls += 3
-	tp.LastCost = 0.0018
-	tp.TotalCost += tp.LastCost
 	return tp.service.BuildReview(todos)
 }
 
 func (tp *TodoProcessor) PlanDay(todos []*models.SmartTodo, context string) (intelligence.DayPlan, error) {
-	tp.FastCalls++
-	tp.SmartCalls++
-	tp.LastCost = 0.001
-	tp.TotalCost += tp.LastCost
 	return tp.service.PlanDay(todos, context)
 }
 

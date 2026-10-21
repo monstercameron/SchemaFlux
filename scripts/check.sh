@@ -42,25 +42,27 @@ done
 
 # Checks are ordered fast-to-slow so a typo fails in seconds rather than after
 # the full suite. Each entry is "label|command".
+ALLOCATION_SKIP='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
 CHECKS=(
   "gofmt|test -z \"\$(gofmt -l .)\" || { gofmt -l .; false; }"
   "build|go build ./..."
   "build examples|go build ./examples/..."
   "vet|go vet ./..."
+  "staticcheck|go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tests=false -checks=inherit,-U1000 ./..."
   "secret scan|python scripts/secret_scan.py"
   "secret scan self-test|python scripts/secret_scan.py --self-test"
   "deprecation policy|python scripts/deprecation_policy.py --check"
   "acceptance ledger|python scripts/acceptance_checklist.py --check"
   "release ladder|python scripts/release_gate.py --check"
   "traceability|python .audit/traceability.py"
-  "api surface|go test ./tests/ -run TestPublicAPISurface -count=1"
+  "api surface|go test ./internal/guard -run 'TestSurfaceMatchesTheSnapshots|TestSurfaceCountsMatchTheAmendedA4' -count=1"
   "tests|go test ./... -count=1"
   "smarttodo module|cd examples/smarttodo && go test ./..."
   "coverage floor|python scripts/coverage_floor.py"
 )
 
 SLOW=(
-  "tests shuffled|go test ./... -count=3 -shuffle=on"
+  "tests shuffled|go test ./... -count=3 -shuffle=on -skip='$ALLOCATION_SKIP'"
   "examples gate|python scripts/examples_gate.py"
 )
 
@@ -79,8 +81,11 @@ fi
 PLATFORM="$(go env GOOS)/$(go env GOARCH)"
 if [ "$PLATFORM" = "windows/arm64" ]; then
   RACE_NOTE="SKIPPED on $PLATFORM (the race detector does not run here; CI covers it)"
+elif [ "$(go env CGO_ENABLED)" != "1" ]; then
+  RACE_NOTE="SKIPPED on $PLATFORM (the race detector requires cgo; CI covers it)"
 else
-  CHECKS+=("race|go test -race ./... -count=1")
+  # Race instrumentation changes process-wide allocation measurements.
+  CHECKS+=("race|go test -race -skip='$ALLOCATION_SKIP' ./... -count=1")
   RACE_NOTE=""
 fi
 

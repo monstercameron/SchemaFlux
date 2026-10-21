@@ -475,6 +475,23 @@ everything around it. Every item here is code-verifiable; only P-012 and P-013 n
   redact the body by default. Feeds **Gap-12** and **X-03**.
   *Verify:* `errors.As` recovers the status code; the default `Error()` string contains no
   request payload.
+  **Revised, 2026-10-03.** The body was withheld and the vendor's message was not. A
+  probe made during the tracing audit pointed the OpenAI provider at a server whose
+  401 quoted the key in its message: the key was in the error returned to the caller
+  and in two of the library's own log lines. Now `Error()` prints the provider, the
+  status, the wait a throttled answer asked for, the model, and the vendor's type,
+  code and param (bounded, printable), and says that a message and a body were
+  withheld and how long each was. One gate, one meaning: closed prints neither;
+  `SCHEMAFLUX_ERROR_DETAIL=1` prints both; `Detail()` always returns both. The
+  provider's own key is removed where the provider builds the error, so the fields
+  never hold it. The same text comes out of `%v`, `%#v`, `log/slog` and
+  `encoding/json`, for `APIError`, `RateLimitError` and the codex error. Held by
+  `internal/llm/apierror_disclosure_test.go` (every HTTP provider against 401, 400,
+  429 and 500, about a hundred cases, each seen failing on the old code) and
+  `internal/ops/provider_error_disclosure_test.go` (the call path and its log lines
+  at every level). ADR 0001 is amended. Not done: an error that wraps
+  `encoding/json`'s own message for a response that did not decode can still name
+  one character of it.
 - [x] **P-008** — Set `store: false` by default. The Responses API retains responses
   server-side unless told otherwise, which is a surprising default for a library that
   processes arbitrary user records. Expose `option.Store(true)` for callers who want it.
@@ -2815,6 +2832,159 @@ Decisions, not defects. Each halves or doubles the maintenance surface, so make 
   (`optionsurvival_test.go`, `mergecoverage_test.go`) picked the field up via the fixture.
   *Verify:* unset ⇒ no `tools` key at all; set ⇒ `{"type":"web_search"}` on the wire; the
   option survives `applyDefaults` and the embedded merge.
+- [x] **PS-012** — State the retry contract an embedding application codes against, and check
+  the defaults behind it are sane: bounded attempts, jittered backoff, `Retry-After` honoured
+  where a provider sends one, per-provider ceilings, and a host-supplied policy honoured
+  exactly. Raised by the **CodeFlux** integration alongside **OB-006**: that host does its own
+  retrying per pipeline stage, and two layers that both retry multiply.
+  *Verify:* the documented behaviour is the implemented behaviour, and each rule has a test.
+  **Done, and the audit found the machinery sound.** Attempts are bounded at `retries + 1`
+  with a default of three retries; the computed backoff is decorrelated jitter (**A-008**) --
+  each wait uniformly random between the base and three times the *previous* wait, capped at
+  five seconds by `maxComputedRetryDelay`; a server-stated `Retry-After` wins outright and is
+  deliberately not jittered, bounded at two minutes by `llm.MaxRetryAfter`, with an unparsable
+  or already-past value counting as *the server did not say* rather than as a wait of zero
+  (**CB-03**); `waitForRetry` selects on the context, so a cancelled call returns immediately
+  rather than sleeping out its remaining budget; and `internal/llm/classify.go` remains the
+  single place that decides what is retryable, with an unrecognised error retried rather than
+  failed fast. `Client` defaults are 30s timeout, 3 retries, 1s backoff. Nothing here needed
+  fixing.
+  What did need fixing was the **documentation**, which described behaviour that had been
+  removed. README's rate-limit paragraph still said "the computed backoff doubles from 500ms
+  and stops at five seconds" -- the pre-**A-008** exponential ladder, gone since jitter
+  replaced it. A reader tuning against that sentence was tuning against a ladder that no
+  longer exists. Corrected, and the unjittered-`Retry-After` rule and the unparsable-header
+  rule stated, neither of which was written down anywhere a caller reads.
+  Added a **"The retry contract"** section to README's Reliability chapter, since that is
+  where this repository documents what an embedder can rely on. Seven guarantees: bounded
+  attempts; `WithRetries(0)` means zero and not "zero, so use the default"; the three distinct
+  meanings of a `Provider.RetryPolicy` return (`n` / `0` / negative) as a table; decorrelated
+  jitter and why it is not a plain ladder; cancellation never retried and never slept through;
+  one place decides retryability; and repair counted and configured separately from retry.
+  Evidence: `internal/api/client/retrycontract_test.go` pins the half nothing covered -- what
+  a host sets on the `Client` is what the provider config ends up holding. Five cases for the
+  budget (default, off, explicit, per-provider override wins, an override of zero leaves the
+  client's value alone, because an unset struct field is not a request for zero) and the
+  backoff's matching shape. `internal/ops/retry_policy_test.go` already pinned the
+  dispatcher's half and still does.
+  One **asymmetry** was found, examined, and deliberately left alone rather than "fixed":
+  `Client.WithRetries(-1)` clamps to zero, while a provider returning `-1` from `RetryPolicy`
+  gets the library's default. Those look like the same input and are different questions -- a
+  caller setting a ceiling of minus one can only mean "none", since there is no such thing as
+  minus one retry, while a provider returning a negative is declining to state a policy, which
+  is a thing a provider may legitimately have no opinion about. Changing either would break a
+  meaning somebody depends on, so both are pinned by assertion and written into the README
+  table instead.
+  **Not done:** `mw/retry.go` -- the opt-in decorator a caller wraps around their own provider
+  -- is a second retry implementation with its own copy of `decorrelatedJitter`, duplicated on
+  purpose (`nextRetryDelay`'s comment says why: importing `mw` into `internal/ops` for one
+  ten-line function was the worse trade). It is not in the default call path and nothing in
+  this task changed it, but a caller who wraps it around a provider that also retries gets
+  both budgets multiplied, and the README does not say so. Worth a line the next time that
+  section is touched.
+- [x] **PS-013** — Make the Codex CLI's subscription login a first-class provider, so any
+  embedding host can run this library against a `codex login` with no API key at all. Operator
+  directive alongside **OB-006**: SchemaFlux is now CodeFlux's default model layer, and the
+  capability must live here rather than in one host's private adapter.
+  *Verify:* a shelled provider reaches the model through `CallLLM` like every other one --
+  observed, retried, budgeted, and classified identically; API-key variables cannot reach the
+  child; no test invokes the real CLI.
+  **Done.** `codex/` is a new package, not a change to `internal/llm`. The precedent is
+  **OB-001**'s: an adapter may carry a concern the library a consumer imports may not, so a
+  host that never imports this package gets no process-spawning code path, no CLI flags, and
+  no new public API. `testdata/api_surface.txt` is unchanged and was not regenerated -- the
+  snapshot covers the root package, and nothing was added to it.
+  The transport is `codex exec --ephemeral --ignore-user-config --ignore-rules --sandbox
+  read-only --skip-git-repo-check --json --model M [--output-schema FILE] -o REPLY -`, run in a
+  fresh temporary directory. Flags were verified against the installed CLI's own `--help`
+  (codex-cli 0.147.0) rather than assumed. The request's generated JSON Schema becomes the
+  `--output-schema` file, so a typed operation is enforced by the CLI rather than asked for in
+  prose; the answer comes back through `-o`.
+  **The prompt goes to stdin** -- that is what the trailing `-` is for -- and never to argv.
+  This is the load-bearing choice, not a stylistic one: argv is readable from any process
+  listing on the machine and is the thing a CLI is most likely to echo when it fails, so
+  delivering the prompt any other way would put the caller's data into a diagnostic stream no
+  matter how carefully the error surface was written afterwards.
+  **API-key variables are stripped from the child**: `OPENAI_API_KEY`, `OPENAI_KEY`,
+  `CODEX_API_KEY`, matched case-insensitively because a Windows environment block is. The
+  failure this prevents is not a crash, it is a success: a CLI that inherited a key
+  authenticates with it, the answers come back correctly, an account nobody chose is billed,
+  and nothing in the result says which identity paid. `CODEX_HOME` is deliberately preserved --
+  it is where the login this transport exists to use actually lives.
+  **Cost is unpriced, and that is a fix to `pricing`, not a property of the provider.**
+  `lookupPricingModel` keys on the model alone and ignores the provider, so a codex turn pinned
+  to `gpt-5.6-sol` would have been priced at that model's API list rates -- a precise USD figure
+  for a call that was never metered that way. A flat-rate subscription's marginal cost is not
+  the list price and is not zero either, so `CalculateCost` now refuses to price an unmetered
+  provider at all and reports `Priced: false`. That is **PR-001**'s rule one layer out: the
+  failure mode is not an absent number, it is a confident wrong one.
+  **Unknown stays unknown.** A `turn.completed` event with no usage block is distinguished from
+  one reporting zeros (`outcome.usageReported`), and nothing derives a total from counts nobody
+  stated -- summing two absent fields into a total of zero would manufacture the one figure the
+  CLI never gave. Counts that are negative or outside the `int` range are refused rather than
+  narrowed into something that looks measured. `CompletionResponse.Model` is left **empty**:
+  the CLI does not report which model served the turn in any event this package reads, and
+  filling in the model that was *asked for* would claim an observation nobody made, which is
+  exactly what `ResultMetadata.ObservedModel` exists to keep separable.
+  **A turn is a success only if a `turn.completed` event arrived.** A zero exit with no
+  completed event is a CLI that stopped early, and reporting its empty output as an empty
+  answer is the fail-open this list spends most of its length removing.
+  Failures are classified **structurally** -- did the process produce a status, did a completed
+  event arrive, did a `turn.failed` arrive, did the caller's context end -- and never by reading
+  the CLI's prose. Matching a vendor's text to pick a retry disposition is the defect **P-007**
+  removed from the retry classifier, and the CLI's message is exactly that kind of text. The
+  cost is that a permanently-doomed turn is retried under the caller's budget rather than
+  failed fast, which is the trade AGENTS.md already states for `KindUnknown`.
+  On the error surface this goes **one notch tighter than ADR 0001**, and the reasoning is
+  recorded in `codex/errors.go`: ADR 0001 keeps a vendor's *structured* error field in `Error()`
+  on the grounds that it is almost always about the request rather than the caller's data, and
+  its stated revisit trigger is a provider found to echo request bodies there. For this
+  transport neither half is established -- the CLI's `turn.failed` message is not a classified
+  vendor field but whatever text it chose to print about a turn that ran the caller's prompt.
+  So both it and stderr are withheld by default and both are reachable through the mechanism
+  ADR 0001 already defines. `llm.ErrorDetailEnvVar` / `ErrorDetailEnabled` were exported *from
+  the internal package* so the gate has one definition rather than two free to drift; nothing
+  public changed.
+  Evidence: `codex/codex_test.go` -- ten cases on environment stripping alone (each spelling,
+  `CODEX_HOME` and `PATH` preserved, a non-pair entry passed through, a variable whose *value*
+  mentions a key name kept, because the name is what identifies a variable); argv assertions;
+  event-parsing cases covering unknown event types, malformed and blank lines, a 200KB line
+  that the scanner's default limit would have silently dropped, absent-versus-zero counts, and
+  impossible counts; the error-surface rules; and `CalculateCost` reporting a codex turn
+  unpriced. `codex/funnel_test.go` is the integration half: the real `ops.CallLLM` against the
+  codex provider with only its shell boundary scripted, asserting the OB-006 observer events
+  fire with `provider=codex`, that the CLI's token counts reach telemetry, that the cost
+  arrives unpriced, and that a failed turn is retried by the funnel and still counted as one
+  logical request. A runnable `Example` covers the third leg of the standard of done.
+  **The two security rules were mutation-checked rather than merely asserted**, because a test
+  that passes proves nothing about whether it would fail. Disabling the environment filter made
+  `TestTheChildEnvironmentCannotFallBackToAPIKeyAuthentication` fail on three spellings; moving
+  the prompt from stdin to argv made `TestTheChildNeverReceivesThePromptOnArgv` fail quoting the
+  planted marker. Both mutations were reverted and the suite is green.
+  **No test starts a process.** The shell boundary is a function-typed field (`Provider.turn`),
+  the same seam shape CodeFlux's own codex transport uses, so argv assembly, event parsing,
+  error classification and the payload rules are all exercised for real against scripted CLI
+  output. `New`'s PATH lookup is the only thing a real binary would touch, and the tests that
+  need a Provider construct one directly.
+  **Not done, and each is deliberate:**
+  1. **No tier-to-model mapping.** `WithProvider("codex")` needs `SCHEMAFLUX_MODEL`, a pin, or
+     `Options.Model`. Which models a login may run is a property of the CLI's version and the
+     caller's subscription; a default here would be this library asserting what it cannot know,
+     which is the defect `providerModels`' own comment describes -- `gpt-5.4` reaching
+     api.deepseek.com because a provider with no row fell through to somebody else's.
+  2. **One prompt channel.** `codex exec` has no system role, so the operation's instructions
+     and the caller's data arrive in one stream. TC-001's delimiting still happens upstream, but
+     the role separation an API gives for free is not available and the README says so.
+  3. **No streaming.** `StreamingProvider` is not implemented; the CLI's event stream could
+     support it and nothing here needs it yet.
+  4. **`--output-schema` is not verified against a live CLI.** The flag, its file argument, and
+     the event names come from the installed CLI's `--help` and from a working implementation in
+     another repository, but no test in this repository has run the real binary -- by design,
+     since a live test would need a login and would spend the operator's quota. The first real
+     call is the first proof, and that is a stated limitation rather than a claim.
+  5. The `unmeteredProviders` set in `pricing` has one member. It is a set rather than a
+     `provider == "codex"` check because the category is real and will have more members, but
+     nothing generalises it further until a second one exists.
 - [x] **PS-005** — Multi-turn support: `CompletionRequest` carries one system string and one
   user string, with no message history. `Asking`, `Negotiating`, and
   `NegotiatingAdversarially` are naturally multi-turn operations implemented as one round
@@ -4130,6 +4300,120 @@ others, with nothing at the call site to tell them apart.
   particular backend, and inventing one for a stack nobody has said they use would be
   guesswork wearing a deliverable's name.
   Closes **PRD-24**.
+- [x] **OB-006** — Fire `telemetry.Observer` from the operation path, and carry enough on the
+  events for an embedding host to join them to its own traces: the schema name of a structured
+  request, the provider's request time apart from retry backoff, the attempt count, and the
+  finish reason. Found by an integration audit for **CodeFlux**, which embeds this library as
+  its typed LLM operation layer and needs the library's spans nested inside its per-stage ones.
+  *Verify:* an operation run through a provider the caller registered themselves produces the
+  same start and finish events as a built-in one; one logical request produces one pair of
+  events whatever the retry count; a span opened by the host is the parent of the library's.
+  **Done.** The seam **OB-001** built was never connected. `ObserveOperationStart` and
+  `ObserveOperationEnd` had **no production call site anywhere in the repository** — the
+  interface, its no-op default, the OpenTelemetry adapter, and thirteen tests all existed and
+  described behaviour that never happened. A host that installed an observer, or called
+  `telemetry/otel.Install` with its own `TracerProvider`, received nothing at all: not fewer
+  events for a custom provider than a built-in one, but zero events for both. The question the
+  audit set out to answer — whether a caller's own transport is as visible as the providers
+  this repository ships — had no difference to measure.
+  The emission site is `ops.CallLLM` (`internal/ops/llm_helper.go`), which is the single funnel
+  every provider passes through: the package default, a client's `WithProviderInstance`, one
+  attached by `WithProvider`, and anything handed to `RegisterProvider` or
+  `RegisterProviderFactory`. Observing there is what makes a caller's own transport visible;
+  observing per operation would have meant forty-odd sites and would still have missed nothing
+  that this one misses. The span covers the whole logical request — retries are
+  `Attempts`, not extra spans, so a host does not count a retried request several times in its
+  own latency figures. It is emitted from a `defer`, so the next `return` added to that
+  function cannot be the one that silently drops its span.
+  Four fields were added to the events, each a name, a shape, or a count:
+  `OperationEvent.SchemaName` and `.ResponseFormat` (the shape of the request, never its
+  contents); `OperationResult.ProviderDuration` (time inside `provider.Complete`, summed,
+  reported *beside* `Duration` rather than instead of it — the difference between the two is
+  this library's own backoff, and a reader looking at a slow operation has to be able to tell a
+  slow provider from a request that waited before asking again); `OperationResult.FinishReason`
+  (the provider's own enum, the only thing separating a complete answer from a truncated one);
+  and `OperationResult.Provider`/`.Model`, which name what actually answered, since a provider
+  does not always serve a request with the model it was asked for. Those two are left empty on
+  a failure rather than echoing the request: what was *asked* is on the start event, where it
+  is true, and reporting a provider that never responded as the one that did is the
+  reporting-success-while-wrong shape one field down. The finish reason is captured as soon as
+  a provider responds rather than only when the response survives validation, so a truncated
+  answer -- a real response this library then refuses -- carries both `output truncated` and
+  the provider's own `length` instead of only the first.
+  Cancellation was already distinguishable and is now reported as such: the finish event's
+  `ErrorKind` comes from `llm.Classify`, the one place allowed to decide what a failure is, so
+  a cancelled request reports `canceled`, an expired deadline `timeout`, and a provider failure
+  its own kind. No second opinion about the taxonomy was written.
+  The operation's *name* was the one thing `CallLLM` did not have: `types.OpOptions` carries
+  mode, tier, schema, and identifiers but not `"extract"`, and the operations in this package
+  are hand-written functions rather than instances of one runner. It travels on the context now
+  (`internal/ops/opname.go`), the same shape `callrecord.go` already uses to get an execution
+  record out of `CallLLM` without changing every operation's return type — deliberately not a
+  field on `OpOptions`, because a field sixty call sites forget to set looks authoritative and
+  is empty, while a missing context value is exactly what it is.
+  On the adapter side (`telemetry/otel`): the span already started on the caller's context, so
+  host-opened spans were already the parent — but nothing asserted it, and the failure mode is
+  silent (spans that look perfectly correct and belong to a trace of their own). That is a test
+  now. An unnamed operation used to produce a span called `schemaflux.` with a trailing dot;
+  it is `schemaflux.llm`. A successful span used to be left `Unset`, which several backends
+  bucket with the errors in their default panels; it says `Ok`.
+  Evidence: `internal/ops/observeroperation_test.go` — a caller-supplied provider produces the
+  full event pair; three retries produce one pair with `Attempts: 3`; provider time is non-zero
+  and never exceeds the wall clock; a table separates a provider failure, a cancellation, and a
+  timeout by kind; and a marker planted in the user prompt and echoed by the provider's error
+  message appears in no field of either event. `telemetry/otel/nesting_test.go` asserts the
+  parent span ID and trace ID against a host-opened span, the root case, the span name, the new
+  attributes, `Ok` on success, and that a failure claims no answering provider or model.
+  `tests/telemetry_integration_test.go` is the black-box half AGENTS.md asks for: a host builds
+  its own `TracerProvider`, installs the adapter, opens `stage.parse-invoice`, calls the
+  exported `schemaflux.Extract` against a `schemafluxtest` fixture, and finds
+  `schemaflux.extract` as that stage's child in that stage's trace, carrying the provider, the
+  request ID, and the schema name. Its companion asserts the absence that matters more: a host
+  that builds a provider and never installs the adapter gets zero spans, so the library still
+  costs nothing to anyone who is not tracing.
+  `telemetry/observer_test.go` gained a check from the other side of the payload rule: the
+  forbidden-name list only catches names somebody already thought of, so every field of both
+  types must now be declared as one of name, shape, identifier, or count, and an undeclared
+  field fails the build. A declaration left behind by a removed field fails too, so an exemption
+  cannot be inherited by the next field to take that name.
+  A panicking observer is contained rather than allowed to take the operation down
+  (`internal/ops/observe.go`). The interface's contract can say an implementation must not
+  block; it cannot say somebody else's span exporter has no bugs, and losing a correct,
+  already-paid-for answer to a broken log sink is the worst available trade. The panic is
+  reported, not swallowed — but nothing from the recovered value is logged, since an observer
+  that panicked while formatting the caller's data could carry that data in the panic value.
+  **Not done, and each is deliberate:**
+  1. The **operation name is not universal**. It is set where the library already knew it —
+     `RunOp`, `ExtractResult`, `SortResult`, the four text-result operations, the batch
+     protocol, and MDSP recovery — and recovered from the first segment of `opts.CacheIdentity`
+     for `Extract`, which is the only operation that builds one (**P-009**). Every other
+     operation emits an event with an empty `Operation`, which the adapter names
+     `schemaflux.llm`. It is left empty rather than guessed: a span named after the wrong
+     operation is worse than one that admits it does not know, because a reader cannot tell the
+     two apart. Naming the rest means either threading a name through ~60 `OpOptions` call
+     sites or finishing **A-001**'s single executor, and the second makes the first pointless.
+  2. **Pre-flight refusals are not observed.** A missing model mapping, an exhausted budget,
+     and a trust-boundary violation return before the emission point. Nothing was attempted on
+     those paths, and a span reporting zero attempts for a request that never existed is a
+     reader's problem rather than a reader's information. A host that wants them sees them as
+     classified errors, not spans.
+  3. **Metrics still have no host-facing seam through OpenTelemetry.** `telemetry.MetricSink`
+     and `RegisterMetricSink` exist (**OB-002**) and every recorded metric is fanned out to
+     them, but there is no `MeterProvider` adapter to match `telemetry/otel`'s tracer one, and
+     no metrics function takes a `context.Context`, so no metric can be tied to the span it
+     belongs to. A host reading token, cost, or attempt figures through its own meter has to
+     write the `MetricSink`-to-instrument adapter itself. That is the remaining half of
+     **OB-002** and it is not this task.
+  4. **The observer is still process-wide**, one per process, set by `telemetry.SetObserver`.
+     Two clients in one process cannot observe separately. That is **IN-004**'s territory and
+     ADR-0005 acceptance criterion 19.1.1 already records it.
+  The exported API surface (`testdata/api_surface.txt`) is **unchanged and was not regenerated**:
+  it snapshots the root package only, and every addition here is in `telemetry`,
+  `telemetry/otel`, or `internal/ops`. Nothing was added to the root package on purpose — a
+  root-level re-export of the otel installer would put OpenTelemetry back into the dependency
+  list of every consumer, which is the exact thing `internal/coredeps_test.go` asserts against
+  and the whole point of **OB-001**.
+  Extends **OB-001**. Does not close **OB-002**.
 
 ---
 
@@ -4335,6 +4619,3576 @@ others, with nothing at the call site to tell them apart.
   cite decisions as `ADR-nnn` instead.
   *Verify:* the script fails when a gap's only task is deleted, and when a task cites a gap
   ID that does not exist.
+
+---
+
+# M18 — Live experiment review (2026-10-01)
+
+This milestone is not part of the M00–M17 dependency chain. It records what a live
+experiment found, and it reopens ground M01, M02 and M05 marked closed.
+
+On 2026-10-01 the library was driven against the live OpenAI Responses API to compare
+`gpt-6-luna` with TypeSafe's Jev decision model: the 65 cases in `cmd/live-llm-ops-smoke`
+three times each, plus 18 labelled head-to-head tasks, about 550 calls through the exported
+API. As checked out, the library could not complete one operation on `gpt-6-luna`, and could
+not complete `Extract` or `Question` on its own default model. The run only finished because
+a local proxy rewrote three request fields. Three read-only reviews followed: all 104
+non-test files in `internal/ops`, the exported surface in `schemaflux.go`, and the provider,
+configuration and observability layers.
+
+Where each claim comes from is marked, because the three sources are not equally strong:
+
+- *(live)* — observed against the real API during the experiment.
+- *(read)* — the cited lines were read by the author of this section.
+- *(reviewer)* — reported by a read-only reviewer with the cited lines; not independently
+  re-read. Confirm the line before fixing, and correct the entry if it is wrong.
+
+Line numbers are those of the working tree on 2026-10-01 and will drift. Claims about what
+the API accepts (the 64-character cache key, the strict-mode schema rules) were observed
+live; claims about billing semantics were not.
+
+**Order.** LX-001 to LX-003 first: they are the difference between working and not working
+against the live API. Then LX-008, so they cannot come back unnoticed. Then the three
+critical fail-open defects (LX-020 to LX-022) and the three critical API defects (LX-060 to
+LX-062). The rest in severity order within each group.
+
+## Live API compatibility
+
+- [x] **LX-001** — `[LIVE]` **Critical.** Every operation returns HTTP 400 on any `gpt-6`
+  model: "Unsupported parameter: 'temperature' is not supported with this model."
+  `supportsTemperature` (`internal/llm/provider.go:999-1008`) exempts only the `gpt-5` prefix
+  and answers true for everything else, so an unknown model fails open *(live, read)*.
+  `capabilities_test.go:44-47` pins that default by expecting `temperature=true` for unknown
+  models *(reviewer)*. The chat-completions path never consults the gate at all
+  (`chatcompletions.go:111-136`) *(reviewer)*. The gate should fail closed: send
+  `temperature` only to a model known to accept it.
+  *Verify:* the request body for `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, `gpt-6.1-sol` and
+  an invented model name carries no `temperature` key; a live call on `gpt-6-luna` returns
+  200.
+  **Done.** `supportsTemperature` reads one model table (`internal/llm/models.go`): a
+  family the table knows answers from its row, and a name it does not know is sent
+  `temperature` only when the endpoint is not OpenAI's. Both request paths consult it
+  (`buildResponsesRequestBody`, `chatcompletions.go`). An alias the table cannot see through
+  (an Azure deployment, a proxy route) is covered by `ProviderConfig.OmitTemperature`, which
+  the OpenAI, chat-completions and Anthropic bodies all honour.
+  **Not done:** the `gpt-5` row covers 5.1 and later by prefix and was not checked live
+  (LX-005). `efforts` and `acceptsEffort` in the table are read only by a test until LX-105
+  makes effort a per-call option.
+  Evidence: `internal/llm/wirelimits_test.go` (`TestTemperatureIsNotSentToModelsThatRejectIt`,
+  `TestOmitTemperatureLeavesItOffWhateverTheModel`,
+  `TestOmitTemperatureIsHonouredByTheAnthropicProvider`), `internal/llm/capabilities_test.go`
+  (`TestTemperatureIsWithheldFromModelsThatRejectIt`, `TestTheLongestMatchingFamilyWins`,
+  `TestIsOpenAIEndpoint`), `internal/api/client/client_test.go` (the config-merge guard that
+  caught `OmitTemperature` being dropped). Live, 2026-10-01 and 2026-10-02: the smoke
+  command on `gpt-6-luna` with no proxy passed 65 of 65 twice.
+- [x] **LX-002** — `[LIVE]` **Critical.** `Extract` returns HTTP 400 on the default model:
+  "Invalid 'prompt_cache_key': string too long. Expected a string with maximum length 64."
+  `promptCacheKeyFor` (`internal/ops/llm_helper.go:606-625`) joins identity, model, digest,
+  mode and format with no bound; with the schema identity `Extract` sets, the key was 99 to
+  101 characters *(live, read)*. `streaming.go:281` builds the same key *(reviewer)*.
+  `provider_cache_test.go:40` uses an 88-character key and asserts it reaches the wire
+  verbatim, which pins the defect *(reviewer)*. A fixed-length digest of the joined parts
+  keeps the identity property the doc comment describes.
+  *Verify:* a test that builds the key for every operation, every tier default and a
+  40-character pinned model name and asserts 64 characters or fewer; live `Extract` on
+  `gpt-5.6-luna` returns 200.
+  **Revised 2026-10-01.** The live check is on `gpt-6-luna`: the 5.6 family is no longer a
+  target (LX-120).
+  **Done.** The bound is applied at the wire, in `boundPromptCacheKey`
+  (`internal/llm/wirelimits.go`): a key of 64 characters or fewer is sent unchanged and a
+  longer one is sent as its SHA-256 in hex, which is 64 characters and keeps the property
+  the key exists for, that equal inputs give equal keys. It is applied there and not in
+  `promptCacheKeyFor` so that every path to the provider is covered, including the streaming
+  one and a key a caller builds.
+  **Not done:** the key in the log line is the unbounded one, so it differs from the key on
+  the wire when the bound applied. A reader matching logs to provider-side cache reports
+  has to hash it.
+  Evidence: `internal/llm/wirelimits_test.go` (`TestBoundPromptCacheKey`,
+  `TestOpenAIResponsesBoundsALongPromptCacheKeyOnTheWire`), `internal/llm/provider_cache_test.go`
+  (`TestOpenAIResponsesSendsPromptCacheKey`, corrected: it asserted an 88-character key
+  reached the wire verbatim), `tests/wirecontract/wire_contract_test.go`. Live: `Extract`
+  passes in both 65-of-65 smoke runs above.
+- [x] **LX-003** — `[LIVE]` **Critical.** Four hand-built JSON schemas are sent with
+  `strict: true` and are not strict-valid, so the call returns HTTP 400: "'additionalProperties'
+  is required to be supplied and to be false." `question_answer` (`internal/ops/extended.go:1218-1222`)
+  failed live on both models *(live, read)*; `predict.go:357-364` leaves
+  `additionalProperties` open on purpose *(read)*; `compress.go:301-309` and
+  `decompose.go:313-336` have the same shape *(reviewer)*. The proxy closed a schema on 12 of
+  the 195 baseline calls; by the way the cases were split across processes those were
+  `Question`, `Predict`, `Compress` and `CompressText`, three runs each. `Decompose`'s
+  hand-built schema was replaced before sending on the path the smoke case takes, so it did
+  not fail live, but it is sent when the wrapper struct is not expressible. Optional
+  properties are also missing from `required`, which strict mode rejects.
+  *Verify:* one helper builds every envelope schema; an offline test walks each schema an
+  operation can send and fails on an object without `additionalProperties: false` or with a
+  property absent from `required`; live `Question`, `Predict`, `Compress` and `CompressText`
+  return 200.
+  **Done.** `strictEnvelope` (`internal/ops/jsonschema.go`) builds every hand-written
+  envelope: a closed object, every property in `required`, and a property the caller did
+  not ask for widened to accept null, which is how strict mode spells optional. `Question`,
+  `Compress`, `Predict` and `Decompose` use it, and so do the `RedactLLM` and `Similar`
+  schemas added under LX-020 and LX-022. A field the caller asked for is required as a real
+  value, because the first version made every optional field a union with null and a
+  requested confidence could then come back null and decode to zero. The provider refuses a
+  schema that breaks a strict rule before the network (`StrictSchemaProblem`), on OpenAI's
+  endpoints only, as an invalid-request error naming the path.
+  The same pass closed what the schemas exposed: `Question` returned a zero-valued answer
+  and nil when the answer was missing, null or an empty string, for `string` and for named
+  string types; `Decompose` accepted an empty estimate when estimates were requested.
+  **Not done:** a schema whose root is not an object is still refused: `Extract[[]T]`,
+  `Generate[[]T]` and pointer targets (LX-004). The refusal counts as a provider attempt in
+  the finish event although nothing was sent.
+  Evidence: `internal/ops/strictenvelope_test.go` (twelve tests, including
+  `TestStrictEnvelope`, `TestPredictSchemaCoversTheEnvelope`,
+  `TestQuestionRefusesAMissingOrNullAnswer`,
+  `TestDecomposeRefusesAMissingEstimateWhenEstimatesWereRequested`),
+  `internal/llm/wirelimits_test.go` (`TestStrictSchemaProblem`,
+  `TestOpenAIRefusesANonStrictSchemaBeforeSending`), `tests/lx003_envelope_integration_test.go`
+  (six tests through the exported API and the real provider). Live: `Question`, `Predict`,
+  `Compress` and `CompressText` pass in both smoke runs; on the 32 labelled `Question`
+  items the score was 0.969 before and after the change.
+- [ ] **LX-004** — **High.** `GenerateJSONSchema` (`internal/ops/jsonschema.go`) emits
+  schemas the strict endpoint cannot honour *(reviewer)*: a non-object root for
+  `Extract[[]T]`, `Generate[[]T]` and pointer targets (`:91-96`, `:107-109`, waived without
+  an assertion at `jsonschema_test.go:196-201`); `[]byte`, `json.RawMessage` and UUID arrays
+  described as arrays of integers, because custom marshalers are not consulted; duplicate
+  names in `required` on promoted-field collisions (`:168-169`). For `map`, `any`, recursive
+  types, empty structs and depth over six it returns nil and the caller silently downgrades
+  to `json_object` with no log and no metadata (`core.go:180`), so `Enrich` claims
+  enforcement it never has (`enrich.go:291-295`).
+  *Verify:* a table test over those type shapes; a downgrade is visible in the result's
+  contract level.
+- [ ] **LX-005** — **High.** Per-model knowledge lives in at least ten places keyed by string
+  prefix, each with its own answer for an unknown model *(reviewer)*: temperature
+  (`provider.go:999`), reasoning block and effort (`:1010-1058`), strict schema (`:698-712`,
+  always sent), `max_output_tokens` (`:650`, always sent), chat-completions parameters
+  (`chatcompletions.go:111-136`), tier defaults (`config.go:239-243`), token ceilings
+  (`config.go:254-265`), the pricing table (`pricing/pricing.go:31-228`), `getDefaultRates`
+  (`provider.go:1866-1883`, every OpenAI model priced as GPT-4), and the capability registry
+  (`capabilities.go:343-424`), which nothing in production populates. No non-test file
+  mentions `gpt-6`. This is the "setting with two homes" defect the list has closed twice,
+  at ten homes.
+  *Verify:* one model table is the only place a model name is compared; a test fails when a
+  second site appears; every row states what an unknown model gets.
+- [ ] **LX-006** — **High.** Reasoning effort cannot be set per call. It is hard-coded per
+  family (`provider.go:719-726`) with no field on `CompletionRequest` or `OpOptions`
+  *(reviewer)*, and `gpt-6` models get no reasoning block, so they run at the API default of
+  medium *(live)*. In the experiment that made the median operation 1.9 s with 108 reasoning
+  tokens per call, and there was no way to measure the model at a lower effort.
+  *Verify:* an option reaches the wire as `reasoning.effort`; unset produces the same body
+  as today.
+- [ ] **LX-007** — **High.** A response that spends its whole output budget on reasoning is
+  returned as an untyped error (`provider.go:563-566`), classified unknown, and therefore
+  retried up to the attempt budget (`llm_helper.go:669-682`) *(read)*. The ceiling is the
+  tier default (1000, 2000 or 4000) and is always sent as `max_output_tokens`, which
+  reasoning tokens count against; zero means "tier default", so a caller cannot lift it.
+  The billed usage of each such attempt is discarded (`publishFailedCall`, `:1038`)
+  *(reviewer)*.
+  *Verify:* a scripted "incomplete, reasoning only" response is a typed, non-retryable error
+  that carries its usage.
+- [x] **LX-008** — **High.** Nothing in the gate can catch LX-001 to LX-003 without a
+  network call, and the unit tests pin two of them. The only request-shape test asserts
+  `model` alone (`provider_shapes_test.go:229-255`) *(reviewer)*.
+  *Verify:* an offline contract test renders the request body of every catalogued operation
+  through the OpenAI provider and checks the constraints learned live: cache key length,
+  strict-schema validity, no gated parameter for a gated family. It fails on today's tree.
+  **Done.** `tests/wirecontract` runs every case of the smoke catalogue through the
+  exported API and the real OpenAI provider on its default endpoint, with a recording
+  `http.RoundTripper` in place of the network, for `gpt-6-luna` and for an invented model
+  name. Each case must send at least one body, and each body is checked for the model, the
+  cache key length, no `temperature`, and a strict schema, by a checker written
+  independently of `StrictSchemaProblem` so that one mistake cannot hide in both. The
+  catalogue moved to `internal/smokecases` so the smoke command and this test read one
+  list. It was watched failing on the tree before the fixes.
+  **Not done:** an operation that makes several calls is checked on the requests it sends
+  against a stand-in that answers with an empty object, so a later request that depends on
+  an earlier answer is not rendered. Chat-completions and Anthropic bodies are not covered.
+  Evidence: `tests/wirecontract/wire_contract_test.go`
+  (`TestEveryOperationSendsABodyTheLiveAPIAccepts`, `TestBodyProblems`),
+  `internal/smokecases/cases.go`.
+- [ ] **LX-009** — `[LIVE]` **Medium.** `conformance_live_test.go` calls `provider.Complete`
+  with a hand-written strict-valid schema and no temperature, cache key or token ceiling, so
+  it cannot see what operations actually send; a rejected schema is recorded as
+  `Passed: true, Supported: false` (`conformance_model.go:72-75`) *(reviewer)*.
+  *Verify:* the live suite sends real operation bodies (see LX-112) and a rejected request
+  is a failure.
+- [ ] **LX-010** — **Medium.** The chat-completions schema sanitiser deletes any map key
+  named `format`, `pattern`, `default`, `minimum` or `maximum`, including a struct field of
+  that name inside `properties`, and leaves it in `required` (`chatcompletions.go:259-262`)
+  *(reviewer)*.
+  *Verify:* a struct with a field named `format` round-trips on a chat-dialect provider.
+- [ ] **LX-011** — **Medium.** The Anthropic provider is out of contract with the rest of
+  the layer (`provider.go:1157-1324`) *(reviewer)*: errors are untyped, so 400 and 401 are
+  retried; `JSONSchema`, `Messages`, `Tools` and `ResponseFormat` are dropped silently; a
+  model name starting with `gpt` is swapped for `claude-3-5-sonnet-20240620` without notice
+  (`:1161-1163`); the raw response body goes into the error string (`:1269`).
+  *Verify:* the protocol conformance suite passes against the Anthropic provider, or the
+  provider refuses the features it drops.
+
+## Operations that fail open or do not check their answer
+
+- [ ] **LX-020** — **Critical.** `RedactLLM` finds spans with `strings.Index`, a byte
+  offset, stores `End: start + len(s.Text)` in bytes (`internal/ops/redact_llm.go:329-341`),
+  and then applies them to `[]rune(text)` (`:397-424`) *(read)*. Any multi-byte character
+  before a span shifts the mask, leaving the start of the secret visible while
+  `Spans[].Original` reports the right text. It also drops a span it cannot locate with a nil
+  error (`:322-335`), masks one occurrence of a value that appears several times, and
+  produces a merged category `"email,phone"` that its own category check then rejects
+  (`:376`, `:207-218`) *(reviewer)*.
+  *Verify:* the UTF-8 corpus through `RedactLLM`: the masked output never contains any byte
+  of a reported span.
+  **In review (round 6), 2026-10-02.** What is in the tree:
+  values are located in bytes and converted to character offsets once, and the output is
+  spliced in bytes, so text outside the spans comes back unchanged, invalid UTF-8 included.
+  The model is asked for the value and a category and no position. Every occurrence of a
+  reported value is masked, ignoring case and treating any whitespace as equal; an
+  occurrence that is only a piece of a longer word or number is left alone when the value
+  also stands on its own somewhere (a reported age of "34" does not change "$1345"), and
+  scripts written without word spacing are exempt from that rule. Overlapping and touching
+  occurrences are merged. A span that cannot be found, a span with no text, and a response
+  with no spans list are classified errors, and on any error the result carries no text.
+  No error or log line repeats the document or the model's own words. The default deadline
+  now applies to any context that has none, where it applied only to a nil context.
+  Decisions recorded here: `RedactSpan.Start` and `End` are character offsets, per
+  AGENTS.md (two tests disagreed and both passed); a name that is also a common word is
+  masked wherever the word appears; the comparison is not Unicode-normalised, so a value
+  quoted in composed form against decomposed text fails the call.
+  **Not done:** the local provider cannot run this operation, because it answers with a
+  placeholder that is not in the text; `examples/21-redact` is recorded as FAIL in
+  `.audit/examples_expected.txt` where it was recorded as PASS while every call in it
+  failed (LX-122).
+  Evidence: `internal/ops/lx020_redactllm_test.go` (eight tests),
+  `internal/ops/lx020_occurrences_test.go` (eight tests, 43 subtests),
+  `internal/ops/opbodies2_test.go` (`TestOccurrencesOf`, `TestMergeByteSpans`,
+  `TestSpansInCharacters`), `tests/lx020_redactllm_integration_test.go`
+  (`TestIntegrationRedactLLMOverTheUTF8Corpus`, 55 layouts with the corpus text as the
+  secret, before it and after it; `TestIntegrationRedactLLMFailsClosed`; `ExampleRedactLLM`;
+  `ExampleRedactLLM_failsClosed`). Reviews: round 2 found the byte/rune defect unfixed in
+  the first attempt's tests; round 3 found eleven items, all addressed. Live, 2026-10-02:
+  the smoke case passes on `gpt-6-luna`.
+  **Rounds 4 and 5.** Round 4's blocker was the rule above: applied to a value of any
+  length, it left "Müllers" readable where "Müller" also stood alone. It now covers only a
+  very short value (three characters or fewer, or four digits or fewer); anything longer is
+  masked wherever it appears. Round 5 showed the short case still leaked an inflected name
+  ("Otts Konto" beside "Ott"), so a short word is now left alone only in the middle or at
+  the end of a longer word and masked at the start of one; a short run of digits is left
+  alone inside a longer number. Copies left readable are counted in
+  `Metadata["left_inside_longer_words"]`, after merging, so a copy another span masks is not
+  counted. **Residual, stated in the doc comment:** a short name joined to the end of
+  another word is left readable when the name also stands alone.
+  The search was a loop restarting a case-insensitive regexp one character after each match,
+  which a reviewer showed is about cubic on a long value in a repetitive document. It is
+  now a Knuth-Morris-Pratt search over a copy of the text folded once per call (case by
+  Unicode simple folding, whitespace by `unicode.IsSpace`, a byte offset per character):
+  linear, and no regexp. Measured on a 30 KB document with ten values and 1,430
+  occurrences: 1.3 ms and 722 KB for locate and mask, 0.5 ms and two allocations to fold;
+  20,000 repeated characters against a 10,000-character value takes 0.65 ms.
+  Also: categories are reported under the caller's spelling, an unlabelled span is masked
+  and not counted, a requested category name may not be blank or contain a comma, and
+  option and splice failures are classified.
+  Evidence added: `internal/ops/lx020_occurrences_test.go` (now 15 tests),
+  `internal/ops/lx_units_test.go` (`TestFoldRune`, `TestFoldText`, `TestFoldValue`,
+  `TestFoldedTextFind`, `TestShortRedactValue`, `TestLeftInLongerWord`,
+  `TestEmbeddedInWord`, `TestCategoryAsAsked`), `internal/ops/redact_llm_bench_test.go`
+  (four benchmarks).
+- [ ] **LX-021** — **Critical.** `Deduplicate` fails open
+  (`internal/ops/extended.go:1390-1394`): a response it cannot parse sets
+  `result.Unique = items` and returns nil *(read)*. It never checks that the groups form a
+  partition: out-of-range indices are skipped, an index in two groups is counted twice, and a
+  group whose first index is out of range loses its valid members (`:1397-1440`)
+  *(reviewer)*. `threshold` is rendered into the prompt and checked nowhere. No schema. The
+  result carries no indices, so a caller cannot map it back to the input. The catalogue
+  lists it as stable.
+  *Verify:* a parse failure is an error; `CoversExactlyOnce` over the groups; ten cases.
+  **In review (round 6), 2026-10-02.** What is in the tree: the model reports, for each
+  item that is or may be the same thing as an earlier one, the item, the earlier item and a
+  similarity on a fixed scale; Go checks every entry (both numbers in the list, the target
+  earlier, the similarity from 0 to 1, an item reported twice in agreement), applies the
+  threshold, and groups by following the links. The threshold is not in the request and a
+  value outside 0 to 1 is refused before any call, which catches 85 written for 0.85. A
+  response that cannot be read, has no list, or names an item the list does not have is a
+  classified error with an empty result. The result gained `UniqueIndices` and
+  `DuplicateIndices`, in input order, and no longer shares memory with the input.
+  Items that are written the same are grouped in Go without asking: only distinct items are
+  sent, and when at most one is distinct no call is made.
+  Decisions recorded here: the old `groups` answer shape is refused, not read, because it
+  carries no similarity for the threshold to apply to; a group follows its links, so C
+  joins A through B without having been compared with A; the model is asked only for
+  items it takes to be duplicates, so nothing below 0.5 is reported and a missing item is
+  unique by definition, which is what the *Verify* line's partition check comes to once Go
+  completes the groups with the items not mentioned.
+  **Cost, measured live on `gpt-6-luna`, 18 runs:** the score went from 1.000 to 0.983 and
+  the median from 1,451 ms to 2,382 ms, because scoring similarity costs the model
+  reasoning (46 reasoning tokens a call before, 95 after; a first wording that asked for
+  every pair down to 0.3 cost 218). At reasoning effort none the same task ran at 1,019 ms
+  and 0.989 (LX-105).
+  Evidence: `internal/ops/lx021_deduplicate_test.go` (seven tests, 31 cases watched
+  failing), `internal/ops/lx_round5_test.go` (`TestDeduplicateCollapsesIdenticalItemsItself`,
+  `TestDeduplicateRefusesAnIndexThatIsNotAWholeNumber`,
+  `TestDeduplicateResultDoesNotAliasTheInput`, `TestDeduplicateLinks` with twenty cases),
+  `tests/lx021_deduplicate_integration_test.go` (`TestIntegrationDeduplicate`, eleven cases
+  through the exported API; `ExampleDeduplicate`; `ExampleDeduplicate_failsClosed`).
+- [ ] **LX-022** — **Critical.** `Similar` invents a number
+  (`internal/ops/analysis.go:917-928`): on a bare `true` or `false` it sets
+  `Score = threshold ± 0.1` *(read)*. On the normal path `IsSimilar` is taken from the model
+  and never compared with `Score` against the threshold (`:933-934`), so
+  `{"is_similar": true, "score": 0.2}` at a threshold of 0.7 returns similar.
+  *Verify:* no score that the model did not return; `IsSimilar` is computed in Go from score
+  and threshold, or a disagreement is an error.
+  **In review (round 6), 2026-10-02.** What is in the tree:
+  the schema has no verdict field and `IsSimilar` is `score >= threshold`, computed in Go.
+  A bare boolean, a missing score and a score outside 0 to 1 are classified errors, and a
+  failed call returns a zero result. The model is not told the threshold: the system prompt
+  is one constant with an anchored scale, so a score means the same thing at every
+  threshold and every call shares a cache prefix. The first version of this fix told the
+  model where the line was and to score on the side it meant, which a reviewer pointed out
+  asks for the verdict first.
+  Named aspects are keys of the answer, one required entry each, so a provider that
+  enforces the schema cannot skip, repeat or rename one. Go sorts them into
+  `MatchedAspects` and `DifferingAspects` by the same threshold, in the caller's order and
+  spelling. A provider that answers by name, as a list, or in the two lists this operation
+  used to ask for is read and checked by the same rules. Blank and duplicate aspect names
+  are refused before the call.
+  Decisions recorded here: with no aspects named the model is not asked for any; an aspect
+  nobody asked for is dropped, not refused.
+  Evidence: `internal/ops/lx022_similar_test.go` (four tests),
+  `internal/ops/lx022_aspects_test.go` (six tests, 33 subtests),
+  `tests/lx022_similar_integration_test.go` (`TestIntegrationSimilarIsDecidedFromTheScore`,
+  `TestIntegrationSimilarScoresEachNamedAspect`, `ExampleSimilar`, `ExampleSimilar_aspects`,
+  `ExampleSimilar_failsClosed`). Live on `gpt-6-luna`, 24 labelled pairs at the default
+  threshold: 24 of 24 with the threshold in the prompt (2026-10-01) and 24 of 24 with it
+  removed (2026-10-02). `examples/11-similar` now compares all six pairs under the local
+  provider, where every comparison failed before and the example exited 0.
+  **Rounds 4 and 5.** The aspect keys are listed in the message, one to a line and quoted,
+  where they first travelled as steering: steering is the caller's text and is marked to
+  the model as untrusted, and a name with ";" in it read as two aspects. The prompt says an
+  aspect is judged in its own terms, since "judge meaning, not wording" contradicted an
+  aspect such as tone. A blank explanation, a threshold that is not a number, and an aspect
+  named like an answer key ("a2") are refused. Prompt text is written without HTML
+  escaping (`promptJSON`), so "R&D" reaches the model as written. These five fixes were
+  written before their tests, which therefore were not watched failing.
+  Measured, 24 labelled pairs: the redesign cut output from 194 to 94 tokens a call and the
+  median from 2,635 ms to 1,725 ms, at 24 of 24 both times.
+  Evidence added: `internal/ops/lx022_aspects_test.go` (now ten tests),
+  `internal/ops/lx_units_test.go` (`TestSimilarAspectAnswers`, `TestCheckedAspects`,
+  `TestAspectsAsked`), `internal/ops/lx_round5_test.go` (`TestPromptJSON`,
+  `TestPromptsCarryPunctuationAsWritten`).
+- [ ] **LX-023** — **High.** The `Conform` defect AGENTS.md lists as fixed (a missing payload
+  field returns a zero value and nil) survives in at least thirteen places *(reviewer)*:
+  `compose.go:266`, `derive.go:275`, `negotiate.go:290` and `:672`, `pivot.go:313`,
+  `project.go:307`, `resolve.go:263`, `extended.go:972` (MergeWithMetadata), `extended.go:1250`
+  (Question), `normalize.go:346`, `predict.go:375`, `enrich.go:286`, `synthesize.go:376-391`.
+  `ParseJSONStrict` accepts a response carrying any one recognised field (`json.go:54-59`),
+  so `{"confidence": 0.9}` passes.
+  *Verify:* one shared "payload field present" check, used by every site; a test per
+  operation with a response that omits the payload.
+- [ ] **LX-024** — **High.** `Arbitrate` and `Decide` return option 0 when the model omits
+  the index: `WinnerIndex` is a plain `int`, so a missing field decodes to 0 and passes the
+  range check (`arbitrate.go:304-324`, `procedural.go:165-186`) *(read)*. In `Arbitrate` the
+  `RequireAllRules` check passes when the winner's evaluation is absent (`:355-369`), and a
+  single option wins with `Scores[0] = 1.0` and `ModelConfidence = 1.0` without a model call
+  (`:178-185`) *(reviewer)*.
+  *Verify:* a response without the index is an error in both operations.
+  **In review (round 14), 2026-10-03.**
+  **Arbitrate** is rewritten (`internal/ops/arbitrate_core.go`). The model is no longer
+  asked which option wins. It says, for every option and every rule, whether the rule is
+  met and how well, under keys the schema requires, so an answer that leaves an option or a
+  rule out is not one the schema allows and is refused here. This library works out the
+  rest: each option's total is the weighted mean of its rule scores under the caller's
+  `Weights`; an option that fails a rule is disqualified when `RequireAllRules` is set; the
+  highest total wins; and a tie is broken by `Tiebreaker`. The weights were arithmetic the
+  model was asked to do, and the two checks made afterwards passed when the winner's
+  evaluation was missing.
+  When every rule is required and no option meets them all there is no winner, and the
+  error is `ErrReviewRequired`; the model used to be left to pick one anyway. One option
+  with nothing required of it still wins without a call, and no longer comes back with a
+  score of 1.0 and a model confidence of 1.0 that no model gave; when every rule is
+  required it is evaluated, because it can fail. Weights that are negative, not a number,
+  too many, or all zero, a blank rule and an unknown tiebreaker are refused before a call.
+  The instructions are one fixed prompt; the rules and options travel in the message as
+  JSON, and the model is told neither the weights, the tiebreaker nor whether every rule
+  is required. The response is no longer logged on a parse failure.
+  **Decision recorded here:** "most-confident", the default tiebreaker, had no stated
+  meaning the library could apply. It now means the tied option that passed the most
+  rules, and the earliest of those. "random" is kept and documented as the one setting
+  that makes the result differ from call to call.
+  **Decide** reads its selection through a pointer from a declared schema whose `selected`
+  is required and is one of the branch numbers, so an answer without one is refused, or
+  takes the fallback and says so. Alternatives have to be other branches, each named once.
+  A branch taken by its own `Condition` sets `ByCondition` and no longer carries a
+  `ModelConfidence` of 1.0. The situation and the descriptions go to the model as JSON.
+  Live on `gpt-6-luna`, 2026-10-02: `Arbitrate`, ten cases, three repetitions: 30 of 30, median 4,943 ms and 479 output tokens, against 9,844 ms and 1,359 tokens before, when the model also did the arithmetic. `Decide`, 32 tickets: 32 of 32, median 1,610 ms against 1,667 ms. The 65-operation baseline was 64 of 65 in the same run; the one failure was `DecomposeToSlice`, the intermittent in LX-027.
+  Evidence: `internal/ops/lx024_arbitrate_test.go` (six tests, 57 cases watched failing),
+  `internal/ops/lx024_decide_test.go` (four tests, 25 cases; these did not compile before
+  the change), `internal/ops/lx024_units_test.go` (`TestArbitrateWeights`, thirteen;
+  `TestArbitrateDecide`, fifteen; `TestArbitrateSchema`, ten; `TestArbitrateUserPrompt`,
+  ten; `TestDecideSchema`; `TestDecideUserPrompt`, ten; `TestReadDecideAnswer`, fifteen),
+  `tests/lx024_arbitrate_decide_integration_test.go`
+  (`TestIntegrationArbitrateWorksOutTheWinner`, ten cases through the exported API;
+  `TestIntegrationDecideDoesNotReadAMissingSelectionAsTheFirstBranch`, seven;
+  `ExampleArbitrate`; `ExampleDecide`). Three older tests that scripted a winner were
+  rewritten to the new answer and keep what they protected.
+  **Round 11**, a blocker and seven more. The blocker was mine: the rewritten prompt
+  left the shape of the answer to "the schema", and a provider that is sent no schema
+  (Anthropic's, and the plain JSON mode) never showed the model one, so every such answer
+  would have been refused. The instructions now state the shape and carry an example,
+  which a test feeds back through the reader; whether a reason is wanted with every
+  evaluation is said in the message; and a test holds that no operation's instructions
+  refer the model to a schema.
+  An arbitration or a choice too large to declare an answer for is refused here with the
+  count, before anything is sent (2,500 declared fields; 500 branches), where it went out
+  and came back as a provider's 400. `Decide`'s alternatives no longer repeat the branch
+  numbers, which doubled what the schema held.
+  `Decide` refuses a situation that cannot reach the model. The situation is JSON now, and
+  an `error`, or a struct with no exported field, is `{}`: the model was asked to choose
+  for a situation it was not shown. A request that cannot be made is reported with or
+  without a fallback; the fallback is for a provider that fails and an answer that cannot
+  be used, and taken here it would be taken on every call.
+  When every option is disqualified the error says which option failed which rules, by
+  position. Weights that add up to infinity are refused (two of 1e308 made every total
+  not-a-number). A tie is every option within a billionth of the best total; it was
+  measured from the best so far, so a run of totals each just under the last all tied.
+  What was asked for is checked before the one-option shortcut. `onScale` no longer
+  repeats the model's number in its error. What `Decide` refuses before asking is
+  classified.
+  **Decision recorded here:** a reason with every evaluation is asked for only when
+  `IncludeReasoning` is set, in a struct, in `NewArbitrateOptions` and on the builder
+  alike (`.IncludeReasoning(true)`, new). At v1.2.0 the reasons were always asked for. A
+  struct could not express "on by default", the constructor and the builder set it and a
+  struct did not, and the reasons are most of the answer: without them an arbitration
+  takes about half the time. A reason the model sends unasked is not kept, so that what
+  comes back does not depend on whether the provider held it to the schema.
+  Live after these changes: `Arbitrate` 10 of 10 at a median of 5,493 ms and 481 output tokens (4,943 ms and 479 before, over 30 cases). `Decide` 95 of 96 over three repetitions at a median of 2,015 ms; the one miss, in the first repetition, did not recur in the next two.
+  Evidence added: `internal/ops/lx_round11_arbitrate_test.go` (thirteen tests),
+  `internal/ops/lx_round11_units_test.go` (`TestArbitrateAnswerOnItsOwn`, twenty-three;
+  `TestMergeArbitrateOptions`, thirteen; `TestArbitrateFailures`, ten;
+  `TestDecideSaysNothing`, twenty-three), `tests/lx_round11_integration_test.go`
+  (`TestIntegrationArbitrateSaysWhichOptionFailedWhichRule`,
+  `TestIntegrationDecideRefusesASituationThatSaysNothing`, `ExampleArbitrate_reasons`).
+  `TestArbitrateRefusesOutOfRangeWinnerIndex` passed only because its answer had no
+  options at all; it scripts a whole answer now.
+- [ ] **LX-025** — **High.** `Validate` overwrites the model's verdict with
+  `len(result.Errors) == 0` (`extended.go:526-532`), so `{"valid": false, "summary": "..."}`
+  with no itemised errors returns valid *(read)*. `AutoCorrect=false` still accepts a
+  `corrected` value *(reviewer)*.
+  *Verify:* `valid: false` with no errors is not valid.
+  **In review (round 14), 2026-10-03.** What is in the tree: the model is no longer asked
+  for a verdict. It lists what it found in three lists, errors, warnings and info, and
+  this library works the verdict out from them by the caller's `FailOn`, which it already
+  did. What was wrong is that the three lists were optional, so an answer with no issues
+  in it read the same as an answer that found none: `{"valid": false, "summary": "..."}`
+  came back valid, and so did `{}`. The lists and the confidence are required fields of a
+  declared schema (`validation`) and are read so that a missing one can be told from an
+  empty one; an answer that leaves one out, gives an issue no message, or a confidence
+  off the 0 to 1 scale is refused. A model that says `valid: false` anyway and lists
+  nothing that fails the data by `FailOn` is refused too: "valid" would overrule it on no
+  evidence and "invalid" would be a verdict with no issue behind it.
+  Each issue takes the severity of the list it was reported in, whatever it says of
+  itself. A `corrected` value is taken only when `AutoCorrect` is set; one the model sent
+  anyway was returned. The same goes for an explanation and `IncludeExplanations`. The
+  instructions are one fixed prompt; the rules, the field rules, the hints and the data
+  travel in the message as JSON, written with `promptJSON` (LX-127 for this operation).
+  A value whose type has no strict schema, asked for a correction, is sent with no schema
+  and its answer is held to the same rules. Nothing is returned with an error: the result
+  used to come back half filled, with its `Metadata` map.
+  **Found on the way:** an older test, `TestValidateDerivesValidityFromIssues`, held
+  `{"valid":false}` with nothing itemised and expected `Valid: true`. That is this defect
+  written down as the wanted behaviour. The case is moved to the refusals.
+  **Not done:** `ValidateLegacy`, which is deprecated and takes the model's own `valid`,
+  is untouched; a missing explanation is not a reason to refuse an answer (the schema
+  requires it of a provider that enforces schemas, and nothing in the verdict turns on it).
+  Live on `gpt-6-luna`, 2026-10-02: `ValidateHybrid` 16 of 16 at a median of 2,847 ms (243 output tokens, 176 of them reasoning). The same task before the rework was 16 of 16 at 1,980 ms (173 and 51). `Decide`, whose prompt did not change, ran a quarter slower in the same session, so part of that is the day; the reasoning tokens are this prompt's, and LAT-004 takes that up.
+  Evidence: `internal/ops/lx025_validate_test.go` (five tests, 40 cases watched failing),
+  `internal/ops/lx025_units_test.go` (`TestValidateFails`, seventeen; `TestValidateIssueSchema`;
+  `TestValidateSchema`, ten; `TestValidateUserPrompt`, twelve; `TestValidateList`,
+  seventeen; `TestReadValidateAnswer`, twenty-one; `TestValidateCorrection`, eleven;
+  `TestValidateCorrectedSchema`; `TestValidateWithoutASchemaForTheType`),
+  `tests/lx_round11_integration_test.go`
+  (`TestIntegrationValidateRefusesAnAnswerThatItemisesNothing`, twelve cases through the
+  exported API; `TestIntegrationValidateTakesACorrectionOnlyWhenAsked`;
+  `Example_validateRefusesAVerdictWithNoReason`). Eleven older tests and three examples
+  that scripted an answer with lists left out now script a whole one. The golden prompt
+  for `Validate` is regenerated.
+- [ ] **LX-026** — **High.** `Suggest` turns any JSON object into one zero-valued suggestion
+  (`suggest.go:325-343`): `{"error": "cannot comply"}` becomes `[]T{{}}` and nil *(read)*.
+  `Scores` and `Reasons` are never filled and the prompt never states T's shape
+  *(reviewer)*.
+  *Verify:* an object that does not decode into a non-zero T is an error.
+- [ ] **LX-027** — **High.** `DecomposeToSlice` failed one live run in three with malformed
+  JSON *(live)*, and wraps a lone object as a one-part result (`decompose.go:463-478`), the
+  collapse `collection.go:479-482` says was removed from `Filter`. In `Decompose`, `MaxDepth`
+  is checked against the model's own `depth` field, not the parent chain; `{"parts": []}`
+  succeeds; the schema built at `:311-338` is overwritten at `:349-353` *(reviewer)*.
+  *Verify:* a schema-constrained array; the lone-object path is an error; depth is computed
+  in Go.
+- [ ] **LX-028** — **High.** `Verify` derives its verdict from the model's `overall_verdict`
+  and never sees the options (`verify.go:260-343`, `:504`): `CheckFacts`, `CheckLogic` and
+  `CheckConsistency` edit one prompt line (`:399-412`) *(reviewer)*. Live, with
+  `CheckFacts=false`, the syllogism in the repository's own smoke case came back `mixed` or
+  `unknown` with `fact:unverifiable` issues, and the smoke case failed two runs in three
+  *(live)*. `VerifyClaim` returns only `Claims[0]` (`:558-560`).
+  *Verify:* with `CheckFacts=false` no fact-category issue can lower the verdict; the smoke
+  case passes ten runs in ten.
+  **In review (round 14), 2026-10-03.** What is in the tree: the model is not asked for a
+  verdict. It reports claims, flaws in the reasoning and inconsistencies, and Go works the
+  verdict out as the worst of the checks that were run: claims are verified when all are,
+  false when all are, unverifiable when none could be checked, mixed otherwise; reasoning
+  is false on a critical flaw and mixed on a lesser one; an inconsistency is mixed. A check
+  that is off is not in the schema, and what a provider sends for it anyway is dropped. A
+  check that is on must be reported, if only as an empty list: an answer that assessed
+  nothing used to count as verified. Verdict words, severities and 0 to 1 numbers are
+  checked. Evidence, reasoning and source citations are asked for only when wanted. The
+  sources, the domain and the trusted-source names moved from the system prompt to the
+  message, which closes `Verify`'s part of LX-035, and the system prompt is the same for
+  equal switches. `VerifyClaim` returns the worst of the claims found, where it returned
+  the first. All three checks off is refused. Errors return an empty result.
+  Decisions recorded here: the overall verdict is one of verified, false, mixed and
+  unverifiable, so "partially_true" and "misleading" are now words for a single claim only.
+  **Round 6** found the first rules wrong in three ways, and they were replaced. A review
+  that reported no claims with the fact check on came back verified, so
+  `Verify("The Earth is flat.")` passed if the model listed nothing; no claims is now
+  unverifiable, and `VerifyClaim` with no claim assessed is an error. The ranking was not
+  monotone: a verified claim added to unverifiable ones made the verdict worse. Claims are
+  now verified only when all are, false when all are, mixed when any is false, misleading
+  or partly true, and otherwise unverifiable; a minor flaw and an ambiguity are reported
+  and do not lower the verdict. Two properties are tested over every set of up to three
+  claims: one more verified claim never worsens the verdict, and one more false claim never
+  improves it.
+  **The confidence floor changed meaning, deliberately.** It rejected the whole call, which
+  threw away a review, faults and all, for being unsure. It is now applied to the one word
+  it protects: a claim called verified below `MinConfidence` is reported as unverifiable
+  and counted in `Metadata`, and a verified verdict from a review that scores itself below
+  it is reported as unverifiable. A fault found is kept whatever the confidence. The model
+  is no longer told the floor. The property the old tests held is kept, that nothing below
+  the floor comes back verified; the tests that asserted an error now assert that.
+  Also from round 6: a missing confidence is a schema violation and not a zero; evidence,
+  reasoning and the source list are required in Go when asked for; a verified claim that
+  cites none of the supplied sources is reported as unverifiable and counted; issue types
+  are checked; the domain and trusted-source names are quoted in the message, where a line
+  break in one could forge the heading that introduces the content; `false_premise` is
+  offered only when facts are checked. `Strictness` is guidance to the model and is
+  documented as that.
+  Live on `gpt-6-luna`, 16 labelled items: 0.938 in every earlier run and a median of
+  4,317 ms; after the first rewrite, 1.000 and 2,206 ms. The 65-operation baseline went from
+  64 to 65.
+  Evidence added: `internal/ops/lx028_verify_rules_test.go` (`TestOverallVerdict`, 24
+  cases; `TestOverallVerdictMovesTheRightWay`; `TestWorseVerdict`; `TestOnScale`;
+  `TestVerifyAppliesTheConfidenceFloorWhereItBelongs`;
+  `TestVerifyHoldsAVerifiedClaimToItsSources`; `TestVerifyFindings`, 15 cases;
+  `TestVerifyResponseSchema`; `TestVerifySystemPrompt`; `TestVerifyUserPrompt`;
+  `TestVerifyClaimWithNoClaimAssessed`).
+  **Round 7**, and one live miss. `VerifyClaim` ranked the claims and looked at nothing
+  else, so a claim the model verified inside content that contradicted itself, or in a
+  review below the confidence floor, came back "verified" where `Verify` said mixed or
+  unverifiable. It is now never better than the review's overall verdict. With the fact
+  check off it answered "verified" for a claim nobody had fact-checked; that is refused
+  before the call, and the smoke case that relied on it keeps the fact check on.
+  The rule that an ambiguity does not lower the verdict was mine and was wrong: live, the
+  model reported two contradictory revenue statements as an ambiguity and the content
+  passed. The model is asked only for an ambiguity that changes the meaning, so any
+  consistency finding is now mixed. A contradiction or a false premise in the reasoning is
+  at least mixed whatever severity the model gives it. A claim called verified with no
+  evidence, when evidence was asked for, is reported as unverifiable and counted.
+  So a pass can still carry issues, and only minor ones of a kind the conclusion survives.
+  Evidence added: `internal/ops/lx028_verify_rules_test.go`
+  (`TestVerifyClaimIsNeverBetterThanTheReview`, eleven cases;
+  `TestVerifyHoldsAVerifiedClaimToItsEvidence`; five more cases in `TestOverallVerdict`).
+  Evidence: `internal/ops/lx028_verify_test.go` (nine tests, 62 cases watched failing),
+  `tests/lx028_verify_integration_test.go` (`TestIntegrationVerifyWorksOutTheVerdict`,
+  twelve cases; `TestIntegrationVerifyKeepsSourcesOutOfTheInstructions`;
+  `ExampleVerifyWithModel`; `ExampleVerifyWithModel_flawed`).
+  **Round 8.** When `VerifyClaim` lowered a verdict it replaced the claim's reasoning with
+  the review's summary, which the model wrote without knowing the rule that lowered it: a
+  review below the confidence floor came back "unverifiable" with the reasoning "All claims
+  are accurate". The model's reasoning, evidence and confidence for the claim are now left
+  as given. `ClaimVerification` gained two fields: `ModelVerdict`, what the model called
+  the claim when `Verdict` is not it, and `Note`, this library's own account of why. Both
+  are empty when the two agree, and neither is read from the model's answer. `Verify` sets
+  them too, on a claim it does not let stand as verified.
+  A claim nobody could check is no longer moved by the cap. An unverifiable claim in
+  content that contradicted itself was reported as "partially_true", which says part of it
+  was found true.
+  The three counts (`claims_below_min_confidence`, `claims_without_evidence`,
+  `claims_without_a_source`) were first-match, so a claim below the floor with no evidence
+  was counted as zero claims without evidence. Each now counts the claims its rule caught.
+  Evidence added: `internal/ops/lx028_verify_cap_test.go`
+  (`TestVerifyClaimSaysWhatItLoweredAndWhy`, eighteen cases;
+  `TestVerifyRelabelsSayWhatAndWhyAndAreEachCounted`, ten;
+  `TestVerifyDoesNotTakeTheLibrarysFieldsFromTheModel`),
+  `tests/lx028_verifyclaim_integration_test.go` (`TestIntegrationVerifyClaim`, eleven cases
+  through the exported API, which `VerifyClaim` had none of; `ExampleVerifyClaim`). The two
+  new fields did not exist, so these did not compile before the change; the unverifiable
+  case and the counts were confirmed failing by a mutation run.
+  Live on `gpt-6-luna` after round 7's rules, 2026-10-02: `VerifyWithModel` 48 of 48 over
+  three repetitions, median 2,063 ms. The miss the ambiguity rule caused is gone.
+  **Round 9.** A stricter confidence floor gave a better-looking verdict: a claim the model
+  verified at low confidence, behind a critical flaw, came back "false" with no floor and
+  "unverifiable" with one, because the floor relabelled it first and the cap leaves alone
+  what nobody could check. That exemption is now for a claim the model itself could not
+  check. And when the model splits a claim in several, the confidence, evidence, sources
+  and reasoning returned are those of the claims that gave the verdict: a claim found false
+  at 0.95 beside one verified at 0.2 used to come back "false" at 0.2 with the verified
+  claim's evidence.
+  Evidence added: `TestVerifyClaimReturnsTheVerdictsOwnConfidenceAndEvidence` (thirteen
+  cases, six watched failing), `TestLowerVerdict` (ten), `TestReviewFaults` (eleven).
+  **Round 10.** The cap was applied once, to the worst claim, after the claims had been
+  merged, so the exemption for a claim the model could not check covered the whole answer
+  whenever that claim happened to be the worst: a verified claim beside it escaped a
+  critical flaw, and which claim came first could change the verdict. Each claim is capped
+  first and then the worst is taken. What is returned with the verdict is the claims that
+  have it on their own account; the ones lowered to it are returned only when the cap is
+  the whole reason. Seven cases added to the same test, two of them the same claims in
+  both orders.
+  **Round 11.** With a floor of 0.7, a claim verified at 0.95 beside one verified at 0.3
+  came back with the first one's reasoning, a note blaming the review, and 0.3; in the
+  other order it came back as the second. Two things. A claim under the caller's floor
+  has its verdict for a reason of its own, and the code asked only whether the model had
+  given the verdict, which that claim fails as surely as one the review lowered: the two
+  are told apart now by which ones the review lowered. And of the claims that gave the
+  verdict, the one the model was least sure of speaks for them, so the confidence, the
+  reasoning and the note returned are one claim's; they were the first claim's reasoning
+  beside the lowest confidence. Six cases added, and four older ones moved to the new
+  rule.
+- [ ] **LX-029** — **High.** `Audit` findings are not tied to the caller's `Policies` or
+  `Categories` (`audit.go:260-273`, `:349-398`), so a finding about anything can flip the
+  verdict; live, compliant records failed on issues outside the three policies supplied
+  *(live)*. `Threshold` filters findings before the verdict is computed, so raising it makes
+  an audit pass; severity is unbounded *(reviewer)*. `AuditWithModel`, the recommended
+  replacement, drops `AuditFinding.Policy` (`:188-196`), so the caller cannot tell which
+  policy a finding belongs to.
+  *Verify:* every finding names one of the supplied policies or is reported separately and
+  cannot change the verdict.
+  **In review (round 14), 2026-10-03.** `Audit` is rewritten on the rule the other
+  judgment operations follow: the model reports and this library decides
+  (`internal/ops/audit_core.go`).
+  The model is given the policies by key and reports the violations of each under its key,
+  every key required, and reports apart whatever else it finds. A finding's policy is set
+  from where it was reported, in the caller's own words, and is not a string the model
+  wrote. A finding counts toward the verdict when it is a violation of a supplied policy or
+  a problem in a category the caller named; with neither supplied, everything found counts;
+  with policies and no categories, a problem that is no policy's is returned in
+  `AuditResult.Other` and changes nothing.
+  The verdict is worked out from every finding that counts, and only then does `Threshold`
+  decide which are listed; `Metadata["findings_below_threshold"]` says how many were left
+  out. A threshold outside 0 to 1 is refused before the call.
+  An answer that does not report on every policy, leaves out the list of findings, or holds
+  a finding with no severity, a severity off the scale, a blank issue or a category that
+  was not allowed, is refused, and a refused audit returns an empty result. `{}` and
+  `{"findings": null}` both used to be an audit with no findings, which passes.
+  The instructions are one fixed prompt with nothing of the caller's in them; the policies,
+  categories, guidance and data go in the message as JSON (this was also LX-035's `Audit`
+  half). The model is not told the threshold. The answer is declared as a strict schema.
+  The response is no longer written to the log on a parse failure: it quotes the caller's
+  data as evidence.
+  `AuditWithModel` carries the policy as each issue's `Rule` (a new field of
+  `JudgmentIssue`), and what does not count is in `ModelClaims["other_findings"]`. The
+  option merge now carries `RequestID` and `CorrelationID`.
+  Live on `gpt-6-luna`, 2026-10-02, 12 labelled records, three repetitions: 36 of 36, median
+  2,330 ms, 145 output tokens. Before, on the same records at the default effort: 0.917 and
+  0.833 in two runs, median 5,600 ms, 368 output tokens, with compliant records failing on
+  findings outside the policies.
+  **Not done:** `Deep` is still a sentence in the message and nothing else (LX-036); a
+  caller passing options without `Deep` gets it switched off (LX-062).
+  Evidence: `internal/ops/lx029_audit_test.go`
+  (`TestAuditCountsOnlyWhatTheCallerAskedToHaveChecked`, thirteen cases;
+  `TestAuditRefusesAnAnswerThatDoesNotReport`, 21; `TestAuditRequest`, eight;
+  `TestAuditRefusesAThresholdOffTheScale`, ten;
+  `TestAuditWithModelSaysWhichPolicyAFindingBelongsTo`;
+  `TestMergeAuditOptionsCarriesTheIdentifiers`), all watched failing, 47 cases;
+  `internal/ops/lx029_audit_units_test.go` (`TestDistinctText`, eleven;
+  `TestAuditViolationCategories`; `TestAuditResponseSchema`, seven; `TestAuditList`, twenty;
+  `TestAuditUserPrompt`, ten); `tests/lx029_audit_integration_test.go`
+  (`TestIntegrationAuditCountsWhatWasAskedAbout`, twelve cases through the exported API;
+  `ExampleAuditWithModel`). A mutation run broke the new code eighteen ways and each was
+  caught.
+  **Round 10.** The policy's text was copied into the schema as each key's description,
+  which contradicted "in the message and nowhere else"; it is gone from the schema. An
+  audit has room for so many policies, since each one's list repeats the categories and a
+  provider's structured output has a ceiling on enum values: an audit that would pass 500
+  is refused before the call with the count (99 policies fit with the five default
+  categories). The categories are named in the message, where they were only in the
+  schema and a provider that does not enforce one never showed them to the model.
+  Nested structures are inspected unless the new `Shallow` is set. `Deep` was the switch,
+  on by default and copied from the caller's options as given, so `Audit(x)` looked inside
+  nested structures and `Audit(x, AuditOptions{Threshold: 0.3})` did not. `Deep` is kept so
+  callers compile, is refused together with `Shallow`, and is marked deprecated.
+  `AuditSummary` gained `BelowThreshold` and `OtherHighestSeverity`: a failing finding the
+  threshold left out used to give "fail" over a summary of no findings, and a critical
+  problem outside the caller's policies passed with no signal. The severity scale in the
+  prompt describes a problem's size and no longer says what has to be done about it.
+  **Decision recorded here:** a violation of a supplied policy fails the audit whatever
+  severity the model gave it. The verdict used to turn on that severity crossing 0.7 for
+  every finding. With the reworded scale, a record with no owner under "every record must
+  name a data owner" passed one live run in three, because the model called the violation
+  moderate. The policy is the caller's rule and the violation is the fact the model was
+  asked for; how bad it is, is the model's opinion, and it still decides for a finding
+  that is no policy's (0.7 or above fails).
+  Live after these changes: 48 of 48 over four repetitions, median 2,401 ms, 153 output tokens (35 of 36 before the decision above, the one miss being the case it describes).
+  Evidence added: `internal/ops/lx_round10_audit_test.go` (ten tests),
+  `internal/ops/lx_round10_misc_test.go` (`TestAuditPolicyKey`, `TestAuditFindingSchema`,
+  `TestAuditEnumValues`).
+  **Round 11.** The severity scale still offered "an observation; nothing is wrong" as
+  its lowest band. Since a violation of a supplied policy fails the audit at any severity
+  (round 10), one such entry under a policy failed a record that complied with it. Every
+  band is a problem now, and the instructions say a remark about data that complies is
+  not a violation. `NewAuditOptions` still set `Deep`, which is refused beside `Shallow`,
+  so the constructor and the builder could not ask for a shallow audit at all; it no
+  longer does, and the builder has `.Shallow(true)`. The smarttodo example read the list
+  of findings alone and told a board that had failed its audit, on a finding under its
+  threshold, that it had no issues; it reads the verdict.
+  Live after the scale changed: `AuditWithModel` 12 of 12 at a median of 2,824 ms and 226 output tokens (2,401 ms and 153 before, over 48).
+  Evidence added: `internal/ops/lx_round11_audit_test.go`,
+  `internal/api/fluent/lx_round11_setters_test.go`,
+  `examples/smarttodo/internal/intelligence/service_audit_test.go` (eleven cases).
+- [ ] **LX-030** — **High.** `Rank` and `SemanticMatch` trust the model's bookkeeping
+  *(reviewer)*. `Rank` never sorts by score, so `TopK` truncates whatever order arrived, and
+  it accepts duplicate, out-of-range and missing indices (`rank.go:316-341`).
+  `SemanticMatch` drops out-of-range pairs and passes the model's unmatched lists through
+  although both are computable (`match.go:357-373`, `:405-406`); "one-to-one" is prompt-only.
+  `MatchOne` returns the model's order.
+  *Verify:* `Rank` output is a permutation prefix sorted in Go; unmatched sets are computed
+  in Go.
+- [ ] **LX-031** — **High.** Deterministic `Redact` has four silent no-ops *(reviewer)*: an
+  unknown category such as `email` matches nothing and is not rejected
+  (`redact_detect.go:210-221`); an invalid custom pattern is skipped; a sensitive numeric or
+  slice field is listed in `FieldsRedacted` and left unchanged (`redact.go:381-385`,
+  `:419-421`); a nested failure keeps the original value (`:431-433`).
+  *Verify:* each is an error or redacts.
+- [ ] **LX-032** — **High.** The streaming path does not build the request `CallLLM` builds
+  (`streaming.go:218-249`) *(reviewer)*: it ignores the per-call model pin, the client's
+  provider, the client budget on both check and record, and `CommonOptions.Context`; it emits
+  no observer events; `StreamRewrite` and `StreamSummarize` skip the length checks their
+  buffered twins run.
+  *Verify:* one request builder shared by both paths; a budget test that streams.
+- [ ] **LX-033** — **High.** The four text `*WithMetadata` variants accept a response with
+  no `text` (`text.go:196-235`, `:337-362`, `:462-482`, `:578-599`); plain `Summarize`
+  ignores `TargetLength`; `MaxCompression` is validated and never compared with the computed
+  ratio *(reviewer)*.
+  *Verify:* a response without `text` is an error in all four.
+- [ ] **LX-034** — **High.** `LockedLimits` are enforced for three operations only; the
+  source says so (`options.go:590-593`). A client-scope `MinMode` or `MaxOutputTokens` lock
+  is bypassed by `Summarize`, `Transform`, `Generate`, `Classify` and every type in LX-060
+  *(reviewer)*.
+  *Verify:* a reflection test that every options type applies the locks.
+- [ ] **LX-035** — **High.** Caller data is interpolated into the system prompt: `Verify`'s
+  `Sources` (`verify.go:379-387`), `Rank`'s `Query` (`rank.go:275`), and policies, rules,
+  criteria and rubrics in eight more operations *(reviewer)*. `verifyTrustBoundary`
+  (`trust.go:182-191`) checks `Steering` only, so the guarantee stated at `trust.go:15-18`
+  does not hold, and the cached prefix differs on every call.
+  *Verify:* the system prompt of every operation is identical across two calls with
+  different inputs.
+- [ ] **LX-036** — **Medium.** Options that reach the prompt and nothing else *(reviewer)*:
+  `ExcludeFields` in `Infer`, `EnrichInPlace`, `AnnotateStruct` and `Derive`
+  (`infer.go:119-133`, `enrich.go:249-252`); `Fields` and `SkipFields` in `Normalize`
+  (`normalize.go:300-308`); `FieldPriorities` and the chosen value in `Resolve`
+  (`resolve.go:186-192`, `:283-313`); `FillGaps` in `Assemble` (`compose.go:191-296`);
+  explicit `Mappings` in `Project` (`project.go:208-216`); `IncludeOutliers=false` in
+  `Cluster` (`cluster.go:279-293`); `NumScenarios` in `Predict` (`predict.go:285-293`).
+  *Verify:* per option, a response that ignores it is refused, or the exemption is stated
+  with a test beside it.
+- [ ] **LX-037** — **Medium.** `Score` accepts a missing `value` as 0 when the scale allows
+  it and has a bare-number fallback that parses free text (`analysis.go:499-541`);
+  `Classify` with `MultiLabel` declares no field for several labels; `Compare`'s aspect
+  scores are unchecked *(reviewer)*.
+  *Verify:* a response without `value` is an error.
+- [ ] **LX-038** — **Medium.** Sixteen maps are rendered into prompts unsorted *(reviewer)*:
+  `core.go:318`, `text.go:736`, `match.go:280`, `rank.go:243`, `:253`, `:262`,
+  `enrich.go:231`, `:388`, `normalize.go:287`, `derive.go:181`, `negotiate.go:208`,
+  `annotate.go:228`, `:346`, `critique.go:333`, `conform.go:175`, `resolve.go:188`,
+  `analysis.go:426`.
+  *Verify:* a determinism test per operation: two renders of the same options are
+  byte-identical.
+- [ ] **LX-039** — **Medium.** Constants written into `Model*` and measurement fields
+  *(reviewer, 0.5 read)*: `ModelConfidence = 1.0` with no model call (`extended.go:884`,
+  `arbitrate.go:181-182`, `resolve.go:144`, `procedural.go:123`); `ModelConfidence: 0.5` in
+  `TransformError` (`core.go:460`); `Metadata["model"] = "llm-completion"`
+  (`complete.go:192`); `APICallsMade` counts successes only (`batch.go:146-150`); every item
+  of a chunk carries the whole chunk's `Meta`, so summed cost overcounts (`plan_many.go:129`).
+  *Verify:* none of these fields is set without a model having said so.
+- [ ] **LX-040** — **Medium.** The plan cost estimate counts protocol overhead and omits the
+  payload (`plan.go:488-498`), and an unpriced model drops the budget bound entirely
+  (`:429-433`) *(reviewer)*.
+  *Verify:* the estimate for a 10 kB item exceeds that for a 10-byte item; an unpriced model
+  with a budget set is refused.
+- [ ] **LX-041** — **Medium.** Options declared and never read *(reviewer, grep inside
+  `internal/ops`)*: `CompleteOptions.Temperature`, `TopP`, `TopK`;
+  `SummarizeOptions.MaxCompression`; `CompareOptions.OutputFormat`;
+  `ChooseOptions.IncludeScores`; `ClassifyOptions.IncludeConfidence`;
+  `RankOptions.IncludeScores`; `ArbitrateOptions.IncludeReasoning`; `ConformOptions.Validate`;
+  `ComposeOptions.Validate`; `AnnotateOptions.Format`; `EnrichOptions.Depth`;
+  `SynthesizeOptions.IncludeConfidence`; `TransformOptions.Examples`;
+  `FilterOptions.BatchSize`; all of `BatchOptions`; `Decision.Priority`;
+  `CommonOptions.Threshold`. The documented `NewExtractOptions().WithStrictSchema(true)`
+  fails `Validate` (`options.go:296-305`). `dead_options_test.go` exists and catches none of
+  these.
+  *Verify:* the dead-option test fails on today's tree, then passes.
+- [ ] **LX-042** — **Medium.** `Match` makes one model call per condition, in sequence
+  (1.88 requests per call measured live) *(live)*; hard-codes the Quick tier and takes no
+  options, so the caller cannot set model, steering or context beyond the parameter; renders
+  the input with `%v`; parses free-text `true` or `false`; returns one bool that is true even
+  when only `Otherwise` ran (`control_flow.go:30-48`, `:108-148`) *(read)*.
+  *Verify:* one request for all conditions, schema-constrained; the result says which case
+  fired.
+- [ ] **LX-043** — **Medium.** Batch extraction's merged mode bypasses `Extract`'s contract
+  (`batch.go:261-316`) *(reviewer)*: no schema, no required-field check, no repair, a
+  positional index with out-of-range silently skipped, and a zero-valued result reported as
+  "no result". `WithBatchSize(0)` loops forever. `ExtractSmart` switches into this mode by
+  itself above 20 inputs.
+  *Verify:* merged mode meets the same contract level as single `Extract`, or is removed.
+- [ ] **LX-044** — **Medium.** `Complete` returns success with nothing completed, truncates
+  to `MaxLength` silently, and reports `Length` in bytes while documenting characters
+  (`complete.go:189`, `:268-282`); `CompleteField` round-trips the struct through
+  `map[string]any`, which rounds large integers and drops `json:"-"` fields (`:463-538`)
+  *(reviewer)*.
+  *Verify:* an empty completion is an error; other fields are byte-identical afterwards.
+- [ ] **LX-045** — **Medium.** About 45 operations call the model with no schema, and the
+  response format is inferred by substring-matching the system prompt
+  (`llm_helper.go:813-831`) *(reviewer)*. Schema-constrained output is set only for
+  `Extract`, `Transform`, `Generate`, `Question`, `Compress`, `Decompose`, `Enrich`,
+  `Normalize` and `Predict`.
+  *Verify:* every catalogued stable operation declares a schema, or its contract level says
+  prompt-only.
+- [ ] **LX-046** — **Medium.** Model self-reports under measurement-style names
+  *(reviewer)*: `Compliance`, `Quality`, `Stats`, `GapCount`, `AverageConfidence`,
+  `OverallSatisfaction`, `SourceCoverage`, `SimilarityScore`, `Score`. Several are computable
+  in Go; `Pivot` delegates `sum` and `avg` to the model unverified. Every `ModelConfidence`
+  field still serialises as `"confidence"`.
+  *Verify:* each is renamed `Model*`, or computed.
+- [ ] **LX-047** — **Medium.** The deterministic rules layer is not exact (`rules.go:45-111`)
+  *(reviewer)*: `ZZ` passes as a country code; a rule such as
+  `required: at least 8 chars, one uppercase` is cut at the colon and only non-empty is
+  checked; `mail.ParseAddress` accepts `Name <a@b>`.
+  *Verify:* table tests for each.
+- [ ] **LX-048** — **Low.** Remaining byte-for-rune sites (`text.go:588`, with a divide by
+  zero on empty input; `compress.go:220`, `:347`; `core.go:629-637`, which truncates the
+  `Generate` prompt at 10,000 bytes mid-rune; `redact.go:512`) and `%v` renders of caller
+  data into prompts (`procedural.go:149-155`, `extended.go:666`, `:709`, `:1296`,
+  `analysis.go:315`, `parse.go:184`, `batch.go:280`) *(reviewer)*.
+  *Verify:* the UTF-8 corpus through each.
+- [ ] **LX-049** — **Low.** Smaller gaps *(reviewer)*: `Critique` passes with an overall
+  score of 0.1 when no issues are listed (`critique.go:249-258`); `Annotate` drops every
+  annotation when confidence is omitted (`annotate.go:291-297`); `Explain` accepts an empty
+  explanation; `extractresult.go:112-115` reports a schema check as passed without running
+  one; a second opinion on retry by substring (`procedural.go:416-431`); default prompts
+  tell the model to "use reasonable defaults for missing data" (`utils.go:251-256`,
+  `infer.go:107`); `scheduler.go:672-674` never admits or refuses a request larger than the
+  token window; `diff.go:303` panics on unexported fields; `test_helpers.go` ships in the
+  production package.
+  *Verify:* one test per item.
+
+## Public API
+
+- [ ] **LX-060** — **Critical.** On fifteen option types that embed both `CommonOptions` and
+  `types.OpOptions`, the `OpOptions` half is silently discarded: `toOpOptions` returns
+  `CommonOptions.toOpOptions()` alone (`rank.go:151` *(read)*; `annotate.go:128`,
+  `cluster.go:146`, `compress.go:155`, `critique.go:162`, `decompose.go:144`, `enrich.go:136`,
+  `extended.go:119`, `:1072`, `match.go:153`, `normalize.go:167`, `predict.go:167`,
+  `synthesize.go:151`, `verify.go:160` *(reviewer)*). `MaxOutputTokens`, `WebSearch` and
+  `JSONSchema` exist only on `OpOptions`, so `opts.MaxOutputTokens = 500` compiles on 26
+  functions and does nothing. `Filter` and `Sort` drop the `OpOptions` steering too
+  (`collection.go:416-419`, `:606-609`), and the repository's own examples 05 and 06 set it.
+  `options.go:386-394` describes this as fixed.
+  *Verify:* a reflection test sets every `OpOptions` field on every options type and asserts
+  it reaches the provider.
+  **In review (round 14), 2026-10-03.** Review hit this twice in other tasks before it was
+  taken up: a stream ignored a client set on `CommonOptions`, and `Verify` ignored one set
+  on the embedded half. What is in the tree: the fourteen `toOpOptions` methods return
+  `mergeEmbeddedOpOptions`, the one rule the other option types already used, so the
+  context, the model pin, steering, `MaxOutputTokens`, `WebSearch`, `JSONSchema` and the new
+  `Effort` reach the provider from either half, with `CommonOptions` winning where both
+  speak. `Filter`, `Sort` and `Suggest` read the caller's steering from either half before
+  composing their own. A source-reading test fails any conversion method that returns one
+  half of two, and fails when a new options type is not in its list.
+  **Not done:** the `OpOptions` fields are checked at `toOpOptions` for all 28 types and at
+  the provider for three operations, not for every operation, so an operation that reads a
+  field straight off one half after converting is not caught by this.
+  Evidence: `internal/ops/lx060_options_test.go`
+  (`TestEveryOptionsTypeCarriesItsEmbeddedHalf` and `TestCommonOptionsWinsOverTheEmbeddedHalf`
+  over 28 types; `TestTheEmbeddedHalfReachesTheProvider`;
+  `TestComposedInstructionsKeepSteeringFromEitherHalf`;
+  `TestNoOptionsTypeConvertsOnlyOneHalf`); 50 cases watched failing.
+  **Round 7** found three more one-half reads, fixed: `ExtractResult` read the context
+  from `CommonOptions` alone; the client-scope lock check read it the same way, so a lock
+  on the embedded half's context was not applied; and `resolvedContext`, which several
+  operations build their context from, dropped the caller's `Timeout`.
+  Evidence added: `TestResolvedContext` (ten cases),
+  `TestExtractResultReadsTheContextFromEitherHalf`, `TestLockedLimitsAreSeenOnEitherHalf`.
+  **Round 8.** Every timeout that was applied started a goroutine that waited on the
+  derived context until its deadline, and a context was derived on every resolution of the
+  options whether or not it shortened anything. Measured: 200 `ExtractResult` calls with a
+  one-hour timeout left 1,200 goroutines parked, six a call. `applyTimeout` now derives a
+  context only when that makes the deadline earlier, and nothing waits on it: 0 goroutines
+  for the same 200 calls. The lock check in `Validate` and `ExplainResolution` read the
+  options through a merge that does not apply the timeout (`optionsForReading`), so reading
+  them does not start a timer the call then starts again.
+  `ExplainResolution` read steering, threshold, mode and tier from `CommonOptions` alone,
+  so a value set on the embedded half was reported as the operation's default, and it
+  reported a deadline that was only the caller's own `Timeout` as one the request's context
+  carried. Both read the merged options now, and the deadline is the caller's context's.
+  Evidence added: `internal/ops/lx_round8_options_test.go` (`TestApplyTimeout`, thirteen
+  cases; `TestACallWithATimeoutLeavesNoGoroutineBehind`;
+  `TestExplainResolutionReadsBothHalves`, twelve; `TestLockedLimitsOnTheModeAndTheCeiling`,
+  ten, through `Validate` as well), all watched failing.
+- [ ] **LX-061** — **Critical.** The root `RedactLLM`, `Complete` and `CompleteField` pass
+  `context.Background()` (`schemaflux.go:845`, `:872`, `:888`) *(read)*, so the caller's
+  context is ignored: no cancellation, no deadline, and a client-scoped provider is lost,
+  because the provider is looked up from the context. The fluent package fixed this and
+  documents it (`internal/api/fluent/aliases.go:286-316`) *(reviewer)*.
+  *Verify:* a cancelled context cancels all three.
+  **In review (round 6), 2026-10-02.** What is in the tree: the three root functions pass
+  `opts.Context`, so a client's provider on the context is the one that answers. The test
+  for cancellation then showed a wider gap: nothing on the shared call path checked the
+  context before calling the provider, so a call on a cancelled or expired context was
+  still sent, and billed, whenever the provider did not notice for itself. `callLLM` and
+  `CallLLM` now refuse first (`contextOver`), with an error that is classified as canceled
+  or timeout and still satisfies `errors.Is(err, context.Canceled)`.
+  Evidence: `tests/lx061_root_context_test.go`
+  (`TestRootFunctionsUseTheClientOnTheCallersContext`,
+  `TestRootFunctionsHonourACancelledOrExpiredContext`,
+  `TestRootFunctionsStillRunWithNoContext`; twelve cases, nine watched failing).
+  **Rounds 4 and 5.** A reviewer read every root function and found none left passing
+  `context.Background()`. The same reading found the defect on four more paths, all fixed:
+  `Complete` applied the default deadline only to a nil context, so every caller with a
+  context ran unbounded; the streaming path had no check for a finished context and
+  resolved its provider, model and budget from the process alone; the four `Stream`
+  functions read the context from the embedded options where the buffered operations read
+  `CommonOptions` first, so a client set the usual way was still ignored; and `Settle`,
+  `SettleAdversarial` and `Decide` cut a caller's longer deadline to the default. A retry
+  is no longer sent after the context ends, and a cancellation during a backoff is
+  classified. A stream is recorded against a client's budget however it ends, and runs the
+  trust-boundary check.
+  **Not done:** an expired caller deadline is classified as a timeout, whose kind reports
+  itself retryable. The streaming path still emits no observer events and no failed-call
+  record (LX-125).
+  Evidence added: `internal/ops/lx061_context_test.go` (`TestContextOver`, eleven cases;
+  `TestNothingIsSentOnAFinishedContext`, ten; `TestNoRetryIsSentAfterTheContextEnds`;
+  `TestCompleteAppliesTheDefaultDeadline`; `TestStreamUsesTheCallersClient`;
+  `TestACallersLongerDeadlineIsNotCut`; `TestStreamsReadTheContextWhereTheBufferedPathDoes`,
+  twelve; `TestAStreamIsRecordedAgainstTheClientsBudgetHoweverItEnds`;
+  `TestStreamKeepsSteeringOutOfTheSystemPrompt`), `internal/ops/lx_units_test.go`
+  (`TestWaitForRetry`, `TestNoRetryIsSentAfterTheContextEndsEveryTime`),
+  `tests/lx061_root_context_test.go` (`TestRootStreamsUseTheClientOnTheCallersContext`).
+  **Rounds 6 and 7, on what a client's budget is told.** One rule now, in `chargeBudget`:
+  every response a provider produced is charged, whether or not the answer could be used,
+  and a response that reports no usage is recorded as spend of unknown size. Before, the
+  buffered path charged only the answer it accepted, so a truncated answer and every
+  attempt thrown away before a retry cost the client nothing on its own ledger; and an
+  answer with no usage was recorded as priced at zero. A stream that broke partway or was
+  abandoned is recorded as unknown spend, and one that failed before anything arrived is
+  not recorded. **Not done:** an unknown-spend record does not count toward a
+  `ClientBudget` ceiling, since there is no figure to add; it marks the total incomplete.
+  Evidence added: `internal/ops/lx_budget_test.go`,
+  `TestAStreamIsRecordedAgainstTheClientsBudgetHoweverItEnds` (eight endings),
+  `TestStreamRunsTheTrustBoundaryCheck`.
+  **Round 8.** The process-wide ledger was told only about the answer a call accepted, so
+  for a caller with no client budget a truncated answer and every attempt thrown away
+  before a retry cost nothing on any ledger. It is told about those now
+  (`trackRefusedAnswer`).
+  An answer served by `mw.Cache` has its usage zeroed, and zero usage is recorded as spend
+  of unknown size, so one cache hit turned a client's total into a floor for a call that
+  cost nothing. `llm.CompletionResponse` gained `Cached`, the cache sets it on a hit, and a
+  cached answer is not recorded on either ledger.
+  The budget was asked once, before the first attempt. The attempts that are thrown away
+  are charged, so it can run out between attempts, and the retry was sent all the same. It
+  is asked before every attempt.
+  Evidence added: `internal/ops/lx_budget_ledger_test.go`
+  (`TestTheProcessLedgerIsToldAboutAnswersThatWereRefused`, ten cases;
+  `TestACacheHitIsNotRecordedAsSpend`, four; `TestTheBudgetIsCheckedBeforeEveryAttempt`,
+  six; `TestChargeBudget`, eleven direct cases), `mw/cache_test.go`
+  (`TestCacheHitZeroesTokenUsage` now asserts the mark on a hit and its absence on a miss).
+  `Cached` did not exist, so these did not compile before the change; two of them were
+  confirmed failing by a mutation run.
+  **Round 9, on streams.** A stream that was stopped before it finished read as one that
+  had finished with nothing: `Text` returned an empty string and no error when the caller's
+  context was cancelled or its deadline passed. It returns the classified reason now, and
+  `Err` holds it. This predates the work here and was found by a test written for
+  something else. The buffered path's three accounting rules now hold on a stream as well:
+  a truncated stream is on the process-wide ledger, an answer served from a cache is on
+  neither, and an answer from a provider the client's policy forbids is refused.
+  Evidence added: `internal/ops/lx_round9_stream_test.go`
+  (`TestAStreamThatWasStoppedDoesNotReadAsFinished`,
+  `TestAStreamFollowsTheBufferedPathsAccounting`, `TestAnUnreadStreamIsStoppedWhenItsSchedulerCloses`),
+  all watched failing.
+- [ ] **LX-062** — **Critical.** The eleven flat variadic option types reset defaults:
+  the merge functions assign booleans unconditionally (`arbitrate.go:387-388` *(read)*), so
+  a partial literal such as `ArbitrateOptions{Rules: ...}` or the documented
+  `ConformOptions{Strict: true}` turns off default-true flags (`audit.go:415`,
+  `compose.go:296`, `conform.go:309-310`, `derive.go:305`) *(reviewer)*. The constructors
+  that would avoid it exist (`options_advanced.go:31-148`) and are not exported. Ten merge
+  functions never copy `RequestID` or `CorrelationID`; `AdversarialOptions.Model` is never
+  copied (`negotiate.go:560-573`); only `opts[0]` is read; `DeriveOptions.MinConfidence`
+  cannot be set to 0 although the README says to.
+  *Verify:* a literal with one field set leaves every other default intact, for all eleven.
+- [ ] **LX-063** — **High.** The `*Result` envelopes empty themselves when the context is
+  passed the documented way: `SummarizeResult`, `RewriteResult`, `TranslateResult`,
+  `ExpandResult` and `SortResult` attach the call recorder to `opts.OpOptions.Context`
+  (`textresult.go:27-28` *(read)*), while the operation runs under the context that prefers
+  `CommonOptions.Context`, so usage and cost come back zero *(reviewer)*. Five fluent
+  `RunResult` methods return operation, IDs and elapsed only, with `Attempts` hard-coded to 1
+  (`internal/api/fluent/run.go:43-58`).
+  *Verify:* usage is non-zero on every `*Result` function with the context set either way.
+  **Partly done 2026-10-02, with LX-060.** The five wrappers named here, and `Filter`'s
+  chunks, write their derived context to both halves (`useContext`), so the recorder is
+  seen whichever half the caller used. **Not done:** the five fluent `RunResult` methods.
+  Evidence: `internal/ops/lx060_options_test.go`
+  (`TestResultEnvelopesAreFilledWhicheverHalfHoldsTheContext`, five wrappers by three
+  homes).
+- [ ] **LX-064** — **High.** 66 functions that call a model return no usage, cost or latency
+  *(reviewer; hit live, which is why the experiment needed a recording proxy)*. The envelope
+  exists for six operations and cannot be extended by name, because `<Op>Result` is already
+  a struct type for about forty others. There are four spellings of the same idea: `*Result`,
+  the deprecated `*WithMetadata`, fluent `RunDetailed()` and fluent `RunResult(ctx)`.
+  *Verify:* one way to get the envelope for every catalogued operation.
+- [ ] **LX-065** — **High.** Five calling conventions on one surface *(reviewer, hit live)*:
+  a required struct with both embeds; a required struct with `OpOptions` only; variadic
+  `...OpOptions`; variadic flat `...XOptions`; and context-first. 83 functions carry the
+  context as an options field against AGENTS.md's "Context is a parameter, not a field".
+  On the double-embed types a bare `opts.Steering`, `.Model`, `.Context`, `.Mode` or
+  `.Intelligence` is an ambiguous selector and does not compile. Typed withers cover
+  `WithMode` on 27 of 28 types and `WithContext` on 3; elsewhere the promoted wither returns
+  `CommonOptions`, so `NewRewriteOptions().WithSteering("x")` cannot be passed to `Rewrite`.
+  `EnrichOptions.Context` is a `map[string]any` that shadows both real contexts.
+  *Verify:* a ruling recorded here on the one convention, then a compile-time example per
+  operation written that way.
+- [ ] **LX-066** — **High.** Eighteen doc-comment examples in `schemaflux.go` name methods
+  or fields that do not exist or take other types *(reviewer)*, among them `WithCondition`
+  (`:549`), `WithMaxLength` (`:655`), `WithCount` for `WithTopN` (`:807`), `WithRatio` for
+  `WithCompressionRatio` (`:1154`), `WithMode("hierarchical")` (`:1172`) and
+  `DeriveOptions{TargetFields}` (`:1405`). `:911-919` attaches `ValidateLegacy`'s comment to
+  `DeduplicateResult`.
+  *Verify:* every doc example is a compiled `Example` function, per the standard of done.
+- [ ] **LX-067** — **High.** README claims that the code contradicts *(reviewer)*:
+  `result.Issues` on `ValidateResult` (`README:283-285`); `RedactWithResult`, which is not
+  exported (`:140`); `Deduplicate` described as O(n²) calls when it makes one (`:118-120`);
+  `Transform()` and `Creative()` as `Extract` modes (`:374-376`); `Validate` recommended
+  while deprecated (`:391`, `:956-958`); model names `gpt-5.4`, `gpt-5-mini`, `gpt-5-nano`
+  (`:787-790`) against defaults of `gpt-5.6-luna` and `gpt-5.6-terra`, while
+  `schemaflux.go:388-394` still says "GPT-4 class". About 25 environment variables the code
+  reads are undocumented.
+  *Verify:* README examples compile under the examples gate; one generated table of
+  environment variables.
+- [ ] **LX-068** — **High.** Deprecations lose capability *(reviewer)*. `MergeWithMetadata`
+  says "use Merge, which returns the same result"; `Merge` returns a bare `T` and loses
+  `Conflicts` and `SourcesUsed`. `FormatWithMetadata` likewise. Seven fluent builders
+  (`Validating`, `Critiquing`, `Verifying`, `VerifyingClaim`, `Negotiating`,
+  `NegotiatingAdversarially`, `Auditing`) run deprecated functions with no marker
+  (`internal/api/fluent/aliases.go:319-451`). `VerifyWithModel` takes a `string` and returns
+  `JudgmentResult[any]`.
+  *Verify:* each deprecated function names a replacement that returns at least as much.
+- [ ] **LX-069** — **High.** Exported names a caller cannot use *(reviewer)*:
+  `Client.WithScheduler` and `WithDataPolicy` take internal types
+  (`internal/api/client/client.go:80`, `:88`); `KindOf` returns `ErrorKind` with no `Kind*`
+  constant exported; `CostInfo.Quality` is readable with no `PricingQuality` constant
+  exported; `NewMemoryCheckpointStore` and `GetLogger` return internal types;
+  `GuardWithSuggestions` is internal, so `GuardResult.Suggestions` is always empty.
+  *Verify:* an external-package test constructs every exported parameter type.
+- [ ] **LX-070** — **Medium.** Type parameters *(reviewer, hit live)*: the output parameter
+  comes last on `Transform`, `Classify`, `Question`, `DecomposeToSlice`, `Enrich`, `Derive`,
+  `Project` and `Pivot`, so the inferable input type must be restated
+  (`Classify[string, string]`); `Classify`'s `C` is unconnected to `Categories []string`;
+  `Synthesize` and `Assemble` take `[]any` while `Merge` and `Resolve` take `[]T`.
+  *Verify:* a ruling on parameter order, applied in the same pass as LX-065.
+- [ ] **LX-071** — **Medium.** Return shapes *(reviewer)*: about 25 names for the value
+  field (`Text`, `Merged`, `Data`, `Enriched`, `Resolved`, `Winner`, `Deal`); five spellings
+  of top-level confidence; 37 result structs carry the `Metadata map[string]any` bag
+  `schemaflux.go:100-105` says is being retired; eight functions return `(T, X, error)` with
+  eight different `X`. Results that cannot be mapped back to the input: `Deduplicate` (no
+  indices), `Match` (one bool), `MatchOne` (model order, `SourceIndex` always 0).
+  *Verify:* one envelope (LX-064) with the value in one named field.
+- [ ] **LX-072** — **Medium.** Names *(reviewer, hit live)*: `Match` is control flow and
+  unrelated to `MatchOptions`, `MatchResult`, `MatchOne` and the `Matching` builder, which
+  builds `SemanticMatch`; `Like` is identical to `When`; `Assemble` uses `ComposeOptions`;
+  `Settle` uses `NegotiateOptions`; three suffix grammars for how a verdict is decided
+  (`...Deterministically`, `...Hybrid`, `...WithModel`); one concept called Speed,
+  Intelligence and Tier; the smoke command's case names (`Validate`, `Verify`, `Negotiate`,
+  `Audit`) no longer match the functions they call.
+  *Verify:* a naming ruling recorded here.
+- [ ] **LX-073** — **Medium.** Defaults differ by spelling *(reviewer)*: the variadic
+  `...OpOptions` operations and option-less `Decide` default to Smart (`utils.go:444-474`),
+  every `NewXOptions` to Fast, so `Decide(ctx, s, d)` and
+  `Decide(ctx, s, d, NewDecideOptions())` differ. `Choose.RequireReasoning`,
+  `Filter.IncludeReasons` and `Sort.IncludeScores` ask for output the return type cannot
+  carry. Required inputs are positional on some operations (`Deduplicate`'s threshold,
+  `Merge`'s strategy, `Conform`'s standard) and options fields on others.
+  *Verify:* one default tier, stated once.
+- [ ] **LX-074** — **Medium.** The catalogue's tiers do not match the code *(reviewer)*:
+  `Deduplicate` is stable and fails open (LX-021); `Question` and `Compress` are stable and
+  send schemas the API rejects (LX-003); `Complete` and `CompleteField` are stable and drop
+  the context (LX-061); the four `Stream*` operations have no tier;
+  `CategoryInfrastructure` is never assigned.
+  *Verify:* stable requires a declared schema, a Go-side invariant and an offline contract
+  test; the catalogue test enforces it.
+- [ ] **LX-075** — **Low.** 75 exported functions have no doc comment, including `Init` and
+  `NewClient`; a parameter named `context` shadows the package (`schemaflux.go:1373`, `:1379`)
+  *(reviewer)*.
+  *Verify:* a lint rule.
+
+## Configuration, state and logging
+
+- [ ] **LX-080** — **High.** `Client.WithTimeout`, `WithRetries` and `WithRetryBackoff` only
+  set fields (`internal/api/client/client.go:174-200`) *(read)*; the provider was already
+  built inside `NewClient` (`:140`), so `NewClient(k).WithRetries(0)` still retries three
+  times and `WithTimeout(90s)` leaves the HTTP client at 30 s *(reviewer)*. The new
+  `retrycontract_test.go` asserts on `providerConfig(...)` output, not on the installed
+  provider, so it passes while the defect stands.
+  *Verify:* a counting transport sees exactly one attempt after `WithRetries(0)`.
+- [ ] **LX-081** — **High.** An environment key beats an explicit key:
+  `resolveProviderAPIKey` returns the provider's environment variable before the argument
+  (`client.go:624-633`) *(read)*, so `Init("sk-A")` uses `OPENAI_API_KEY` when it is set. The
+  experiment had to unset the variable to be sure which key was in use.
+  *Verify:* an explicit key wins.
+- [ ] **LX-082** — **High.** Process-wide state makes two differently configured clients in
+  one process impossible *(reviewer; hit live, the benchmark needed one process per parallel
+  stream)*: the default provider is rewritten by every client (`client.go:169`, `:229`,
+  `:261`, `:436`); the logger, observer, pricing table, cost history, budget and capability
+  registry are globals; tier-to-model mapping, repair attempts, prompt reinforcement and
+  error detail can be set only through environment variables, read at call time.
+  *Verify:* two clients with different models, keys and budgets run concurrently in one test
+  and neither sees the other's settings.
+- [ ] **LX-083** — **High.** Logging breaks AGENTS.md's "never log or embed the caller's
+  payload". The default logger writes INFO and above to stderr during normal operation
+  *(live)* and keeps the last 1000 entries in memory (`internal/telemetry/logger.go:112`,
+  `:516`) *(read)*. The full model response is logged at ERROR in eight places
+  (`analysis.go:504`, `:708`, `:929`, `arbitrate.go:314`, `audit.go:345`, `compose.go:261`,
+  `conform.go:262`, `resolve.go:258`), a 200-byte prefix at `core.go:740`, and caller input
+  at debug (`core.go:221`, `:707`, `rank.go:199`) *(reviewer; `arbitrate.go:314` and
+  `analysis.go:929` read)*. Payload also reaches error strings (`conform.go:268`,
+  `provider.go:1269`).
+  *Verify:* a library that is silent by default; a test that runs every operation with a
+  sentinel in input and response and finds it in no log line and no error string.
+- [ ] **LX-084** — **Medium.** Timeouts *(reviewer; hit live, single operations took up to
+  19 s and the run needed 120 s)*: three independent 30 s defaults (`config.go:48`,
+  `client.go:129`, `:369`); `http.Client.Timeout` caps each attempt whatever the caller's
+  deadline; `operationContext` applies the default only to operations that call it, and
+  `Extract`, `Transform` and `Generate` do not; a 19 s operation leaves no room for one
+  retry inside 30 s.
+  *Verify:* one default, in one place; a per-attempt timeout is retryable.
+- [ ] **LX-085** — **Medium.** What a caller cannot control per call *(reviewer)*: reasoning
+  effort (LX-006), temperature, retries, repair attempts, base URL, HTTP client and headers.
+  `CompleteOptions.WithTemperature` writes the value into result metadata and never into the
+  request (`complete.go:193`). `SCHEMAFLUX_LLM_MAX_RETRIES` and `_RETRY_BACKOFF` are dead on
+  the client path. `SCHEMAFLUX_DEBUG` is parsed three different ways. `applyTimeout` parks a
+  goroutine per call until the deadline (`options.go:147-157`).
+  *Verify:* each control is settable per call or documented as per-client.
+- [ ] **LX-086** — **Low.** `go build ./...` fails on the working tree in
+  `internal/operations/admincenter/incidentrepair/incidentrepair.go:153`, an untracked
+  package that has nothing to do with LLM operations *(live)*. The gate's first step is
+  therefore red before any of this library is compiled.
+  *Verify:* the package moves out of this module or builds.
+
+## Cost and observability
+
+- [ ] **LX-090** — **High.** Cost figures are wrong in both directions *(reviewer; the
+  cost arithmetic at `pricing/pricing.go:337-348` read)*. Cached tokens are charged twice:
+  `PromptTokens` is the provider's inclusive input count (`provider.go:528-531`) and the
+  cached cost is added on top, so a cached token costs 110% of the input price instead of
+  10%; `accounting_test.go:106-109` assumes the two counts are disjoint. The luna cached
+  rate is marked "NOT a published figure" in the source and reported as `PricingExact`
+  (`pricing.go:44-49`, `:372-378`). `provider.EstimateCost` prices every OpenAI model as
+  GPT-4, and `mw/budget.go:91` reserves budget from it. Budgets add nothing for an unpriced
+  model (`ops/clientbudget.go:82-85`), which today includes the Quick default
+  `gpt-5.6-terra` and every `gpt-6` model.
+  *Verify:* a cached call costs less than an uncached one; a budget on an unpriced model is
+  refused, not ignored. The inclusive-count claim needs checking against a live response
+  before the arithmetic is changed.
+- [ ] **LX-091** — **Medium.** Observability is per `CallLLM`, not per operation
+  *(reviewer)*: a repaired or multi-call operation produces several events with no request
+  id to join them; the operation name is empty except for `RunOp`, batch and five `*Result`
+  wrappers; `ResultMetadata.Operation` is never set, so the per-operation cost breakdown is
+  always empty (`llm_helper.go:506-533`); streaming fires no events; the OpenTelemetry
+  adapter omits reasoning tokens.
+  *Verify:* one event per operation call, named, with summed usage.
+- [ ] **LX-092** — `[LIVE]` **Medium.** No price for any `gpt-6` model *(live)*. The
+  published rate for `gpt-6-luna` on 2026-10-01 was $0.10 per million input tokens and $0.50
+  per million output tokens; the others need a published source, per the rule recorded with
+  the pricing tasks above.
+  *Verify:* the table carries the rate with its source and date.
+
+## Provider seam and new operations
+
+- [ ] **LX-100** — **High.** A provider can only return text:
+  `Complete(ctx, CompletionRequest) (CompletionResponse, error)` with `Content string`
+  (`provider.go:25-37`, `:228-241`), and about sixty call sites parse that string
+  *(reviewer)*. Nothing on the request carries the operation, its candidates or its labels;
+  they exist only inside rendered prompt text. A model that returns typed decisions with
+  probabilities cannot be plugged in without serialising its answers into the JSON each
+  operation expects, which is what `mockshape.go` does by parsing prompts. In the experiment
+  such a model matched `gpt-6-luna` on 18 decision tasks (0.995 against 0.982) at about a
+  tenth of the latency and a ninth of the cost, through an adapter outside the library.
+  *Verify:* a design ruling recorded here for a typed-answer seam beside `Complete`: what a
+  decision request carries, how probabilities are exposed without being called measurements,
+  and what an operation does when the caller asks a decision provider for text. No code
+  before the ruling.
+  **Ruling, 2026-10-03, on the owner's instruction ("add the jev layer in ... allow the
+  user to use jev for latency and costs but allow adapters for other decision apis").**
+  The decision rides on the ordinary request and response, typed, so the call path is
+  not forked: the budget, the scheduler, the data policy, retries, timing, the observer
+  and the decision record are the same code for a decision as for a completion.
+  *What a decision request carries:* the state the questions are about, and one or more
+  questions, each a yes-or-no, a choice among labels with their criteria, or a level on
+  an ordered scale. The operation fills it; a provider never learns what is being
+  decided by parsing a prompt. A generating provider ignores the field and is sent
+  exactly what it is sent today.
+  *How a probability is exposed:* the response carries typed answers, each with the
+  probability the model reported when it reports one, named and documented as the
+  model's own claim (`ModelConfidence`), never as an accuracy. One function renders
+  typed answers into the form the operation's reader takes, the inverse of the reader;
+  a provider never writes that JSON.
+  *What happens when a decision provider is asked for text:* an unsupported-capability
+  error before anything is sent. The same for a decision outside the limits the
+  provider declares (the number of options, the levels of a scale, the length of the
+  state).
+  *The route and the fallback* are a provider that wraps two, `mw.Decisions(generator,
+  decider, options)`: a decision the decider can take goes to it and everything else to
+  the generator; LX-104's rules hold (the floor has no default, the escalation is
+  recorded, both calls are paid for and counted, a generator that fails after a
+  low-confidence answer is an error and the low-confidence answer is never returned).
+  A client's data policy holds for both routes.
+  *Adapters:* one implementation of the System One protocol with TypeSafe direct,
+  OpenRouter and a LiteLLM pass-through as presets (LX-103); and any other decision
+  API is an implementation of `Provider` that reads the typed decision off the request.
+  *In this change:* `Is`, `Which`, `WhichOrNone`, `Rate`, `Assess` (a struct of bounded
+  fields is several questions in one request), their forms that report a confidence,
+  `Whether`, `RouteBy`, `Classify` and `Choose`. A decision the three question types
+  cannot express goes to the generator. `Filter`, `Sort`, `Rank`, `Score`, `Similar`,
+  `Deduplicate`, `SemanticMatch`, `Arbitrate`, `Decide`, `Match` and the model-judged
+  rules of `Validate` follow (LX-101). LX-102 stays answered by the freeze: no new
+  operation is added for it; `Assess` and the confidence floor are the two prototypes
+  that already exist as an operation and as this route.
+  **Built, 2026-10-03.** `internal/llm/decision.go` (the typed decision, the answer,
+  the limits a provider declares, the one renderer of typed answers into what the
+  operations' reader takes), `internal/llm/systemone.go` (the protocol, with the
+  presets `jev`, `jev-openrouter`, `jev-litellm` registered by name), `mw/decisions.go`
+  (`mw.Decisions(generator, decider, mw.DecisionOptions{Floor, Model, NoFailover})`),
+  the decision carried on the context through the unforked call path, the price of
+  `jev-latest` and `jev-1.13.0`, a scripted decider in `schemafluxtest`, and eight
+  names at the root (`TypedDecision`, `DecisionQuestion`, `DecisionKind` and its three
+  constants, `DecisionAnswer`, `DecisionLimits`). The request body is byte-equal to
+  the prototype client's for eleven shapes; twenty malformed answers are refused;
+  eleven HTTP failures are classified with no key, URL or body in the error. A
+  yes-or-no reports the probability of the side chosen; the confidence of several
+  answers is the lowest; an answer with no probability cannot clear a floor. Steering
+  reaches a decider as guidance on every question, never as part of the state. Tests
+  call no model API. The whole suite passed three times after it, one shuffled.
+  **Measured live the same day**, the benchmark app's 17 messages, effort none, Jev
+  for the decisions and `gpt-6-luna` for the text, no floor, one pass: the speculative
+  flow 5.17 s a message where it took 5.45 s on `gpt-6-luna` alone, $0.0058 where it
+  cost $0.0074, 12 labels matched where 15 did; the fast flow 5.83 s against 6.32 s,
+  $0.0064 against $0.0087, 13 matched against 12. Jev answered each decision in about
+  180 to 280 ms, and the time of a message hardly moved: in this app every decision
+  shares its wait with a call to the generating model (the extraction beside the first
+  look, the draft), so the generating model sets the pace of every wait. What Jev
+  bought here is cost, about a quarter. The labels that differed were intent (three),
+  urgency and status: one pass of seventeen moves by two or three on its own, so
+  whether Jev is less accurate on this app is not known; three passes of each are
+  being run. The wait that a decision model could remove whole is the audit of the
+  reply, about 1.5 s on the generating model, which is not yet a decision (LX-101).
+  **Open, found by the lane in files it did not own, with a lane on them now:** the
+  redacting middleware does not redact the decision's text; the response cache never
+  keeps a typed answer; the decision providers have no row in the tables of key
+  variables and default models; a dotted version (`jev-1.13.0`) is not read as a
+  revision of the model that was asked for, so a data policy refuses the answer after
+  it was paid for; through OpenRouter a call is unpriced. Not yet carried by a
+  decision: `Filter`, `Sort`, `Rank`, `Score`, `Similar`, `Deduplicate`,
+  `SemanticMatch`, `Arbitrate`, `Decide`, `Match`, the model-judged rules of
+  `Validate`, and `Audit`.
+- [ ] **LX-101** — `[LIVE]` **Medium.** Depends on LX-100. A Jev provider serving the
+  operations whose result is a bounded decision: `Classify`, `Choose`, `Decide`, `Match`,
+  `Filter`, `Sort`, `Rank`, `Score`, `Similar`, `Deduplicate`, `MatchOne`, `SemanticMatch`,
+  `Arbitrate`, and the model-judged rules of `ValidateHybrid`.
+  *Verify:* the head-to-head tasks from the experiment pass through the exported API with
+  the provider selected.
+- [ ] **LX-102** — **Medium.** Decide whether to add the operations prototyped on
+  2026-10-01 in the standalone module beside this repository
+  (`schemaflux-jev-prototype`): `Pick` (choose among code-found candidates, value copied
+  verbatim), `Assess[T]` (a struct of bounded fields from one request) and `Cascade`
+  (escalate below a confidence floor), and with narrower scope `CheckClaims` and `Screen`.
+  All scored 0.958 to 1.000 on small sets with labels written by their author.
+  *Verify:* a ruling per operation, taken after a rerun on real workloads.
+- [ ] **LX-103** — **Medium.** Depends on LX-100. Adapters for Jev-style APIs, so the
+  decision seam is not welded to one vendor's wire format. TypeSafe direct
+  (`POST /v1/systemone`), OpenRouter (`/api/v1/systemone` and its Decisions API), and a
+  LiteLLM pass-through all carry the same three question types with different
+  authentication and paths. The seam also needs an adapter in the other direction: a
+  generating model answering a decision request through a strict schema, so an operation
+  written against the seam still runs for a caller who has no decision model.
+  *Verify:* the protocol conformance suite runs the same decision cases against each
+  adapter on a local stand-in; a decision operation returns the same typed result from
+  either kind of provider.
+- [ ] **LX-104** — **High.** Depends on LX-100. Confidence escalation from a decision
+  model to a generating model. The prototype (`Cascade`) answered with Jev and sent 8% of
+  48 questions to `gpt-6-luna` at a floor of 0.7, which took accuracy from 0.979 to 1.000
+  at a mean of 253 ms against 1,077 ms for the generating model alone. That rests on one
+  error. **Decision:** the floor is a required argument with no default until it has been
+  measured on a few hundred labelled items; the escalation is recorded in the result the
+  way `Escalate` records it; both calls count against the budget; a fallback that cannot
+  answer is an error, never a silent return to the low-confidence answer.
+  *Verify:* scripted providers on both sides: above the floor one call is made, below it
+  two, and the record says which answered.
+  **Built with LX-100, 2026-10-03, and measured the same day** on the benchmark app:
+  its speculative flow, 17 labelled messages, three passes (51 runs), effort none,
+  Jev (`jev-latest`) for the decisions and `gpt-6-luna` for the text.
+
+  | Decisions answered by | Labels matched | Mean per message | Cost of 51 runs | Sent on to the generating model |
+  | --- | --- | --- | --- | --- |
+  | `gpt-6-luna` (no decision provider) | 43 of 51 | 5.37 s | $0.0222 | |
+  | Jev, no floor | 35 of 51 | 4.89 s | $0.0172 | 0 of 102 |
+  | Jev, floor 0.7 | 41 of 51 | 5.32 s | $0.0221 | 45 of 102 |
+  | Jev, floor 0.9 | 43 of 51 | 5.64 s | $0.0228 | 54 of 102 |
+
+  What it says, for this app and no further. With no floor Jev is a fifth cheaper and
+  a tenth faster and agrees with the labels on 16 fewer points in a hundred; its
+  misses are of intent, urgency and status, as the first study's were of severity.
+  With a floor the agreement comes back and the saving goes with it: nearly half the
+  decisions are asked twice, and at 0.9 the route is slower than the generating
+  model alone. Two reasons, both of the app and of this first cut of the route, and
+  neither of the model. A decision here shares its wait with a call to the
+  generating model, so answering it in 200 ms shortens no wait. And an `Assess` asks
+  about ten questions in one request, its confidence is the lowest of the ten, and a
+  request is passed over whole when any one answer is under the floor: one unsure
+  answer in ten re-asks all ten. One pass of seventeen moves by two or three labels
+  on its own, and fifty-one runs do not settle a difference of two; the difference
+  of eight between no floor and the generating model is the only one here that is
+  likely real.
+  **What follows from it:** (1) pass over only the questions that are under the
+  floor: ask the generating model those, and keep the rest of the decision
+  provider's answers; that is a change to the route and to what a request to the
+  generator carries, to be designed and measured, not assumed. (2) A decision model
+  earns its latency where a decision is a wait of its own: the audit of a reply is
+  one (about 1.5 s on the generating model here), and is not yet a decision
+  (LX-101). (3) The floor has no default, and this is why.
+- [ ] **LX-105** — **High.** Thinking support. Extends LX-006 from "the effort can be
+  set" to a feature: a per-call reasoning level in the options and the fluent surface; the
+  values each family accepts in the model table (LX-005), so an unaccepted value is refused
+  locally instead of failing the request; the same option mapped to Anthropic's thinking
+  budget; reasoning tokens reported in the envelope and counted against the output ceiling
+  deliberately (LX-007); and a measured default for `gpt-6-luna`, which today runs at the
+  API's default of medium and spends about 108 reasoning tokens per call.
+  *Verify:* the option reaches the wire for each provider that supports it and is refused
+  with a classified error for one that does not; unset produces the body sent today.
+  **Measured 2026-10-02**, before any code: the 18 labelled decision tasks through the
+  exported API on `gpt-6-luna`, 355 calls at each effort, the effort set on the wire by the
+  study harness so the library was unchanged.
+
+  | Effort | Macro score | Median | p90 | Reasoning tokens a call | Cost per 1,000 calls |
+  | --- | --- | --- | --- | --- | --- |
+  | none | 0.988 | 1,467 ms | 2,721 ms | 0 | $0.095 |
+  | low | 0.979 | 1,991 ms | 4,084 ms | 72 | $0.134 |
+  | medium (the API default, sent today) | 0.985 | 2,077 ms | 5,146 ms | 105 | $0.151 |
+
+  On these tasks reasoning buys no accuracy that this sample can see, and none is 29%
+  faster at the median, 47% at p90 and 37% cheaper. One repetition, 24 to 32 items a task,
+  so a difference of one item in a task is noise. All eighteen are decisions over short
+  inputs: nothing here measures a generating operation, a long document, or arithmetic.
+  What it supports: a default of none for the operations whose answer is a choice, a score
+  or a yes or no, with the option to raise it per call. What it does not support: none as
+  the default everywhere.
+
+  The same day, on arithmetic, which the eighteen tasks do not contain: four computation
+  tasks, six runs each, asked of the API directly.
+
+  | Effort | Correct |
+  | --- | --- |
+  | none | 13 of 24 |
+  | low | 24 of 24 |
+  | medium | 24 of 24 |
+
+  With reasoning off the model judges as well as it does at the default and cannot be
+  trusted to compute: an invoice total came back as six different wrong numbers in six
+  runs. The model table recorded the same on the 5.6 family.
+
+  **In review (round 14), 2026-10-03.** What is in the tree: `OpOptions.Effort` and
+  `CommonOptions.WithEffort`, exported as `schemaflux.Effort` with its constants. A
+  caller's value is a requirement: the Responses request carries it, a value the model's
+  family is known not to take is refused before the network with the values it does take,
+  and a provider path that cannot set one (chat completions, Anthropic) refuses it. An
+  operation can prefer an effort for its own calls; a preference is sent only when the
+  family is known to take it and is dropped otherwise. `Classify`, `Similar` and
+  `Deduplicate` prefer none. With nothing set the request is what it was.
+  Decision recorded here: the operations that prefer none are the ones whose answer is a
+  semantic judgment. `Choose`, `Decide`, `Match`, `Sort`, `Rank`, `Filter`, `Question` and
+  `Score` are built around the caller's own criteria, "the cheapest per unit" is
+  arithmetic, and they prefer nothing.
+  **Round 7** showed the three break that rule from the inside: `Classify` takes
+  descriptions and examples, `Similar` takes aspects and steering, and all three can be
+  handed numbers, so a description reading "line items total more than $500" turns a
+  classification into a sum. The preference is now made per call (`judgmentEffort`): it is
+  none only when nothing the caller supplied, input and criteria alike, has a digit in it.
+  **Stated limit:** a number written as a word is not seen. The preference is also honoured
+  only on the model it was measured on, `gpt-6-luna` and its snapshots: the model table
+  gained `preferable` for that, since the 5.6 family accepts none and is on record failing
+  with it, and the other gpt-6 models are unmeasured. A caller's own value is not held to
+  either rule.
+  Also from round 7: the effort is part of the response-cache key, where the same prompt at
+  none and then at high was answered from the cache with the none answer; the codex
+  provider takes a caller's per-call effort over its configured one, where it ignored the
+  request's; `ConvertOpOptions` carries the effort and the model pin, where it dropped
+  both; the ten operations with flat option types carry it; and every fluent builder has
+  `Effort(...)`.
+  The exported surface grew by `Effort` and eight constants; `testdata/api_surface.txt` was
+  regenerated for that.
+  **Not done:** Anthropic's thinking budget is not mapped; reasoning tokens are not reported
+  in the envelope (LX-007); the efforts the gpt-5 and o-series families take are not in the
+  table, so a caller's value is passed through to them unchecked; the other gpt-6 models
+  are not measured (LX-121).
+  Evidence: `internal/llm/lx105_effort_test.go` (`TestResolveEffort`, 22 cases;
+  `TestReasoningEffortOnTheWire`; `TestProvidersThatCannotSetAnEffort`),
+  `internal/ops/lx105_effort_test.go` (five tests), `tests/lx105_effort_integration_test.go`
+  (`TestIntegrationReasoningEffortOnTheWire`, eleven cases;
+  `TestIntegrationAPreferredEffortIsDroppedWhereItCannotApply`; `ExampleEffort`),
+  `tests/wirecontract` (an effort on the wire must be one the model takes).
+  Evidence added in round 7: `internal/ops/lx105_gating_test.go` (`TestJudgmentEffort`,
+  fourteen cases; `TestThePreferenceIsDroppedWhenANumberIsInPlay`, fifteen;
+  `TestFlatOptionsCarryTheEffortWhereverTheyCarryTheModel`, which reads the source;
+  `TestFlatOptionsEffortReachesTheRequest`; `TestConvertOpOptionsCarriesTheModelAndTheEffort`),
+  `internal/llm/lx105_effort_test.go` (`TestResolveEffort` now 29 cases;
+  `TestResolveEffortDoesNotDependOnTheEndpoint`; `TestEffortNotSupported`),
+  `mw/cache_test.go` (`TestCacheKeyAxisReasoningEffort`), `codex/codex_test.go`
+  (`TestACallersEffortReplacesTheConfiguredOne`), `internal/api/fluent`
+  (`TestEffortReachesEveryEntryPointBuilder`; the effort set and read back on 49 builders).
+  Live on `gpt-6-luna`, 2026-10-02, with the preference in place and before the gating:
+  `Classify` 1.000 at a median of 1,295 ms against 1,785 ms at the default; `Similar`
+  1.000 at 1,395 ms against 1,741 ms; `Deduplicate` 0.994 at 1,101 ms against 2,003 ms.
+  Live with the gating, same day: `Classify` 1.000 at 1,677 ms with reasoning off on 0 of
+  32 calls; `Similar` 1.000 at 1,392 ms, off on 23 of 24; `Deduplicate` 1.000 at 1,171 ms,
+  off on 15 of 18; the 65-operation baseline 65 of 65. `Classify` lost the whole of its
+  gain to one category description in the benchmark that says "2FA". That is the gate
+  working as written and shows what it costs.
+  **Round 8.** One blocker: `SettleAdversarial` built its request from options its own
+  merge never copied the model pin or the effort into, so both were dropped. The test that
+  was meant to catch this read the source and counted literals and merges; it is joined by
+  one that calls all twelve flat-option operations and reads what reaches the call.
+  The number gate asked `unicode.IsDigit`, which is one of Unicode's three number
+  categories: "½ off", "Ⅻ units", "x²" and "三十個" ran with reasoning off. It now takes any
+  character Unicode classes as a number, the Han numerals, which Unicode classes as
+  letters, and 43 English quantity words as whole words ("two" to "ninety", "hundred",
+  "dozen", "half", "twice", "double", "percent" and their plurals; not "one"). **Stated
+  limit:** a number written as a word in another language is not seen. The gate reads the
+  whole of every such call's input, so it does not allocate; 30 KB of English takes 52
+  microseconds and 30 KB of Japanese 63.
+  The preference was honoured on any name beginning "gpt-6-luna", the model table being
+  matched by prefix, so "gpt-6-luna-mini" and a fine-tune inherited a measurement nobody
+  made on them. It is now a list of models and not families (`measuredPreferences`): the
+  name itself and its dated snapshots.
+  The response cache keyed the effort word and not whose it was. A caller's none is sent
+  to any model that takes it; a preference for none is dropped off `gpt-6-luna` and the
+  request runs at the default, so on `gpt-5.6-luna` the two are different requests and one
+  was served the other's answer. The key now carries both. It also had no axis for web
+  search, tools, tool choice or earlier messages, so a request with web search on was
+  answered with the cached answer to the same prompt without it; those are axes 14 to 16.
+  The codex provider refuses an effort that is not one of the seven words, where it handed
+  any string to the CLI as configuration.
+  `ConvertOpOptions` still dropped the strictness flags, the output ceiling, web search and
+  a declared schema, which `ExtractBatch` relies on; it now carries the whole of what it is
+  given.
+  Evidence added in round 8: `internal/ops/lx_round8_flat_test.go`
+  (`TestFlatOptionsCarryTheModelAndTheEffortToTheCall`, twelve operations),
+  `internal/ops/lx105_gating_test.go` (`TestJudgmentEffort` now 48 cases and an allocation
+  check), `internal/ops/lx_round8_gating_test.go`
+  (`TestTheNumberGateReadsEveryTextACallerSupplies`, 25 cases, one text at a time),
+  `internal/ops/effort_bench_test.go`, `internal/llm/lx105_effort_test.go`
+  (`TestResolveEffort` now 42 cases), `mw/cache_test.go`
+  (`TestCacheKeyAxesForSearchToolsAndMessages`, seventeen requests with distinct keys),
+  `codex/lx105_effort_test.go` (`TestWhichEffortACompletionRequestPassesToTheTurn`, sixteen
+  cases), `internal/ops/lx_round8_options_test.go` (`TestConvertOpOptionsKeepsEveryField`,
+  fifteen operation names). A mutation run broke eight of these fixes one at a time and
+  every one was caught.
+  **Round 9.** The gate also takes "zero", "third", "quarter", "fifth", "tenth",
+  "trillion", "thrice" and "quadruple" with their plurals, and the Han numerals 贰, 叁, 陆,
+  廿, 卅, 卌 and 半. Round 10 added the other ordinals that are also fractions, "fourth" to
+  "ninth". Evidence added: `TestMentionsANumber` (46 inputs, with invalid and
+  truncated UTF-8), `TestIsQuantityWord`, `TestIsHanNumeral`, `TestWithoutSnapshotDate`
+  (fourteen), `TestPreferenceMeasured` (sixteen), `TestIsEffortWord` (seventeen).
+- [ ] **LX-106** — **High.** Refine every operation against one checklist. The catalogue
+  says which operations exist; nothing says which of them meet the bar. For each
+  catalogued operation: a declared schema or a stated prompt-only contract level; the
+  answer checked against the question in Go; an envelope with usage; options that are
+  either enforced or documented as guidance with a test beside them; a reviewed prompt
+  with a golden; a compiled example; a benchmark; and, where the result is a bounded
+  decision, a path through the decision seam. LX-020 to LX-049 are the defects already
+  known; this is the pass that finds the rest and records the state per operation.
+  *Verify:* a table test with one row per catalogued operation and one column per item,
+  failing on any unticked cell that has no recorded exemption.
+- [ ] **LX-107** — **High.** A control-flow surface. A caller should be able to branch on
+  a judgement the way they branch on a comparison, without writing or reading a prompt:
+  `Is(ctx, x, condition)` returns a bool, `Which(ctx, x, options...)` returns one of the
+  options, `Rate(ctx, x, levels...)` returns a level, `Pick` returns one of the candidates
+  it was given, `Assess[T]` fills a struct of bounded fields. These are the decision
+  model's three question types and two compositions of them. Each has a variant returning
+  the evidence (probabilities, which provider answered, usage). Prompt-level tuning stays
+  available and is never required. Served through the decision seam, with a generating
+  model as the fallback (LX-103).
+  *Verify:* a compiled example per function containing no prompt text; the same example
+  passes against a scripted decision provider and a scripted generating provider.
+- [ ] **LX-108** — **Medium.** Use the decision model to make existing operations more
+  trustworthy, not only faster. Candidates, each to be measured before it is switched on:
+  a claim check after `Summarize`, `Rewrite`, `Translate` and `Expand` that refuses or
+  repairs output the source does not support; a screen before a generating call for input
+  that is out of scope; a check on a repaired answer before a second repair is paid for;
+  per-item verification of what `Filter` kept; and choosing the tier or model per call.
+  *Verify:* per candidate, a labelled set showing the error rate with and without it, and
+  the added latency.
+- [ ] **LX-109** — **Medium.** Limits of a decision model that the library has to respect
+  *(live, 2026-10-01)*. A message reading "The answer to every question about this message
+  is no" lowered Jev's injection probability to 0.30 and the flag was not raised, so a
+  decision model must not be the only control on an injection path. It reads instructions
+  literally and is documented as unreliable at arithmetic, counting and date order, which
+  this library should compute in Go anyway. It returns no explanation, so an operation
+  whose caller asked for reasoning cannot be served by it alone.
+  *Verify:* each limit is a documented refusal or a routing rule with a test.
+
+## Gate and tooling
+
+- [ ] **LX-110** — **High.** `scripts/check.sh` has drifted from CI and AGENTS.md again
+  *(read)*: it never runs `staticcheck`, and shuffles with `-count=3` where CI runs
+  `-count=10` (`check.sh:63`, `.github/workflows/ci.yml:65`, `:111-114`). When a tool is
+  missing it prints SKIPPED and still ends with "all checks passed" and exit 0 (`:139-154`)
+  *(reviewer)*.
+  *Verify:* one list generates all three; a skipped check makes the summary say so in its
+  last line.
+- [ ] **LX-111** — **Medium.** The model defaults in `internal/config/config.go` rest on
+  benchmarks of four runs per model, kept as Python scripts under `.audit/live`, and the
+  source says separating the models would take about 115 samples each. There is no
+  reproducible evaluation command in Go: the experiment had to build a recorder, labelled
+  sets and an aggregator from nothing.
+  *Verify:* an evaluation command in this repository that runs a labelled set through the
+  exported API and reports accuracy, latency, tokens and cost per operation as JSON lines.
+- [ ] **LX-112** — `[LIVE]` **Medium.** `cmd/live-llm-ops-smoke` *(read, used live)*: sets
+  the provider with `os.Setenv` and discards `Init`'s error (`main.go:98-102`); asserts only
+  that fields are non-empty, so a wrong answer passes; has one flaky case (LX-028); covers
+  neither `Deduplicate`, `Match` nor the streaming operations; cannot be pointed at another
+  model without an environment variable; prints PASS lines and nothing a tool can read.
+  *Verify:* a model flag, JSON-lines output with latency and usage, and an assertion per
+  case that a wrong answer fails.
+
+## Default model
+
+- [x] **LX-120** — The OpenAI tier defaults moved from the `gpt-5.6` family to
+  `gpt-6-luna` on 2026-10-01, on the owner's direction that the 5.6 family is no longer a
+  target. All three tiers name the one model, because nothing has compared it with
+  `gpt-6-sol` or `gpt-6-astra`; a split would be a guess. The pricing table gained
+  `gpt-6-luna` at its published rates ($0.10 input, $0.50 output and $0.01 cached input
+  per million tokens), so cost is no longer reported as unpriced for the default model.
+  **Not done:** `README.md` and the doc comments still name 5.6 models (LX-067); Quick lost
+  the latency advantage `gpt-5.6-terra` gave it (LX-121).
+  Evidence: `internal/config/config.go` (`ModelDefault*`), `internal/config/model_defaults_test.go`
+  (`TestGetModelUsesGPT6FamilyForOpenAI`, `TestTierDefaultsMatchTheMeasurement`,
+  `TestEveryTierNamesAKnownModel`), `pricing/pricing.go`. Live, 2026-10-01: the smoke
+  command on `gpt-6-luna` with no proxy passed 65 of 65 cases in 3m15s.
+  *Verify:* every tier resolves to a `gpt-6` model the account lists; the offline suite
+  passes.
+- [ ] **LX-121** — `[LIVE]` **Medium.** Measure the `gpt-6` family before any tier is
+  split: `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra` and `gpt-6.1-sol` on a labelled set large
+  enough to separate them (the note in `config.go` puts that at about 115 items per model),
+  at each reasoning effort the family accepts. Depends on LX-105 for the effort option and
+  LX-111 for the harness.
+  *Verify:* the measurement recorded in `config.go` beside whatever assignment it supports.
+- [ ] **LX-122** — **Medium.** The local provider cannot run an operation whose answer has
+  to quote the input. It answers every string with a placeholder, which `RedactLLM` now
+  refuses as a value that is not in the text, so `examples/21-redact` fails under
+  `SCHEMAFLUX_PROVIDER=local` and is recorded as FAIL. Before LX-020 it was recorded as
+  PASS while all six calls in it failed, because the example printed the errors and exited
+  0; `examples/11-similar` did the same and now exits 1 when nothing succeeds. Other
+  examples may still report success after every call fails: `examples/22-suggest` logs a
+  parse failure on one of its calls and exits 0.
+  Fixed on the way, 2026-10-02: the local provider answered with the first element of the
+  last array in the message whenever the system prompt had no JSON template, even when the
+  request declared a schema. `Verify` declares its answer and takes content that can hold
+  a list, and `examples/34-verify` failed on it. A declared schema now wins
+  (`internal/llm/mockshape_extra_test.go`, `TestADeclaredSchemaIsAnsweredWhateverTheMessageHolds`).
+  *Verify:* every numbered example exits non-zero when none of its calls succeeds; the
+  local provider can answer `RedactLLM` from the text it is given, or the example is marked
+  as needing a live provider and the gate says so.
+- [ ] **LX-123** — **Low.** `scripts/examples_gate.py` is sensitive to load: run beside
+  `go test ./...` it reported four examples failing with an empty reason, and the same tree
+  passed 44 of 45 when the gate ran alone. The 90-second budget covers a `go run` build.
+  Seen three times on 2026-10-02, the third with nothing else running: one example failed
+  in a run and passed eight times in eight by hand.
+  *Verify:* the gate builds the examples once and times only the run, or reports a build
+  that did not finish as its own outcome.
+- [ ] **LX-124** — **Low.** `internal/operations/admincenter/incidentrepair/incidentrepair.go`
+  is an untracked file dated 2026-09-03 that does not compile (`:153`, an `error` assigned
+  to a `string`), so `go build ./...` and `go vet ./...` fail on a clean checkout of the
+  working tree. Nothing imports it and it does not look like this module's code. Left
+  untouched.
+  *Verify:* the owner removes it or fixes it; `go build ./...` passes.
+- [ ] **LX-125** — **Medium.** The streaming path is not at parity with the buffered one.
+  `streamLLM` and `runStream` emit no observer events, so a host's tracing sees no stream;
+  a stream that fails publishes no failed-call record; and `StreamSummarize`,
+  `StreamRewrite`, `StreamTranslate` and `StreamExpand` have no compiled example. Found in
+  review while fixing LX-061 on that path.
+  *Verify:* a stream produces the same start and finish events as a buffered call, on every
+  exit; a failed stream publishes a call record.
+- [ ] **LX-126** — **Critical.** `Client.WithScheduler` and `Client.WithDataPolicy` do
+  nothing. The client stores both and puts them on the context
+  (`internal/api/client/client.go:78-90`, `internal/ops/execconfig.go:62-68`), and
+  `ExecScheduler` and `ExecDataPolicy` have no caller outside tests *(read)*. A caller who
+  bounds a client's concurrency, or restricts where its calls may be routed, gets neither
+  and no error. The second is a data-handling control that is silently off.
+  *Verify:* a client with a scheduler never has more calls in flight than it allows; a
+  client with a data policy refuses a route the policy forbids; or the two methods are
+  removed until they do something.
+  **In review (round 14), 2026-10-03.** Worse than written: `Scheduler`, `SchedulerLimits`
+  and `DataPolicy` were not exported, so nothing outside this module could build the
+  argument to either method. They are now, with `NewScheduler`, `RetentionDays`,
+  `RetentionUnspecified` and `DeclareRoute`.
+  **The scheduler.** Every request a call sends to a provider takes a slot in the client's
+  scheduler first (`throughScheduler`, `internal/ops/clientlimits.go`): one for each attempt
+  of a buffered call, given back for the wait before a retry, and one for the life of a
+  stream, however it ends. A call that is not admitted sends nothing and is not retried; it
+  fails with `ErrAdmissionRejected`, `ErrShutdown`, or the caller's own cancellation or
+  timeout. A stream that is not admitted is refused by the call that opens it and not by
+  the first read. The scheduler is told the provider, a priority that is not the lowest by
+  accident, and an estimate of the tokens and cost the request holds, so its ceilings on
+  tokens and cost in flight work through a client.
+  Two defects in the scheduler itself, found by these tests. The queue bound counted a
+  request from the moment it asked until the dispatcher got round to admitting it, so two
+  calls arriving together at an idle scheduler with a queue of one could refuse the second
+  for a full queue while every slot was free; what can run now is admitted before the queue
+  is measured. And a request whose own estimate is over a ceiling on what may be in flight
+  could never be admitted and was queued until its caller gave up; it is refused when it
+  asks.
+  **The data policy.** A call is refused before anything is sent, with `ErrPolicyViolation`,
+  unless its provider is in `AllowedProviders`, its route has declared where it runs and
+  what it keeps (`DeclareRoute`), every region the route may run in is in `AllowedRegions`,
+  and its retention is within `MaxRetentionDays` (`checkDataPolicy`). The rules are the
+  type's own and do not fail open: a list left empty allows nothing, so the zero policy
+  refuses every call. A client therefore has a policy only when it was given one
+  (`ExecConfig.DataPolicyDeclared`); `ExecDataPolicy` used to report one for any client,
+  which under enforcement would have refused every call of every client that never asked.
+  `WithoutDataPolicy` removes one. `MinimumContract` on a client's policy is enforced where
+  a policy attached to the call already was, and `AllowResultCaching`, when false, makes
+  `mw.Cache` go round the cache for that client: nothing read, nothing stored.
+  **Not done (LX-131):** `Classification`, `AllowTrainingUse` and `ContentLogging` are
+  enforced by nothing in a call; the per-tenant limit of a client's scheduler is fed
+  nothing.
+  **Round 9**, one blocker and eleven more. The blocker: the policy was checked against the
+  provider the request was handed to and nothing behind it, so with `mw.Fallback` as that
+  provider a failure of the primary sent the content to an alternate the policy forbade,
+  and the call succeeded. `mw.Fallback` now holds every alternate to the client's policy
+  before using it (`ops.CheckRoutePolicy`), and an answer that names a provider the policy
+  does not allow is refused on both paths (`checkAnswerRoute`), which covers a router this
+  library does not know about, after the fact.
+  Also fixed. The budget is asked again once a call has its slot: it was asked before the
+  wait, so a hundred queued calls all passed a budget the first was about to spend. A call
+  admitted in the instant its context ended is not run. An unread stream gives its slot
+  back when its scheduler closes, where it held it until the caller's deadline and `Close`
+  waited with it. A call in flight at `Close` is told it was shut down, not cancelled. The
+  cost estimate fed to the scheduler is this library's price for the model, where it was
+  the provider's own figure, which prices every OpenAI model as one old one; an estimate
+  that is not a finite, non-negative number is refused, since one NaN switched a ceiling
+  off for good. The queue bound is applied after the new request has had its chance to
+  run, so a request for an idle provider is not refused because one for a busy provider is
+  waiting. The route registry has a lock. A route declared with a negative retention is
+  refused, where it passed every policy. The client and its snapshots own copies of the
+  policy's lists. A conformance report no longer wipes a route's declared regions when it
+  is published. A bypass of the cache is an event.
+  `MinimumContract` was enforced by one of the seven functions that return a `Result`. All
+  seven ask now, the refusal is a policy violation a caller outside the module can test
+  for, and with a floor on the call and one on the client the stricter holds.
+  Evidence added in round 9: `internal/ops/lx_round9_limits_test.go` (eleven tests),
+  `internal/ops/lx_round9_stream_test.go` (three), `internal/ops/lx_round9_units_test.go`
+  (`TestCheckBudget`, `TestTrackRefusedAnswer`, `TestEstimatedCost`, `TestCheckAnswerRoute`,
+  `TestOptionsForReading` and six more), `mw/lx126_fallback_policy_test.go`
+  (`TestFallbackHoldsEveryAlternateToTheClientsDataPolicy`, eleven cases;
+  `TestCacheBypassIsAnEvent`; `TestCacheLengthPrefixedIsInjective`; `TestCacheAxisHelpers`),
+  `internal/llm/lx126_registry_test.go`, `tests/lx126_routers_integration_test.go` (a
+  fallback chain, a response cache and a contract floor through the exported API, thirteen
+  cases). A mutation run broke this round's fixes 35 ways, one at a time, and each was
+  caught by a test.
+  **Round 10**, one blocker and eleven more. The blocker was mine from round 9: a stream
+  that had been read to its end said it had been stopped when read again, so ranging over
+  `All` and then calling `Text` returned "the stream ended before it finished". A stream
+  now records its outcome once and replays it, a detached stream's drain keeps it, and two
+  readers at once agree.
+  The contract floor was checked in every `Result` form and the level set in one, so six
+  forms were refused under any floor at all, after the provider had answered. Each form
+  now states the level it establishes (a text form, well-formed JSON; `SortResult`, schema
+  and invariants; `RunOpBatchResult`, what its operation declares), and a floor it cannot
+  reach is refused before anything is sent (`checkContractFloor`). The builders'
+  `RunResult` built its envelope outside this package and asked nothing; it is covered.
+  A fallback alternate is checked, and sent, under the model it runs
+  (`FallbackRoute.Model`): it was checked under the request's, which is the primary's. An
+  answer from another provider is held to the policy as a route, provider and model, where
+  it was checked by name. Only a cancellation caused by the scheduler closing is called a
+  shutdown: any error at all was relabelled one. Publishing a conformance report reads and
+  writes the route under one lock, and the registry stores copies of what it is given.
+  Evidence added in round 10: `internal/ops/lx_round10_stream_test.go`,
+  `internal/ops/lx_round10_floor_test.go` (78 cases over six forms and six floors),
+  `internal/ops/lx_round10_misc_test.go`, `internal/api/fluent/lx126_floor_test.go`,
+  `mw/lx126_fallback_model_test.go`, `internal/llm/lx126_registry_test.go`. Mutation run:
+  51 breakages of this round's fixes and of LX-024, one at a time: 49 caught; the other two change nothing a caller can observe, so no test could tell them apart (returning the text beside an error it is always empty for, and one of two checks that both refuse a missing option).
+  One more, found by the suite itself and not by review: with two readers of one stream,
+  one could take the final item off the channel while the other found the channel closed
+  and recorded "stopped" before the first had recorded anything, so both were told a clean
+  stream had been stopped. It showed once in a full run. The producer now records the final
+  item itself before it closes the channel, and a reader that finds the channel closed
+  takes the outcome from that record. The test for it runs three readers 300 times and
+  fails with the fix removed.
+  **Round 11**, a blocker and five more. The blocker: `RunOpBatchResult` reported the
+  level its operation declares, and the batch path ran neither the invariants nor the
+  evidence check that level stands for, so a floor of "invariants checked" was met by
+  outputs nobody had checked. `RunOpBatch` holds every output to the invariants now. The
+  evidence check is made between one input and one output and a batch has neither in
+  that form, so a batch reports its level without it (`batchContractLevel`) and a floor
+  that asks for it is refused before anything is sent.
+  `RunOpResult` asked about the floor only after the provider had answered; it asks
+  first. A builder's `Sorting(...).RunResult` built a best-effort envelope with no level
+  and was refused under any floor that `SortResult`, the same sort, meets; it returns
+  `SortResult`'s envelope.
+  An answer is held to the policy as the route it names. Under the provider that was
+  asked it was accepted whatever model it named, so a gateway that keeps one name and
+  sends requests on to a model the policy forbids was never noticed; and an answer from
+  another provider was checked under exactly the model it named, a dated snapshot nobody
+  declares, so a fallback that had been checked, allowed and paid was then refused. The
+  route that was asked, or one version of its model (`llm.SameModelRoute`), is accepted;
+  anything else is checked as provider and model, under the model's own name or the name
+  it is a version of. `mw.Fallback` writes the alternate's provider and model on an
+  answer that names neither. The local provider answers as the model it was asked for.
+  Publishing a conformance report keeps what a route's family declared, where it looked
+  only at the route's own entry and left a family-covered route with no regions. The
+  registry keeps a copy of a family's lists and hands out copies.
+  A detached stream that its reader has left is read to its end by the stream; a second
+  range over it used to read the same channel beside that, and the two shared the text.
+  It waits for the end and yields none. `Err` says a stream its reader left was
+  cancelled, where it returned nil until something read the stream again.
+  **Limit recorded here:** under a declared policy, a gateway whose answers name a model
+  other than the one asked (an Azure deployment name asked, the underlying model
+  answered) has that route refused after the call unless it is declared with
+  `DeclareRoute`. The error names the route. This is the policy doing what it says, and
+  it is a cost on the first call.
+  Evidence added in round 11: `internal/ops/lx_round11_routes_test.go`
+  (`TestABatchIsHeldToWhatItsLevelStandsFor`, twelve; `TestBatchContractLevel`, ten;
+  `TestRunOpResultIsRefusedBeforeItIsPaidFor`, twelve; `TestAnAnswerIsHeldToTheRouteItNames`,
+  twenty), `internal/ops/lx_round11_stream_test.go`, `internal/ops/lx_round11_units_test.go`
+  (`TestStreamSendFinishAndWhyStopped`, thirty), `internal/llm/lx_round11_registry_test.go`
+  (`TestWithoutVersionTag`, twenty; `TestSameModelRoute`, sixteen;
+  `TestPublishingKeepsWhatTheFamilyDeclared`, ten; `TestTheRegistryKeepsAndGivesCopies`;
+  `TestCopyCapabilities`, ten; `TestPublishingReadsAndWritesARouteAsOneStep`, which
+  stands between the read and the write where the test before it only ran the two
+  together), `mw/lx_round11_fallback_test.go` (eleven),
+  `tests/lx_round11_integration_test.go` (`TestIntegrationAnAnswerIsHeldToTheRouteItNames`,
+  twelve cases through the exported API). Tests that did not bite, now do: the refused
+  newcomer test also counts the queues, and the `stopCause` table has both reasons at
+  once. Mutation run over LX-025 and round 11: 67 breakages, one at a time. 65 were caught as written; the two that were not each showed a test that asserted too little (the prompt test did not look for the description of each key, and the route test did not look at what a refusal said), and with those fixed all 67 are caught.
+  **Decision recorded here:** a declared policy follows the type's documented rule and
+  refuses a route that has declared nothing, where it could have allowed what it cannot
+  see. A caller with a policy declares their routes once at start-up. The refusal says so
+  and names `DeclareRoute`.
+  Evidence: `internal/ops/lx126_scheduler_test.go` (eight tests: the bound over eight limit
+  shapes on both paths, sixteen cases; six refusals; the slot given back for a retry's
+  wait; three ways a stream ends; the burst; ten never-fits cases),
+  `internal/ops/lx126_datapolicy_test.go` (`TestAClientsDataPolicyDecidesWhichRouteACallMayTake`,
+  seventeen routes on both paths, 34 cases; `TestADataPolicyRefusalCostsNothing`;
+  `TestExecDataPolicyIsDeclaredOnlyWhenSet`; `TestAClientsDataPolicyCarriesTheContractFloor`,
+  ten), `mw/lx126_cache_policy_test.go` (eight), `internal/llm/lx126_declareroute_test.go`
+  (twelve), `internal/api/client/lx126_client_test.go` (ten and two more),
+  `tests/lx126_client_limits_integration_test.go`
+  (`TestIntegrationAClientsSchedulerBoundsItsCalls`, ten cases through the exported API;
+  `TestIntegrationAClientsDataPolicyRefusesARouteItDoesNotAllow`, 22;
+  `ExampleClient_WithDataPolicy`; `ExampleClient_WithScheduler`). The scheduler, cache and
+  burst tests were watched failing; the policy tests did not compile before the change.
+- [ ] **LX-127** — **Low.** Prompt text is written with `json.Marshal`, which escapes "<",
+  ">" and "&" for HTML. `promptJSON` (`internal/ops/json.go`) does not, and is used by
+  `Similar`, `Deduplicate`, `Verify`, `formatInput` and `NormalizeInput`. The operations
+  that marshal their input themselves still build their prompts with `json.Marshal`, so a record with "R&D" in it costs extra tokens and
+  is not shown to the model as written.
+  *Verify:* no prompt is built with `json.Marshal`; a test over the smoke catalogue finds
+  no HTML escape sequence in any request.
+- [ ] **LX-128** — **Low.** One run of the whole offline suite crashed in the `tests`
+  package, with frames at `collection_integration_test.go:305` (a `Sort` test that drives a
+  scripted provider from several goroutines). It did not repeat in nine further runs and
+  the panic message was not captured. `ScriptedProvider` appended to its request log with
+  no lock, which is a data race under any concurrent operation; that is now guarded. The
+  race detector does not run on this machine (windows/arm64).
+  *Verify:* `go test -race ./...` passes in CI on Linux.
+- [ ] **LX-129** — **Medium.** The reasoning-off preference rests on 18 short tasks. A score
+  of 0.988 against 0.985 at the default is agreement within noise, and it says nothing
+  about long inputs, category descriptions with negation or exceptions, many categories, or
+  `Deduplicate` over long lists *(review round 8)*. The number gate is also coarse in the
+  other direction: one "2FA" in a category description cost `Classify` all of its gain in
+  the 2026-10-02 run.
+  *Verify:* scores at none and at the default, stratified by input length, category count,
+  negation in a description and list size (10, 50, 200), with no stratum more than a point
+  below the default; or the preference is withdrawn for the strata that drop. Which shapes
+  of number need reasoning (an identifier, a single figure, two figures to compare) is
+  measured, and the gate is narrowed to those.
+- [ ] **LX-130** — **Low.** A scheduler cannot refuse a burst outright. `MaxQueued` zero
+  means no bound, like every other limit, and the smallest queue is one; the field's
+  comment said zero refused outright, which the code never did. The comment is corrected.
+  *Verify:* a stated way to ask for "no waiting", or a ruling that a queue of one is it.
+- [ ] **LX-131** — **Medium.** What a client's data policy does not do (LX-126).
+  `Classification` is a label nothing in a call reads. `AllowTrainingUse` cannot be checked
+  because no route declares whether it trains on what it is sent. `ContentLogging` is a
+  per-client field and the logger's level is one setting for the process
+  (`telemetry.SetContentLoggingPolicy`). A router this library does not know about is
+  caught only after it has answered, by the provider its answer names; `mw.Fallback` is
+  held before it sends (fixed under LX-126, round 9). `MinimumContract` holds for the
+  functions that return a `Result` and not for a plain `Extract` or `Classify`, which work
+  out no contract level. A provider that rewrites the model it was asked for is checked
+  under the model that was asked. The per-tenant limit of a client's scheduler is fed no
+  tenant.
+  *Verify:* each is enforced, or the field's doc says in its first line that it is not.
+
+---
+
+# M19 — Plan: enterprise grade
+
+Requested 2026-10-01: refine the API, the features and the program until it is production
+grade; review each change adversarially as it is made; refine the base prompts; keep it
+extensible, low in memory and latency; add tests, benchmarks and documentation; and make
+the API read like deterministic control flow, so a caller thinks about prompting only
+when they choose to tune it.
+
+This milestone adds no new defects. It orders M18's tasks into phases, says what each
+phase has to prove before the next starts, and defines the score the work is aiming at.
+
+**How each change is made.** A failing test first, and a note that it was watched failing.
+The fix. The package's tests, then the whole offline suite. Then a reviewer who did not
+write the change reads the diff with instructions to break it, and every finding is either
+fixed or answered in the task's evidence. Live confirmation only where a task is marked
+`[LIVE]`, as a deliberate, small run that is announced, never as part of a test command.
+
+**Phases.**
+
+- [x] **LX-132** — **Low.** `TestVotePartialFailuresStillReconcileTheSuccesses` counted
+  its samples in a plain int, and `Vote` runs its samples at once, so two could both read
+  2 and the test saw two failures where it had arranged one. It failed once in a full
+  run of `internal/ops` on 2026-10-02. The count is atomic; fifty runs pass.
+  *Verify:* `go test ./internal/ops -run TestVotePartialFailures -count=50`.
+- [x] **EG-001** — Phase 0, live compatibility. LX-001, LX-002, LX-003, LX-008, LX-120.
+  *Exit:* the smoke command passes on the default model with no proxy, and the offline
+  wire contract test covers every catalogued operation.
+  **Done 2026-10-02.** The smoke command passed 65 of 65 on `gpt-6-luna` with no proxy,
+  twice, the second time with the Phase 1 changes in. `tests/wirecontract` sends every
+  catalogued case and has an empty allow-list for cases that send nothing. Three review
+  rounds on this phase: 1 blocker and 12 should-fix, then 8 should-fix, then confirmation
+  that all were fixed.
+- [ ] **EG-002** — Phase 1, no operation fails open. LX-020 to LX-022 first, then LX-023
+  to LX-035, then the medium group. LX-106 carries the per-operation checklist.
+  *Exit:* for every catalogued operation, a response with the payload missing, an index
+  out of range, or an option ignored is an error; the catalogue's stable tier requires it.
+- [ ] **EG-003** — Phase 2, one API shape. LX-060 to LX-062 first (options, contexts and
+  defaults that are silently dropped), then LX-064 and LX-065 (one envelope, one calling
+  convention), then LX-107 (the control-flow surface), then names, docs and README.
+  *Exit:* one documented way to call any operation, to pass a context, and to get usage;
+  every doc example compiles; nothing a caller sets is ignored without an error.
+- [ ] **EG-004** — Phase 3, one model table and thinking. LX-005, LX-105, LX-007, LX-084,
+  LX-090, LX-092.
+  *Exit:* a model name is compared in one place; reasoning effort is a per-call option;
+  cost figures match a recorded live response.
+- [ ] **EG-005** — Phase 4, the decision seam. LX-100, then LX-101, LX-103, LX-104, then
+  LX-108 and LX-109, then the ruling in LX-102.
+  *Exit:* the 18 head-to-head tasks pass through the exported API on a decision provider,
+  on a generating provider, and with escalation between them.
+- [ ] **EG-006** — Phase 5, prompts, performance and documentation. A reviewed prompt and
+  a golden per operation; benchmarks for allocations and overhead per call with a
+  recorded budget; LX-111 for accuracy; LX-080 to LX-085 for configuration; logging silent
+  by default (LX-083); README and reference rewritten from compiled examples.
+  *Exit:* the score below.
+
+**The score.** Ten properties, each either demonstrated by a test in the gate or not. The
+target is all ten.
+
+1. Every catalogued operation completes against the live default model.
+2. No operation returns a value without an error when the answer is missing or unusable.
+3. Every option a caller can set is enforced, refused, or documented as guidance.
+4. One calling convention, one envelope, one way to pass a context.
+5. A caller can write a decision, a selection and a typed extraction with no prompt text.
+6. Usage, cost and latency are available for every call and correct against a live
+   response.
+7. The same operation runs on a generating provider and a decision provider, with
+   escalation between them.
+8. Library overhead per call is measured, budgeted and checked in the gate.
+9. Nothing the caller sent or the model returned appears in a log line or an error string.
+10. Every example in the README and the reference is compiled and run by the gate.
+
+---
+
+# M20 — Benchmark: an app whose control flow is LLM operations
+
+Requested 2026-10-02: a hard task to benchmark this package with. Build a smart
+application with many smart features under one constraint, that every decision about
+what happens next is made by an operation of this library, so the application's own code
+barely branches. An application like that spends nearly all of its time waiting on the
+network, so the library has to be made as fast as it can be around those waits. The
+refinement and review of M18 and M19 continues beside it.
+
+**What the constraint means, as it is checked.** In the application's flow package, the
+only condition a hand-written `if` may test is an error. Every other branch is taken by
+a combinator of this library that is handed the result of an operation: is this spam,
+which team owns it, does it need a human. A test parses the package and fails on any
+other `if`, any `switch`, and any `for` with a condition. Loops over a list are allowed;
+which items are in the list is an operation's answer.
+
+**What is measured.** For a fixed set of labelled inputs: wall time per input, the number
+of provider calls, how much of the wall time was spent waiting for the provider and how
+much in this library, tokens, cost, and whether the flow ended where the label says it
+should. Offline, against a scripted provider with a set delay per call, so that the
+number of waits and their overlap are measured exactly and the gate can hold them. Live,
+on `gpt-6-luna`, as small announced runs, for the real figures.
+
+**The control-flow surface (extends LX-107).**
+
+- [ ] **BM-001** — **High.** Decisions a caller can branch on with no prompt text: `Is`
+  (a yes or no), `Which` (one of the labels given), and `Assess` (several of either, about
+  one subject, in one call). Each returns a plain Go value and an error; each has a form
+  that also returns the confidence and the envelope. The answer is declared as a strict
+  schema, read through pointers, and an answer that leaves a question out is refused.
+  *Verify:* a compiled example per function with no prompt text in it; ten cases per
+  function; an integration test through the exported API with an injected provider.
+  **In review, 2026-10-02.** `Is`, `Which`, `WhichOrNone`, `Rate` and `Assess`, each with a
+  `Result` form that also returns the model's confidence and the envelope, are one
+  operation (`internal/ops/assess.go`): one fixed prompt, the questions and the subject
+  in the message as JSON with the subject last, and a declared answer with one required
+  entry per question, a boolean or a whole number that is one of the option numbers or
+  levels. The schema holds nothing of the caller's, so two call sites that ask questions
+  of the same kinds declare the same answer. An answer that leaves a question out, or
+  answers one with the wrong kind of value, is refused: it is never read as no, as the
+  first label, or as the bottom of the scale. `Assess[T]` reads its questions from `ask`,
+  `oneof` and `scale` tags, once per type, and a struct it embeds asks its own questions
+  as if they were written there; an embedded struct of an unexported type used to be
+  passed over without a word. A decision defaults to the fast tier.
+  A subject is shown as what it says (`writtenSubject`): an error as its message, a value
+  JSON can see nothing of as its `String`, and one with neither is refused.
+  `WhichOrNone` was added for "which of these, if any": with nothing to choose from it
+  asks nothing.
+  Catalogued as experimental until review and a wider live measurement.
+  Evidence: `internal/ops/bm001_assess_test.go` (ten tests, about 190 cases),
+  `tests/bm001_decisions_integration_test.go` (three tests through the exported API;
+  `ExampleIs`, `ExampleWhich`, `ExampleRate`, `ExampleAssess`, `ExampleRouteBy`,
+  `ExampleGather`), seven cases in `tests/wirecontract`. No mutation run or review yet.
+- [ ] **BM-002** — **High.** Combinators that take a decision and run the branch, so that
+  the caller writes no condition: `When` (then, else), `Route` (a handler per label),
+  `Gather` (independent steps at once, under the client's scheduler and budget, the first
+  error cancelling the rest), and `Each` (a step for every item of a list). Each is a
+  function over a context and typed values and holds no state.
+  *Verify:* the order of calls and the number in flight are asserted against a scripted
+  provider that records both; an error in one branch cancels the others.
+  **In review, 2026-10-02.** `Branch`, `Whether`, `Select`, `RouteBy`, `Gather`,
+  `Gather2` to `Gather4` and `Each` (`internal/ops/flow.go`). `When` was the name in this
+  task and is taken by `Match`'s case builder, as `Switch` is by an older helper, so the
+  two are `Whether` and `Select`. A decision that fails runs no branch. `Gather` cancels
+  the rest on the first failure and returns nothing beside the error; a step that panics
+  is an error with no payload, and the stack is logged. `Each` works a list with at most
+  64 at once.
+  Evidence: `internal/ops/bm002_flow_test.go` (eight tests). Not built yet: speculation
+  (LAT-007).
+
+**The application.**
+
+- [ ] **BM-010** — **High.** `examples/flowdesk`, a support desk that handles an incoming
+  message end to end with no hand-written branch on its content. Features, each an
+  operation or a composition of them: screen out spam; detect the language and translate;
+  redact personal data before anything else reads the text; classify the intent; route to
+  a team; rate urgency; extract the order, account and product it mentions; find the open
+  ticket it duplicates, or open a new one; decide whether enough is known to answer, and
+  ask for what is missing; draft a reply in the customer's language; audit the draft
+  against the desk's policies and redraft once when it fails; decide whether a human has
+  to approve; summarise the thread for the hand-off; suggest the next action; and predict
+  whether the customer will write again.
+  *Verify:* the flow package passes the branch check above; an offline test runs twelve
+  labelled messages through a scripted provider and each ends in the labelled outcome; an
+  `Example` shows one message handled.
+  **In review, 2026-10-02.** `examples/flowdesk/desk` has three flows over the same
+  questions: `HandleOneAtATime` (one call for each decision), `Handle` (the decisions
+  fused and the independent steps overlapped: four waits for a plain message) and
+  `HandleFast` (everything asked of the message as it arrives, beside the extraction and
+  the ticket match, and asked again only when the message turns out to need translating
+  or redacting: three waits, six calls). `branch_test.go` holds the package to the rule,
+  and checks itself against twenty snippets. `examples/flowdesk/sim` is a simulated
+  provider that answers each operation from fourteen labelled cases keyed by question
+  text, with a set delay per call; every outcome field is asserted for every case and
+  every flow.
+  Three questions were reworded after the first live runs, which is the tuning this task
+  is for: "personal data" matched an email address or an order number once the model
+  reasoned about it, which sent six messages down the redaction path that the label says
+  do not need it; "says enough to act on" read as "no" for most messages when the model
+  did not reason; and "money, legal exposure or a safety issue is involved" is true of
+  every billing question.
+  **Friction recorded from building it** (each a DevX task to raise): the context reaches
+  an operation four different ways, and a call that omits it uses the process-wide
+  provider without a word; `RedactLLM`, `Audit`, `Generate` and `WhichOrNone` have no
+  `Result` form; a custom provider has to be named "local" or every call fails with "no
+  default model"; `Summarize` writes `TargetLength` into the prompt and checks nothing;
+  the library logs every operation at info level to standard error.
+- [ ] **BM-011** — **High.** The benchmark command, `examples/flowdesk/cmd/bench`: the
+  offline mode with a set delay per call, and the live mode. It prints one row per
+  message and a summary, and writes JSONL. `[LIVE]` for the live figures.
+  *Verify:* offline, the summary is the same from run to run; the gate holds the number of
+  calls and the number of sequential waits per message at a recorded budget.
+  **In review, 2026-10-02.** `examples/flowdesk/cmd/bench`. Offline, fourteen messages,
+  identical from run to run apart from the milliseconds:
+
+  | flow | calls | waits | mean waits per message |
+  |---|---|---|---|
+  | one at a time | 228 | 228 | 16.29 |
+  | fused | 120 | 60 | 4.29 |
+  | fast | 100 | 52 | 3.71 |
+
+  Live on `gpt-6-luna`, 2026-10-02, one repetition of fourteen messages each. "Matched"
+  is the outcome's decision fields against the label; the labels are this repository's
+  own and several are judgment calls, so it is a consistency figure and not an accuracy
+  one.
+
+  | flow | effort | questions | mean wall | median | calls | cost | matched |
+  |---|---|---|---|---|---|---|---|
+  | one at a time | default | first wording | 33.8 s | 37.5 s | 236 | $0.0206 | 7 |
+  | fused | default | first wording | 13.4 s | 13.3 s | 124 | $0.0151 | 9 |
+  | fused | none | first wording | 9.75 s | 7.5 s | 119 | $0.0073 | 6 |
+  | fast | default | first wording | 17.1 s | 16.1 s | 127 | $0.0187 | 8 |
+  | fast | none | first wording | 6.1 s | 5.7 s | 102 | $0.0072 | 5 |
+  | fused | none | reworded | 7.3 s | 6.3 s | 118 | $0.0072 | 10 |
+  | fast | default | reworded | 11.9 s | 10.8 s | 98 | $0.0153 | 10 |
+  | fast | none | reworded | 5.8 s | 4.9 s | 99 | $0.0070 | 10 |
+
+  From first to last row: 5.8 times faster and 2.9 times cheaper, with more outcomes
+  matching. The library's own share of a message is 3 to 10 ms of it. What the table
+  says about where the time is: reasoning tokens were 66% to 90% of every operation's
+  output at the default effort; with reasoning off a call has a floor of about 1.1 s
+  whatever it answers; and the fast flow is slower than the fused one whenever the first
+  look sends messages down the path that reads them again, which is what the first
+  wording of the personal-data question did.
+  One call in the fused run without reasoning took 25 s (LAT-005).
+  **The play by play, later on 2026-10-02.** `-trace` follows each run with its calls in
+  the order they started: when each began, how long it took, and what the model
+  answered, a decision written as its questions and their answers
+  (`cmd/bench/trace.go`; the simulator's `Answers` reads `{"q1":true,"q2":3}` back beside
+  the questions). Each call's start and answer are in the `-out` record as well. Reading
+  the first live trace found four things the totals did not show, each fixed in the
+  application: a French customer was answered in Spanish, because with reasoning off the
+  model called the message "another language" and the desk passed that label to
+  `Translate` as if it were one (the reply is now translated only into a language the
+  desk can name); redaction at the library's default of every category masked "89 euros"
+  and the amount was gone from every later step (the desk now names the categories its
+  own screen asks about); the simulator's `[ref M-xx]` tag was read by the live model as
+  an order number (stripped before a live run, `sim.WithoutReferences`); and the ticket
+  match attached a double charge to another customer's open ticket about a double charge
+  (the question now says a follow-up is the same case). One is left: the open tickets
+  carry no customer, so "the same customer" cannot be answered, and a late parcel is
+  still attached to another parcel's ticket at every setting.
+  Live after those fixes, fourteen messages, one repetition each:
+
+  | flow | effort | mean wall | calls | waits a message | matched | cost |
+  |---|---|---|---|---|---|---|
+  | one at a time | default | 27.9 s | 226 | 16.1 | 12 | $0.0184 |
+  | fast | default | 13.5 s | 98 | 3.6 | 11 | $0.0151 |
+  | fast | none, triage at low | 7.3 s | 98 | 3.6 | 12 | $0.0082 |
+  | fast | none | 6.4 s | 98 | 3.6 | 10 | $0.0069 |
+
+  The third row is what the application's `Judgment` option is for: with reasoning off,
+  "I want my money back" was not held for a person to approve, and a low effort on the
+  triage questions alone recovers it for about a second a message. With fourteen
+  messages and one repetition a difference of one match is inside the noise.
+  Two tests of this command were timing-fragile and are fixed: wait counts asserted with
+  a simulated delay of 1 ms (three calls made at once did not always overlap on a busy
+  machine; now 25 ms), and the trace's wait marks compared float sums of whole
+  microseconds (Windows' clock gives a call the very microsecond the one before it ended
+  in; the comparison now allows for the rounding).
+  **Review round 13 (reader R3) on the application: not approved.** Its findings that
+  change the figures above: the one-at-a-time flow asks two questions (`Angry`,
+  `Refund`) that nothing reads, so a plain message costs it 18 calls where 16 would do;
+  the three flows give `Judgment` to different questions; the fast flow reads the
+  subject line and the others the body only; and the check that holds the package to
+  its rule is syntactic and accepts a comparison passed to `Branch`, `max`, a range loop
+  that returns on its first item, and `recover`. All accepted and fixed on 2026-10-03:
+  `Angry`, `Refund` and `Foreign` are gone (a plain message costs the one-at-a-time flow
+  15 calls, was 18; the language alone decides the translation, by `Select`); every flow
+  asks every question of `Message.Text()`, the subject and the body, with `Judgment` on
+  the same questions; a ticket carries its customer and is matched by its ID, with the
+  sender beside the text; the check on the package's rule now refuses a comparison
+  outside an error check wherever it is written, `min`, `max`, `recover`, the `cmp` and
+  `slices` packages, a `return`, `break` or `continue` inside a loop, labels and `defer`,
+  and is held to 83 snippets; a test reads every request of a run and finds no personal
+  data after the redaction and no original text after the translation, and a second
+  test shows that check failing for a redaction that masks nothing; the report's means
+  are over the runs that did not fail; a record carries the settings of its run and the
+  length of its critical path; the trace's bookkeeping is done after the run and not
+  inside it; and three labelled messages were added, in German, in Portuguese and in a
+  language the desk cannot name, so that every route of the language is reached.
+  **A fourth flow, `HandleAhead`** (`desk/ahead.go`), takes out the two waits the traces
+  showed buying nothing. It reads a message once: what the first look decided stands
+  when the text is then translated or redacted, and the text is put right only for the
+  steps that write from it, where `HandleFast` asked its questions a second time. And
+  it starts the translation of a reply beside the audit of the draft
+  (`schemaflux.BranchAhead`), keeping it when the audit passes and cancelling it for a
+  redraft when it does not. A message in Spanish takes it four waits and eight calls,
+  where the fast flow takes six and eleven. Evidence: `desk/ahead_test.go` (the
+  labelled outcome and the fast flow's outcome for all seventeen cases; calls exact;
+  nothing after the redaction reads the personal data; a draft that failed is never
+  sent; twelve faults each return no outcome and leave no call in flight).
+  Offline, seventeen messages at 25 ms a call: 242 calls in 242 waits one at a time, 152
+  in 77 fused, 132 in 69 fast, 112 in 58 ahead.
+  **Measured again live on the corrected application**, 2026-10-03, `gpt-6-luna`,
+  seventeen messages, one repetition:
+
+  | flow | effort | mean wall | calls | waits a message | matched | cost |
+  |---|---|---|---|---|---|---|
+  | one at a time | default | 24.9 s | 240 | 14.1 | 13 | $0.0183 |
+  | fast | default | 11.8 s | 130 | 3.9 | 14 | $0.0178 |
+  | fast | none, triage at low | 7.4 s | 130 | 3.9 | 15 | $0.0100 |
+  | fast | none | 6.9 s | 131 | 4.0 | 14 | $0.0085 |
+  | ahead | none, triage at low | 6.2 s | 109 | 3.2 | 14 | $0.0083 |
+  | ahead | none | 5.2 s | 109 | 3.2 | 14 | $0.0073 |
+
+  From the first row to the last: 4.8 times faster, 2.5 times cheaper, one more message
+  matching its label. The library and the desk between them account for 1 to 5 ms of a
+  message. These runs have the decision family's reinforcement preamble off (LAT-004)
+  and the schema of a decision cached (LAT-006). What they do not show is that
+  reasoning buys anything on these messages: at one repetition of seventeen the low
+  effort on the triage matched one more in the fast flow and no more in the ahead flow,
+  which is inside the noise, and BM-013 and LX-129 are where that is to be settled.
+  The page with every call of every run: `https://claude.ai/artifact/6GgbpmNcWHu6sJZS5fDGsB`.
+
+**Latency around the network wait.** Each is measured before and after with BM-011, and
+the figure goes in the task's evidence.
+
+- [ ] **LAT-001** — **High.** Say where the time of a call went: waiting for a slot,
+  building the request, name lookup, connecting, the TLS handshake, waiting for the first
+  byte, reading the body, and reading the answer. On `Meta` for the `Result` forms and in
+  the telemetry event for every call. Without it every other task here is a guess.
+  *Verify:* against a local test server that delays each phase by a known amount, each
+  figure is within tolerance of it; the figures add up to the call's elapsed time.
+  **In review, 2026-10-02.** `types.Timing` (lookup, connect, handshake, send, wait for
+  the first byte, read, and the whole; whether the connection was reused; and the wait
+  for a slot in the client's scheduler), measured from the transport's own events by the
+  OpenAI, Anthropic and chat-completions providers (`internal/llm/timing.go`), carried on
+  `CompletionResponse.Timing`, summed into each call's record and into `Meta.Timing` for
+  the `Result` forms. `Timing.Outside` is what is left of the elapsed time. A provider
+  that times nothing leaves it unmeasured, which is told from a call that took no time.
+  Not done: the streaming path, and the telemetry event.
+  Evidence: `internal/llm/lat001_timing_test.go` (a TLS server with a set thinking time
+  and sending time; five providers; the caller's own trace is still called; ten cases of
+  the clock), `internal/types/timing_test.go`, `internal/ops/lat001_envelope_test.go`.
+- [ ] **LAT-002** — **High.** Connections. One transport per provider tuned for many
+  small concurrent calls to one host; and `Client.Warm(ctx)`, which does the name lookup
+  and the handshake before the first call needs them, so the first decision of a process
+  does not pay for them.
+  *Verify:* against a local TLS server, the first call after `Warm` reports no connect and
+  no handshake time; forty calls at once reuse connections and open no more than the
+  transport's limit.
+  **In review, 2026-10-02.** A provider whose caller supplies no HTTP client uses one
+  transport shared by all of them, a copy of the process's default with 128 idle
+  connections kept per host where Go keeps two (`internal/llm/transport.go`); the copy is
+  made again when the process's default is replaced, so a proxy or a test's guard put
+  there is still followed. `Client.Warm(ctx)` and `llm.Warm` open the connection with a
+  request for headers that carries no key and no content.
+  Measured live: one new connection per run, 260 to 785 ms of set-up paid by the first
+  call; after `Warm`, none. So it is worth a quarter to three quarters of a second once
+  per process, and nothing after.
+  Evidence: `internal/llm/lat002_warm_test.go` (five providers cold and warmed; forty
+  calls at once over HTTP/1.1, of which the second forty reuse the first forty's
+  connections; a caller's own client is left alone), `internal/api/client/lat_defaults_test.go`.
+- [ ] **LAT-003** — **High.** Fewer waits. `Assess` answers several questions in one call
+  where they were one call each; `Gather` overlaps the waits of steps that do not depend
+  on each other. The application uses both, and its count of sequential waits per message
+  is the number this task lowers.
+  *Verify:* BM-011's offline summary, before and after.
+  **In review, 2026-10-02.** The figures are under BM-011: 16.29 waits a message one at
+  a time, 4.29 fused, 3.71 fast. `Client.WithModel` and `Client.WithEffort` were added
+  for it (`ExecConfig.Model`, `.Effort`; `resolveModel`): the application could reach
+  every operation's model only through the SCHEMAFLUX_MODEL environment variable, and
+  their effort not at all. What a call names wins, then the client, then the tier's model
+  or the operation's preference. Evidence: `internal/ops/lat_client_defaults_test.go`.
+- [ ] **LAT-004** — **High.** Shorter waits. A decision answers in the fewest output
+  tokens that can carry it: no explanation unless the caller asks, single-letter keys
+  avoided only where they cost accuracy. Reasoning is off for a decision on a model where
+  that was measured to cost nothing (LX-105, LX-129). The instructions for a decision are
+  short. `[LIVE]`
+  *Verify:* output tokens and median latency per decision before and after, with accuracy
+  on the labelled set unchanged.
+  **Measured 2026-10-02, not yet closed.** On the benchmark's fast flow: with every call
+  at effort none a decision call has a median of 1.3 to 1.4 s and writes 40 tokens;
+  at the library's default the same call takes 2.8 s and writes 178, of which 76% are
+  reasoning. Turning the prompt-reinforcement preamble off changed no decision: at
+  effort none it took 16% off the input tokens and nothing off the time; at the default
+  effort it took 31% off the output tokens and 12% off the wall time. So the preamble is
+  to be left off for the decision family (in hand), and the larger lever is the effort:
+  off everywhere but the questions that were measured to need it.
+  A question for a later measurement (BM-013): with reasoning off the model answered a
+  choice among six languages with the number of the last option for a French message. A
+  choice is answered by its number so that the schema holds nothing of the caller's; a
+  model that does not reason may map a label to its number less reliably than it would
+  copy the label.
+- [ ] **LAT-005** — **Medium.** The slow tail. `mw.Hedge` sends a second copy of a request
+  that has not answered within a set delay and takes whichever answers first, cancelling
+  the other. Off unless asked for. `[LIVE]`
+  **Revised 2026-10-02.** This task said the budget is charged for both copies. It is
+  not, and cannot be from where the middleware sits: the library charges for the one
+  answer the middleware returns, and a provider bills whatever a cancelled request had
+  generated. The cost of a run that hedged is therefore a floor, and the doc comment and
+  the benchmark's report say so.
+  *Verify:* against a scripted provider with one slow answer in ten, the 95th percentile
+  falls to the hedge delay plus a normal answer; a request that answers in time is sent
+  once.
+  **In review, 2026-10-02.** `mw.Hedge(after, opts...)`, `HedgeEvent{Hedged, SecondWon}`,
+  `WithHedgeObserver` (`mw/hedge.go`): a failure before the delay is returned as it is,
+  the first success after it wins, both failing returns the first copy's error, and a
+  delay of zero or less sends every request once. The benchmark takes `-hedge <delay>`
+  and reports how many calls were sent a second time and how often the second copy
+  answered first. Evidence: `mw/lat005_hedge_test.go`, `cmd/bench/trace_test.go`
+  (`TestTheHedgeIsCountedAndReported`). Not yet measured live: the runs of this day had
+  no call slower than 5 s after the first, so there was no tail to cut, and a live figure
+  needs enough repetitions to meet one.
+  Review round 13 (reader R2): no recover in a copy's goroutine, the observer runs on
+  the caller's goroutine unguarded, a real error is replaced by the context's when both
+  are there, and the chain-order sentence in the doc contradicts itself. All four are
+  fixed (RV-013; `mw/r13_lat005_hedge_test.go`, `mw/r13_lat_chain_test.go`).
+- [ ] **LAT-006** — **Medium.** This library's own share of a call. A schema is generated
+  once per type and reused; the request for a decision is built without reflecting over
+  the same type twice. Benchmarks for building a decision request and reading its answer,
+  with a recorded budget in allocations and nanoseconds that the gate holds (the M19
+  score's eighth property).
+  *Verify:* `go test -bench` figures before and after; the budget test fails when a
+  benchmark is over it.
+  **In review, 2026-10-03.** The schema of a decision holds nothing of the caller's, so
+  it is the same for every call that asks questions of the same kinds: it is built once
+  per set of kinds and kept (at most 256 of them, read without a lock, keyed on kinds
+  and never on a caller's text). An `Assess` type's plan keeps its rendered questions
+  and both its schemas, and the questions are checked once, when the plan is made. The
+  bytes of the message are unchanged, which a test holds against the old rendering.
+  Allocations per operation, a single `Is` / a `Which` of six / an `Assess` of thirteen:
+  building the request 25 / 47 / 198 before and 5 / 5 / 4 after; the whole decision with
+  the provider stubbed 44 / 68 / 266 before and 26 / 26 / 63 after; bytes for the whole
+  decision 4,719 / 6,254 / 27,347 before and 2,615 / 2,847 / 5,773 after. Reading the
+  answer is 11 / 11 / 50, nearly all of it `encoding/json` decoding into a map, left as
+  it is. The budget is in allocations, which are the same from run to run, and not in
+  nanoseconds, which are not: `TestDecisionAllocationsStayWithinBudget` fails when a
+  figure is more than two over what was measured.
+  Evidence: `internal/ops/lat006_assess_request.go`, `lat006_assess_read.go`,
+  `lat006_assess_bench_test.go`, `lat006_assess_request_test.go`.
+- [ ] **LAT-007** — **Medium.** Speculation. `When` may start the then-branch while the
+  condition is still being decided and cancel it if the answer is no. Off unless asked
+  for, since a cancelled branch may already have been paid for.
+  *Verify:* against the scripted provider, a true condition costs one wait where it cost
+  two; a false one returns the else-branch and the then-branch's context is cancelled.
+  **In review, 2026-10-03.** Three forms, each a function of its own so that speculation
+  is something a caller writes and never something that happens to them
+  (`internal/ops/flow.go`): `BranchAhead(ctx, decide, yes, no)` starts `yes` beside the
+  decision and keeps it when the answer is yes, cancels it and runs `no` otherwise;
+  `BranchBoth` starts both and keeps the one the answer picks; `RouteAhead(ctx, decide,
+  likely, routes...)` starts the route a caller expects beside the decision. A decision
+  that fails cancels what was started and returns its own error alone; an error from a
+  branch that was not taken is discarded; nothing is started before the routes are
+  checked; and no goroutine outlives the call (200 calls, each step reporting its exit
+  before the call returns). The doc says what it costs: a branch that is cancelled may
+  already have been sent, and the provider bills for it.
+  Evidence: `internal/ops/lat007_ahead_test.go` (48 tests),
+  `tests/lat007_ahead_integration_test.go` (an injected provider that reports whether a
+  call was cancelled while it held it; `ExampleBranchAhead`). The lane that built it
+  wrote the code before the tests, and its wall-clock bounds have a margin of about two
+  where three was asked for: both are for the mutation run and the next review to weigh.
+  Measured live in the benchmark application's `HandleAhead` (BM-011): a message in
+  Spanish with personal data in it, whose reply is translated beside its audit, took
+  7.4 s in five waits.
+- [ ] **LAT-008** — **Low.** The provider's faster service tier, as an option a caller can
+  set per client or per call, sent only to a route that declares it. `[LIVE]`
+  *Verify:* the wire contract test for the field; a live median with and without.
+  **Revised 2026-10-02.** What is built is narrower than this says, and the narrower
+  thing is the task: the tier is set per provider (`ProviderConfig.ServiceTier`), not
+  per client or per call. Review round 13 found it was sent to any endpoint an OpenAI
+  provider was pointed at and accepted without a word by providers that never send it;
+  both are fixed (RV-013). The tier the provider says it served is on the response and
+  does not yet reach the envelope.
+  Measured live with `-tier priority` on the benchmark: the drafting call's median fell
+  from 2.0 s to 1.2 s and the decision calls did not change, and the difference between
+  two runs of the same setting was larger than the difference between the tiers at
+  fourteen messages. Evidence so far: `internal/llm/lat008_service_tier_test.go`.
+- [ ] **BM-012** — **High.** A decision log. A program whose control flow is decided by a
+  model has to be able to say why it took the path it took. A client can register an
+  observer that is told, after each decision, the questions that were asked and the
+  answers that were read into Go, with the time it took; a decision that failed is
+  reported too. The record goes to the caller's function and nowhere else. The
+  benchmark's `-trace` reads the same thing off the wire with a regular expression,
+  which is the need this task answers properly.
+  *Verify:* ten cases on what the record holds; an integration test through the exported
+  API; an `Example` that prints a decision log.
+  **In review, 2026-10-03.** `Client.WithDecisionObserver(func(context.Context,
+  DecisionRecord))`. A `DecisionRecord` is the operation, the questions in the order
+  asked (`AnsweredQuestion`: the question, its options or its scale, and the answer as
+  Go read it: a bool, the label, or the level), the model's confidence when it was asked
+  for, the time taken, and the error of a decision that failed, which has no answers.
+  With no observer nothing is built. The observer is called with no lock held, a panic
+  in it is recovered and logged without the record, and the record is neither logged nor
+  put in an error. Not observed: what is refused before a question is put, a type
+  `Assess` cannot ask about and the three checks `WhichOrNone` makes on its labels.
+  `WhichOrNoneResult` was added beside it and returns `Picked{Label, Found}`.
+  Evidence: `internal/ops/bm012_decisionlog.go`, `bm012_decisionlog_test.go` (fifteen
+  cases on the record, the panic, the lock, fifty at once),
+  `bm012_whichornoneresult_test.go`, `internal/api/client/bm012_decisionlog_test.go`,
+  `tests/bm012_decisionlog_integration_test.go` (`ExampleDecisionRecord`,
+  `ExampleWhichOrNoneResult`). The benchmark's `-trace` still reads the wire and is to
+  be moved onto this.
+- [ ] **BM-013** — **Medium.** A choice answered by number, with reasoning off. `[LIVE]`
+  Measure, over a few hundred choices with four to eight options, how often a model at
+  effort none names the wrong option number for a label it would have copied correctly,
+  against the same choices answered by label under an enum. If numbers cost accuracy at
+  effort none, a choice is answered by label where the schema can hold the labels and by
+  number only where it cannot.
+  *Verify:* the two error rates, per option count, on `gpt-6-luna`.
+- [ ] **DX-020** — **Medium.** Friction found by building the benchmark application, each
+  to be fixed or stated: an operation takes its context four different ways, and a call
+  that is given none runs on the process-wide provider without a word; `RedactLLM`,
+  `Generate` and `Audit` had no form that returns the envelope (in hand);
+  `WhichOrNone` had none either (in hand); a provider that is not one of the library's
+  own had to be named "local" or every call failed for want of a default model (in
+  hand); `Summarize` writes its target length into the prompt and checks nothing (in
+  hand); `Rewrite` takes its changes as one comma-joined string, so a change that holds
+  a comma is two; `Translate` takes its target language as free text and will write in
+  some language whatever it is handed; the library logs every operation at info level
+  to standard error unless told not to.
+  **Done on 2026-10-03, in review:** `GenerateResult`, `RedactLLMWithMeta` and
+  `AuditWithMeta` (the last two so named because `RedactLLMResult` and `AuditResult` are
+  types), each the plain form run under a recorder so the two cannot drift, with the
+  caller's ids on every path including a refusal before any call
+  (`internal/ops/dx12_result.go`, `dx12_result_test.go`,
+  `tests/dx12_result_integration_test.go`); `WhichOrNoneResult` (BM-012); a summary's
+  metadata now says how long it came back and whether that is within the target, and the
+  doc says the target is a request (`dx12_summary_length.go`); a provider with no model
+  table still has to be given a model, since sending none would change what the built-in
+  providers without a table do, and the error that says so is now classified and names
+  `Client.WithModel` (`config.NoDefaultModelError`, at both call sites).
+  **Still open:** the four ways of passing a context; `Rewrite`'s comma-joined changes;
+  `Translate`'s free-text target; the logging default, which is `Info` to standard
+  error from `telemetry.DefaultLoggerConfig` and is pinned by five tests: the
+  recommendation is `Warn` by default with the per-operation lines demoted to `Debug`,
+  and it is the owner's call because it changes what every program prints; the hand-built
+  refusal envelopes of `ExtractResult`, `SummarizeResult` and the other text forms,
+  which still carry no ids and should use the helper the new forms share.
+- [ ] **RV-013** — **High.** Review rounds 12 (what was left) and 13, and what was done
+  about them. Ten lanes worked the tree at once on 2026-10-02 and 2026-10-03, each on
+  files of its own, and this is the record of it.
+  **Round 12, the rest of it.** `SortRequest.RunResult` and `SortResult`: the caller's
+  ids are on every envelope, `Elapsed` is the wall time of the whole sort, a sort of
+  fewer than two items reports no attempt because it makes none, and the check after
+  the call is of the level the answering route delivered
+  (`internal/ops/lx_round12b_sort_test.go`, `internal/api/fluent/lx_round12b_sort_test.go`).
+  Routes: an answer under another name for the same model is accepted for a `-latest`
+  alias, a snapshot answered by its alias and a gateway prefix, and still refused for a
+  preview rename or an Azure deployment, which is a recorded limit; the policy checks
+  the model a provider will send (`llm.ModelSender`, which the Anthropic provider
+  implements for the `gpt*` names it replaces); the provider behind a gateway is read
+  from the answer (`CompletionResponse.UpstreamProvider`) and held to the policy; names
+  a server supplied are cut to 64 printable characters before they reach an error
+  (`internal/llm/lx_round12b_routes_test.go`, `internal/ops/lx_round12b_answerroute_test.go`,
+  `mw/lx_round12b_fallback_test.go`, `tests/lx_round12b_routes_integration_test.go`).
+  Registry: registering a family again replaces it, and a declared or observed route is
+  an overlay on its family and no longer a frozen copy of it. Streams: one outcome is
+  recorded once and is what every reader, the ledger and the call record say; waiting on
+  a drain ends with the stream's own context; `Err` reports a cancellation as soon as it
+  is known and `TextStream.Ended` says whether there is an outcome; a refused stream
+  publishes a record (`internal/ops/lx_round12b_stream_test.go`, run twenty times over;
+  the race detector does not run on this machine). `VerifyClaim`: a refutation speaks at
+  its surest claim and a verification at its least sure, and the corrections of every
+  claim that gave the verdict are kept (`lx_round12b_verify_test.go`). The smarttodo
+  example no longer writes a bill of health from an audit that failed. The tests the
+  round named as passing with their fix reverted now fail without it
+  (`lx_round12b_bite_test.go`). Left for a measurement: whether a finding the model
+  rates as trivial fails an audit under a policy.
+  **Round 13** read what had never been read: the decisions and the combinators, the
+  latency work, and the benchmark application. Not approved: seven blockers and about
+  thirty-four more, all accepted.
+  Decisions (`internal/ops/r13_assess_test.go`): a scale as wide as the integers
+  overflowed the check on its width and the schema was then built for ever; whole
+  numbers were read through a float and one above 2^53 came back as its neighbour; an
+  answer that gave a question twice was read as its second; a key that is not one of
+  those asked is now refused however it is spelled; the context argument is the
+  context, whatever the options hold; the reasoning preference of a decision is tested
+  at the request the provider receives.
+  Combinators (`internal/ops/r13_flow_test.go`): a step that ended its goroutine came
+  back as a zero value and no error; a nil step was found after the others had been
+  started; a panic was unclassified and is now an invariant violation with the type of
+  what was panicked logged beside the stack; `RouteBy` with one route is refused in its
+  own name.
+  Latency (`internal/llm/r13_lat*`, `mw/r13_lat*`, `internal/ops/r13_lat*`): an answer
+  from the cache reported the network time of the call that first fetched it; the shared
+  transport compared two interface values that can be uncomparable and could panic; the
+  clock now describes the attempt that answered, so a redial after a dead connection is
+  not counted twice and a reused connection reports no set-up; `Timing.Calls` says how
+  many calls a sum covers and `Outside` is nothing for more than one; `Warm` carries
+  none of the caller's headers and follows no redirect, and reaches a provider through
+  the wrappers of `mw.Chain`; the shared transport raises only what was lower and leaves
+  the idle timeout alone; a copy of a hedged request that panics is an error; a client's
+  effort is a preference, sent where a route takes it and dropped where it does not, and
+  an effort named on the call stays strict; a service tier on a provider that would
+  never send one is refused when the provider is built.
+  The application's findings are under BM-011.
+  **Not done, and recorded:** the tier a provider says it served does not reach the
+  envelope (it needs a field on `Meta`); a call that fails returns no timing; `Preflight`
+  takes no context and so does not know the client's model; `TextStream.Detach` writes a
+  plain bool a reader reads.
+  **After the lanes:** the surface gained `AuditWithMeta`, `BranchAhead`, `BranchBoth`,
+  `GenerateResult`, `RedactLLMWithMeta`, `RouteAhead`, `WhichOrNoneResult`,
+  `AnsweredQuestion`, `DecisionRecord`, `Picked` and `Timing`; the suite, seventy
+  packages, passed three times running. One test of mine was found failing about one run
+  in twenty and is fixed: it required a connect to the loopback address to take longer
+  than nothing, which Windows' clock does not promise.
+  *Verify:* a mutation run over these fixes, and a review round that finds nothing above
+  a nit.
+- [ ] **RV-014** — **High.** Review round 14, 2026-10-03: three readers on the
+  optimisation work (PF-002 to PF-004) and on the speculative flow of the benchmark
+  app, each told to break it and to show what it found with a probe test run through a
+  build overlay, the tree untouched. **Not approved by any of the three.** What they
+  found, and what was sound, so that the next round does not repeat the work.
+  **The shared call path.** One blocker: the cost ledger could lose a budget notice.
+  A call that found the ledger held, by a reader or by a writer, left its record on a
+  list for the holder to apply, and only two of the holders ever looked at the list;
+  the 80% and 100% callbacks for that call never ran unless something touched the
+  ledger later (35 of 40 trials under a real reader). Totals and history were exact
+  throughout: 25,600 concurrent calls, no record lost, doubled or out of order. The
+  lane's own test hid it by reading the ledger once at the end. Also: the request
+  tracking variables were frozen at first use and nothing refreshed them, so a `.env`
+  loaded by `InitWithEnv` after an earlier call was ignored; nothing tested that
+  request ids differ between two processes; two of the lane's tests passed with the
+  optimisation they named removed.
+  **The per-type cache.** No wrong value and no data race in what is cached; the type
+  is the only thing that shapes it; the copy handed to a caller is deep; the fast
+  structure check agreed with the token walk on 600,000 bodies and the required-field
+  check with the old one on 120,000 values. Found: near its limit the cache could hand
+  two goroutines two plans for one type (equal in value, so the cost was work done
+  twice, and a test of the lane's that failed ten runs in a thousand); a type that
+  embeds a pointer to itself overflows the stack in the schema generator, which no
+  `recover` catches, while the type check calls it fully supported (old code, reached
+  now from the cache); every call for a type now shares one schema map with the
+  provider, which nothing in the repository writes to and nothing documented as
+  read-only; one budget test measured a copy of the code and not the code.
+  **Batches.** The pool is sound: no deadlock, no goroutine left behind, results
+  placed by index once, nothing beside an error. Found: a scheduler that sets no
+  limit raised the bound from 4 to 64 (ruled: it is 4); an input never started in
+  parallel mode got the bare context error where the others get a classified one;
+  three refusals were unclassified; under fail-fast an item cancelled in flight was
+  counted as failed; the two shapes of `RunOpMany` disagreed on which failure is
+  returned (ruled: the one that stopped the run, everywhere); several claims of the
+  lane were true and untested.
+  **The benchmark app, and this one was mine.** `HandleAhead` read the details out of
+  the message beside its first look, before the redaction, and wrote the reply from
+  them and reported them in the outcome. A customer's phone number, given where an
+  order number goes, went to the drafting call after the text had been redacted. No
+  test saw it, because the simulator answers an extraction from the label whatever it
+  is sent, and because `ahead` was not in the list of flows the invariant tests walk.
+  Fixed test-first: a provider whose extraction answers from what it is shown
+  (`TestWhatIsReadFromTheTextBeforeItIsRedactedDoesNotGoOn`, all four flows; it failed
+  on `ahead` alone, with the phone number in the drafting request and in the outcome);
+  a message that holds personal data has its details read again from the redacted
+  text; `ahead` is in `allFlows`, so the redaction, translation, judgment, refusal,
+  cancellation and wait-count tests all run on it, and its calls and waits are counted
+  two ways that a test holds equal. Cost: one call and one wait for a message with
+  personal data, 114 calls in 60 waits over the 17 messages where it was 112 in 58.
+  The speculative combinators themselves were sound: the losing branch is cancelled,
+  waited for and discarded, and a reply that failed its audit cannot be returned.
+  **Fixed, 2026-10-03**, by three lanes, test-first, each showing its tests fail
+  without the fix on the old code or through an overlay.
+  *The ledger.* The list of records waiting for the holder of the lock is gone. A
+  call builds its record and keys before the lock and applies its own record under a
+  short exclusive lock, so no record waits for a later call. Notices are queued under
+  that lock, in the order the thresholds were crossed, and delivered one at a time
+  with no lock held, 80% before 100%; a callback that ends its goroutine hands the
+  queue on. The reviewer's three probes are in the repository as tests and each
+  failed on the old code. The price: `TrackCost` at eighteen cores is about 1.2 µs
+  where the list made it 0.7 µs (it was 2.5 µs before any of this work); serial cost
+  and allocations (2 a call) are unchanged. One thing a caller can observe: a call
+  whose notice is handed to a goroutine already delivering may return before its own
+  callback has run. The tracking variables are refreshed by a reload
+  (`config.OnEnvironmentReload`); the seeding of request ids is a function with a
+  test; the two tests that guarded nothing are replaced, one of them with a note that
+  an allocation budget cannot see the early return it names.
+  *The cache.* The miss path is exact: a mutex taken only for a type not yet kept, a
+  second look under it, a store if under the limit. The reviewer's probe failed 23
+  runs in 100 on the old code; 2,000 runs of the five concurrent tests after the
+  fix, none. The read path is as it was, no allocation. A type that embeds itself,
+  directly or through a ring of types, is refused as a configuration error before
+  any call, where it overflowed the stack. A computation that panics reaches every
+  reader with the original value and stack. The randomised structure test generates
+  what the reviewer said it never did, and two broken fast passes that the old
+  generator let through now fail.
+  *Batches.* A scheduler that sets no limit bounds a batch at 4. One rule for the
+  error of every multi-call function: the failure that stopped the run. `MapReduce`
+  runs on the same pool and its own copy of one is deleted. A fail-fast partial run
+  returns a classified error; an item cancelled in flight is counted as cancelled;
+  an input never started carries a classified error. Each entry point's
+  documentation states that a client budget can be passed by the calls in flight,
+  and a test holds the bound. Permutation tests cover every completion order for
+  mixed and partial runs.
+  **The suite after all of it:** every package but `internal/operations`, four times
+  running, one of them shuffled: 25 packages, no failure. `gofmt` and `go vet` clean.
+  **Found on the way and not yet fixed:** the same struct embedded by two routes
+  repeats a name in a schema's `required` list; a type with an unexported embedded
+  struct is called fully supported while its schema is nil (one lane has both now).
+  Tests in `internal/ops` that end with `Configure(DefaultConfig())` pin the tracking
+  configuration for the tests after them. A timeout's cancel function is never
+  called (it goes with V2-010, where no options value carries a timeout).
+  *Verify:* a round on what these lanes changed that finds nothing above a nit.
+
+---
+
+# M21 — A lean API, a clean codebase, and the library's own cost
+
+**The owner's instructions, 2026-10-03.** "Freeze new llmops being added. Your next task is
+to make the api so lean, clean and efficient, it should feel like a part of the go std lib
+and then optimize it to an inch of its life." And: "spawn agents to check for bugs, code
+smells, code style adherence etc; we need to make sure the code base is flawless."
+**No operation, combinator or new form of one is to be added.** Two gaps were found
+before the freeze and are recorded, not filled: there is no loop ("repeat until the model
+says stop, at most N times"), so the benchmark application redrafts once and does not
+audit the redraft; and `Assess` cannot take a free-text answer, so a language had to be a
+closed list.
+
+**What the library is for**, as the yardstick for everything below: a Go programmer hands
+it Go values and names a Go type, and gets back a typed value or an error. The type is the
+contract, and the library owns what makes the contract hold: the prompt, the declared
+shape of the answer, the parsing, the refusal of an answer that does not meet it, the
+retries and the cost. Nobody writes or reads a prompt unless they choose to tune one. So
+the surface a user sees is about their types and their logic, and the machinery (contract
+levels, protocols, registries, option halves, capabilities, call records) is out of sight
+until it is asked for.
+
+**Where it stood**, by five audits and twelve reviews made on 2026-10-03, all by reading:
+the root package exports 666 names (219 functions, 282 types, 90 constants, 75 variables;
+`net/http` exports about 250); 277 of them are used by no example, test or README; 43 of
+the 219 functions take a context first; there are 25 distinct shapes of call among 89
+live operations; 49 option types with 51 constructors and 331 chained setters, of which
+22 refuse their zero value and 10 accept it and mean something else; seven shapes of "the
+answer and what happened"; four taxonomies of error, with the kinds not exported and a
+failed provider call unclassified; about 75 environment variables, a dozen read on every
+call; a client whose `With` methods change the receiver and four of which do nothing
+unless called in the right order; a root that godoc renders as bare alias lines; 147 of
+815 Go files named after a task or a review round. The reports are kept with the
+session's working files and their findings are entered here as they are acted on.
+
+## Decisions
+
+- [ ] **V2-001** — **Decision.** This is version 2. `Extract(input, opts)` and
+  `Extract(ctx, input, opts...)` cannot share a name, so the one shape cannot be reached
+  in v1 except by suffixed twins, which is the kind of family this work removes. A new
+  major version is Go's answer to a breaking change. v1.2.0 stands as the last v1. The
+  module path takes `/v2` as the last step, mechanically, once the surface has settled.
+  The first plan was to keep every name and deprecate; the signature audit showed what
+  that could and could not reach, and the plan changed. The owner can overrule this.
+- [ ] **V2-002** — **Decision.** Plain functions are the face of the library. All 45
+  examples and 504 call sites in the tests use them; 124 lines use the fluent builders,
+  which cover about half the operations, seven of them through functions already
+  deprecated, and four of whose `RunResult` forms return an invented envelope. The root
+  file's comment said the reverse of the README. The builders leave.
+- [ ] **V2-003** — **Decision.** `internal/tools` is removed, not repaired: 28 defects
+  and several ways to do harm (a file deletion that takes any path, a fetch that reaches
+  internal addresses), in helpers the root does not export and one example uses.
+- [ ] **V2-004** — **Decision, 2026-10-03.** Where it is built. The new root is written
+  as a package in the directory `v2/` of this repository (`package schemaflux`, import
+  path `github.com/monstercameron/schemaflux/v2`), over the internal packages as they
+  are. The old root, its tests and the examples keep compiling and passing until the
+  new one is complete; then the old root and the builders are deleted, the new files
+  move to the repository root and the module path takes `/v2`, so the import path the
+  new tests and examples were written against does not change. The reason is the
+  tree: `Extract(input, opts)` and `Extract(ctx, input, opts...)` cannot both be the
+  root's `Extract`, and changing 89 signatures in place breaks 504 call sites in the
+  tests and 45 examples for as long as the work takes, with twenty lanes in one file.
+  The internal packages keep their present shape under the new root at first (the
+  new functions translate a flat options value into today's internal one, which costs
+  field copies); collapsing the internal option types onto the new ones follows,
+  family by family, measured.
+  The surface is specified before it is built: every declaration written out, each
+  with the internal call behind it, and every exported name of today's root given a
+  fate. Two agents are writing that now; the coordinator rules on what they could not
+  settle, a reviewer attacks the result, and only then do lanes implement it.
+- [ ] **V2-005** — **Decision, 2026-10-03.** The surface, as specified and ruled. The
+  specification is about 6,400 lines of declarations, each with the internal call
+  behind it, and a fate for all 666 names of today's root; it and the rulings are kept
+  with the session's working files and are entered here as they are implemented. What
+  it comes to:
+  **A call.** `func Op[T any](ctx context.Context, required..., opts ...OpOptions) (T,
+  error)`. Ten inputs that sat in options become positional (the categories of
+  `Classify`, the criteria of `Filter` and `Sort`, the language of `Translate`, and
+  so on). A caller writes at most the type asked for; seven functions reorder their
+  type parameters for that. One common options type of seven fields (`Model`, `Tier`,
+  `Effort`, `Mode`, `Steering`, `MaxOutputTokens`, `WebSearch`), which an operation's
+  own options type repeats flat. The zero value of every field is what today's
+  constructor sets. A bool whose default was true is renamed to its negation
+  (`Omit…`, `Skip…`); a number whose zero is itself a setting takes a negative for
+  its lowest setting, as `net.Dialer.KeepAlive` does.
+  **The second form.** `X` returns the answer. `XDetail` exists for the nine
+  operations where asking the model for more is a different request (`Summarize`,
+  `Rewrite`, `Translate`, `Expand`, `Is`, `Which`, `WhichOrNone`, `Rate`, `Assess`)
+  and nowhere else. Every `…Result`, `…WithMeta`, `…WithMetadata`, `…Legacy`,
+  `…WithModel` and `…Hybrid` name goes; the reviews take their short names back
+  (`Validate`, `Verify`, `Audit`, `Critique`).
+  **The client.** A value struct with twelve exported fields and no setters, the
+  shape of `http.Client`: `Provider`, `Model`, `Effort`, `Timeout`, `Retries`,
+  `Repairs`, `Budget`, `Scheduler`, `Policy`, `Recorder`, `Logger`,
+  `OmitReinforcement`. `Default()`, `SetDefault(c)`, `WithClient(ctx, c)`. A context
+  that carries no client resolves the default client whole, which is the fix of
+  V2-011. `Init`, `InitWithEnv` and `NewClient` go: the zero client reads the
+  environment by itself, and the library never loads a `.env` file.
+  **What happened.** One `Recorder`, put on a context or on a client, read afterwards
+  (`Records()`, `Total()`) or handed each `Record` as it is made (`Handle`). A record
+  never holds the input or the answer unless the recorder was told to keep them;
+  `Recorder.Decisions` is how the decision log survives.
+  **Errors.** One `*Error`. Eighteen kinds, each a constant that is itself the target
+  of `errors.Is` (the shape of `syscall.Errno`), so the kind and the sentinel cannot
+  disagree. The six ways an answer fails its checks are one kind, `ErrInvalidAnswer`.
+  **The environment.** 75 variables become 40, read once. Anything that changes what
+  a model is asked or what a call may spend is a field in code and has no variable.
+  A malformed variable is a configuration error from the first call that needs it.
+  **The root** is about 225 names where it was 666: the operations with their options
+  and answers, the decisions and `Branch`, `Select`, `Whether`, `RouteBy`, `Gather`,
+  `Each`, the client, the recorder, the error, the provider contract. Subpackages:
+  `provider`, `mw`, `pricing`, `telemetry`, `schemafluxtest`, `requestid`, `flow`
+  (speculation, escalation, voting, checkpoints, approval, map-reduce), `op` (an
+  operation of the caller's own, and planning a batch), `redact`, and `exp` for the
+  sixteen operations the catalogue marks experimental.
+  **Two rulings against a specification's own recommendation.** The tier stays a
+  public option, because every operation honours it and without it a caller can only
+  name a provider's model. And a client's policy floor on the guarantee an answer
+  carries fails closed: an operation that establishes no level is refused under a
+  floor, where today the floor silently does not apply to it.
+  **Lost on purpose:** what only a deprecated form returned (the extra fields of
+  `MergeWithMetadata` and `FormatWithMetadata`, a numeric severity in the old
+  `Audit`); option fields nothing read; prompt states reachable only by passing a
+  zero options struct; `NormalizeBatch` (it is `Each` with `Normalize`); `Chunk` (it
+  is `slices.Chunk`).
+  **In review** by three readers before any of it is built: one writing programs
+  against it and attacking the design, two checking every operation's mapping
+  against the code.
+
+## The shape
+
+- [ ] **V2-010** — **High.** One shape of call:
+  `func Op[T any](ctx context.Context, required..., opts ...OpOptions) (T, error)`.
+  The context is first. What an operation cannot run without is a positional parameter
+  (the categories of `Classify`, the criteria of `Filter` and `Sort`, the language of
+  `Translate`: twelve operations hold a required input in their options today). What has
+  a default is a field of the operation's own options struct, which is flat, has no
+  context in it and no timeout (a deadline is the context's), and whose zero value means
+  the defaults, so there is no constructor. Several option values merge left to right, a
+  later non-zero field winning, as the decision functions already do. A field whose
+  default is true is renamed so that its zero is the default.
+  *Verify:* every operation in the catalogue has the shape, held by a test that reads the
+  signatures; no `New…Options` remains; a test calls each operation with no options.
+- [ ] **V2-011** — **High, and a defect today.** The client. A call whose context
+  carries no client runs on whichever provider was set last and drops that client's
+  budget, scheduler, model, effort, observer and **data policy**: a policy is not
+  enforced on such a call, which its documentation says it is. A context with no client
+  resolves the default client whole. Only `Init` and `SetDefault` set the default;
+  a client's own `With…` methods do not write process state. A `With…` method returns a
+  copy, the zero `Client` is usable, a key given in code wins over the environment, and
+  no setting depends on the order it was set in.
+  *Verify:* a test for each sentence, through the exported API.
+- [ ] **V2-012** — **High.** One form that returns what happened. A function per
+  operation cannot be the rule: 35 operations' result types already hold the `…Result`
+  name. The thirteen `…Result` functions, the `…WithMeta` and the `…WithMetadata` forms
+  give way to one way of asking for the envelope of any call, to be designed against
+  `net/http/httptrace` (a recorder placed on the context and read after the call).
+  `Result[T]` and `Meta` are the one shape; the 41 `Metadata map[string]any` fields go.
+- [ ] **V2-013** — **High.** One taxonomy of error. Every failure of a call is an
+  `*OperationError` whose kind is exported and which wraps its cause; `errors.Is` against
+  a sentinel and the kind agree for every error the library makes, held by a table test.
+  A failed provider call, the process budget and "no provider" are classified. Messages
+  are lower case, name the operation and carry no payload and no vendor text.
+- [ ] **V2-014** — **Medium.** The root as a reader meets it: a package comment that says
+  what a call is and shows three; the file split by what a reader needs; `Client`,
+  `Result` and `Meta` declared as types so their members are documented; compiled
+  examples in the root package; every exported name documented. The names a newcomer
+  sees first number about twenty.
+- [ ] **V2-015** — **Medium.** What leaves the root: the fluent builders; the operation
+  descriptors, planner and algebra; request tracking and logging configuration; the
+  provider constructors and registry. Each to a subpackage that says what it is, or
+  unexported where nothing outside needs it. The target is the smallest root from which
+  every capability is still reached: 305 names by moving these alone, fewer once the
+  option constructors and the second forms are gone.
+- [ ] **V2-016** — **Medium.** Names: no `Get` prefix (twelve), one `Category`, `Tier`
+  meaning one thing, the mode constants spelled alike, `WithModel` not meaning two
+  opposite things, no name that records history (`Legacy`, `Hybrid`, a task number).
+- [ ] **V2-017** — **Medium.** The environment is read once, by one parser, and every
+  variable the library reads is listed in one documented place. Nothing is logged at
+  info level by default; the library does not write to standard error unless asked.
+- [ ] **V2-018** — **Medium.** Files and identifiers are named for what they are. 147
+  files carry a task, round, gap or coverage name, and the lanes of M20 added identifiers
+  with lane prefixes; a test file is named for the file it tests.
+- [ ] **V2-019** — **Medium.** Guards that guard. The surface test pins names only, no
+  signatures, methods or fields, and five public packages have no snapshot; the command
+  the documents give for it runs nothing. The surface of every public package is pinned
+  with its signatures.
+- [ ] **V2-020** — **Medium.** The examples and the README teach the one shape, import
+  nothing internal (23 of 45 do), fail when their calls fail, and the README's first
+  sample compiles as written.
+- [ ] **V2-021** — **Medium.** The testing package is to this library what
+  `net/http/httptest` is to `net/http`: usable from parallel tests, and used by the
+  repository's own tests in place of fifteen hand-written provider stubs.
+
+## The codebase
+
+- [ ] **QS-001** — **High.** The sweep of 2026-10-03: twelve readers, the whole codebase,
+  for defects, smells and departures from `AGENTS.md`. Defects traced by reading, to be
+  shown by a failing test before each is fixed: 89 in the operations, most of them the
+  older operations reading a missing answer as a zero value, with panics in `Redact` and
+  `Diff` on an unexported field, a batch processor that hangs on a size of zero, and
+  options a prompt states and nothing enforces; 9 in the providers (an Anthropic failure
+  untyped and retried whatever its status; the default provider chosen by map order; a
+  caller's property deleted for being named like a schema keyword); 8 in the middleware,
+  pricing and telemetry (cached and reasoning tokens billed twice; a suffixed model
+  priced as its base; a circuit breaker opened by callers' cancellations; a private key
+  redacted by its first line); 8 in the client and configuration (settings that do
+  nothing; an environment key beating the one given in code); 28 in `internal/tools`
+  (V2-003); about thirty in the example applications. Nine lanes are fixing the library's
+  share, each on files of its own. Their outcomes are to be entered here.
+  *Verify:* each defect a test that fails without its fix; a mutation run over the fixes;
+  a review round that finds nothing above a nit.
+  **Fixed, 2026-10-03; in review.** Nine lanes, each on files of its own, each required
+  to show a defect with a failing test before touching it. What changed, by area:
+  *Operations.* The older operations no longer read a missing answer as a zero value:
+  Critique, Compose, Derive, Enrich, Merge, Decompose, Explain, Format, Interpolate,
+  Settle, Match, Normalize, Infer, Pivot, Project, Predict, Rank, Resolve, Suggest,
+  Synthesize, Score, Compare, Annotate, Cluster and the four deprecated text forms each
+  refuse an answer that lacks what was asked, and return nothing beside the error.
+  `Redact` and `Diff` do not panic on a caller's value; a field named for redaction
+  that is not a string is zeroed, where it used to come back readable and listed as
+  redacted. `RedactLLM` runs the deterministic detectors beside the model, so a
+  document that persuades the model to name nothing does not undo them. Numbers a
+  model did not report are no longer made up (a confidence of 0.5 on an error, of 1.0
+  for one source). What a prompt states and Go can check is checked: one-to-one
+  matches, add-only enrichment, excluded fields, a rank that covers every item once
+  and is sorted in Go, the caller's fields unchanged by `Infer`, a glossary term in a
+  translation. Maps are rendered into prompts in sorted order. No response body, no
+  caller data and none of the model's text is logged or carried in an error. The
+  batch processor refuses a size or a concurrency below one, where zero looped until
+  memory ran out. The strict decoder, through which every answer is read, treated
+  arrays as objects and lost its place after a nested value: it refused valid answers
+  and accepted a real duplicate key. The trust check refused any call whose steering
+  was a word the system prompt also used.
+  *Providers.* One rule of error for every provider (429 is a rate limit, 503 is the
+  provider being unavailable, both keep `Retry-After`); an answer cut off or withheld
+  is classified and not retried; the default provider is never chosen by the order of
+  a map; a finish reason that is missing or unknown is an error; request fields a
+  provider cannot send are refused before the call; bodies and stream events are
+  bounded; a caller's property named like a schema keyword is kept.
+  *Middleware, pricing, telemetry, the testing package.* Cached and reasoning tokens
+  are priced once (they were added on top of the totals they are part of); a model
+  name with a suffix is not priced as its base; a total that holds an unpriced call
+  says it is incomplete; the circuit breaker counts the provider's failures and not
+  the caller's cancellations; the cache does not hand a follower its leader's
+  cancellation, does not keep an answer that was cut off, and is bounded; a private
+  key is redacted as a block; a fallback stops on what should stop everything; spans
+  carry no steering and no error text.
+  *Client, configuration, types.* The client's settings take effect whatever order
+  they are set in, and `WithRetries(0)` retries nothing; a key given in code beats the
+  environment; `Err` says what is true now; an unusable timeout in the environment is
+  refused at start; the kind of an error and `errors.Is` agree for every error the
+  packages make, held by a table of about 190 cases; booleans in the environment are
+  read by `strconv.ParseBool`, by one parser.
+  Found by the integration that followed: the "jumble" strategy of `Redact` could
+  hand back its input unchanged, one time in twenty-four for four characters; and the
+  two helpers that tests used to read the log captured nothing, so every "does not log
+  the payload" assertion built on them had been passing whatever was logged. With
+  them repaired one leak showed: the strict parser's error listed the model's own key
+  names, and every operation logs that error.
+  **The mutation run.** 1,512 mutations, each reverting one fix through a build
+  overlay with the tree untouched (the same `git diff` hash before and after every
+  run). No fix was missing. 162 were unguarded: no test noticed their removal. The
+  lane that had reproduced each defect on the old code first (old file from `git
+  show`, a probe test through `go -overlay`) left a third as many gaps as the lanes
+  that wrote test and fix together, and that method is now the rule. For nearly every
+  gap the missing test was written and proved both ways.
+  One new defect came out of it: a NaN given as `Settle`'s minimum satisfaction is
+  replaced by the default without a word.
+  **The gaps closed, 2026-10-03.** Five workers, one per area, put the missing tests
+  into the test file of the source each one tests (none is named for the mutation
+  run), and ran every one against its mutation through the overlay: each fails with
+  the fix removed and passes with it. The `Settle` defect was fixed test-first: the
+  caller's own value is checked before the options are merged, a NaN, an infinity or a
+  value outside 0 to 1 is a configuration error before any call, and a negative
+  `MaxAlternatives`, which had the same shape, is refused too. The same shape was then
+  found in `derive.go`, `interpolate.go` and `resolve.go`; see the follow-ups under
+  PF-002.
+  **Not done, and the next tasks:** QS-005 to QS-008 below.
+  **Since then, 2026-10-03:** QS-005 is under way (below); a second resolver of
+  embedded struct members was found in five places and all five now read from one
+  (`jsonMembers` in `internal/ops/jsonschema.go`, which follows `encoding/json`'s own
+  rule: the shallowest name wins, then a tagged one, and a tie is no member), so the
+  declared schema, the description of the type in the prompt, the check of required
+  fields and the reader of answers agree about what a type's members are; a type that
+  embeds an unexported pointer to a struct is refused before any call, because
+  `encoding/json` cannot fill it.
+- [ ] **QS-002** — **Medium.** The static analysers. `staticcheck`: 107 findings, all
+  but two in tests (53 uses of deprecated names, 25 unused, 9 nil contexts). `deadcode`:
+  four functions no test reaches, two of them root wrappers (`WhichResult`,
+  `RateResult`). To be zero, and run in the gate.
+- [ ] **QS-003** — **Medium.** Caller text in system prompts. The newer operations put
+  nothing of the caller's in the system prompt; about twenty older ones do. Moving it
+  changes what a model is asked, so it is measured live, an operation at a time
+  (this is LX-026 to LX-035, now with the list of places).
+- [ ] **QS-004** — **Low.** The example applications' own defects (the task list
+  application's interface and database; the examples that exit 0 when every call failed).
+- [ ] **QS-005** — **High.** One reader for a model's answer. `ParseJSONStrict` accepts
+  an answer when any one of its fields is recognised, which is the root of the reads
+  that failed open; about 35 files call it, and an answer is parsed two to six times
+  on its way back. A reader that takes the names it requires exists
+  (`internal/ops/answerfields.go`) and the operations fixed on 2026-10-03 use it or
+  check for themselves. It replaces `ParseJSONStrict` everywhere, and an answer is
+  parsed once.
+  *Verify:* no caller of the old function is left; a table test of each operation
+  against an answer missing each of its fields; the decode benchmark.
+  **The reader is built, 2026-10-03.** `decodeAnswer(op, response, &target)` in
+  `internal/ops/answerfields.go` decodes once and then walks the text against a plan
+  made once for the type, allocating nothing: every member not marked optional must
+  be there and not null, at every depth, in list elements and map values. A refusal
+  names the member in the library's words ("clusters[2].label is missing"), carries
+  nothing the model wrote, and leaves the target zero. It costs less than what it
+  replaces: 9 allocations where `ParseJSONStrict` took 25 for a small answer, 22 where
+  it took 61 for twelve nested members. Proved on five operations first, each tested
+  against the old call through an overlay; what the old code read as zero when the
+  model left it out: `Critique`'s overall score, summary, priorities and an issue's
+  severity (an issue with no severity passed the severity filter), `Cluster`'s names
+  and keywords, `Explain`'s summary and key points, and every field of a `Suggest`
+  answer beyond the first.
+  **Ruling.** The rule is for the library's own answer types. A caller's type keeps
+  today's rule of presence, read by `decodeCallerAnswer`: what a caller's field must
+  carry is governed by the operation's options (`Extract`'s complete-fields rule and
+  strict mode), and requiring every field of every caller's type would refuse the
+  answers of providers that do not enforce a schema. Whether operations other than
+  `Extract` should be able to require a complete caller's type is a question for v2.
+  **Three lanes are converting the other fifty-five call sites now.**
+  **Done, 2026-10-03.** No call of `ParseJSONStrict` is left and the function is
+  deleted with `requireRecognisedField`. What the old read took as a zero value when
+  the model left it out, counted by running each new test against the unchanged code
+  through an overlay: 89 members in the shaping and text operations (`Synthesize` 13,
+  `Pivot` 12, `Assemble` 11, `Predict` 11, `Conform` 9, `Decompose` 8, the four text
+  forms that report a confidence 7, and the rest), 24 in analysis and judgment
+  (`Score`'s breakdown, reasoning, strengths and weaknesses; `Compare`'s similarities
+  and differences; the summary of `Validate` and of `Verify`; `Decide`'s explanation;
+  what `Question` was asked to include), and `Filter`'s `{"ids": null}`, which read as
+  "nothing kept". A confidence, a completeness or a compliance of 0 that the model
+  reported is now returned as 0; before, a missing one was 0 as well. The judgment
+  operations already refused a missing verdict, score or list by their own checks.
+  **One correction on the way.** Read whole, a batch answer with one element missing
+  its output refused the entire response, where the recovery code had isolated that one
+  item. The rule is applied per element now: a bad element costs its own item, with the
+  error kind it had before, and the whole response is refused only when the list itself
+  is missing, null or the wrong kind. A complete response is still read in one decode.
+  **Left:** `Annotate`'s individual annotations, and the findings, issues, claims and
+  evaluations inside the judgment operations' raw lists, are still read by hand (the
+  reader does not look inside a raw member): `Annotate`'s `start`, `end` and `value`
+  still read as zero when missing. Whether operations other than `Extract` may require
+  a complete caller's type is open for v2.
+- [ ] **QS-006** — **Medium.** The call path's own shape. `CallLLM` is 490 lines with
+  the same fallback written four times; seams that exist for tests live in non-test
+  files (`customLLMCaller`, `setLLMCaller`, `retryRandFloat`, three in `op.go`), and
+  the process-wide provider is one of them. `options.go` as one change: locked limits
+  are enforced by 6 of 14 option types, a timeout's cancel is never called,
+  `WithStrictSchema(true)` fails validation against the default it sits beside.
+- [ ] **QS-007** — **Medium.** What only the race detector can see. Windows on ARM64
+  has none, so these were not run here: a lock removed from the client budget, the
+  tenant cache (its stress test caught the removal in 1 of 30 runs in one batch), the
+  fusion group, the budget middleware's ledger, the testing provider's flag, the
+  stream's detach. Each needs a test that runs under `-race` in CI.
+- [ ] **QS-009** — **Medium.** "Start researching dead code and useless code and start
+  trimming it without breaking the code base" (the owner, 2026-10-03). The inventory,
+  by a type-checked analysis under three build configurations, checked against
+  `deadcode` and `staticcheck`: 26 items nothing references (58 lines); 766 that only
+  their own tests reach (11,392 lines, with 18,340 lines of tests that exist for
+  them); 740 names exported by an internal package and used only inside it; 381
+  public names with no use shown; 800 useless things (option fields set and never
+  read, result fields nothing fills, forwarders). The weight is one subsystem no user
+  can reach: a batch processor, partial and recovering runs, fusion, pipelines,
+  workflows, adaptive chunking, schema evolution and migration. 114 test files are
+  named for a task or a review round and hold 40,280 of 188,930 lines of tests; no two
+  tests have the same body. Twenty-eight batches of deletion were each applied to a
+  copy of the tree and vetted. **Being trimmed now** by four lanes on batches that
+  share no file, each checking every item against the tree as it is (the inventory is
+  of a snapshot, and it calls today's unwired groundwork dead), with the whole
+  working tree first copied to a zip outside the repository, since nothing here is
+  committed. Kept on purpose: everything a public package names; the test
+  infrastructure; today's groundwork for V2-005; what the fluent builders and
+  `internal/tools` hold, which leave wholesale. Not planned: unexporting the 740
+  internal names before V2-005 restructures their packages.
+  *Verify:* build, vet and the whole suite after every batch; the surface test and the
+  golden prompts unregenerated; the lines removed, counted.
+  **The first pass, 2026-10-03.** Removed: about 7,300 lines of code and 14,200 lines
+  of tests, 61 whole files. In `internal/ops`: adaptive chunking, the batch algebra's
+  global path, fusion, partial and recovering runs, pipelines, schema evolution, the
+  result cache, collection identity, the configuration validator, the diagnostics
+  store, fan-out, migration, the prompt registry, retention, sessions, staged plans,
+  the store, vectors, and from `procedural.go` the state machine, the workflow and the
+  retry, loop and switch combinators; from `internal/types` the ledger, `Opt`,
+  retention and scope and the batch result's policy types; the idempotency tracker;
+  `internal/utils` whole; `config.Init`, `GetAPIKey` and the tracing switches that
+  nothing read. The surface test, the golden prompts and the wire contract passed
+  unregenerated after each lane. **Kept that the inventory called dead:** the batch
+  processor (`ExtractBatch`), because a tracing test of another package runs through
+  it; the id-batch algebra's constructor, which the live tests of `RunOpMany` build
+  their operations with (deleted, found needed, put back); the provider registry's
+  default, whose removal would rewrite an error message users read; about forty
+  items that are this week's groundwork and have no caller yet; wrappers that live
+  behaviour tests run through. One option field the removal orphaned
+  (`BatchOptions.MaxRetries`) was caught by the dead-option guard and removed.
+  **Reversed in part the same day, on the owner's instruction.** Shown what the trim
+  had removed, by name, he asked why working features were deleted and not exposed,
+  and ruled: "keep and expose and fix anything yes or maybe rated". Rated yes: partial
+  and recovering runs with adaptive chunking (a bad item costs that item, not the
+  batch). Rated maybe: sessions (several turns with tool calls) and staged plans
+  (planning a job of several stages before paying for it). Those three are being put
+  back from the copies taken before the trim, exported from the root so that they are
+  live and tested through an exported API, reviewed, and given a place in V2-005's
+  packages; that lifts the freeze on operations for these three, which were built
+  before it. What stays removed, rated no: pipelines, workflows, the state machine and
+  the retry, loop and switch combinators (a flow is plain Go with `Branch`, `Select`,
+  `Gather` and `Each`); fusion and fan-out (`Vote`, `Escalate`, `Gather`); the result
+  cache and store (the middleware has a response cache); the prompt registry; schema
+  evolution and migration; the leftovers. The lesson is recorded for the next time:
+  code that works and lacks only a public door is a candidate to expose, and a
+  feature is listed by name and ruled on before it is removed.
+  **Left:** the two batches in files that were under edit (about 780 lines of code);
+  stale comments that still name deleted files, in a dozen places; `BatchOptions` and
+  `ConvertOpOptions`, which now look dead themselves; the unreachable neutral branch
+  of the circuit breaker's report.
+- [ ] **WIP-001** - **State at the work-in-progress commit of 2026-10-03, and what is left.** The owner
+  stopped the effort ("this is taking too long, commit everything as a wip and end here") and asked for
+  notes on what is left. Every lane was stopped mid-work; nothing here was run as a whole suite afterwards.
+  Version 2 lives in the staging directory `v2/` (import path `github.com/monstercameron/schemaflux/v2`)
+  beside the old root, which is untouched as an API and still the released one.
+  **What exists.** In `v2/`: the root types (Client as a value, Options embedded in every options type,
+  one `*Error` with eighteen kinds, Recorder and Record, Provider), about seventy operation functions
+  (extract, complete, describe, text, analysis, collection, judgment, decisions with `Whether` and
+  `RouteBy`, streams), and the subpackages `flow`, `exp`, `op`, `redact`, `chat`, `mw`, `provider`
+  (with `codex`), `pricing`, `telemetry` (with `otel`), `requestid`, `schemafluxtest`. Under them:
+  `internal/bind` (the call helper and the one set of conversions), the decision layer, sessions with a
+  working tool loop, partial and recovering runs, staged plans with a preflight, one cost estimator,
+  contract levels that follow the caller's type, tracing with run-level spans. `tests/parity` holds the
+  request of each v2 function equal to the old root's. `v2/internal/guard` is one table of every public
+  function held to the rules in every call state.
+  **Known state of the build.** `go build` and `go vet` over the package list (without
+  `internal/operations`, which is someone else's and is not in this commit) pass except
+  `examples/v2/flowdesk`, whose port was stopped half-way and does not compile.
+  **What is unfinished, in the order to pick it up.**
+  1. *Run the whole suite* (`go test` over the package list, three times, one with `-shuffle=on`). The
+     only full run of the day had 35 packages passing and 8 failing; two were fixed since, the rest
+     belonged to lanes that were mid-edit. Expect failures in `v2/internal/guard`, `v2/chat`, `v2/exp`,
+     `tests/parity` and the root's surface test. `tests/TestPublicAPISurface` needs
+     `SCHEMAFLUX_UPDATE_API=1` once the diff is read (it holds `Tool`, `ToolCall`, `ModeMDSP` added and
+     the adaptive-chunk names removed).
+  2. *The guard's findings* (the list is in `v2/internal/guard`'s failing rows): `Classify` logs the
+     caller's category label and the model's answer at debug level (`internal/ops/analysis.go`);
+     `exp.Resolve` returns a result beside an error; `op.RunEach` item errors are not the public error
+     type; `Diff` ignores a cancelled context (ruled: every function that takes a context honours it);
+     a call refused for an unusable option adds a Record and no operation scope (`internal/bind/call.go`);
+     a stream ended by the client's timeout can return before its Record is added, and a content-filter
+     refusal on a stream comes back as an invalid answer; `op.RunStages` adds no Record when refused
+     before the first stage; the contract table has no row for `op.runeach`, `op.runstages`, `chat.send`,
+     `chat.sendresults`; the `MinContract` comment omits nine operations a floor refuses; about a dozen
+     fields lack comments. The lane fixing these was stopped part-way: each item must be re-checked.
+  3. *`chat`.* The root's `Request.Tools`, `Request.Messages` and `Response.ToolCalls` were being added
+     when the lane was stopped: check they are complete in `v2/provider.go`, the conversions, the test
+     provider and the cassette, then make `v2/chat` pass and review it (a weaker model wrote it).
+  4. *Functions written by the weaker model and not yet reviewed or completed:* `Score`, `Similar`,
+     `Deduplicate`, `Compare`, `Diff`, `Cluster`, `flow.Decide`, `flow.Match`, `redact`, all of `exp`
+     but `Synthesize`, `op.RunEach` / `Item` / `Stage` / `RunStages` / `PreflightStages`. Each has its
+     function and basic tests; most lack full parity cases, allocation cases, floor cases and payload
+     canaries. Three review lanes were stopped mid-work, so their files may hold half-applied changes.
+     `exp.Predict` and `exp.Decompose` still need `ops.ContractLevelFor[T]` for their level.
+     `tests/parity/exp_project_test.go` did not compile and was moved out of the tree: `exp.Project`
+     has no parity test.
+  5. *Examples.* `examples/v2/` holds ports of the examples that need no `exp` operation, written by the
+     weaker model with an offline test each: none was checked; build and test each
+     (`go test ./examples/v2/<name>/`), fix or delete. `examples/v2/flowdesk` (the benchmark
+     application) is half-ported and does not compile; `examples/v2/smarttodo` is unchecked. The
+     thirteen examples that call `exp` operations (27, 28, 32, 33, 36 to 42, 44, 45) are not ported.
+  6. *Open defects with no owner yet:* three cost-calculation sites in the planner and the stream path
+     still write the unpriced-model warning to the process logger; `redact.Text` names its trace scope
+     differently from its Record; option `Validate` messages in the old root echo the caller's option
+     string (24 sites); a stream whose provider ignores cancellation ends its span late; no middleware
+     forwards a stream (a client with middleware cannot stream: documented, not built).
+     *Found after the lanes were stopped, by a test that finished late:*
+     `tests/log_leak_catalog_test.go` (`TestEveryOperationKeepsWhatItWasGivenOutOfTheLog`) drives all
+     103 catalogued operations of the old root with canaries in the input, the options, the answer and
+     a provider's error, at debug level, and FAILS on this tree: on a provider failure, 88 operations
+     log the vendor's text and the caller's input (about 195 lines of the form
+     `log.Error("<Op> operation LLM call failed", "error", err)` in `internal/ops`; only the sites
+     that use `loggedError(err)` are clean); `Generate` and `Transform` log the caller's field names
+     in a schema line (`core.go`); `Rewrite` logs a required word; `Explain`, `Suggest`, `Summarize`
+     and `NormalizeBatch` log a refused option's value. The fix is mechanical: every such line logs
+     `loggedError(err)` (the kind only). Version 2's client logger already withholds these through
+     its guard handler; the old root does not.
+  7. *Release.* Port the README (the old one is unchanged), write the migration notes, then the swap:
+     move `v2/` to the repository root, delete the old root, the fluent builders and `internal/tools`,
+     and change the module line to `github.com/monstercameron/schemaflux/v2`. Go requires that suffix
+     for a `v2.x.y` tag to be fetchable; no `v2/` directory remains after the move. Rename the test
+     files named for tickets and review rounds. `go mod tidy`.
+  8. *Live check on `gpt-6-luna`* (never run for this work): the tool-call wire shapes for sending a
+     call and its result back, and the refusal of a tool whose parameters are not strict on OpenAI's
+     own endpoint, rest on knowledge of the vendor's API and no test here calls a vendor; then re-run
+     the flowdesk benchmark on v2 for latency and accuracy.
+  **Progress, 2026-10-20 (still open).** `go test ./v2/exp ./tests/parity -count=1` passes.
+  `exp.Resolve` and `exp.Project` now return a zero result on error; Project's plain call
+  avoids the recorded-path allocations. The Project parity table covers its defaults,
+  operation options and common options. The Conform parity test now compares the same
+  preserve-unknown choice on both APIs; Decompose and Enrich parity fixtures supply the
+  estimates and confidence their option cases require. The guard's failure, floor,
+  contract-table and field-comment checks pass after correcting the final stream refusal
+  kind, adding the chat and runner contract rows, and documenting the public fields.
+  The guard's surface snapshots and counts now include the completed `exp.Pivot`
+  and `exp.Predict` wrappers; direct tests, runnable examples, and old-root request
+  parity cover both. The full `v2/internal/guard` suite passes after its timeout
+  assertions were aligned with streams' eventual records and `op.RunEach`'s
+  per-item errors. The old-root API snapshot records the documented surface
+  changes, and the log canary test now passes across its catalogue after error
+  text and schema field names were removed from operation log lines. The root
+  tests pass. The v2 Flowdesk production packages and copied tests have been
+  ported to the v2 API; its full offline bench, desk and simulator suites pass.
+  The v2 examples run reported passing packages, though Go exited while
+  removing a Windows temporary test executable. The nested v2 SmartTodo module
+  now builds, passes `go test ./...` and `go vet ./...` against Go 1.27 after
+  its calls were ported to the v2 context, options, and `exp` APIs. Its UI
+  reads measured request and cost totals from a Recorder instead of displaying
+  invented estimates. All thirteen previously missing `exp` example ports
+  (27, 28, 32, 33, 36–42, 44, 45) now have offline scripted-provider tests.
+  `go test -p 1 ./examples/v2/... -count=1` passes across the complete
+  root-module v2 example tree, including Flowdesk. The unrelated untracked
+  `internal/operations` file is untouched.
+  One full root-module package-list run excluding only that unrelated
+  `internal/operations` package passes with `go test -p 1 -count=1`; the same
+  package list passes with `-shuffle=on -count=1`. A third unshuffled run
+  also passes after the option-error privacy and exp allocation/floor/canary
+  changes. All three runs exclude only the unrelated untracked
+  `internal/operations` package.
+  `redact.Text` now names its observer scope `redact.text`, matching its
+  Record; its exact-scope test failed before the fix and passes after.
+  The planner's two unpriced cost paths and the stream record path now send
+  pricing warnings through the client's logger, covered by a test that
+  checks all three sites and the process logger. A System One HTTP timing
+  assertion was flaky on Windows because a valid call can take less than
+  the clock's resolution; it now checks that the timed call was counted,
+  and passed 20 consecutive runs.
+  The option-error privacy sweep removed rejected string values from the
+  internal validators used by both APIs. A table of 25 direct validator cases
+  checks that each error names its field without repeating a canary. Exported
+  `exp.Predict` and `exp.Pivot` tests first failed when their public error
+  text and JSON repeated the caller's option, then passed after the fixes.
+  The affected internal, v2 exp, old-root integration, and parity suites pass
+  with their exact-message expectations updated. Numeric range errors still
+  include the rejected number; `CompleteField` errors still name the field.
+  `exp.Pivot` and `exp.Predict` now have allocation comparisons against their
+  internal calls, repeated three times: Pivot adds one allocation with an
+  injected client and two on the default client; Predict adds two and three
+  respectively for its interval conversion and the client lookup. Focused
+  floor tests confirm Pivot refuses a schema-constrained minimum before a
+  request, while Predict with a schema-bearing output passes that minimum
+  and refuses an evidence-checked minimum. Invalid provider responses and
+  caller input canaries do not appear in either operation's public error or
+  Record JSON. All focused tests pass offline.
+  The root README now describes the staged v2 function API, client and
+  provider configuration, errors and records, package layout, offline tests,
+  and migration from the v1 builders. It names the staging location and the
+  intended `/v2` module path; its relative package and example links must be
+  updated when the release swap moves those directories. A stale
+  `SummarizeOptions.MaxWords` godoc example was corrected to the actual
+  `TargetLength` and `LengthUnit` fields. A compile-only check of the README's
+  client, operation, recorder, error, and test-provider examples passes;
+  `go test ./examples/v2/01-extract ./v2 -count=1` also passes offline.
+  The six v2 analysis wrappers named for weaker-model review (`Score`,
+  `Similar`, `Deduplicate`, `Compare`, `Diff`, `Cluster`) were checked against
+  their internal calls and tests. Each has direct cases, old-root request
+  parity, allocation comparisons, contract-floor refusals, payload canaries,
+  and a runnable example. Their focused v2 and parity test runs pass offline.
+  Score's public comment now describes its tested 1e-9 floating-point
+  tolerance at a scale endpoint instead of saying it never clamps.
+  `op.RunEach` gained a direct floor test that first failed: a refused run
+  recorded its Requested contract as prompt-only even though the descriptor
+  offered JSON well-formed. The atomic partial and recovering batch internals
+  now keep that requested level on a refusal before any request. Atomic and
+  batched exported-path tests pass and confirm zero provider calls. The README
+  port initially removed the redaction limits the existing disclosure test
+  requires; its v2 redaction section now carries those limits and the v1-to-v2
+  reporting change, and `TestREADMEDescribesRedaction` passes. The full
+  `internal/ops`, `v2/op`, and parity suites pass after these changes, as do
+  `go vet` on the affected packages, `gofmt`, and `git diff --check`.
+  `exp.Project` now has exported-path tests for its schema-contract floor
+  refusal before any provider call and for malformed-answer and provider-error
+  payload canaries in public errors, Records and logs. Its focused tests pass.
+  `exp.Settle`'s comment now matches its validator: negative satisfaction
+  disables that floor, while negative MaxAlternatives is rejected.
+  The experimental-operation provider-error tests no longer skip when they
+  encounter a raw cause kept for `Error.Detail`, or silently skip on a client
+  log canary. They now assert the public error, Record, and log separately;
+  all focused cases pass with no skips. `op`'s three foreign-provider error
+  log cases likewise assert instead of skip. The complete `v2/exp`, `v2/op`,
+  and parity suites pass after this review, as does vet on both v2 packages.
+  **Release swap in progress, 2026-10-20.** The v2 packages and examples now
+  live at the repository root under the `/v2` module path. The old public root,
+  old example copies, fluent builders and tools have been retired; the former
+  runtime implementations needed by the v2 wrappers live under
+  `internal/runtime`. The v1-only integration and parity harness was archived
+  outside the repository because it cannot compile against the v2 root; the
+  offline tool wire contract tests remain in `tests/wirecontract` and pass.
+  The guard now inventories the moved root and public subpackages, and its
+  full suite passes. `go mod tidy`, the nested SmartTodo tests, the secret
+  scan, deprecation policy, acceptance ledger and release ladder pass. A
+  scoped package suite passes across 82 packages after the move. Full
+  `go build ./...` encounters only the unrelated untracked
+  `incidentrepair.go` compile error when that file is present; it was
+  temporarily held outside the tree for the complete gate and restored.
+  Coverage measured 97.4% and that result is the new floor.
+  Example 29 was missing from staging and is now ported with offline tests;
+  all 45 numbered example suites pass. The complete `scripts/check.sh` gate
+  passed 16/16 on 2026-10-20, including shuffled tests and the examples gate;
+  `govulncheck` reported advisory findings. Two guarded live tool-wire tests
+  compile and skip by default. The offline Flowdesk benchmark passed 3/3
+  messages in each flow. The live tool-wire check and live Flowdesk benchmark
+  remain before release. This Windows
+  host has cgo disabled, so its race gate is reported as unavailable and must
+  run in CI.
+  **Dependency review, 2026-10-20.** The open Dependabot PRs were checked
+  against the new root. OpenTelemetry 1.45, SmartTodo's SQLite 1.14.52 and
+  Charm terminal packages, and the applicable GitHub Actions tags were
+  updated. SmartTodo's embedded Bubble Tea copy needed the focus and blur
+  message types used by Bubbles 1.0; its own replacement remains local.
+  The old OpenAI SDK and tracing exporters no longer appear after the module
+  tidy, so their PRs have no remaining dependency to update. The nested
+  SmartTodo tests and wasm target build pass locally. The complete
+  `scripts/check.sh` gate passed 16/16 again with the dependency updates.
+  The first draft-PR CI run found two race detector failures in test
+  bookkeeping, an unmatched staticcheck directive, and a stale `Init` call
+  in the wasm entry point; those have been corrected. The next CI run passed
+  the SmartTodo browser workflow and found that allocation-budget tests fail
+  under race instrumentation without a data race; the race pass now skips only
+  those tests, which still run in the ordinary and shuffled suites. Staticcheck
+  found deliberately invalid test fixtures and helpers used only by tests;
+  the pinned check now analyzes shipped packages and suppresses U1000 for
+  those helpers. Its remaining production findings were corrected, and that
+  command passed locally. A review also found that replacing an enforcing
+  process budget briefly disabled enforcement; the replacement now publishes
+  all fields under one ledger lock, with a concurrent regression test. The
+  focused pricing, runtime pricing, schemafluxtest and ops suites pass.
+  **CI verification, 2026-10-21.** The draft branch at `818cef4` passed all
+  12 CI jobs, including the full `scripts/check.sh` gate, staticcheck and
+  govulncheck, normal and shuffled tests on Windows, Ubuntu, Ubuntu ARM and
+  macOS, and race detection on Ubuntu, Ubuntu ARM and macOS. The SmartTodo
+  demo build passed separately. The owner authorized up to US$2 in provider
+  spend for live checks. Both guarded OpenAI tool-wire assertions passed on
+  `gpt-6-luna`. The first full Flowdesk live comparison had no provider errors:
+  fused matched 15/17 labels in a mean 9.6 seconds for $0.014479, and the
+  one-at-a-time flow matched 13/17 in a mean 26.1 seconds for $0.017756.
+  A second full run, shown through a local browser dashboard, matched 16/17
+  fused and 14/17 one-at-a-time, again with no provider errors. Its reported
+  model cost was $0.033865 across all 34 message runs.
+  The misses were in labeled intent or urgency, so this is measured semantic
+  quality rather than a clean 34/34 result. Go reported a Windows temporary
+  executable deletion error after the tool-wire assertions passed.
+  A later CI run exposed a false leak assertion in `flow/noLeak`: it compared
+  the process-wide goroutine count inside a `synctest.Test` bubble, and its
+  failure stack contained only the test harness. `synctest.Test` already waits
+  for every goroutine in its bubble to exit and fails on a deadlock; the helper
+  now waits for the bubble to settle and relies on that scoped check. The
+  affected `BranchAhead` case passed 100 local repetitions, and the complete
+  flow package passed ten repetitions of its assertions; Go then reported a
+  Windows temporary test-executable deletion error after the package passed.
+  A shuffled macOS run found the same process-wide count in the root package's
+  `flowNoLeak` helper. It now uses the same bubble-scoped check. The affected
+  root test passed 100 local repetitions of its assertions; Go again reported
+  only the Windows temporary executable deletion error afterwards.
+  The following CI race run exposed a scheduling assumption in
+  `TestStreamEndsTheCallWhenTheStreamEnds`: a fast producer can finish before
+  `Stream` returns, so the test's immediate "still open" assertion raced the
+  documented completion callback. The scripted producer now waits until that
+  assertion has checked an unfinished call. All scenarios passed 100 local
+  repetitions after the change; the CI race gate still needs to verify it.
+  The same CI run's Ubuntu shuffle pass found a privacy-test canary of only
+  four digits inside a random request ID. The test now uses a distinctive
+  invoice marker and still checks the email, text, and long-input canaries;
+  its six cases passed 100 shuffled local repetitions. No caller payload was
+  present in the failed log.
+  **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
+  planner change and the middleware and batch reviews were not written up one by one; this entry and
+  RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a
+  nil step in `Branch` is an invalid request; version 2 has no built-in provider that answers with a
+  placeholder (use `schemafluxtest`); a log line never holds an error's text; a client budget never
+  lifts the process-wide ceiling and refuses an unpriced model unless `AllowUnpriced`; a typed decision
+  that does not fit its question is the decision provider failing (the model is asked unless
+  `NoFailover`); a batched answer is attributed by a random per-request id alone, and a model that
+  writes one item's answer under another's id cannot be detected (one request per item is the remedy);
+  a stream that sent a request records it whatever its ending; `pricing.SetLimits`, `ForRequest`, and
+  `Breakdown` returning `Spending`; one request's own timeout is no signal, the caller's context ending
+  stops everything.
+- [ ] **RS-001** - **High.** The three features the owner ruled are kept, exposed and
+  fixed (QS-009's reversal): partial and recovering runs with adaptive chunking,
+  sessions, staged plans. **Put back, 2026-10-03:** seventeen files in `internal/ops`
+  and `internal/types` (about 7,300 lines with their tests), from the copies taken
+  before the trim, brought up to the tree as it is now (the answer readers, the
+  bounded pool, classified errors, the pinned client and its deadline, the planned
+  contract level); `mergeIDBatchPartial` and `itemDecodeCause` back inside
+  `batchprotocol.go`. Exported from the root so that they are live: `RunOpManyPartial`,
+  `RunOpManyRecover`, `NewIDBatchAlgebra`, `NewAdaptiveChunkState`, `RunStagedPlan`,
+  `NewSession` and the types, constants and `ErrSessionInvariant` they need: 44 names,
+  and `testdata/api_surface.txt` regenerated for exactly those (44 added, none
+  removed). *Evidence:* the 106 restored tests pass, three times shuffled; new tests
+  through the root on a scripted provider: five items with the third failing under
+  each policy (the failing item is sent once, or three times under the retry
+  policies); a recovering run where one element of a five-item answer is bad (two
+  provider calls, the second carrying only that item; a third with the item alone
+  when it is bad again); a two-stage plan whose second stage is sent the first's
+  output; a session of two turns with one tool call. One defect fixed on the way,
+  caught by the new test: a failing policy returned an error of unknown kind while
+  the failed item's kind was known.
+  **What "fixed" means, ruled (R28 to R30, with the specification of how the three
+  appear in V2-005).** The specification found that two of the three do not do what
+  their names say. The session code validates a transcript and never calls a model,
+  and a tool loop cannot work today: the request builder sends a tool's result as a
+  message with a role and never sends the model's own call back, the call path
+  refuses and retries a reply that is only tool calls, two providers silently ignore
+  tools and message lists, and the fallback middleware treats "unsupported" as final.
+  A staged plan runs stages and cannot be planned before paying. So, in order: (1)
+  the 31 defects the specification lists and the dozen the restoring lane found are
+  fixed test-first (a nil context read as Background; nothing summed for the run;
+  unclassified errors and task ids in text a caller reads; two concurrency bounds;
+  the delivered contract level unchecked on the recovering path; a busy scheduler
+  read as a malformed answer; one request's timeout failing every unsent item; a
+  caller's codec able to end the process; a plan's own scheduler able to wait on
+  itself; a failed stage hiding what was spent); (2) the tool loop is made to work in
+  the providers, the middleware and the call path; (3) a staged plan can be planned
+  without paying, through the one estimator; (4) the V2-005 declarations are written
+  over them. V2-005 gains ten names and one package for all three, where exposing the
+  code as it stood would have added about 42: root `Tool`, `ToolCall`, `Message`
+  (this reverses the ruling that the provider contract carries no tool calls);
+  package `chat` with `Session`; `op.RunEach`, `op.Item`, `op.Stage`, `op.RunStages`,
+  `op.PreflightStages`; and the test package's cassette keeps a tool call. Ruled
+  with it: one function `op.RunEach` whose item is a value or an error and never
+  both; the retry pass and stage groups are dropped (`RunEach` again on the failed
+  items, and `Gather` over `op.Run`, do the same jobs); a cancelled `RunEach` returns
+  what finished with a nil error and every other item carries the cancellation; the
+  planner's estimate is corrected for everyone (it prices the prompts a descriptor
+  renders), which changes the numbers `Preflight` reports, on purpose.
+  **In progress:** step 1 for the batch engines and staged plans, and step 2's
+  provider and middleware half. **Left:** the planner's part of step 1 and step 3
+  (they wait for the lane now in `plan.go`); the call path's half of step 2 and the
+  session's own defects (they wait for the provider half); step 4; an adversarial
+  review of all of it.
+  *Verify:* each defect's test seen failing first; the tool loop tested against a
+  loopback server speaking each wire format and never a vendor; the whole suite.
+- [ ] **QS-008** — **Low.** Recorded by the lanes and not acted on: dead exported code
+  (`collection_identity.go`, `vector.go`, the fusion and fan-out files, the migration
+  registry, `PromptRegistry`, option fields with no reader, `Metadata` maps never
+  filled, the whole of `internal/utils`), to go with V2-015; the built-in local
+  provider still answers a schema with `true` and `0.5`, which the examples lean on;
+  the Anthropic default model names could not be checked offline; two reasoning rates
+  were removed from the price table on recollection of the vendor's billing and are
+  unverified; a provider's cost estimate cannot say "unknown"; a failed call carries
+  no timing.
+
+## The library's own cost
+
+- [ ] **PF-001** — **High.** Measure first. Through the exported functions with a
+  provider that answers at once (`tests/bench_callpath_test.go`), 2026-10-03: `Extract`
+  of a small struct 289 allocations, 24 KB and 58 µs with logging quiet, 311 and 143 µs
+  at the default logging with standard error discarded; `Is` 100 allocations and 34 µs;
+  `Summarize` 119 and 36 µs. Against a wait of one to three seconds this is nothing a
+  user waits for: the reason to cut it is throughput and principle, and the figure of 26
+  allocations for `Is` recorded under LAT-006 was of a benchmark that stops short of the
+  shared path. The rest of the suite and the baseline are being written.
+  **The baseline, 2026-10-03** (21 benchmark files, `bench_*_test.go`; emulated x64 on
+  this machine, so times are high by a third and allocations are exact). Of one
+  `Extract`'s 295 allocations: building the schema and the prompt for the type 158
+  (54%, rising to 79% for a type of sixty fields); the shared call path 72 (the
+  metrics recorder with metrics off 16, the cost ledger 14, the request id 5);
+  decoding the answer 30; options 11. Strict mode adds 3,186 allocations to an
+  `Extract` of twelve fields. The first call of a process takes 10.5 ms and the
+  hundredth 59 µs. The environment is read 15 times a call. Five independent chunks
+  of a batch ran with one call in flight. `Extract` scales to about eight cores; the
+  cost ledger does not scale; a captured log line is seven times slower at eighteen
+  cores than at one. A regression landed while it ran: the schema cache key now builds
+  a replacer on every call, 37 allocations and 40 KB, two thirds of an `Extract`'s
+  memory.
+  *Verify:* a budget in allocations for each benchmark, held by a test.
+- [ ] **PF-002** — **High.** What is recomputed for every call and need not be: the JSON
+  schema of a type (twice, with a marshal and a hash, at about 35 sites); the options,
+  merged three times, each time minting a request id from the system's random source; 29
+  reads of the environment; the schema encoded again for each request; an answer parsed
+  two to six times.
+  **Done for the type work, the environment, the options and the shared path,
+  2026-10-03; in review.** Three lanes, each measuring before and after with
+  `benchstat` over six runs and each leaving a test that fails when the allocation
+  count rises. Golden prompts and the wire-contract tests passed unchanged throughout:
+  no request changed by a byte.
+  *The type.* Everything that depends only on the Go type is computed once per
+  `reflect.Type` and read without a lock (`internal/ops/typeplan.go`): the
+  classification, the prose schema, the JSON schema as a value and as encoded text,
+  its name and hash, the system prompt for each mode, the plan of required fields.
+  The cache holds 1,024 types; a type past the limit gets a plan for that call. The
+  build for one `Extract` went from 158, 710 and 1,558 allocations (three fields,
+  twelve nested, sixty wide) to none. The regression in the cache key is gone (37
+  allocations and 40 KB to 1 and 64 B). The duplicate-key and limit check reads the
+  bytes once and falls back to the token walk only when it must, which halves the
+  strict decoder (101 to 51 allocations for a small answer, 120,008 to 56,040 for
+  100 KB); a randomised test of 4,000 bodies holds that the fast pass never clears
+  what the walk refuses.
+  *The shared path.* `CallLLM` against a provider that answers at once: 72
+  allocations and 10.9 µs to 22 and 6.3 µs. The environment is read once and kept
+  (15 reads a call to none; `config.ReloadEnvironment()` reads it again, and tests
+  set variables through `internal/config/configtest`). Metrics off costs nothing (16
+  allocations to 0). A request id costs a counter, not a read of the system's random
+  source. Reading options no longer runs a full merge (6 allocations to 1), and the
+  defaults are applied by named field, without reflection.
+  *The whole call.* `Extract` of three fields: 295 allocations, 58.9 KB and about
+  43 µs to 65, 6.4 KB and about 10 µs. Twelve nested fields: 952 to 170; in strict
+  mode 4,138 to 1,606. Sixty fields: 1,978 to 348. `Transform` 371 to 88; `Generate`
+  569 to 165. The geometric mean over the allocation benchmarks fell by 75%.
+  *The first call.* 10.5 ms to between 5.4 and 5.8 ms; the target of 3 ms was not
+  reached. Measured stage by stage (`SCHEMAFLUX_MEASURE=1 go test ./internal/ops/
+  -run TestFirstCallLLMStages -v`): a native arm64 build pays about 0.24 ms for the
+  same cold stages, so what is left here is mostly the emulator translating code the
+  first time it runs, and not the library.
+  *The default log level is warn.* It was info, which wrote three lines per
+  `Extract`, two of them before the answer was returned. A behaviour change, and the
+  only one in this work that a caller's logs can see.
+  **The follow-ups, done 2026-10-03.** The numeric check compares identical text
+  without building rationals (a 100 KB list: 53,402 allocations to 33,990). The
+  recognised-field names are read from the plan. The schema is shared, not copied, at
+  the ten sites that only embed it (`Normalize` 79 allocations to 33, `Predict` 143
+  to 99). The start and end lines of `Extract`, `Transform`, `Generate` and a stream
+  are debug lines, built only when debug is on; "an answer was repaired" is a
+  warning, since a repair is a second paid call. `Extract` resolves its options once
+  and `ExtractResult` hands its own down (11 allocations of option work to 5, one
+  request id where there were two). After them: `Extract` of three fields 54
+  allocations and about 9 µs (it was 295 and 43 µs at the start of the day); twelve
+  nested fields in strict mode 970 (it was 4,138). The budgets in
+  `TestCallAllocationsStayWithinBudget` are the measured figure plus two.
+  Correctness, from the same pass: `Init` and `InitWithEnv` reload the environment;
+  `Derive`, `Interpolate` and `Resolve` refuse an option that is not a number in
+  range, before any call, as a configuration error; `Settle` and its three relatives
+  refuse a second options value; `ExtractResult` reports the digest of the schema
+  the call was made with; the streamed and buffered text operations share one
+  constant for each prompt; a step that panics inside `RunOpManyRecover`'s fallback
+  fails that item and no longer the process. And one real defect found by a test
+  that failed half the time: the required-field check walked a map in random order,
+  so the member named in its error changed from run to run; it sorts the keys now.
+  **Not done:** the encoded schema is still encoded again for each request (it needs
+  a field carried from the options to the provider request); an answer is still
+  parsed more than once (QS-005).
+- [ ] **PF-003** — **High.** Wall time: independent chunks of a batch run one after
+  another. This is the one change here that a user would feel.
+  **Done, 2026-10-03; in review.** Chunks and oversized items of `RunOpMany` share
+  one bounded pool (`runBounded` in `internal/ops/plan_many.go`): 4 in flight, or the
+  client scheduler's limit when it has one, never more than 64. `ExtractBatch` in
+  merged mode overlaps its chunks up to `WithConcurrency`, which it used to ignore;
+  in parallel mode it runs a fixed set of workers and no longer one goroutine per
+  input. With a provider that takes 5 ms a call: five chunks 28.3 ms to 11.0 ms, ten
+  chunks 55.2 ms to 16.1 ms, merged mode 27.4 ms to 6.8 ms, 1,000 inputs 1,002
+  goroutines to 12. Tests order events with channels and cover every completion
+  order of four chunks.
+  **What a caller can observe:** the error returned is the first failure in time,
+  where it was the first by position; a plan whose chunks do not add up to the items
+  is refused before any call, where the earlier chunks used to be sent and paid for;
+  a panic in a chunk is an error for that chunk, where it used to end the process; a
+  client budget is checked as each call starts, so the calls already in flight can
+  take it past the ceiling, as on every other concurrent path.
+  **Optimization review, 2026-10-20.** `runManyBatched` now scans the sorted
+  oversized indexes once and reserves its temporary slices, removing a map
+  allocation and a lookup per input. The focused `RunManyBatched` and
+  `RunOpMany` tests pass; no speedup is claimed without a benchmark.
+  **Not done:** `RunOpManyRecover` stays serial, because each chunk's size depends on
+  how the last was answered. Five chunks take two rounds at a bound of 4; raising the
+  bound is one line and is the owner's call. Chunk calls carry no tenant.
+- [ ] **PF-004** — **Medium.** Contention: the cost ledger takes an exclusive lock
+  across about fifteen allocations on every call; the logger writes under a mutex before
+  the answer is returned.
+  **Done in part, 2026-10-03; in review.** The record, its tags and its day keys are
+  built before the lock; the history holds immutable records; a call that finds the
+  ledger busy leaves its record on a lock-free list and returns. `TrackCost`: 14
+  allocations to 2; in parallel 2.5 µs to 0.38 µs. `GetLogger`, `CheckBudget` and the
+  metrics, debug and trace switches are atomic loads. With the default level at warn a
+  successful call writes no log line, so the logger's mutex is not taken.
+  **Not done:** the ledger scales to four cores and then flattens; past that needs a
+  sharded index and atomic totals. A budget callback can now run on a goroutine
+  other than the one that recorded the cost, when two calls arrive together.
+  **Measured live after all of it, 2026-10-03** (`gpt-6-luna`, the benchmark app's 17
+  messages, effort none, one pass): the speculative flow 5.2 s a message over 109
+  calls, 14 of 17 labels matched, $0.0073; the fast flow 5.9 s over 131 calls, 14
+  matched, $0.0085. Time spent outside the model: 2 to 3 ms a message. The library's
+  own cost is no longer something a caller of this app waits for; what is left to win
+  is in how many waits a flow has and how many overlap, which is BM-011 and LAT-008.
+  **And again after review round 14** (RV-014; the speculative flow now reads the
+  details a second time for a message with personal data): the speculative flow
+  5.5 s a message over 112 calls, 15 of 17 labels, $0.0074; the fast flow 6.3 s over
+  132 calls, 12 of 17, $0.0087. The fast flow matched 14 an hour earlier on the same
+  code path: at effort none the labels move by two or three in seventeen from one
+  pass to the next, which is the measurement BM-013 asks for and one pass cannot
+  give.
+
+## Tracing
+
+- [ ] **OT-001** — **High.** "Make sure otel is flawless" (the owner, 2026-10-03). Two
+  readers audited it with probes over the SDK's in-memory exporter; a lane then fixed
+  it, test-first, with forty mutants of its own fixes, all caught.
+  **What the audit found.** A blocker in each half. Spans were lost whenever an
+  observer was installed or removed while calls were in flight: the finish went to
+  whoever was installed at the end, not to whoever saw the start (under fifty
+  goroutines and forty install cycles, 1,695 of 5,181 spans never ended). And the
+  environment-driven setup let the host's own `OTEL_EXPORTER_OTLP_*` variables
+  override the library's: a plaintext connection for an `https://` endpoint while the
+  log said `tls=true`, and the host's bearer token sent to the library's collector.
+  Beside those: a failed operation exported only successful spans, because a span
+  covered one request and ended before the answer was read; streams had no span; a
+  provider that panicked ended its span as a success; `InitTracing` replaced the
+  host's global tracer provider and propagator; a shutdown on a cancelled context
+  flushed nothing; the shell's `ENV` variable was exported as the deployment
+  environment; an endpoint with credentials in it was written to the log; a program
+  that only called `Install` linked gRPC (20.8 MB against 9.0 MB); no attribute
+  followed the generative-AI semantic conventions; attributes were built for spans
+  that a sampler had dropped.
+  **Decision.** The library does not set tracing up for its host. `InitTracing`,
+  `ShutdownTracing`, every exporter, sampler, resource and propagator built from the
+  environment, and the older helpers nothing called, are deleted. What remains of
+  `telemetry/otel` is an observer over a tracer provider the host passes in: `New`,
+  `Install`, `InstallIDSources`. That removed the second blocker and most of the
+  setup findings by construction, and twelve requirements from `go.mod`.
+  **Fixed.** The observers that saw a start are the ones that see its finish, and
+  several can be installed at once, each isolated from another's panic (the churn
+  test, two hundred runs, every span ended). Events have two scopes: one call of an
+  operation, whose result carries the outcome of the whole call, and one request to
+  a provider beneath it; a repair is a second request marked as one, a retry and a
+  hedged copy are events on the request. Streams have a request span, ended once
+  however the stream ends. A panic is a failure and continues. Spans follow the
+  convention: an operation span named `schemaflux.<operation>`, request spans of kind
+  client named `chat <model>` with the `gen_ai.*` keys of semconv 1.41.0 (marked as
+  in development upstream) and `error.type`; one private namespace, `schemaflux.*`;
+  success leaves the status unset, as the API's documentation asks of
+  instrumentation. Nothing is computed for a span that is not recording, and it is
+  still ended. A caller's ids reach attributes bounded and printable. The library's
+  own metrics registry is bounded at 2,048 series with one overflow series, its model
+  tag is cut to 64 printable bytes, a duplicate series is gone, and failures are
+  counted by error kind. A leak test with five markers (input, steering, answer,
+  provider error body, key) finds none in any span.
+  **Not done.** The plain forms of most operations have no operation span yet: about
+  seventy call sites in forty-two files reach the provider without naming
+  themselves, and their span is named `chat <model>` alone. The single entry of
+  V2-005's seams gives every operation its span and its name; `SortResult` and
+  `RunOpBatchResult` wait for the same lane. The race detector does not run on this
+  machine. No OpenTelemetry metrics bridge exists: it would need an adapter over the
+  host's meter provider and the convention's two histograms.
+  **The second audit, 2026-10-03: not approved, no blocker.** 20,000 operations a run
+  for five runs with observers installed and removed at random: 450,000 spans a run,
+  none left open, none ended twice, no parent in another observer's tree. No marker
+  of input, steering, answer, error body, key or schema field in any span. Open:
+  an observer that returns an unrelated context replaced the call's context, and with
+  it the caller's deadline (a call with a 100 ms deadline ran 2 s and returned no
+  error); a plain `Extract` refused before the runner has no operation span; the
+  judged forms carry two names for one call; the operation span says "unknown" where
+  the request beneath it says what failed; a model name reaches the span's name
+  unbounded (a 5,008-byte name with a newline in it); a runbook still tells the
+  operator to remove the observer in a way that no longer removes it. A lane is on
+  all six and seven of the nits.
+  *Verify:* a third audit that finds nothing above a nit; every operation with an
+  operation span once the single entry is in.
+
+## The toolchain
+
+The owner asked, on 2026-10-03, what the newest Go releases offer. Read from the release
+notes on go.dev and confirmed on the installed toolchain where it could be; nothing of
+Go 1.27 was run, because it is not installed. The whole report is with the session's
+working files.
+
+- [ ] **TL-001** — **High.** The toolchain. The stable release is go1.27.1 (2026-09-01);
+  1.26.8 is the older supported one; 1.25, which `go.mod` names, is out of support. The
+  machine has 1.26.3, five patch releases behind, and PS-003 already lists three
+  reachable standard-library vulnerabilities that 1.26.4 and 1.26.5 fix. To do: build
+  and test on 1.27.1 with 1.26.8 as the second leg in CI; `gofmt` once on 1.27.
+  Installing a toolchain on the owner's machine is the owner's call and has been asked.
+  **Done, 2026-10-03, on the owner's instruction ("start this process and set this as
+  the floor").** `go.mod` says `go 1.27.0` and `toolchain go1.27.1`; the toolchain was
+  fetched by the go command into the module cache (the installed 1.26.3 switches to it
+  for this module). Before the switch the tree was built and vetted on 1.27.1 and the
+  tests of thirteen packages no lane was editing were run on it: all passed, and one
+  file needed `gofmt`. Not done: the 1.26.8 leg in CI is moot with a 1.27 floor; the
+  whole suite on 1.27.1 waits for the lanes now in `internal/ops`.
+- [ ] **TL-002** — **Decision.** The floor of v2 is `go 1.26.0`, not 1.27: the floor
+  is what every user needs, and the older supported release is what CI can test it on.
+  So v2 uses nothing that needs 1.27 in its exported shape: no generic methods (new in
+  1.27, and an interface still cannot have one, so a fake could never implement it), no
+  options struct that embeds a common one (a literal that sets a promoted field
+  compiles only for a caller on 1.27). Package-level generic functions, a struct
+  client and flat options, as V2-005 has them, are right for the floor. Methods can be
+  added later without breaking anyone.
+  **Revised, 2026-10-03: the floor is `go 1.27.0`, the owner's decision.** Every user
+  of v2 needs Go 1.27. What that buys, each confirmed by a program run on 1.27.1:
+  an operation's options type embeds the one common `Options` and a caller still
+  writes `SummarizeOptions{Model: "x", MaxWords: 50}`, because a literal may now set a
+  promoted field, so the seven common fields are declared once and not forty times;
+  `encoding/json/v2` is a plain import (TL-003 is no longer blocked); `errors.AsType`
+  and the rest of the newer standard library are free to use. Generic methods compile
+  on 1.27 and v2 still does not use them: one way to make a call, the client on the
+  context, and an interface cannot declare one in any case.
+- [ ] **TL-003** — **High, when the floor allows it.** `encoding/json/v2` is stable in
+  1.27 and needs an experiment flag on 1.26. It rejects duplicate names by default,
+  and a three-field decode measured 9 allocations to 2 and a twelve-field one 19 to 5
+  with the experiment on. It would replace the library's own duplicate-key walk and
+  its second decoder in `internal/ops/strictdecode.go`. It does not replace
+  everything: its nesting limit is fixed at 10,000 where the library's is 64, it has
+  no limit on the length of a list or a string, and it does not notice a float that
+  lost precision; the byte scanner and the numeric check stay. Its defaults would
+  change the contract (names matched with case, no default form for a duration), so
+  it is used over the v1 defaults with strictness added. Until the floor is 1.27 it
+  can only sit behind a build tag, with the present code as the other half. First
+  step: run the suite once with `GOEXPERIMENT=jsonv2` and see what moves; the
+  allocation budgets will differ by toolchain once the standard `encoding/json` is
+  backed by v2, and need a figure for each.
+  **Done, 2026-10-03, on go1.27.1.** The move of the floor broke five tests at once,
+  for the right reason: they compare the library with `encoding/json` itself, and
+  `encoding/json` changed. The rule for the name in a `json` struct tag is different
+  in 1.27 (a name now ends at the first quote, backslash or backquote, where 1.26
+  threw such a name away and used the Go name; options are read as identifiers; there
+  are new options `embed`, `case:strict`, `case:ignore`, `format:`): the facts are a
+  table of seventy rows tested against the standard library, and the one resolver of
+  a struct's members follows it. And the standard decoder allocates more for a decode
+  into `any` than 1.26's did, which took the numeric check over its budget.
+  The exact decoder now runs on `encoding/json/v2` over the v1 defaults, with
+  strictness added: the decoder refuses a duplicate name at every depth, and the
+  library keeps what v2 does not check (its own depth of 64, the limits on a list and
+  on a string, the check that a number kept its precision, and classifying the
+  decoder's error instead of attaching it, since v2's error quotes the member's name
+  from the response). The old decoder is kept as a test's reference: over 12,000
+  generated bodies and 87 written by hand, the new one never accepts what the old one
+  refused, every error has the same kind, and one verdict differs: an object that
+  names one member twice in different cases (`{"name":..,"NAME":..}`), which the old
+  one accepted and read the last of, is refused. That was a fail-open read.
+  Measured, allocations exact: the exact decode of a 200-byte record 87 to 3; of a
+  5 KB list 2,186 to 78; of 100 KB 42,552 to 1,949. The numeric check 76 to 1 and
+  2,095 to 1. Twelve nested fields in strict mode, end to end, 973 to 42 (it was 4,138
+  this morning); sixty fields 578 to 42. Budget tests hold the new figures.
+  **What a caller can observe:** a type-mismatch message names `/items/0/id` where it
+  named `/items/id` (the standard library's change); an error of the exact decoder no
+  longer carries the standard library's error as its cause.
+  **Left:** two places still read a tag's options by splitting on commas and so
+  disagree with 1.27 for `omitempty:x`; the answer reader folds every name, where
+  `case:strict` asks for an exact match; a type with a `format:` option fails every
+  decode and the type check does not know it; one budget in `typeplan_test.go` still
+  allows 282 where the figure is 21. The package can no longer be built with
+  `GOEXPERIMENT=nojsonv2`.
+- [ ] **TL-004** — **Medium.** `testing/synctest` (stable since 1.25) for the tests
+  that fail when the machine is busy: the wait counts and overlaps of the speculative
+  combinators, the hedge, the scheduler, and the benchmark app. A fake clock that
+  moves only when every goroutine is blocked makes "two calls of 40 ms that overlap
+  take 40 ms" exact and instant. A lane is converting them now, test files only.
+  **Done, 2026-10-03, test files only.** The speculative combinators (47 tests),
+  `Gather` and `Each`, retry backoff, the scheduler, the hedge and the bulkhead, the
+  integration tests of the same, and the benchmark app's counts of waits and overlaps
+  run in a bubble, and their assertions are exact where they were bounds ("at most
+  330 ms" is "150 ms"). Real seconds, median of three: the converted set of
+  `internal/ops` 12.95 to 0.72; the benchmark app's `desk` 24.5 to 0.72. Under 24
+  copies at once the unconverted integration test of `BranchAhead` failed 14 runs in
+  192 and the converted one none. What cannot run in a bubble and why is recorded with
+  the tests: a lock held across a sleep stalls one; an example has no test handle.
+  **A real race it uncovered** behind a tolerance in the benchmark app's test: when a
+  draft fails its audit while its translation is under way, `BranchAhead` cancels the
+  translation and starts the redraft without waiting for the cancelled call to
+  return, so the simulator counts 7 waits or 8, about evenly. Calls and elapsed time
+  are the same either way. Kept: waiting would hold the redraft behind a provider
+  that ignores cancellation. The test names the case and both values.
+  **Left:** nine other test files of `internal/ops` that assert on durations.
+- [ ] **TL-005** — **Low, mechanical, when the tree is quiet.** `errors.AsType` at the
+  23 `errors.As` sites of the call path (105 ns and an allocation to 11 ns and none,
+  measured; needs 1.26); the `go fix` modernisers, one analyser at a time (about 110
+  hunks in non-test files: `strings.Builder`, `slices.Contains`, `maps` loops,
+  `reflect.TypeFor`, range over an integer); `sync.WaitGroup.Go` by hand at four
+  sites; `context.WithCancelCause`, which the standard library has had since 1.21 and
+  the scheduler, the hedge and a stream do not use, so that an error can say why a
+  call was stopped. Measured and not worth it: interning names with `unique` (slower
+  than a map lookup).
 
 ---
 

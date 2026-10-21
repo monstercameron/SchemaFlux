@@ -158,7 +158,7 @@ func TestConform_ConformedFieldDoesNotUnmarshalIntoT(t *testing.T) {
 // including their zero values, because a bool cannot distinguish "unset"
 // from "false" the way a string or pointer can.
 func TestConform_CustomRulesAndOptionMergingDoNotPanic(t *testing.T) {
-	withResponse(t, `{
+	model := coreAnswer(t, `{
 		"conformed": {"street": "1 MAIN ST", "city": "SPRINGFIELD"},
 		"adjustments": [],
 		"violations": [],
@@ -176,5 +176,18 @@ func TestConform_CustomRulesAndOptionMergingDoNotPanic(t *testing.T) {
 	}
 	if result.Compliance != 1.0 {
 		t.Fatalf("Compliance = %v, want 1.0", result.Compliance)
+	}
+
+	// What the options said has to have reached the model: the rule, the
+	// steering, and the value of PreserveUnknown the caller's options carried.
+	call := model.last()
+	if !strings.Contains(call.system, `- "street": "must be uppercase"`) {
+		t.Errorf("the custom rule did not reach the prompt:\n%s", call.system)
+	}
+	if !strings.Contains(call.user, "prefer USPS abbreviations") {
+		t.Errorf("the steering did not reach the prompt:\n%s", call.user)
+	}
+	if !strings.Contains(call.system, "Drop source fields the standard does not define") {
+		t.Errorf("PreserveUnknown: false did not reach the prompt:\n%s", call.system)
 	}
 }

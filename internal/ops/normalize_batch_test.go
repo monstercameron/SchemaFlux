@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type batchRecord struct {
@@ -47,7 +47,7 @@ func TestNormalizeBatchRunsConcurrently(t *testing.T) {
 
 		<-release // hold every worker until the test lets go
 		atomic.AddInt32(&inFlight, -1)
-		return `{"normalized":{"name":"ada"},"changes":[],"total_changes":0}`, nil
+		return `{"normalized":{"name":"ada"},"changes":[],"warnings":[]}`, nil
 	})
 
 	input := make([]batchRecord, items)
@@ -93,10 +93,10 @@ func TestNormalizeBatchPreservesInputOrder(t *testing.T) {
 		_ = n
 		for _, name := range []string{"alpha", "bravo", "charlie", "delta"} {
 			if containsName(userPrompt, name) {
-				return fmt.Sprintf(`{"normalized":{"name":%q},"changes":[],"total_changes":0}`, name+"-done"), nil
+				return fmt.Sprintf(`{"normalized":{"name":%q},"changes":[],"warnings":[]}`, name+"-done"), nil
 			}
 		}
-		return `{"normalized":{"name":"unknown"},"changes":[],"total_changes":0}`, nil
+		return `{"normalized":{"name":"unknown"},"changes":[],"warnings":[]}`, nil
 	})
 
 	input := []batchRecord{{Name: "alpha"}, {Name: "bravo"}, {Name: "charlie"}, {Name: "delta"}}
@@ -126,7 +126,7 @@ func TestNormalizeBatchReportsTheFailingIndex(t *testing.T) {
 		if containsName(userPrompt, "bad") {
 			return "", fmt.Errorf("this one failed")
 		}
-		return `{"normalized":{"name":"ok"},"changes":[],"total_changes":0}`, nil
+		return `{"normalized":{"name":"ok"},"changes":[],"warnings":[]}`, nil
 	})
 
 	input := []batchRecord{{Name: "fine"}, {Name: "bad"}, {Name: "fine"}}

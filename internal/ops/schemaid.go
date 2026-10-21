@@ -32,9 +32,9 @@ type SchemaDescriptor struct {
 	// the Go type.
 	Name string
 
-	// Version is the contract version. Bumping it is a deliberate act -- see
-	// the compatibility rules in S-011 -- and it is part of the identity, so a
-	// v2 answer is never served from a v1 cache.
+	// Version is the contract version. It is part of the identity, so a v2
+	// answer is never served from a v1 cache. DescribeSchema always sets
+	// SchemaVersionDefault: a type does not carry a version.
 	Version string
 
 	// Hash is a digest of the emitted schema. Two types that produce the same
@@ -56,46 +56,31 @@ func (d SchemaDescriptor) String() string {
 
 // SchemaVersionDefault is the version a type carries when it does not say.
 //
-// Types do not carry a version today; the field exists so that stored results
-// and cache keys have somewhere to put one when S-011's evolution rules land,
-// rather than needing a migration to gain the concept.
+// Types do not carry a version, so every descriptor DescribeSchema builds has
+// this one. The field exists so that stored results and cache keys have
+// somewhere to put one without a migration when a type gains a version.
 const SchemaVersionDefault = "v1"
 
 // SchemaDialect names what GenerateJSONSchema emits.
 const SchemaDialect = "json-schema-2020-12-strict"
 
 // DescribeSchema builds the identity for a Go type.
+//
+// The identity is a hash of the schema, which takes the schema, a canonical
+// encoding of it and a SHA-256, and it is the same every time for a type, so it
+// is built once for each type.
 func DescribeSchema(targetType reflect.Type) SchemaDescriptor {
-	descriptor := SchemaDescriptor{
-		Name:    schemaNameFor(targetType),
-		Version: SchemaVersionDefault,
-		Dialect: SchemaDialect,
-	}
-
-	schema := GenerateJSONSchema(targetType)
-	if schema == nil {
-		// A type strict mode cannot express still has an identity, because a
-		// prompt-only call still has a contract: the prose schema. Hashing that
-		// keeps the two paths distinguishable rather than collapsing every
-		// unexpressible type onto one hash.
-		descriptor.Dialect = "prose"
-		descriptor.Hash = digestOf(GenerateTypeSchema(targetType))
-		return descriptor
-	}
-
-	descriptor.Hash = digestOf(canonicalJSON(schema))
-	return descriptor
+	return typePlanFor(targetType).identity()
 }
 
 // canonicalJSON renders a value with map keys sorted at every level, so the
 // same schema always produces the same bytes.
 //
-// encoding/json already sorts map keys, but only for map[string]any; a schema
-// built from nested maps and slices is exactly that, so this is mostly a
-// guarantee in writing. It matters because the hash is a contract identity: two
-// runs that produce the same schema must produce the same hash, and Go's map
-// iteration order is not something to leave to chance -- CA-001 is the same
-// lesson about prompts.
+// encoding/json already sorts the keys of a map[string]any, so the map branch
+// of normalizeForHash changes nothing in the output; what this adds is sorting a
+// []string, which encoding/json leaves in order. A []any holding strings is not
+// sorted, so the hash of a schema whose property list was built that way depends
+// on the order it was built in.
 func canonicalJSON(value any) string {
 	normalized := normalizeForHash(value)
 	encoded, err := json.Marshal(normalized)
@@ -153,11 +138,49 @@ func digestOf(content string) string {
 // cache keyed on the schema alone serves an answer produced by a different
 // question. P-009 and MW-004 both need this and neither should invent its own.
 func SchemaCacheKey(operation, operationVersion string, descriptor SchemaDescriptor) string {
-	parts := []string{operation, operationVersion, descriptor.Name, descriptor.Version, descriptor.Hash, descriptor.Dialect}
+	parts := [6]string{operation, operationVersion, descriptor.Name, descriptor.Version, descriptor.Hash, descriptor.Dialect}
+
+	// The key is written once, into a buffer sized for it. Building a
+	// strings.Replacer for each part, as this did when the escaping was added,
+	// cost 37 allocations and 40 KB per call to produce a string that nearly
+	// always has nothing to escape.
+	size := 0
+	for _, part := range parts {
+		size += len(part) + 1
+	}
+	var key strings.Builder
+	key.Grow(size)
 	for i, part := range parts {
+		if i > 0 {
+			key.WriteByte(':')
+		}
 		if strings.TrimSpace(part) == "" {
-			parts[i] = "-"
+			key.WriteByte('-')
+			continue
+		}
+		writeCacheKeyPart(&key, part)
+	}
+	return key.String()
+}
+
+// writeCacheKeyPart writes one part of a cache key. The parts are joined with a
+// colon, so a colon inside one has to be escaped, and the backslash that escapes
+// it with it, or ("a:b", "c") and ("a", "b:c") are the same key. A part with
+// neither character, which is every part a type and an operation produce, is
+// written as it is.
+func writeCacheKeyPart(key *strings.Builder, part string) {
+	if !strings.ContainsAny(part, `\:`) {
+		key.WriteString(part)
+		return
+	}
+	for i := 0; i < len(part); i++ {
+		switch part[i] {
+		case '\\':
+			key.WriteString(`\\`)
+		case ':':
+			key.WriteString(`\:`)
+		default:
+			key.WriteByte(part[i])
 		}
 	}
-	return strings.Join(parts, ":")
 }

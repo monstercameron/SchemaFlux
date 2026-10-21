@@ -1,19 +1,23 @@
-// package ops - Data operations for structured data extraction and transformation
 package ops
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
+
+// generateMaxPromptLength is the longest prompt, in characters, that Generate
+// sends after the caller's text and the clauses the options add to it have been
+// joined. A longer one is refused.
+const generateMaxPromptLength = 10000
 
 // extractPromptVersion is Extract's contract version for cache-key purposes.
 // It is a deliberate act, like SchemaVersionDefault: bump it when something
@@ -22,7 +26,7 @@ import (
 // even when the change touches no prompt literal and produces the identical
 // schema hash. Without a version separate from those two, a behavioural
 // change would be invisible to the cache key and an old cached prefix would
-// keep being served under a new contract. P-009.
+// keep being served under a new contract.
 const extractPromptVersion = "v1"
 
 // Extract converts unstructured data into strongly-typed Go structs using LLM interpretation.
@@ -52,19 +56,43 @@ const extractPromptVersion = "v1"
 // In Strict mode, all required fields must be present. In Transform mode (default),
 // the LLM will intelligently infer missing fields.
 func Extract[T any](input any, opts ExtractOptions) (T, error) {
-	var result T
-	log := logger.GetLogger()
+	return extractResolved[T](input, opts, opts.toOpOptions())
+}
+
+// extractResolved is Extract for options that have been resolved already. The
+// options are merged once for a call: ExtractResult resolves them to decide what
+// it will promise before anything is sent, and hands the same value on, where it
+// used to merge them again here.
+func extractResolved[T any](input any, opts ExtractOptions, resolved types.OpOptions) (result T, err error) {
+	log := loggerFor(resolved.Context)
+
+	// One call of the operation to the installed observers from the first
+	// moment, so a call refused before it reaches the runner shows on an
+	// operation span as the one refused after does. The runner joins this unit
+	// and starts none of its own.
+	var observed *observedOperation
+	resolved.Context, observed = observeOperation(resolved.Context, "extract")
+	defer observed.end(&err)
 
 	// Validate options
-	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+	if err := opts.validateResolved(resolved); err != nil {
+		return result, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
-	// Convert to legacy OpOptions for internal use
-	opt := opts.toOpOptions()
+	// The legacy OpOptions this call works on, a copy of the resolved ones.
+	opt := resolved
 
-	// Enhance steering with extraction-specific options
-	if opts.SchemaHints != nil || opts.Examples != nil || opts.FieldRules != nil {
+	// Enhance steering with extraction-specific options.
+	//
+	// StrictSchema opens this block on its own. It used to be read only inside
+	// it, so WithStrictSchema(true) with no hints, examples or rules asked for
+	// strictness and sent the model nothing about it. AllowPartial still does
+	// not open the block: it is true in the options every caller starts from,
+	// so opening it for AllowPartial would add a line to the prompt of every
+	// default call, which is a change to what the model is asked and needs a
+	// live measurement before it is made. It is stated when something else
+	// opens the block, as before.
+	if opts.SchemaHints != nil || opts.Examples != nil || opts.FieldRules != nil || opts.StrictSchema {
 		var steeringParts []string
 		if effectiveSteering(opts.CommonOptions, opts.OpOptions) != "" {
 			steeringParts = append(steeringParts, effectiveSteering(opts.CommonOptions, opts.OpOptions))
@@ -95,7 +123,13 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		}
 
 		if len(opts.Examples) > 0 {
-			examplesJSON, _ := json.Marshal(opts.Examples)
+			// An example that cannot be written as JSON is refused. Marshalling
+			// it with the error dropped left "Follow these examples: " with
+			// nothing after it and made the call anyway.
+			examplesJSON, err := json.Marshal(opts.Examples)
+			if err != nil {
+				return result, types.Newf(types.KindConfiguration, "extract", "the examples cannot be written as JSON")
+			}
 			steeringParts = append(steeringParts, fmt.Sprintf("Follow these examples: %s", string(examplesJSON)))
 		}
 
@@ -119,21 +153,23 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// Eight sites across Extract, Transform, and Generate had the same hazard.
 	startTime := time.Now()
 	defer func() {
-		if config.IsMetricsEnabled() {
+		if telemetry.MetricsEnabled() {
 			telemetry.RecordMetric("extract_duration", time.Since(startTime).Milliseconds(), map[string]string{
-				"type": reflect.TypeFor[T]().String(),
+				"type": telemetry.BoundedTagValue(reflect.TypeFor[T]().String()),
 				"mode": opt.Mode.String(),
 			})
 		}
 	}()
 
 	// Log operation start
-	log.Info("Extract operation started",
-		"requestID", opt.RequestID,
-		"targetType", reflect.TypeFor[T]().String(),
-		"mode", opt.Mode.String(),
-		"intelligence", opt.Intelligence.String(),
-	)
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("Extract operation started",
+			"requestID", opt.RequestID,
+			"targetType", reflect.TypeFor[T]().String(),
+			"mode", opt.Mode.String(),
+			"intelligence", opt.Intelligence.String(),
+		)
+	}
 
 	// Validate input
 	if input == nil {
@@ -144,8 +180,8 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
 		}
-		log.Error("Extract failed: nil input", "requestID", opt.RequestID, "error", err)
-		return result, err
+		log.Error("Extract failed: nil input", "requestID", opt.RequestID, "error", loggedError(err))
+		return result, types.Classified(types.KindInvalidRequest, err)
 	}
 
 	// Get context with timeout
@@ -158,14 +194,19 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// prompt; the machine-readable form goes to the provider, which can enforce
 	// it. Sending only the prose was the difference between a contract and a
 	// polite request.
-	targetType := reflect.TypeOf(result)
+	targetType := reflect.TypeFor[T]()
+
+	// Everything below that depends on the type and on nothing the caller sent
+	// is read from the type's plan, which works it out the first time the type
+	// is used and not again.
+	plan := typePlanFor(targetType)
 
 	// Refuse a type no answer could satisfy, before paying for the answer.
 	// An `any` field produces a schema saying "interface {}", the model
 	// guesses, and the decode either fails or succeeds into something
 	// meaningless -- a provider call and a bill spent to discover something
-	// reflection knows for free. S-010.
-	if err := PreflightType(targetType); err != nil {
+	// reflection knows for free.
+	if err := plan.preflight(); err != nil {
 		return result, types.ExtractError{
 			InputShape: types.DescribeValue(input),
 			TargetType: fmt.Sprintf("%v", targetType),
@@ -174,27 +215,26 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		}
 	}
 
-	typeInfo := GenerateTypeSchema(targetType)
-
 	opt.ResponseFormat = "json"
-	if schema := GenerateJSONSchema(targetType); schema != nil {
+	if schema := plan.sharedSchema(); schema != nil {
+		// The plan's own map, shared by every Extract of this type: it is read
+		// by the request and by nothing that changes it.
 		opt.JSONSchema = schema
-		opt.SchemaName = schemaNameFor(targetType)
+		opt.SchemaName = plan.schemaName()
 	}
 
 	// The schema's identity, so a cache key, a replay fixture, and a stored
 	// result can all say which contract produced an answer. The Go type's name
 	// is not that: it changes when a field is renamed and does not change when
-	// a field's type changes. S-002.
-	schemaDescriptor := DescribeSchema(targetType)
-	opt.SchemaID = schemaDescriptor.String()
+	// a field's type changes.
+	opt.SchemaID = plan.identityText()
 
 	// The provider-facing cache key's operation-and-schema half. extractPromptVersion
 	// is bumped when Extract's contract changes in a way that is not visible in
 	// the schema hash or the rendered prompt bytes -- e.g. the repair policy or
 	// the strict/transform decode path below -- so that a cache entry from
-	// before the change is never served after it. P-009.
-	opt.CacheIdentity = SchemaCacheKey("extract", extractPromptVersion, schemaDescriptor)
+	// before the change is never served after it.
+	opt.CacheIdentity = plan.extractCacheIdentity()
 
 	// Convert input to string format for LLM processing
 	inputStr, err := NormalizeInput(input)
@@ -208,22 +248,23 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		}
 		log.Error("Extract failed: input normalization error",
 			"requestID", opt.RequestID,
-			"error", extractErr,
+			"error", loggedError(extractErr),
 		)
-		return result, extractErr
+		return result, types.Classified(types.KindInvalidRequest, extractErr)
 	}
 
-	// Log input details in debug mode
+	// Log input details in debug mode. The length only: the input is the
+	// caller's data, and a preview of it is a copy of it in the log.
 	if config.GetDebugMode() {
 		log.Debug("Extract input normalized",
 			"requestID", opt.RequestID,
-			"inputLength", len(inputStr),
-			"inputPreview", inputStr[:Min(len(inputStr), 100)],
+			"inputLength", runeLen(inputStr),
 		)
 	}
 
-	// Build system prompt based on mode
-	systemPrompt := BuildExtractSystemPrompt(typeInfo, opt.Mode)
+	// The system prompt for the mode, the same bytes BuildExtractSystemPrompt
+	// writes for the type's schema.
+	systemPrompt := plan.extractSystemPrompt(opt.Mode)
 
 	// Build user prompt
 	userPrompt := fmt.Sprintf("Extract structured data from this input:\n%s", inputStr)
@@ -232,10 +273,10 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 	// A parse failure or a missing required field used to be terminal, even
 	// though the model can almost always fix both when told what was wrong.
 	//
-	// A-012: this used to call withRepair directly with a closure built
+	// this used to call withRepair directly with a closure built
 	// inline. It now goes through runExtractOp (opextract.go), which builds
 	// the same closure as an Op's OutputContract.Decode and runs it through
-	// RunOp -- the port A-001 exists to prove. Everything above this line is
+	// RunOp -- Everything above this line is
 	// unchanged, so the prompt bytes, the schema and cache identities, and
 	// this function's own error handling below are unchanged too.
 	candidate, repair, err := runExtractOp[T](ctx, opt, systemPrompt, userPrompt)
@@ -252,19 +293,21 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 		log.Error("Extract failed",
 			"requestID", opt.RequestID,
 			"attempts", repair.Attempts,
-			"error", extractErr,
+			"error", loggedError(extractErr),
 		)
 		return result, extractErr
 	}
 
 	result = candidate
 
-	log.Info("Extract operation completed",
-		"requestID", opt.RequestID,
-		"duration", time.Since(startTime),
-		"attempts", repair.Attempts,
-		"repaired", repair.Repaired,
-	)
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("Extract operation completed",
+			"requestID", opt.RequestID,
+			"duration", time.Since(startTime),
+			"attempts", repair.Attempts,
+			"repaired", repair.Repaired,
+		)
+	}
 
 	return result, nil
 }
@@ -293,11 +336,11 @@ func Extract[T any](input any, opts ExtractOptions) (T, error) {
 // different types. It can handle field renaming, type conversion, and derived fields.
 func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 	var result U
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return result, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Convert to legacy OpOptions
@@ -315,8 +358,10 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 
 	if len(opts.MappingRules) > 0 {
 		rules := "Field mappings: "
-		for target, source := range opts.MappingRules {
-			rules += fmt.Sprintf("%s <- %s; ", target, source)
+		// In key order: ranging over the map wrote the rules in a different
+		// order on every call, so the prompt differed between identical calls.
+		for _, target := range sortedKeys(opts.MappingRules) {
+			rules += fmt.Sprintf("%s <- %s; ", target, opts.MappingRules[target])
 		}
 		steeringParts = append(steeringParts, strings.TrimSuffix(rules, "; "))
 	}
@@ -333,45 +378,71 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 		opt.Steering = strings.Join(steeringParts, ". ")
 	}
 
+	// The static types, not the dynamic type of a value that may be nil.
+	// reflect.TypeOf(input) is a nil Type for a nil interface, and .String()
+	// on it panicked, as did reflect.TypeOf(result) for an interface U. An
+	// interface input that holds a value is described by what it holds.
+	fromType := reflect.TypeFor[T]()
+	if fromType.Kind() == reflect.Interface {
+		if held := reflect.TypeOf(input); held != nil {
+			fromType = held
+		}
+	}
+	toType := reflect.TypeFor[U]()
+	toPlan := typePlanFor(toType)
+
 	startTime := time.Now()
 	defer func() {
-		if config.IsMetricsEnabled() {
+		if telemetry.MetricsEnabled() {
 			telemetry.RecordMetric("transform_duration", time.Since(startTime).Milliseconds(), map[string]string{
-				"from_type": reflect.TypeOf(input).String(),
-				"to_type":   reflect.TypeFor[U]().String(),
+				"from_type": telemetry.BoundedTagValue(fromType.String()),
+				"to_type":   telemetry.BoundedTagValue(toType.String()),
 				"mode":      opt.Mode.String(),
 			})
 		}
 	}()
 
-	log.Info("Transform operation started",
-		"requestID", opt.RequestID,
-		"fromType", reflect.TypeOf(input).String(),
-		"toType", reflect.TypeFor[U]().String(),
-	)
-
-	// Validate input
-	if reflect.ValueOf(input).IsZero() {
-		log.Warn("Transform received zero value input",
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("Transform operation started",
 			"requestID", opt.RequestID,
-			"type", reflect.TypeOf(input).String(),
+			"fromType", fromType.String(),
+			"toType", toType.String(),
 		)
 	}
 
-	ctx := opt.Context
-	if ctx == nil {
-		ctx = context.Background()
+	// Refuse a target no answer could satisfy before paying for the answer, as
+	// Extract does.
+	if err := toPlan.preflight(); err != nil {
+		return result, types.TransformError{
+			InputShape: types.DescribeValue(input),
+			FromType:   fromType.String(),
+			ToType:     toType.String(),
+			Reason:     err.Error(),
+			Err:        err,
+			RequestID:  opt.RequestID,
+			Timestamp:  time.Now(),
+		}
 	}
 
-	// Get type information
-	fromType := reflect.TypeOf(input)
-	toType := reflect.TypeOf(result)
+	// Validate input. An invalid Value is a nil interface, which has no zero
+	// value to ask about.
+	if held := reflect.ValueOf(input); !held.IsValid() || held.IsZero() {
+		log.Warn("Transform received zero value input",
+			"requestID", opt.RequestID,
+			"type", fromType.String(),
+		)
+	}
+
+	// The default deadline applies when the caller set none, as it does in
+	// every sibling operation.
+	ctx, cancel := operationContext(opt.Context, 0)
+	defer cancel()
 
 	fromSchema := GenerateTypeSchema(fromType)
-	toSchema := GenerateTypeSchema(toType)
+	toSchema := toPlan.proseSchema()
 
-	// Declare the target schema rather than only describing it in prose
-	// (S-002, CI-008). Transform embedded the target's shape in its system
+	// Declare the target schema rather than only describing it in prose.
+	// Transform embedded the target's shape in its system
 	// prompt and asked for "ONLY valid JSON matching the target schema", which
 	// is a request a model may honour and nothing verifies. Sending it as a
 	// schema means a provider that supports structured output enforces it, and
@@ -379,9 +450,9 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 	// than falling back to a shape no operation asks for -- which is why this
 	// example failed under `SCHEMAFLUX_PROVIDER=local`.
 	opt.ResponseFormat = "json"
-	if schema := GenerateJSONSchema(toType); schema != nil {
+	if schema := toPlan.sharedSchema(); schema != nil {
 		opt.JSONSchema = schema
-		opt.SchemaName = schemaNameFor(toType)
+		opt.SchemaName = toPlan.schemaName()
 	}
 
 	// Marshal input to JSON
@@ -392,12 +463,13 @@ func Transform[T any, U any](input T, opts TransformOptions) (U, error) {
 			FromType:   fromType.String(),
 			ToType:     toType.String(),
 			Reason:     fmt.Sprintf("failed to marshal input: %v", err),
+			Err:        types.Classified(types.KindInvalidRequest, err),
 			RequestID:  opt.RequestID,
 			Timestamp:  time.Now(),
 		}
 		log.Error("Transform failed: marshaling error",
 			"requestID", opt.RequestID,
-			"error", transformErr,
+			"error", loggedError(transformErr),
 		)
 		return result, transformErr
 	}
@@ -422,12 +494,12 @@ Transformation rules:
 
 	userPrompt := fmt.Sprintf("Transform this data:\n%s", string(inputJSON))
 
-	// Log transformation details in debug mode
+	// Log only sizes: a schema contains the caller's field names.
 	if config.GetDebugMode() {
 		log.Debug("Transform schemas",
 			"requestID", opt.RequestID,
-			"fromSchema", fromSchema,
-			"toSchema", toSchema,
+			"fromSchemaBytes", len(fromSchema),
+			"toSchemaBytes", len(toSchema),
 		)
 	}
 
@@ -445,28 +517,36 @@ Transformation rules:
 		}
 		log.Error("Transform failed: LLM error",
 			"requestID", opt.RequestID,
-			"error", transformErr,
+			"error", loggedError(transformErr),
 		)
 		return result, transformErr
 	}
 
-	// Parse transformed data
-	if err := ParseJSONStrict(response, &result); err != nil {
+	// Parse transformed data into a local: encoding/json fills the fields it can
+	// before it reports a type error, so decoding straight into result handed a
+	// partly filled value back beside the error.
+	//
+	// ModelConfidence is left unset on the error. A response that cannot be
+	// read carries no confidence from the model, and the 0.5 that stood here
+	// was a number nobody reported.
+	var decoded U
+	if err := decodeCallerAnswer("transform", response, &decoded); err != nil {
 		transformErr := types.TransformError{
-			InputShape:      types.DescribeValue(input),
-			FromType:        fromType.String(),
-			ToType:          toType.String(),
-			Reason:          fmt.Sprintf("failed to parse response: %v", err),
-			ModelConfidence: 0.5,
-			RequestID:       opt.RequestID,
-			Timestamp:       time.Now(),
+			InputShape: types.DescribeValue(input),
+			FromType:   fromType.String(),
+			ToType:     toType.String(),
+			Reason:     fmt.Sprintf("failed to parse response: %v", err),
+			Err:        err,
+			RequestID:  opt.RequestID,
+			Timestamp:  time.Now(),
 		}
 		log.Error("Transform failed: parsing error",
 			"requestID", opt.RequestID,
-			"error", transformErr,
+			"error", loggedError(transformErr),
 		)
 		return result, transformErr
 	}
+	result = decoded
 
 	// PreserveFields reached the prompt as "Preserve these fields: ..." and was
 	// checked nowhere, so a field the caller pinned could come back changed with
@@ -492,17 +572,20 @@ Transformation rules:
 				if !reflect.DeepEqual(original, produced) {
 					log.Error("Transform changed a field named in PreserveFields",
 						"requestID", opt.RequestID, "field", field)
-					return result, fmt.Errorf(
-						"transform: field %q is named in PreserveFields and was changed", field)
+					var none U
+					return none, types.Newf(types.KindInvariantViolation, "transform",
+						"field %q is named in PreserveFields and was changed", field)
 				}
 			}
 		}
 	}
 
-	log.Info("Transform operation completed",
-		"requestID", opt.RequestID,
-		"duration", time.Since(startTime),
-	)
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("Transform operation completed",
+			"requestID", opt.RequestID,
+			"duration", time.Since(startTime),
+		)
+	}
 
 	return result, nil
 }
@@ -534,19 +617,23 @@ Transformation rules:
 //
 // The operation understands the target type structure and generates
 // appropriate data that conforms to the schema.
+//
+// The prompt, with the clauses the options add to it, is at most 10000
+// characters. A longer one is refused with an error of kind
+// types.KindContextTooLarge that names the limit; nothing is cut.
 func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 	var result T
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return result, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Handle batch generation if Count > 1
 	if opts.Count > 1 {
 		// This would need special handling for slice types
-		return result, fmt.Errorf("batch generation not yet supported - use Count=1")
+		return result, types.Classified(types.KindConfiguration, fmt.Errorf("batch generation not yet supported - use Count=1"))
 	}
 
 	// Convert to legacy OpOptions
@@ -577,13 +664,22 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 			"Every generated value must be distinct: do not repeat a value that appears in the seed data or examples")
 	}
 
+	// Seed data and examples that cannot be written as JSON are refused. With
+	// the error dropped the prompt said "Base on this seed data: " and nothing
+	// after it, and the call went ahead without the option.
 	if opts.SeedData != nil {
-		seedJSON, _ := json.Marshal(opts.SeedData)
+		seedJSON, err := json.Marshal(opts.SeedData)
+		if err != nil {
+			return result, types.Newf(types.KindConfiguration, "generate", "the seed data cannot be written as JSON")
+		}
 		promptParts = append(promptParts, fmt.Sprintf("Base on this seed data: %s", string(seedJSON)))
 	}
 
 	if len(opts.Examples) > 0 {
-		examplesJSON, _ := json.Marshal(opts.Examples)
+		examplesJSON, err := json.Marshal(opts.Examples)
+		if err != nil {
+			return result, types.Newf(types.KindConfiguration, "generate", "the examples cannot be written as JSON")
+		}
 		promptParts = append(promptParts, fmt.Sprintf("Follow these examples: %s", string(examplesJSON)))
 	}
 
@@ -594,19 +690,21 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 
 	startTime := time.Now()
 	defer func() {
-		if config.IsMetricsEnabled() {
+		if telemetry.MetricsEnabled() {
 			telemetry.RecordMetric("generate_duration", time.Since(startTime).Milliseconds(), map[string]string{
-				"type": reflect.TypeFor[T]().String(),
+				"type": telemetry.BoundedTagValue(reflect.TypeFor[T]().String()),
 				"mode": opt.Mode.String(),
 			})
 		}
 	}()
 
-	log.Info("Generate operation started",
-		"requestID", opt.RequestID,
-		"targetType", reflect.TypeFor[T]().String(),
-		"promptLength", len(prompt),
-	)
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("Generate operation started",
+			"requestID", opt.RequestID,
+			"targetType", reflect.TypeFor[T]().String(),
+			"promptLength", runeLen(prompt),
+		)
+	}
 
 	// Validate prompt
 	prompt = strings.TrimSpace(prompt)
@@ -615,33 +713,61 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 			PromptShape: types.DescribeValue(prompt),
 			TargetType:  reflect.TypeFor[T]().String(),
 			Reason:      "prompt cannot be empty",
+			Err:         types.Newf(types.KindInvalidRequest, "generate", "prompt cannot be empty"),
 			RequestID:   opt.RequestID,
 			Timestamp:   time.Now(),
 		}
 		log.Error("Generate failed: empty prompt",
 			"requestID", opt.RequestID,
-			"error", err,
+			"error", loggedError(err),
 		)
 		return result, err
 	}
 
-	// Sanitize prompt length
-	const maxPromptLength = 10000
-	if len(prompt) > maxPromptLength {
-		log.Warn("Generate prompt truncated",
+	// A prompt over the bound is refused, not cut. Cutting it by byte offset
+	// split a character in two, and what it dropped was the end of the prompt:
+	// the template, constraints, uniqueness rule, seed data and examples the
+	// options appended after the caller's text, so the call succeeded with the
+	// options gone. The bound is in characters, as the collection operations'
+	// size guards state theirs, and the error names it.
+	if length := runeLen(prompt); length > generateMaxPromptLength {
+		genErr := types.GenerateError{
+			PromptShape: types.DescribeValue(prompt),
+			TargetType:  reflect.TypeFor[T]().String(),
+			Reason: fmt.Sprintf("the prompt is %d characters, over the limit of %d; shorten it or send less seed data and fewer examples",
+				length, generateMaxPromptLength),
+			RequestID: opt.RequestID,
+			Timestamp: time.Now(),
+			Err: types.Newf(types.KindContextTooLarge, "generate",
+				"the prompt is %d characters, over the limit of %d", length, generateMaxPromptLength),
+		}
+		log.Error("Generate failed: prompt over the limit",
 			"requestID", opt.RequestID,
-			"originalLength", len(prompt),
-			"maxLength", maxPromptLength,
+			"length", length,
+			"limit", generateMaxPromptLength,
 		)
-		prompt = prompt[:maxPromptLength]
+		return result, genErr
 	}
 
-	ctx := opt.Context
-	if ctx == nil {
-		ctx = context.Background()
+	// reflect.TypeFor, not reflect.TypeOf(result): the zero value of an
+	// interface target is a nil interface, whose Type is nil, and .Kind() on it
+	// panicked.
+	targetType := reflect.TypeFor[T]()
+	plan := typePlanFor(targetType)
+	if err := plan.preflight(); err != nil {
+		return result, types.GenerateError{
+			PromptShape: types.DescribeValue(prompt),
+			TargetType:  targetType.String(),
+			Reason:      err.Error(),
+			Err:         err,
+			RequestID:   opt.RequestID,
+			Timestamp:   time.Now(),
+		}
 	}
 
-	targetType := reflect.TypeOf(result)
+	// The default deadline applies when the caller set none.
+	ctx, cancel := operationContext(opt.Context, 0)
+	defer cancel()
 
 	// Handle string generation differently (simpler)
 	if targetType.Kind() == reflect.String {
@@ -659,7 +785,7 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 			}
 			log.Error("Generate failed: LLM error",
 				"requestID", opt.RequestID,
-				"error", genErr,
+				"error", loggedError(genErr),
 			)
 			return result, genErr
 		}
@@ -667,23 +793,24 @@ func Generate[T any](prompt string, opts GenerateOptions) (T, error) {
 		// Set string result using reflection
 		reflect.ValueOf(&result).Elem().SetString(response)
 
-		log.Info("Generate operation completed (string)",
-			"requestID", opt.RequestID,
-			"duration", time.Since(startTime),
-			"responseLength", len(response),
-		)
+		if log.Enabled(context.Background(), slog.LevelDebug) {
+			log.Debug("Generate operation completed (string)",
+				"requestID", opt.RequestID,
+				"duration", time.Since(startTime),
+				"responseLength", len(response),
+			)
+		}
 		return result, nil
 	}
 
 	// Handle structured type generation
-	typeSchema := GenerateTypeSchema(targetType)
+	typeSchema := plan.proseSchema()
 
-	// Same as Transform above: declare the shape, do not only describe it
-	// (S-002, CI-008).
+	// Same as Transform above: declare the shape, do not only describe it.
 	opt.ResponseFormat = "json"
-	if schema := GenerateJSONSchema(targetType); schema != nil {
+	if schema := plan.sharedSchema(); schema != nil {
 		opt.JSONSchema = schema
-		opt.SchemaName = schemaNameFor(targetType)
+		opt.SchemaName = plan.schemaName()
 	}
 
 	systemPrompt := fmt.Sprintf(`You are a data generation expert. Generate structured data based on the prompt.
@@ -699,12 +826,12 @@ Generation rules:
 - Maintain internal consistency (e.g., related fields should make sense together)
 - Return ONLY valid JSON matching the schema, no explanations`, typeSchema)
 
-	// Log generation details in debug mode
+	// Log only sizes: the schema contains the caller's field names.
 	if config.GetDebugMode() {
 		log.Debug("Generate schema",
 			"requestID", opt.RequestID,
-			"schema", typeSchema,
-			"prompt", prompt[:min(len(prompt), 200)],
+			"schemaBytes", len(typeSchema),
+			"promptLength", runeLen(prompt),
 		)
 	}
 
@@ -720,32 +847,40 @@ Generation rules:
 		}
 		log.Error("Generate failed: LLM error",
 			"requestID", opt.RequestID,
-			"error", genErr,
+			"error", loggedError(genErr),
 		)
 		return result, genErr
 	}
 
-	// Parse generated data
-	if err := ParseJSONStrict(response, &result); err != nil {
+	// Parse generated data into a local, so that a type error halfway through
+	// leaves nothing in the result. The log line carries the error, which names
+	// the shape of the answer, and not the answer: it is the model's text, and
+	// it was cut to 200 bytes mid-character as well.
+	var decoded T
+	if err := decodeCallerAnswer("generate", response, &decoded); err != nil {
 		genErr := types.GenerateError{
 			PromptShape: types.DescribeValue(prompt),
 			TargetType:  targetType.String(),
 			Reason:      fmt.Sprintf("failed to parse response: %v", err),
+			Err:         err,
 			RequestID:   opt.RequestID,
 			Timestamp:   time.Now(),
 		}
 		log.Error("Generate failed: parsing error",
 			"requestID", opt.RequestID,
-			"error", genErr,
-			"response", response[:min(len(response), 200)],
+			"error", loggedError(genErr),
+			"responseLength", runeLen(response),
 		)
 		return result, genErr
 	}
+	result = decoded
 
-	log.Info("Generate operation completed",
-		"requestID", opt.RequestID,
-		"duration", time.Since(startTime),
-	)
+	if log.Enabled(context.Background(), slog.LevelDebug) {
+		log.Debug("Generate operation completed",
+			"requestID", opt.RequestID,
+			"duration", time.Since(startTime),
+		)
+	}
 
 	return result, nil
 }

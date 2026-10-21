@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Priority is the kind of category type a caller writes. Under the old
@@ -61,7 +61,7 @@ func TestMultiLabelCategoriesReachTheResult(t *testing.T) {
 // A single-label answer still populates Categories, so a caller can read one
 // field regardless of the mode.
 func TestSingleLabelStillPopulatesCategories(t *testing.T) {
-	installClassifyResponse(t, `{"category":"technical","confidence":0.9}`)
+	installClassifyResponse(t, `{"category":"technical","confidence":0.9,"reasoning":"r"}`)
 
 	result, err := Classify[string, Priority]("the page will not load", labelOptions())
 	if err != nil {
@@ -76,22 +76,28 @@ func TestSingleLabelStillPopulatesCategories(t *testing.T) {
 // primary one.
 func TestEveryAssignedCategoryIsChecked(t *testing.T) {
 	installClassifyResponse(t,
-		`{"categories":["billing","sales"],"confidence":0.9}`)
+		`{"categories":["billing","sales"],"confidence":0.9,"reasoning":"r"}`)
 
 	_, err := Classify[string, Priority]("my card was declined",
 		labelOptions().WithMultiLabel(true))
 	if err == nil {
 		t.Fatal("Classify accepted a multi-label answer containing a category it never offered")
 	}
-	if !strings.Contains(err.Error(), "sales") {
-		t.Errorf("the error does not name the offending category: %v", err)
+	// The category is the model's text, and the error is logged by every
+	// caller: it says which one of the answer's categories was wrong, not what
+	// the model wrote.
+	if strings.Contains(err.Error(), "sales") {
+		t.Errorf("the error repeats the model's category: %v", err)
+	}
+	if !strings.Contains(err.Error(), "category 2") {
+		t.Errorf("the error does not say which category was not offered: %v", err)
 	}
 }
 
 // OP-203's other half: MaxCategories was an instruction with no consequence.
 func TestMaxCategoriesIsEnforced(t *testing.T) {
 	installClassifyResponse(t,
-		`{"categories":["billing","technical","account"],"confidence":0.9}`)
+		`{"categories":["billing","technical","account"],"confidence":0.9,"reasoning":"r"}`)
 
 	_, err := Classify[string, Priority]("everything is broken",
 		labelOptions().WithMultiLabel(true).WithMaxCategories(2))
@@ -103,7 +109,7 @@ func TestMaxCategoriesIsEnforced(t *testing.T) {
 	}
 
 	// At the limit is fine.
-	installClassifyResponse(t, `{"categories":["billing","technical"],"confidence":0.9}`)
+	installClassifyResponse(t, `{"categories":["billing","technical"],"confidence":0.9,"reasoning":"r"}`)
 	if _, err := Classify[string, Priority]("two problems",
 		labelOptions().WithMultiLabel(true).WithMaxCategories(2)); err != nil {
 		t.Errorf("Classify = %v at exactly the limit", err)
@@ -113,7 +119,7 @@ func TestMaxCategoriesIsEnforced(t *testing.T) {
 // Duplicates collapse rather than counting against MaxCategories twice.
 func TestDuplicateCategoriesCollapse(t *testing.T) {
 	installClassifyResponse(t,
-		`{"categories":["billing","Billing","BILLING"],"confidence":0.9}`)
+		`{"categories":["billing","Billing","BILLING"],"confidence":0.9,"reasoning":"r"}`)
 
 	result, err := Classify[string, Priority]("a billing problem",
 		labelOptions().WithMultiLabel(true).WithMaxCategories(1))
@@ -129,7 +135,7 @@ func TestDuplicateCategoriesCollapse(t *testing.T) {
 // round trip, so only string-kinded C survived. C is constrained now, and the
 // conversion is direct -- this asserts a named string type round-trips.
 func TestNamedStringTypesAreSupported(t *testing.T) {
-	installClassifyResponse(t, `{"category":"account","confidence":0.9}`)
+	installClassifyResponse(t, `{"category":"account","confidence":0.9,"reasoning":"r"}`)
 
 	result, err := Classify[string, Priority]("close my account", labelOptions())
 	if err != nil {
@@ -149,7 +155,7 @@ func TestNamedStringTypesAreSupported(t *testing.T) {
 // is not worth discarding a good result over.
 func TestStrayAlternativesAreDroppedNotFatal(t *testing.T) {
 	installClassifyResponse(t,
-		`{"category":"billing","confidence":0.9,"alternatives":[{"category":"sales","confidence":0.3},{"category":"account","confidence":0.2}]}`)
+		`{"category":"billing","confidence":0.9,"alternatives":[{"category":"sales","confidence":0.3},{"category":"account","confidence":0.2}],"reasoning":"r"}`)
 
 	result, err := Classify[string, Priority]("my card was declined", labelOptions())
 	if err != nil {

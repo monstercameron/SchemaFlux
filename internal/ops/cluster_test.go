@@ -1,7 +1,10 @@
 package ops
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 func TestClusterOptions(t *testing.T) {
@@ -57,8 +60,15 @@ func TestClusterOptions(t *testing.T) {
 }
 
 func TestCluster(t *testing.T) {
-	// Skip integration tests without LLM
-	t.Skip("Integration test requires LLM provider")
+	// A scripted answer, so this runs without a provider.
+	withResponse(t, `{
+		"clusters": [
+			{"name": "Python and ML", "indices": [0, 2, 3],"keywords":[]},
+			{"name": "Web", "indices": [1, 4, 5],"keywords":[]}
+		],
+		"outlier_indices": [],
+		"quality": 0.8
+	}`)
 
 	t.Run("Cluster groups similar items", func(t *testing.T) {
 		items := []string{
@@ -79,8 +89,93 @@ func TestCluster(t *testing.T) {
 			t.Fatalf("Cluster failed: %v", err)
 		}
 
-		if len(result.Clusters) == 0 {
-			t.Error("expected clusters, got none")
+		if len(result.Clusters) != 2 {
+			t.Fatalf("got %d clusters, want the 2 that were scripted", len(result.Clusters))
 		}
+		if result.Clusters[0].Items[1] != "Machine learning basics" || result.Clusters[1].Items[0] != "JavaScript for beginners" {
+			t.Errorf("clusters = %+v, want the items at the scripted indices", result.Clusters)
+		}
+	})
+}
+
+const clusterCompleteAnswer = `{"clusters":[{"name":"A","description":"d","indices":[0,1],"keywords":["k"]},{"name":"B","description":"d","indices":[2],"keywords":[]}],"outlier_indices":[],"quality":0.5}`
+
+func TestClusterRefusesAnAnswerMissingARequiredMember(t *testing.T) {
+	members := [][]any{
+		{"clusters"},
+		{"clusters", 0, "name"},
+		{"clusters", 0, "indices"},
+		{"clusters", 1, "keywords"},
+		{"outlier_indices"},
+		{"quality"},
+	}
+	refuseEachMissingMember(t, clusterCompleteAnswer, members, func(response string) (any, error) {
+		answerAndRecord(t, response)
+		return Cluster([]string{"a", "b", "c"}, NewClusterOptions())
+	})
+}
+
+func TestClusterReadsAnAnswerWhoseClustersHaveNoDescription(t *testing.T) {
+	// The description is asked for only when GenerateDescriptions is set, and the
+	// prompt tells the model to leave it empty otherwise.
+	answerAndRecord(t, `{"clusters":[{"name":"A","indices":[0,1,2],"keywords":[]}],"outlier_indices":[],"quality":0.5}`)
+	result, err := Cluster([]string{"a", "b", "c"}, NewClusterOptions().WithGenerateDescriptions(false))
+	if err != nil || len(result.Clusters) != 1 || result.Clusters[0].Description != "" {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+}
+
+func TestClusterRefusesAQualityThatIsNull(t *testing.T) {
+	answerAndRecord(t, strings.Replace(clusterCompleteAnswer, `"quality":0.5`, `"quality":null`, 1))
+	result, err := Cluster([]string{"a", "b", "c"}, NewClusterOptions())
+	wantKind(t, err, types.KindSchemaViolation)
+	if !strings.Contains(err.Error(), "quality is null") || len(result.Clusters) != 0 {
+		t.Errorf("result = %+v, err = %v", result, err)
+	}
+}
+
+func TestClusterRefusalsBeforeACallHaveAKind(t *testing.T) {
+	items := []string{"a", "b", "c"}
+	refuse := func(change func(*ClusterOptions)) func() error {
+		return func() error {
+			options := NewClusterOptions()
+			change(&options)
+			_, err := Cluster(items, options)
+			return err
+		}
+	}
+	checkRefusalsBeforeACall(t, []refusalBeforeACall{
+		{"a negative number of clusters", refuse(func(o *ClusterOptions) { o.NumClusters = -1 }),
+			"invalid options: num clusters cannot be negative, got -1", types.KindConfiguration},
+		{"a minimum size of zero", refuse(func(o *ClusterOptions) { o.MinClusterSize = 0 }),
+			"invalid options: min cluster size must be at least 1, got 0", types.KindConfiguration},
+		{"a negative minimum size", refuse(func(o *ClusterOptions) { o.MinClusterSize = -4 }),
+			"invalid options: min cluster size must be at least 1, got -4", types.KindConfiguration},
+		{"a similarity threshold above one", refuse(func(o *ClusterOptions) { o.SimilarityThreshold = 1.25 }),
+			"invalid options: similarity threshold must be between 0 and 1, got 1.250000", types.KindConfiguration},
+		{"a negative similarity threshold", refuse(func(o *ClusterOptions) { o.SimilarityThreshold = -0.5 }),
+			"invalid options: similarity threshold must be between 0 and 1, got -0.500000", types.KindConfiguration},
+		{"a naming strategy nobody knows", refuse(func(o *ClusterOptions) { o.NamingStrategy = "poetic" }),
+			"invalid options: naming strategy must be auto, descriptive, or numbered", types.KindConfiguration},
+		{"a threshold above one on the common half", refuse(func(o *ClusterOptions) { o.CommonOptions.Threshold = 3 }),
+			"invalid options: threshold must be between 0 and 1, got 3.000000", types.KindConfiguration},
+		{"a bad option beside one item", func() error {
+			options := NewClusterOptions()
+			options.NumClusters = -2
+			_, err := Cluster([]string{"only"}, options)
+			return err
+		}, "invalid options: num clusters cannot be negative, got -2", types.KindConfiguration},
+		{"a bad option beside no items", func() error {
+			options := NewClusterOptions()
+			options.NamingStrategy = "x"
+			_, err := Cluster([]string(nil), options)
+			return err
+		}, "invalid options: naming strategy must be auto, descriptive, or numbered", types.KindConfiguration},
+		{"a bad option beside a typed slice of structs", func() error {
+			options := NewClusterOptions()
+			options.MinClusterSize = 0
+			_, err := Cluster([]Person{{Name: "a"}, {Name: "b"}}, options)
+			return err
+		}, "invalid options: min cluster size must be at least 1, got 0", types.KindConfiguration},
 	})
 }

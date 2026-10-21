@@ -5,7 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-003. Provenance through pipelines: result IDs, parent links, input and
@@ -105,7 +106,7 @@ func TestProvenanceFullyTraced(t *testing.T) {
 // (scriptedProvider via WithProvider) so Model is genuinely populated, the
 // same reason op_kernel_seam_test.go's envelope tests avoid setLLMCaller.
 func TestRunOpResultPopulatesProvenanceOnFirstAttempt(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"final"}}
 	ctx := WithProvider(context.Background(), provider)
@@ -157,7 +158,7 @@ func TestRunOpResultPopulatesProvenanceOnFirstAttempt(t *testing.T) {
 // first-attempt case -- and still carries no content from the rejected
 // first attempt.
 func TestRunOpResultProvenanceRecordsRepairPath(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"draft", "final"}}
 	ctx := WithProvider(context.Background(), provider)
@@ -188,7 +189,7 @@ func TestRunOpResultProvenanceRecordsRepairPath(t *testing.T) {
 // stage's Provenance names the immediately prior stage, which in turn named
 // the one before it -- the chain a caller (or an audit) walks back through.
 func TestThreeStagePipelineProvenanceChainsThroughParentResultIDs(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	op := echoOp() // no invariants: every answer is accepted on the first try
 
@@ -244,7 +245,7 @@ func TestThreeStagePipelineProvenanceChainsThroughParentResultIDs(t *testing.T) 
 // not retroactively change the Provenance already returned -- buildProvenance
 // copies ParentResultIDs rather than aliasing the caller's backing array.
 func TestProvenanceParentResultIDsAreCopiedNotAliased(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"out"}}
 	ctx := WithProvider(context.Background(), provider)
@@ -268,7 +269,7 @@ func TestProvenanceParentResultIDsAreCopiedNotAliased(t *testing.T) {
 // 11. A declared Normalize step is recorded by its Go symbol name; an
 // operation with none records nothing.
 func TestProvenanceRecordsNormalizerSymbol(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"final"}}
 	op := echoOp()
@@ -302,7 +303,7 @@ func TestProvenanceRecordsNormalizerSymbol(t *testing.T) {
 // with the exact input digest that failed, without the log ever holding the
 // input itself.
 func TestRunOpResultProvenancePopulatedOnFailure(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"never-final", "still-never-final"}}
 	op := echoOp(func(string) error { return errFor("always fails") })
@@ -323,7 +324,7 @@ func TestRunOpResultProvenancePopulatedOnFailure(t *testing.T) {
 // options set one -- the same SchemaID every operation that knows its
 // schema already computes (S-002) -- and stays empty when there is none.
 func TestProvenanceSchemaDigestFromOpOptions(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 
 	provider := &scriptedProvider{bodies: []string{"final"}}
 	result, err := RunOpResult(WithProvider(context.Background(), provider), echoOp(), "x",

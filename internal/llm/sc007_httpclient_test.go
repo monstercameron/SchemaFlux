@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // SC-007. "Caller-owned HTTP. Every provider accepts an *http.Client or
@@ -32,7 +32,7 @@ import (
 // struct field the production code could set without ever using it -- and
 // that a caller who configures nothing gets a working client with no
 // behaviour change.
-func TestSC007CallerOwnedHTTPClient(t *testing.T) {
+func TestCallerOwnedHTTPClient(t *testing.T) {
 	t.Run("OpenAI: caller-supplied client is the one that executes the request", func(t *testing.T) {
 		server, hit := recordingServer(t, openAIResponsesBody("caller client hit"))
 		defer server.Close()
@@ -392,7 +392,7 @@ func (t failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 func openAIResponsesBody(text string) string {
-	return `{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"` + text + `"}]}],"model":"gpt-test","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	return `{"id":"resp_1","status": "completed", "output":[{"type":"message","content":[{"type":"output_text","text":"` + text + `"}]}],"model":"gpt-test","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
 }
 
 func chatCompletionsBody(text string) string {
@@ -401,4 +401,124 @@ func chatCompletionsBody(text string) string {
 
 func anthropicBody(text string) string {
 	return `{"id":"msg_1","content":[{"type":"text","text":"` + text + `"}],"stop_reason":"end_turn","model":"claude-test","usage":{"input_tokens":1,"output_tokens":1}}`
+}
+
+// A RoundTripper must not modify the request it is given, and the transport the
+// headers are added in front of may retry or inspect that request afterwards. The
+// headers go on a clone.
+func TestCustomTransportAddsHeadersToACloneAndLeavesTheRequestAlone(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		preset  map[string]string
+	}{
+		{"one header", map[string]string{"X-Trace": "abc"}, nil},
+		{"several headers", map[string]string{"X-A": "1", "X-B": "2", "X-C": "3"}, nil},
+		{"no headers", nil, nil},
+		{"an empty map", map[string]string{}, nil},
+		{"a header that overrides one the request carries", map[string]string{"X-Trace": "configured"}, map[string]string{"X-Trace": "original"}},
+		{"a header beside others the request carries", map[string]string{"X-New": "n"}, map[string]string{"X-Old": "o"}},
+		{"a canonicalised name", map[string]string{"x-lower": "v"}, nil},
+		{"an empty value", map[string]string{"X-Empty": ""}, nil},
+		{"the api key header", map[string]string{"api-key": "azure"}, nil},
+		{"many headers", map[string]string{"H1": "1", "H2": "2", "H3": "3", "H4": "4", "H5": "5", "H6": "6"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen *http.Request
+			inner := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				seen = req
+				return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+			})
+			transport := newCustomTransport(inner, tc.headers)
+
+			req, _ := http.NewRequest(http.MethodPost, "http://example.invalid/x", nil)
+			for name, value := range tc.preset {
+				req.Header.Set(name, value)
+			}
+			before := req.Header.Clone()
+
+			if _, err := transport.RoundTrip(req); err != nil {
+				t.Fatalf("RoundTrip: %v", err)
+			}
+			if seen == req {
+				t.Error("the transport underneath was handed the caller's own request")
+			}
+			if len(req.Header) != len(before) {
+				t.Errorf("the caller's request gained headers: %v", req.Header)
+			}
+			for name, value := range before {
+				if req.Header.Get(name) != value[0] {
+					t.Errorf("the caller's header %s changed to %q", name, req.Header.Get(name))
+				}
+			}
+			for name, value := range tc.headers {
+				if got := seen.Header.Get(name); got != value {
+					t.Errorf("the sent request carries %s = %q, want %q", name, got, value)
+				}
+			}
+		})
+	}
+}
+
+// The headers are the transport's own copy. The map is the caller's, and a write
+// to it after the provider was built would otherwise race with every request.
+func TestCustomTransportKeepsItsOwnCopyOfTheHeaders(t *testing.T) {
+	headers := map[string]string{"X-Trace": "first"}
+	var got string
+	transport := newCustomTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		got = req.Header.Get("X-Trace") + "|" + req.Header.Get("X-Later")
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+	}), headers)
+
+	headers["X-Trace"] = "changed"
+	headers["X-Later"] = "added"
+
+	req, _ := http.NewRequest(http.MethodGet, "http://example.invalid/", nil)
+	if _, err := transport.RoundTrip(req); err != nil {
+		t.Fatal(err)
+	}
+	if got != "first|" {
+		t.Errorf("the transport saw %q; a change to the caller's map reached it", got)
+	}
+}
+
+// The same through a provider: the headers reach the server, once.
+func TestExtraHeadersReachTheServerThroughEveryProviderPath(t *testing.T) {
+	var traces atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Trace") == "abc" {
+			traces.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/messages" || r.URL.Path == "/v1/messages":
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","model":"m"}`))
+		case r.URL.Path == "/chat/completions":
+			_, _ = w.Write([]byte(`{"model":"m","choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`))
+		}
+	}))
+	defer server.Close()
+
+	config := ProviderConfig{APIKey: "k", BaseURL: server.URL, ExtraHeaders: map[string]string{"X-Trace": "abc"}}
+	withClient := config
+	withClient.HTTPClient = &http.Client{}
+	for name, cfg := range map[string]ProviderConfig{"library client": config, "caller client": withClient} {
+		openai, _ := NewOpenAIProvider(cfg)
+		anthropic, _ := NewAnthropicProvider(cfg)
+		chat, _ := NewOpenAICompatibleProvider("testvendor", cfg)
+		for provider, p := range map[string]Provider{"openai": openai, "anthropic": anthropic, "chat": chat} {
+			t.Run(name+"/"+provider, func(t *testing.T) {
+				before := traces.Load()
+				if _, err := p.Complete(context.Background(), CompletionRequest{Model: "m", UserPrompt: "x"}); err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+				if traces.Load() != before+1 {
+					t.Errorf("the header reached the server %d times, want once", traces.Load()-before)
+				}
+			})
+		}
+	}
 }

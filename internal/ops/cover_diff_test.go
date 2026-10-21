@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // cover_diff_test.go raises coverage of internal/ops/diff.go's under-tested
@@ -110,6 +110,37 @@ func TestCompareFieldDereferencesNonNilPointers(t *testing.T) {
 	}
 }
 
+// A value reached through an unexported field cannot be turned into an
+// interface, and comparing two of them would panic. compareData never passes
+// one, and a caller that does gets no change back.
+func TestCompareFieldLeavesAnUnexportedValueAlone(t *testing.T) {
+	hidden := reflect.ValueOf(diffHidden{Name: "a", id: 1}).Field(1)
+	otherHidden := reflect.ValueOf(diffHidden{Name: "a", id: 2}).Field(1)
+	exported := reflect.ValueOf(diffHidden{Name: "a", id: 1}).Field(0)
+	if hidden.CanInterface() {
+		t.Fatal("the fixture's field can be read, so the case tests nothing")
+	}
+	cases := []struct {
+		name     string
+		old, new reflect.Value
+	}{
+		{"two different unexported values", hidden, otherHidden},
+		{"an unexported value against itself", hidden, hidden},
+		{"an unexported value against an exported one", hidden, exported},
+		{"an exported value against an unexported one", exported, hidden},
+		{"an unexported value against nothing", hidden, reflect.Value{}},
+	}
+	for _, tc := range cases {
+		for _, deep := range []bool{false, true} {
+			t.Run(tc.name, func(t *testing.T) {
+				if change := compareField("F", tc.old, tc.new, deep); change != nil {
+					t.Errorf("compareField = %+v, want no change", change)
+				}
+			})
+		}
+	}
+}
+
 func TestCompareFieldKindMismatchIsTypeChanged(t *testing.T) {
 	change := compareField("F", reflect.ValueOf(1), reflect.ValueOf("one"), false)
 	if change == nil || change.ChangeType != "type_changed" {
@@ -128,10 +159,10 @@ func TestCompareFieldStructDeepCompare(t *testing.T) {
 			t.Fatalf("compareField(deep=true) = %+v, want structure_changed", change)
 		}
 	})
-	t.Run("deep compare off reports nothing", func(t *testing.T) {
+	t.Run("deep compare off still reports the change, as a plain modification", func(t *testing.T) {
 		change := compareField("F", reflect.ValueOf(a), reflect.ValueOf(b), false)
-		if change != nil {
-			t.Fatalf("compareField(deep=false) = %+v, want nil (struct compare skipped)", change)
+		if change == nil || change.ChangeType != "modified" {
+			t.Fatalf("compareField(deep=false) = %+v, want modified: differing data is never reported as unchanged", change)
 		}
 	})
 	t.Run("identical structs report nothing regardless", func(t *testing.T) {

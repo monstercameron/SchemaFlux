@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // SynthesizeOptions configures the Synthesize operation
@@ -67,11 +68,11 @@ func (s SynthesizeOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"merge": true, "compare": true, "integrate": true, "reconcile": true}
 	if s.Strategy != "" && !validStrategies[s.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", s.Strategy)
+		return fmt.Errorf("synthesis strategy must be merge, compare, integrate, or reconcile")
 	}
 	validResolutions := map[string]bool{"latest-wins": true, "source-priority": true, "majority": true, "llm-decide": true}
 	if s.ConflictResolution != "" && !validResolutions[s.ConflictResolution] {
-		return fmt.Errorf("invalid conflict resolution: %s", s.ConflictResolution)
+		return fmt.Errorf("conflict resolution must be latest-wins, source-priority, majority, or llm-decide")
 	}
 	return nil
 }
@@ -149,7 +150,11 @@ func (s SynthesizeOptions) WithIntelligence(intelligence types.Speed) Synthesize
 }
 
 func (s SynthesizeOptions) toOpOptions() types.OpOptions {
-	return s.CommonOptions.toOpOptions()
+	return mergeEmbeddedOpOptions(s.CommonOptions, s.OpOptions)
+}
+
+func (s SynthesizeOptions) optionHalves() (CommonOptions, types.OpOptions) {
+	return s.CommonOptions, s.OpOptions
 }
 
 // SynthesisFact represents a synthesized fact with optional citation
@@ -214,20 +219,19 @@ type SynthesizeResult[T any] struct {
 //	    WithStrategy("compare").
 //	    WithFocusAreas([]string{"methodology", "conclusions"}))
 func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[T], error) {
-	log := logger.GetLogger()
+	log := loggerForOptions(opts.CommonOptions, opts.OpOptions)
 	log.Debug("Starting synthesize operation", "sourceCount", len(sources))
 
-	var result SynthesizeResult[T]
-	result.SourceCoverage = make(map[int]float64)
-	result.Metadata = make(map[string]any)
-
 	if len(sources) == 0 {
-		return result, fmt.Errorf("no sources provided for synthesis")
+		return SynthesizeResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("no sources provided for synthesis"))
 	}
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		return result, fmt.Errorf("invalid options: %w", err)
+		return SynthesizeResult[T]{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
+	}
+	if err := checkSourcePriorities(opts, len(sources)); err != nil {
+		return SynthesizeResult[T]{}, err
 	}
 
 	opt := opts.toOpOptions()
@@ -246,8 +250,8 @@ func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[
 	for i, source := range sources {
 		sourceJSON, err := json.Marshal(source)
 		if err != nil {
-			log.Error("Synthesize operation failed: marshal error", "index", i, "error", err)
-			return result, fmt.Errorf("failed to marshal source %d: %w", i, err)
+			log.Error("Synthesize operation failed: marshal error", "index", i, "error", loggedError(err))
+			return SynthesizeResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal source %d: %w", i, err))
 		}
 		sourcesJSON[i] = fmt.Sprintf("[Source %d]\n%s", i, string(sourceJSON))
 	}
@@ -293,18 +297,22 @@ func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[
 		insightsNote = "\nGenerate insights: patterns, gaps, contradictions, and trends across sources."
 	}
 
+	// The three values below are the caller's and are written into the system
+	// prompt, so each is quoted as JSON in place: a newline in one cannot start
+	// a line of its own and read as one of the library's rules.
 	focusDesc := ""
 	if len(opts.FocusAreas) > 0 {
-		focusDesc = fmt.Sprintf("\nFocus on: %s", strings.Join(opts.FocusAreas, ", "))
+		focusDesc = fmt.Sprintf("\nFocus on: %s", quotedList(opts.FocusAreas))
 	}
 
 	excludeDesc := ""
 	if len(opts.ExcludeAspects) > 0 {
-		excludeDesc = fmt.Sprintf("\nExclude: %s", strings.Join(opts.ExcludeAspects, ", "))
+		excludeDesc = fmt.Sprintf("\nExclude: %s", quotedList(opts.ExcludeAspects))
 	}
 
+	structureDesc := ""
 	if opts.OutputStructure != "" {
-		excludeDesc += fmt.Sprintf("\nOrganise the synthesised output as: %s", opts.OutputStructure)
+		structureDesc = fmt.Sprintf("\nOrganise the synthesised output as: %s", quotedText(opts.OutputStructure))
 	}
 
 	var zero T
@@ -313,7 +321,7 @@ func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[
 	systemPrompt := fmt.Sprintf(`You are an expert at synthesizing information from multiple sources.
 
 Strategy: %s
-Conflict resolution: %s%s%s%s%s
+Conflict resolution: %s%s%s%s%s%s
 
 The "synthesized" field must match this target schema:
 %s
@@ -349,60 +357,212 @@ Return a JSON object with:
 Rules for "synthesized":
 - It must be a valid instance of the target schema above
 - Do not replace it with a free-form string unless the target schema itself is a string
-- Populate fields with task-relevant synthesized content`, strategyDesc, resolutionDesc, citeNote, insightsNote, focusDesc, excludeDesc, targetSchema)
+- Populate fields with task-relevant synthesized content`, strategyDesc, resolutionDesc, citeNote, insightsNote, focusDesc, excludeDesc, structureDesc, targetSchema)
 
 	userPrompt := fmt.Sprintf("Synthesize these sources:\n\n%s", strings.Join(sourcesJSON, "\n\n"))
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Synthesize operation LLM call failed", "error", err)
-		return result, fmt.Errorf("synthesis failed: %w", err)
+		log.Error("Synthesize operation LLM call failed", "error", loggedError(err))
+		return SynthesizeResult[T]{}, fmt.Errorf("synthesis failed: %w", err)
 	}
 
-	// Parse the response
+	// Parse the response. The prompt asks for every member, so an answer that
+	// leaves one out is refused by name. The insights are the exception: they are
+	// asked for only when GenerateInsights is on, so the member is optional here,
+	// and below an answer without them is refused when the option asked for them.
 	var parsed struct {
 		Synthesized    json.RawMessage     `json:"synthesized"`
 		Facts          []SynthesisFact     `json:"facts"`
-		Insights       []SynthesisInsight  `json:"insights"`
+		Insights       []SynthesisInsight  `json:"insights,omitempty"` // asked for only under GenerateInsights
 		Conflicts      []SynthesisConflict `json:"conflicts"`
 		SourceCoverage map[int]float64     `json:"source_coverage"`
 	}
 
-	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Synthesize operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse synthesis result: %w", err)
+	if err := decodeAnswer("synthesize", response, &parsed); err != nil {
+		log.Error("Synthesize operation failed: parse error", "error", loggedError(err))
+		return SynthesizeResult[T]{}, fmt.Errorf("failed to parse synthesis result: %w", err)
 	}
 
-	if err := json.Unmarshal(parsed.Synthesized, &result.Synthesized); err != nil {
-		var synthesizedString string
-		if err2 := json.Unmarshal(parsed.Synthesized, &synthesizedString); err2 == nil {
-			if err3 := ParseJSONStrict(synthesizedString, &result.Synthesized); err3 != nil {
-				var zero T
-				if _, ok := any(zero).(string); ok {
-					result.Synthesized = any(synthesizedString).(T)
-				} else {
-					log.Error("Synthesize operation failed: synthesized payload parse error", "error", err3)
-					return result, fmt.Errorf("failed to parse synthesized payload: %w", err3)
-				}
-			}
-		} else {
-			var zero T
-			if _, ok := any(zero).(string); ok {
-				result.Synthesized = any(string(parsed.Synthesized)).(T)
-			} else {
-				log.Error("Synthesize operation failed: synthesized payload parse error", "error", err)
-				return result, fmt.Errorf("failed to parse synthesized payload: %w", err)
-			}
-		}
+	// An empty list says the model found no insights; a missing or null one says
+	// it did not answer.
+	if opts.GenerateInsights && parsed.Insights == nil {
+		log.Error("Synthesize operation failed: the answer has no insights")
+		return SynthesizeResult[T]{}, types.Newf(types.KindSchemaViolation, "synthesize",
+			"insights is missing, and insights were asked for")
 	}
-	result.Facts = parsed.Facts
-	result.Insights = parsed.Insights
-	result.Conflicts = parsed.Conflicts
-	result.SourceCoverage = parsed.SourceCoverage
+
+	synthesized, err := decodeSynthesized[T](parsed.Synthesized)
+	if err != nil {
+		log.Error("Synthesize operation failed: synthesized payload", "error", loggedError(err))
+		return SynthesizeResult[T]{}, err
+	}
+
+	if err := checkSynthesisReferences(parsed.Facts, parsed.Insights, parsed.Conflicts, parsed.SourceCoverage, len(sources), opts.CiteSources); err != nil {
+		log.Error("Synthesize operation failed: the answer does not fit the sources", "error", loggedError(err))
+		return SynthesizeResult[T]{}, err
+	}
+
+	result := SynthesizeResult[T]{
+		Synthesized:    synthesized,
+		Facts:          parsed.Facts,
+		Insights:       parsed.Insights,
+		Conflicts:      parsed.Conflicts,
+		SourceCoverage: parsed.SourceCoverage,
+		Metadata:       make(map[string]any),
+	}
+	if result.SourceCoverage == nil {
+		// A model that reported no coverage has reported none, and the empty map
+		// says so. It used to replace the empty map with nil.
+		result.SourceCoverage = make(map[int]float64)
+	}
 
 	log.Debug("Synthesize operation succeeded",
 		"factCount", len(result.Facts),
 		"insightCount", len(result.Insights),
 		"conflictCount", len(result.Conflicts))
 	return result, nil
+}
+
+// insightTypes are the words SynthesisInsight.Type may hold.
+var insightTypes = []string{"pattern", "gap", "contradiction", "trend"}
+
+// checkSourcePriorities refuses a SourcePriorities list that no answer could
+// follow: an index outside the sources, a source named twice, or the
+// source-priority resolution chosen with no priorities. It was a sentence in
+// the prompt and was not looked at.
+func checkSourcePriorities(opts SynthesizeOptions, sourceCount int) error {
+	if opts.ConflictResolution == "source-priority" && len(opts.SourcePriorities) == 0 {
+		return types.Newf(types.KindConfiguration, "synthesize",
+			"the source-priority resolution needs SourcePriorities")
+	}
+	seen := make(map[int]bool, len(opts.SourcePriorities))
+	for i, priority := range opts.SourcePriorities {
+		if priority < 0 || priority >= sourceCount {
+			return types.Newf(types.KindConfiguration, "synthesize",
+				"source priority %d names source %d, but %d source(s) were supplied", i, priority, sourceCount)
+		}
+		if seen[priority] {
+			return types.Newf(types.KindConfiguration, "synthesize",
+				"source priority %d names source %d, which an earlier priority already named", i, priority)
+		}
+		seen[priority] = true
+	}
+	return nil
+}
+
+// decodeSynthesized reads the "synthesized" value into a T, or refuses it.
+//
+// A value that is missing, null or empty is refused, and so is one that shares
+// no field with a struct T: json.Unmarshal takes null and {} into any T without
+// complaint and leaves every field zero. For a string T the value has to be a
+// JSON string and not an empty one. For any other T the value is decoded as
+// JSON, and as a last resort as a JSON string that itself holds JSON, which is
+// how a model that double-encodes answers. The result is assigned only when a
+// decode succeeded, so a decode that failed half way leaves nothing behind.
+func decodeSynthesized[T any](raw json.RawMessage) (T, error) {
+	var zero T
+	refuse := func(format string, args ...any) (T, error) {
+		return zero, types.Newf(types.KindSchemaViolation, "synthesize", format, args...)
+	}
+
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return refuse("the response has no synthesized value")
+	}
+
+	var value T
+	if reflect.TypeOf(&value).Elem().Kind() == reflect.String {
+		var plain string
+		if err := json.Unmarshal(raw, &plain); err != nil {
+			return refuse("the synthesized value is not a string, which the target type is")
+		}
+		if strings.TrimSpace(plain) == "" {
+			return refuse("the synthesized value is an empty string")
+		}
+		reflect.ValueOf(&value).Elem().SetString(plain)
+		return value, nil
+	}
+
+	if err := decodeCallerAnswer("synthesize", text, &value); err == nil {
+		return value, nil
+	}
+
+	var inner string
+	if err := json.Unmarshal(raw, &inner); err == nil {
+		var decoded T
+		if err := decodeCallerAnswer("synthesize", inner, &decoded); err == nil {
+			return decoded, nil
+		}
+	}
+	return refuse("the synthesized value does not fit the target type")
+}
+
+// checkSynthesisReferences holds everything the model said about the sources to
+// the sources that were given, as verify.go does for a claim's citations: an
+// index has to be one of them, coverage is a fraction, an insight has one of
+// the four types, and a model's own confidences are on the 0 to 1 scale. A fact
+// has to cite a source when CiteSources was asked for.
+func checkSynthesisReferences(facts []SynthesisFact, insights []SynthesisInsight, conflicts []SynthesisConflict, coverage map[int]float64, sourceCount int, citeSources bool) error {
+	inRange := func(index int) bool { return index >= 0 && index < sourceCount }
+	refuse := func(format string, args ...any) error {
+		return types.Newf(types.KindInvariantViolation, "synthesize", format, args...)
+	}
+
+	for i, fact := range facts {
+		if citeSources && len(fact.Sources) == 0 {
+			return refuse("fact %d cites no source, and citations were asked for", i)
+		}
+		for _, source := range fact.Sources {
+			if !inRange(source) {
+				return refuse("fact %d cites source %d, but %d source(s) were supplied", i, source, sourceCount)
+			}
+		}
+		if err := onScale("synthesize", "the confidence of fact "+strconv.Itoa(i), fact.ModelConfidence); err != nil {
+			return err
+		}
+	}
+	for i, insight := range insights {
+		if !oneOf(insight.Type, insightTypes) {
+			return refuse("insight %d has a type that is not pattern, gap, contradiction or trend", i)
+		}
+		for _, source := range insight.Supporting {
+			if !inRange(source) {
+				return refuse("insight %d names source %d, but %d source(s) were supplied", i, source, sourceCount)
+			}
+		}
+		if err := onScale("synthesize", "the confidence of insight "+strconv.Itoa(i), insight.ModelConfidence); err != nil {
+			return err
+		}
+	}
+	for i, conflict := range conflicts {
+		if !inRange(conflict.Chosen) {
+			return refuse("conflict %d chooses source %d, but %d source(s) were supplied", i, conflict.Chosen, sourceCount)
+		}
+		for _, position := range sortedIntKeys(conflict.Positions) {
+			if !inRange(position) {
+				return refuse("conflict %d reports a position for source %d, but %d source(s) were supplied", i, position, sourceCount)
+			}
+		}
+	}
+	for _, source := range sortedIntKeys(coverage) {
+		if !inRange(source) {
+			return refuse("the coverage names source %d, but %d source(s) were supplied", source, sourceCount)
+		}
+		if err := onScale("synthesize", "the coverage of source "+strconv.Itoa(source), coverage[source]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sortedIntKeys returns a map's integer keys in ascending order, so the first
+// failure a check reports does not depend on map iteration order.
+func sortedIntKeys[V any](m map[int]V) []int {
+	keys := make([]int, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Ints(keys)
+	return keys
 }

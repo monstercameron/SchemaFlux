@@ -1,0 +1,7 @@
+func Install(provider trace.TracerProvider) (restore func(), err error)
+func InstallIDSources() (restore func())
+func New(provider trace.TracerProvider) (*Observer, error)
+type Observer struct{}
+method (*Observer).Finished(ctx context.Context, result telemetry.Result)
+method (*Observer).Noted(ctx context.Context, note telemetry.Note)
+method (*Observer).Started(ctx context.Context, event telemetry.Event) context.Context

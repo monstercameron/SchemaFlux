@@ -6,8 +6,9 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/localization"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/localization"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 func (m Model) splashViewRender() string {
@@ -104,19 +105,11 @@ func (m Model) statsViewRender() string {
 		renderProgressBar(rate),
 	}, "\n"), 38)
 
-	fastCalls := 0
-	smartCalls := 0
-	totalCost := 0.0
-	if m.processor != nil {
-		fastCalls = m.processor.FastCalls
-		smartCalls = m.processor.SmartCalls
-		totalCost = m.processor.TotalCost
-	}
+	usage, _ := appclient.Usage()
 
 	right := renderPanel("AI usage", strings.Join([]string{
-		fmt.Sprintf("Fast calls: %d", fastCalls),
-		fmt.Sprintf("Smart calls: %d", smartCalls),
-		fmt.Sprintf("Session cost: $%.4f", totalCost),
+		fmt.Sprintf("Provider requests: %d", usage.Requests),
+		sessionSpend(),
 		"",
 		fmt.Sprintf("High priority: %d", m.stats["high"]),
 		fmt.Sprintf("Medium priority: %d", m.stats["medium"]),

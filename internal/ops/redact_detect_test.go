@@ -80,38 +80,6 @@ func TestNormaliseFieldName(t *testing.T) {
 	}
 }
 
-// T-08: the patterns missed the formats they named. An unformatted PAN was
-// caught by neither the PII nor the financial pattern.
-func TestCardNumbersAreDetectedByLuhnNotByShape(t *testing.T) {
-	cards := []struct {
-		name   string
-		text   string
-		isCard bool
-	}{
-		{"unformatted_visa", "4111111111111111", true},
-		{"spaced_visa", "4111 1111 1111 1111", true},
-		{"dashed_visa", "4111-1111-1111-1111", true},
-		{"mastercard", "5500005555555559", true},
-		{"amex_15_digits", "378282246310005", true},
-		{"in_a_sentence", "charge 4111111111111111 please", true},
-
-		{"order_number_16_digits", "1234567890123456", false},
-		{"sequence_number", "1111111111111111", false},
-		{"nine_digits", "123456789", false},
-		{"phone_digits", "3055551234", false},
-		{"too_short", "411111111111", false},
-		{"words", "no numbers here", false},
-	}
-
-	for _, tc := range cards {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := containsCardNumber(tc.text); got != tc.isCard {
-				t.Errorf("containsCardNumber(%q) = %v, want %v", tc.text, got, tc.isCard)
-			}
-		})
-	}
-}
-
 // The phone formats the old `###-###-####` pattern missed.
 func TestPhoneFormatsAreDetected(t *testing.T) {
 	matched := []string{
@@ -128,55 +96,6 @@ func TestPhoneFormatsAreDetected(t *testing.T) {
 		t.Run(text, func(t *testing.T) {
 			if !phonePattern.MatchString(text) {
 				t.Errorf("%q was not detected as a phone number", text)
-			}
-		})
-	}
-}
-
-// The false positives that made the output useless are gone.
-func TestOrdinaryTextIsNotRedactedAsPII(t *testing.T) {
-	ordinary := []string{
-		"New York",
-		"Total Revenue",
-		"Monday Morning",
-		"John Smith visited", // a name IS missed now; that is documented
-		"order 123456789",    // nine digits: was a routing number
-		"$1,284.50 due",      // currency: was masked wholesale
-		"invoice 1234567890123456",
-	}
-
-	for _, text := range ordinary {
-		t.Run(text, func(t *testing.T) {
-			if valueIsSensitive(text, []string{"PII", "financial"}, nil) {
-				t.Errorf("%q was redacted as sensitive", text)
-			}
-		})
-	}
-}
-
-// The data the categories actually name is detected.
-func TestAdvertisedCategoriesDetectTheirData(t *testing.T) {
-	cases := []struct {
-		name     string
-		text     string
-		category string
-	}{
-		{"ssn_dashed", "SSN 123-45-6789", "PII"},
-		{"ssn_spaced", "SSN 123 45 6789", "PII"},
-		{"email", "write to ada@example.com", "PII"},
-		{"phone", "call (305) 555-1234", "PII"},
-		{"card_in_pii", "card 4111111111111111", "PII"},
-		{"card_in_financial", "card 4111 1111 1111 1111", "financial"},
-		{"iban", "IBAN GB29NWBK60161331926819", "financial"},
-		{"password_assignment", "password: hunter2", "secrets"},
-		{"api_key_assignment", "api_key = sk-abcdef", "secrets"},
-		{"bearer", "Authorization: Bearer abcdefghijklmnopqrst", "secrets"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if !valueIsSensitive(tc.text, []string{tc.category}, nil) {
-				t.Errorf("%q was not detected in category %s", tc.text, tc.category)
 			}
 		})
 	}

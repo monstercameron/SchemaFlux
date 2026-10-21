@@ -2,20 +2,17 @@ package ops
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// M12/SC-002, SC-004. Two things Scheduler deliberately leaves out because
-// they are not admission control: whether a given endpoint is healthy enough
-// to keep sending it work (SC-002's circuit breaker and bulkhead), and
-// whether a request that failed ambiguously was already served (SC-004's
-// idempotency). types.KindCircuitOpen and types.KindAdmissionRejected have
+// M12/SC-002. Something Scheduler deliberately leaves out because it is not
+// admission control: whether a given endpoint is healthy enough to keep
+// sending it work (SC-002's circuit breaker and bulkhead).
+// types.KindCircuitOpen and types.KindAdmissionRejected have
 // existed in the taxonomy since the errorkind.go rebuild, but nothing in the
 // module produced them from real state before this file -- there was a
 // sentinel with no breaker behind it.
@@ -171,6 +168,35 @@ func (b *CircuitBreaker) currentStateLocked(st *breakerState) CircuitState {
 // which is what stops a recovering endpoint from being hit with a fresh
 // burst the instant its breaker starts to reconsider it.
 func (b *CircuitBreaker) Allow(key string) (report func(success bool), err error) {
+	record, err := b.allow(key)
+	if err != nil {
+		return nil, err
+	}
+	return func(success bool) {
+		if success {
+			record(callSucceeded)
+		} else {
+			record(callFailed)
+		}
+	}, nil
+}
+
+// callOutcome is what a call reports to the breaker. A call can also end with
+// no verdict on the endpoint at all: its caller walked away, or the work
+// panicked. That ends the call, and so gives back a half-open probe slot, but
+// is neither a success nor a failure of the endpoint.
+type callOutcome int
+
+const (
+	callSucceeded callOutcome = iota
+	callFailed
+	callNeutral
+)
+
+// allow is Allow with a report that takes a callOutcome. The report is safe to
+// call more than once and acts only the first time: a second call used to
+// release a second probe slot, which another probe was holding.
+func (b *CircuitBreaker) allow(key string) (report func(callOutcome), err error) {
 	b.mu.Lock()
 	st, ok := b.breaker[key]
 	if !ok {
@@ -221,13 +247,15 @@ func (b *CircuitBreaker) Allow(key string) (report func(success bool), err error
 		b.mu.Unlock()
 		// probe: true -- this call holds one of the bounded half-open slots and
 		// must give it back whatever the breaker's state is by then.
-		return func(success bool) { b.report(key, success, true) }, nil
+		var once sync.Once
+		return func(outcome callOutcome) { once.Do(func() { b.report(key, outcome, true) }) }, nil
 	case CircuitClosed:
 		// falls through to reporting below
 	}
 	b.mu.Unlock()
 
-	return func(success bool) { b.report(key, success, false) }, nil
+	var once sync.Once
+	return func(outcome callOutcome) { once.Do(func() { b.report(key, outcome, false) }) }, nil
 }
 
 // report records a call's outcome against key's state.
@@ -238,7 +266,7 @@ func (b *CircuitBreaker) Allow(key string) (report func(success bool), err error
 // the probe was admitted -- a probe that started half-open and reports after the
 // breaker re-opened still has to give its slot back, and the old code's
 // state-switch never reached the decrement in that case.
-func (b *CircuitBreaker) report(key string, success bool, probe bool) {
+func (b *CircuitBreaker) report(key string, outcome callOutcome, probe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -251,8 +279,23 @@ func (b *CircuitBreaker) report(key string, success bool, probe bool) {
 		st.halfOpenInFlight--
 	}
 
+	// A call with no verdict on the endpoint gives back its slot and changes
+	// nothing else.
+	if outcome == callNeutral {
+		return
+	}
+	success := outcome == callSucceeded
+
 	switch st.state {
 	case CircuitHalfOpen:
+		if !probe {
+			// A call admitted while the breaker was closed and still running
+			// when it tripped and half-opened says nothing about the recovery a
+			// probe tests. Its late success used to count toward closing the
+			// breaker with no probe having run, and its failure toward re-opening
+			// it.
+			return
+		}
 		if success {
 			st.consecutiveOK++
 			if st.consecutiveOK >= b.cfg.SuccessThreshold {
@@ -283,21 +326,6 @@ func (b *CircuitBreaker) report(key string, success bool, probe bool) {
 		// A report arriving for an already-open breaker is a stale probe
 		// racing the transition; nothing to do.
 	}
-}
-
-// Do runs fn for key through the breaker: refused with a classified error
-// when the breaker will not allow it, otherwise run and its outcome
-// reported automatically. fn's own error, if any, is returned unchanged --
-// the breaker's refusal and fn's failure are never confused with each other.
-func Do[T any](b *CircuitBreaker, key string, fn func() (T, error)) (T, error) {
-	var zero T
-	report, err := b.Allow(key)
-	if err != nil {
-		return zero, err
-	}
-	result, fnErr := fn()
-	report(fnErr == nil)
-	return result, fnErr
 }
 
 // Bulkhead limits how many callers may be inside a named section at once,
@@ -341,12 +369,12 @@ func (bh *Bulkhead) tryLocked(key string, limit int) (func(), error) {
 	if _, ok := bh.cap[key]; !ok {
 		bh.cap[key] = limit
 	}
-	cap := bh.cap[key]
-	if bh.used[key] >= cap {
+	capacity := bh.cap[key]
+	if bh.used[key] >= capacity {
 		return nil, &types.OperationError{
 			Kind:    types.KindAdmissionRejected,
 			Op:      "resilience.Bulkhead",
-			Message: fmt.Sprintf("bulkhead %q is full (%d/%d)", key, bh.used[key], cap),
+			Message: fmt.Sprintf("bulkhead %q is full (%d/%d)", key, bh.used[key], capacity),
 		}
 	}
 	bh.used[key]++
@@ -396,160 +424,4 @@ func (bh *Bulkhead) Acquire(ctx context.Context, key string, limit int) (release
 			return nil, classifyBlockingErr(ctx.Err())
 		}
 	}
-}
-
-// --- SC-004: idempotency and ambiguity -------------------------------------
-
-// LogicalRequestID identifies one caller-visible request across every
-// attempt made on its behalf. AttemptID identifies exactly one of those
-// attempts. Both are opaque, randomly generated strings -- not sequence
-// numbers -- so nothing about them is guessable or comparable across a
-// process restart, which matters if a caller ever forwards one to a
-// provider's idempotency-key header.
-type LogicalRequestID string
-type AttemptID string
-
-// AttemptRecord is what a caller retrying a logical request needs to tell
-// its attempts apart, and to know which ones may have already reached the
-// provider.
-type AttemptRecord struct {
-	Logical LogicalRequestID
-	Attempt AttemptID
-
-	// Number is this attempt's 1-based position within the logical request.
-	Number int
-
-	// Ambiguous marks an attempt whose failure does not prove the request
-	// was never served -- a timeout is the paradigm case: the request may
-	// have reached the provider and produced a real, billed effect that
-	// this process never learned about. It is not set for a failure that
-	// provably never reached the provider (e.g. an admission refusal, which
-	// never attempted a call at all).
-	Ambiguous bool
-
-	Err error
-}
-
-// idGenerator produces the random bytes behind an ID. A field rather than a
-// direct crypto/rand.Read call so a test can inject a deterministic sequence
-// instead of asserting only "the string is nonempty and unique", which is a
-// weaker check than "these two calls produced these exact, different IDs".
-type idGenerator func() string
-
-func randomID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand failing is a process-level emergency this library
-		// cannot repair; falling back to a fixed string would make every
-		// logical request collide, which is worse than the panic.
-		panic(fmt.Sprintf("resilience: crypto/rand unavailable: %v", err))
-	}
-	return hex.EncodeToString(b[:])
-}
-
-// IdempotencyTracker hands out logical request IDs and, per logical
-// request, a monotonically numbered attempt for every retry -- the
-// structure SC-004 asks for: "stable logical request IDs across every
-// attempt, a unique attempt ID per provider call".
-type IdempotencyTracker struct {
-	mu      sync.Mutex
-	nextNum map[LogicalRequestID]int
-	gen     idGenerator
-}
-
-// NewIdempotencyTracker builds a tracker using crypto/rand IDs.
-func NewIdempotencyTracker() *IdempotencyTracker {
-	return newIdempotencyTrackerWithGen(randomID)
-}
-
-func newIdempotencyTrackerWithGen(gen idGenerator) *IdempotencyTracker {
-	return &IdempotencyTracker{nextNum: make(map[LogicalRequestID]int), gen: gen}
-}
-
-// Begin starts a new logical request and returns its ID.
-func (t *IdempotencyTracker) Begin() LogicalRequestID {
-	id := LogicalRequestID(t.gen())
-	t.mu.Lock()
-	t.nextNum[id] = 0
-	t.mu.Unlock()
-	return id
-}
-
-// NextAttempt allocates the next attempt for an existing logical request.
-// Calling it for an ID Begin never returned still works -- it starts that
-// ID's counter at zero -- because a caller integrating this into an
-// existing retry loop may not always route through Begin first, and
-// refusing to number an attempt is a worse failure mode than numbering one
-// for an ID this tracker did not mint.
-func (t *IdempotencyTracker) NextAttempt(id LogicalRequestID) AttemptRecord {
-	t.mu.Lock()
-	t.nextNum[id]++
-	n := t.nextNum[id]
-	t.mu.Unlock()
-	return AttemptRecord{
-		Logical: id,
-		Attempt: AttemptID(t.gen()),
-		Number:  n,
-	}
-}
-
-// RunWithIdempotency runs fn, retrying up to maxAttempts times while an
-// error is retryable per types.OperationError.Retryable() (the shared
-// taxonomy every other retrying layer in this module uses -- see the
-// package doc comment). It returns the full attempt history alongside the
-// result, so a caller can see exactly which attempts happened and which of
-// them are ambiguous: a *types.OperationError with KindTimeout is marked
-// Ambiguous, because a client-observed timeout does not prove the provider
-// never received or acted on the request, and the library performs no side
-// effects itself but its callers do (AGENTS.md's "never fail open" applies
-// here in its narrower SC-004 form -- reporting a timed-out attempt as
-// cleanly failed would hide that ambiguity from a caller who needs it to
-// decide whether repeating the side effect is safe).
-func RunWithIdempotency[T any](
-	ctx context.Context,
-	tracker *IdempotencyTracker,
-	maxAttempts int,
-	fn func(ctx context.Context, attempt AttemptRecord) (T, error),
-) (T, LogicalRequestID, []AttemptRecord, error) {
-	var zero T
-	if maxAttempts <= 0 {
-		maxAttempts = 1
-	}
-	logical := tracker.Begin()
-	var history []AttemptRecord
-
-	var lastErr error
-	for i := 0; i < maxAttempts; i++ {
-		if err := ctx.Err(); err != nil {
-			classified := classifyBlockingErr(err)
-			rec := tracker.NextAttempt(logical)
-			rec.Err = classified
-			history = append(history, rec)
-			return zero, logical, history, classified
-		}
-
-		rec := tracker.NextAttempt(logical)
-		result, err := fn(ctx, rec)
-		if err == nil {
-			rec.Err = nil
-			history = append(history, rec)
-			return result, logical, history, nil
-		}
-
-		opErr, isOp := err.(*types.OperationError)
-		if !isOp {
-			opErr = &types.OperationError{Kind: types.KindUnknown, Cause: err}
-		}
-		if opErr.Kind == types.KindTimeout {
-			rec.Ambiguous = true
-		}
-		rec.Err = err
-		history = append(history, rec)
-		lastErr = err
-
-		if !opErr.Retryable() || i == maxAttempts-1 {
-			break
-		}
-	}
-	return zero, logical, history, lastErr
 }

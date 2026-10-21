@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // scriptedBodies replaces the LLM caller with one that returns each body in
@@ -19,8 +22,7 @@ func scriptedBodies(t *testing.T, bodies ...string) (*[]string, func()) {
 	var prompts []string
 	var index int32
 
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
+	restore := replaceLLMCaller(func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
 		prompts = append(prompts, user)
 		i := int(atomic.AddInt32(&index, 1)) - 1
 		if i >= len(bodies) {
@@ -29,7 +31,7 @@ func scriptedBodies(t *testing.T, bodies ...string) (*[]string, func()) {
 		return bodies[i], nil
 	})
 
-	return &prompts, func() { customLLMCaller = previous }
+	return &prompts, restore
 }
 
 type repairTarget struct {
@@ -146,12 +148,10 @@ func TestExtractRepairsAMissingRequiredField(t *testing.T) {
 // there is nothing to show it.
 func TestTransportFailuresAreNotRepaired(t *testing.T) {
 	var calls int32
-	previous := customLLMCaller
-	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
+	swapLLMCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
 		atomic.AddInt32(&calls, 1)
 		return "", errors.New("provider unavailable")
 	})
-	defer func() { customLLMCaller = previous }()
 
 	if _, err := Extract[repairTarget]("x", NewExtractOptions()); err == nil {
 		t.Fatal("a provider failure must reach the caller")
@@ -298,8 +298,8 @@ func TestRepairBudgetIsConfigurable(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.env, func(t *testing.T) {
-			t.Setenv("SCHEMAFLUX_REPAIR_ATTEMPTS", tc.env)
-			if got := repairAttempts(RepairPolicy{}); got != tc.want {
+			configtest.Setenv(t, "SCHEMAFLUX_REPAIR_ATTEMPTS", tc.env)
+			if got := repairAttempts(context.Background(), RepairPolicy{}); got != tc.want {
 				t.Errorf("repairAttempts = %d, want %d", got, tc.want)
 			}
 		})
@@ -359,6 +359,44 @@ func TestEmbeddedOptionsPrecedenceIsPinned(t *testing.T) {
 
 		if got := opts.toOpOptions().Context.Value(key{}); got != "marker" {
 			t.Error("Context does not fall back to the embedded copy, contradicting the documented behaviour")
+		}
+	})
+}
+
+// A repair is a further paid call because the first answer was unusable, which
+// is the same kind of event as a retry being scheduled and is logged at the same
+// level: it is written at the library's default level, for the call that needed
+// it, and a call that needed none writes nothing.
+func TestARepairedAnswerIsLoggedAsAWarning(t *testing.T) {
+	flat := reflect.TypeFor[benchFlat]()
+	good := benchAnswerFor(t, flat)
+
+	t.Run("a repaired call writes one warning", func(t *testing.T) {
+		scriptedBodies(t, "this is not JSON", good)
+		text, entries := loggerAt(t, logger.WarnLevel)
+		if _, err := Extract[benchFlat]("order A-2207, Team plan, $49", NewExtractOptions()); err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		kept := entries()
+		if len(kept) != 1 || kept[0].Level != "WARN" || kept[0].Message != "an answer was repaired" {
+			t.Fatalf("entries = %+v, want the one warning that the answer was repaired", kept)
+		}
+		if !strings.Contains(text(), "an answer was repaired") {
+			t.Errorf("the warning was not written at the warn level: %q", text())
+		}
+		if strings.Contains(text(), "this is not JSON") {
+			t.Errorf("the warning carries the model's text: %q", text())
+		}
+	})
+
+	t.Run("a call that needed no repair writes nothing", func(t *testing.T) {
+		scriptedBodies(t, good)
+		text, entries := loggerAt(t, logger.WarnLevel)
+		if _, err := Extract[benchFlat]("order A-2207, Team plan, $49", NewExtractOptions()); err != nil {
+			t.Fatalf("Extract: %v", err)
+		}
+		if text() != "" || len(entries()) != 0 {
+			t.Errorf("wrote %q and kept %d entries", text(), len(entries()))
 		}
 	})
 }

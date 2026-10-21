@@ -1,8 +1,11 @@
 package ops
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
 )
 
 // S-007. The reinforcement block is prepended to every request, JSON or not,
@@ -11,7 +14,7 @@ import (
 func TestPromptReinforcementCanBeTurnedOff(t *testing.T) {
 	const operationPrompt = "You are a data extraction expert."
 
-	on := strengthenSystemPrompt(operationPrompt, "json")
+	on := strengthenSystemPrompt(context.Background(), operationPrompt, "json")
 	if !strings.Contains(on, "Perform the semantic task faithfully") {
 		t.Fatal("the reinforcement block is missing by default")
 	}
@@ -19,8 +22,8 @@ func TestPromptReinforcementCanBeTurnedOff(t *testing.T) {
 		t.Fatal("the operation's own prompt was lost")
 	}
 
-	t.Setenv(promptReinforcementEnvVar, "0")
-	off := strengthenSystemPrompt(operationPrompt, "json")
+	configtest.Setenv(t, promptReinforcementEnvVar, "0")
+	off := strengthenSystemPrompt(context.Background(), operationPrompt, "json")
 
 	if strings.Contains(off, "Perform the semantic task faithfully") {
 		t.Error("the block survived being turned off")
@@ -35,7 +38,7 @@ func TestPromptReinforcementCanBeTurnedOff(t *testing.T) {
 // for the block.
 func TestOnlyAnExplicitValueTurnsItOff(t *testing.T) {
 	for _, value := range []string{"0", "false", "off", "no", "FALSE", " Off ", "0 "} {
-		t.Setenv(promptReinforcementEnvVar, value)
+		configtest.Setenv(t, promptReinforcementEnvVar, value)
 		if promptReinforcementEnabled() {
 			t.Errorf("%q did not turn it off", value)
 		}
@@ -44,7 +47,7 @@ func TestOnlyAnExplicitValueTurnsItOff(t *testing.T) {
 	// Whitespace is trimmed, so " Off " means off; a value that means nothing
 	// leaves it on, because turning it off by accident is the worse error.
 	for _, value := range []string{"", "1", "true", "on", "yes", "maybe"} {
-		t.Setenv(promptReinforcementEnvVar, value)
+		configtest.Setenv(t, promptReinforcementEnvVar, value)
 		if !promptReinforcementEnabled() {
 			t.Errorf("%q turned it off", value)
 		}
@@ -58,11 +61,11 @@ func TestTheReinforcementBlockHasAMeasuredCost(t *testing.T) {
 	const operationPrompt = "You are a data extraction expert."
 
 	for _, format := range []string{"", "json"} {
-		t.Setenv(promptReinforcementEnvVar, "1")
-		on := strengthenSystemPrompt(operationPrompt, format)
+		configtest.Setenv(t, promptReinforcementEnvVar, "1")
+		on := strengthenSystemPrompt(context.Background(), operationPrompt, format)
 
-		t.Setenv(promptReinforcementEnvVar, "0")
-		off := strengthenSystemPrompt(operationPrompt, format)
+		configtest.Setenv(t, promptReinforcementEnvVar, "0")
+		off := strengthenSystemPrompt(context.Background(), operationPrompt, format)
 
 		overhead := estimateTokens(on) - estimateTokens(off)
 		if overhead <= 0 {

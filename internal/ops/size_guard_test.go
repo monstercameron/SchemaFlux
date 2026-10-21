@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // C-06: every collection operation marshalled the whole slice into one prompt
@@ -47,8 +48,7 @@ func guardItems(n int) []guardItem {
 func TestSortNoLongerRefusesALargeBatchForSize(t *testing.T) {
 	items := guardItems(500)
 
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, system, _ string, _ types.OpOptions) (string, error) {
+	swapLLMCaller(t, func(_ context.Context, system, _ string, _ types.OpOptions) (string, error) {
 		// The scoring fallback's system prompt asks for a rank_score; every
 		// item gets the same one, so what is being asserted is that the sort
 		// completes and returns every item, not a particular order.
@@ -57,7 +57,6 @@ func TestSortNoLongerRefusesALargeBatchForSize(t *testing.T) {
 		}
 		return `{"ids": []}`, nil
 	})
-	defer func() { customLLMCaller = previous }()
 
 	opts := NewSortOptions().WithCriteria("by name")
 	// SortOptions embeds both CommonOptions and types.OpOptions, and
@@ -91,8 +90,7 @@ func TestFilterChunksRatherThanRefusing(t *testing.T) {
 
 	// Every chunk keeps the id of its first item, whatever the chunk
 	// boundaries are.
-	previous := customLLMCaller
-	setLLMCaller(func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
+	swapLLMCaller(t, func(_ context.Context, _, user string, _ types.OpOptions) (string, error) {
 		var chunk []taggedItem[guardItem]
 		start := strings.Index(user, "[")
 		if start < 0 {
@@ -110,7 +108,6 @@ func TestFilterChunksRatherThanRefusing(t *testing.T) {
 		}
 		return string(kept), nil
 	})
-	defer func() { customLLMCaller = previous }()
 
 	opts := NewFilterOptions().WithCriteria("anything")
 	opts.CommonOptions.Intelligence = types.Quick
@@ -248,4 +245,54 @@ func mustEncode(t *testing.T, value any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(raw)
+}
+
+// The "about N items would fit" figure was wrong when the per-item cost rounded
+// to zero: needed 5000 over 10000 items against a budget of 1000 said every one
+// of the 10000 would fit.
+func TestCheckEchoBudgetSaysHowManyItemsWouldFit(t *testing.T) {
+	maxTokens := config.GetMaxTokens(types.Quick)
+	cases := []struct {
+		name      string
+		needed    int
+		itemCount int
+	}{
+		{"cost per item rounds to zero", maxTokens * 5, maxTokens * 10},
+		{"even split", maxTokens * 2, 100},
+		{"a few large items", maxTokens * 3, 3},
+		{"just over the budget", maxTokens + 1, 50},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := strings.Repeat("x", tc.needed*charactersPerToken)
+			err := checkEchoBudget("Test", payload, tc.itemCount, types.Quick, 1.0)
+			if err == nil {
+				t.Fatal("expected a refusal")
+			}
+			if types.KindOf(err) != types.KindContextTooLarge {
+				t.Errorf("kind = %v, want KindContextTooLarge", types.KindOf(err))
+			}
+			want := int(int64(tc.itemCount) * int64(maxTokens) / int64(tc.needed))
+			if want >= tc.itemCount {
+				t.Fatalf("test setup: %d items would not be refused", tc.itemCount)
+			}
+			if !strings.Contains(err.Error(), fmt.Sprintf("about %d items would fit", want)) {
+				t.Errorf("error = %q, want it to say about %d items would fit", err.Error(), want)
+			}
+		})
+	}
+}
+
+// Exact values: ceil(bytes/4), and the result never decreases.
+func TestEstimateTokensIsBytesOverFourRoundedUp(t *testing.T) {
+	cases := map[int]int{0: 0, 1: 1, 3: 1, 4: 1, 5: 2, 8: 2, 9: 3, 100: 25, 1001: 251}
+	for size, want := range cases {
+		if got := estimateTokens(strings.Repeat("x", size)); got != want {
+			t.Errorf("a %d-byte payload estimated %d, want %d", size, got, want)
+		}
+	}
+	// Bytes, not characters: a three-byte character counts three.
+	if got := estimateTokens(strings.Repeat("東", 4)); got != 3 {
+		t.Errorf("four three-byte characters estimated %d, want 3", got)
+	}
 }

@@ -1,927 +1,201 @@
-// Package pricing - Pricing and cost tracking for LLM operations
 package pricing
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"sort"
+	"math"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/bind"
+	inner "github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/setting"
 )
 
-// PricingModel defines the cost structure for a specific model
-type PricingModel struct {
-	Provider                string
-	Model                   string
-	PricePerPromptToken     float64 // Price per 1K tokens
-	PricePerCompletionToken float64 // Price per 1K tokens
-	PriceCachedToken        float64 // Price per 1K cached tokens (if applicable)
-	PriceReasoningToken     float64 // Price per 1K reasoning tokens (for o1 models)
-	Currency                string
-	EffectiveDate           time.Time
+// maxRate is the highest rate Register accepts, in US dollars per million
+// tokens. The dearest public model is a small fraction of it. It catches the
+// mistake that actually happens, a price given per token or per thousand
+// tokens, and an implausibly large one, which would make every cost priced from
+// the card too large to be believed.
+const maxRate = 1000.0
+
+// A Model is the price of one model, in US dollars per million tokens, as
+// providers publish their prices. Give Register the rates of a model the
+// library does not price, or rates that differ from the table's.
+//
+// Every rate is zero or more and no more than $1,000 per million tokens, and a
+// model that charges nothing for both Input and Output is not registered: a
+// model priced at nothing reports real spending as free, and the library
+// reports it unpriced instead.
+type Model struct {
+	// Provider is the provider that sells the model: "openai", "anthropic". It
+	// is required. A model is priced by its name alone, whichever provider a
+	// call went to, so the provider here says who set the price and takes no
+	// part in the lookup.
+	Provider string
+
+	// Name is the model's name as a request names it, such as "gpt-5". It is
+	// required. It is looked up without regard to case, and without leading or
+	// trailing white space.
+	Name string
+
+	// Input is the price of a million input tokens that were not read from the
+	// provider's prompt cache. Zero is a price of nothing for them.
+	Input float64
+
+	// Output is the price of a million output tokens, reasoning tokens
+	// included unless Reasoning says otherwise. Zero is a price of nothing for
+	// them.
+	Output float64
+
+	// Cached is the price of a million input tokens read from the provider's
+	// prompt cache. Zero means the model has no cheaper rate for them, and they
+	// are charged at Input: a discount nobody published is not one to assume.
+	Cached float64
+
+	// Reasoning is the price of a million output tokens spent reasoning, for a
+	// model that charges for them apart from the rest of its output. Zero means
+	// they are charged at Output.
+	Reasoning float64
 }
 
+// longest is the most bytes of a model name or a provider name that Register
+// accepts. The longest name a provider publishes is a fraction of it.
+const longest = 128
+
+// priceLayers holds, for each model name, the prices that calls to Register have
+// put in force for it, so that a restore puts back the price the table held
+// before: the built-in one, a price registered by the old root, or none.
 var (
-	// Pricing data for different models (prices per 1K tokens in USD)
-	pricingModels = map[string]PricingModel{
-		// OpenAI GPT-5.6 models
-		//
-		// Luna only. Sol and Terra are real models on the same account and are
-		// deliberately absent: the published figures found for them were input
-		// prices without a matching output price, and half a price is not a
-		// price. They stay unpriced until both numbers are known, which reports
-		// them as Unpriced rather than valuing them wrongly.
-		"gpt-5.6-luna": {
-			Provider:                "openai",
-			Model:                   "gpt-5.6-luna",
-			PricePerPromptToken:     0.0002, // $0.20 per 1M tokens
-			PricePerCompletionToken: 0.0012, // $1.20 per 1M tokens
-			// Ten percent of the prompt price, which is the ratio every other
-			// OpenAI entry in this table uses and is NOT a published figure for
-			// this model -- no cached rate was listed anywhere it was checked.
-			// Stated as an inference rather than left at zero, because zero
-			// would price a cached token as free and quietly understate a bill.
-			PriceCachedToken: 0.00002,
-			Currency:         "USD",
-			// The 80% cut that took input from $1.00 to $0.20 and output from
-			// $6.00 to $1.20.
-			EffectiveDate: time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
-		},
-
-		// OpenAI GPT-5.4 models
-		"gpt-5.4": {
-			Provider:                "openai",
-			Model:                   "gpt-5.4",
-			PricePerPromptToken:     0.0025, // $2.50 per 1M tokens
-			PricePerCompletionToken: 0.015,  // $15 per 1M tokens
-			PriceCachedToken:        0.00025,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC),
-		},
-
-		// OpenAI GPT-5 models
-		"gpt-5": {
-			Provider:                "openai",
-			Model:                   "gpt-5",
-			PricePerPromptToken:     0.00125, // $1.25 per 1M tokens
-			PricePerCompletionToken: 0.01,    // $10 per 1M tokens
-			PriceCachedToken:        0.000125,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-5-2025-08-07": {
-			Provider:                "openai",
-			Model:                   "gpt-5-2025-08-07",
-			PricePerPromptToken:     0.00125, // $1.25 per 1M tokens
-			PricePerCompletionToken: 0.01,    // $10 per 1M tokens
-			PriceCachedToken:        0.000125,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-5-nano": {
-			Provider:                "openai",
-			Model:                   "gpt-5-nano",
-			PricePerPromptToken:     0.00005, // $0.05 per 1M tokens
-			PricePerCompletionToken: 0.0004,  // $0.40 per 1M tokens
-			PriceCachedToken:        0.000005,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-5-nano-2025-08-07": {
-			Provider:                "openai",
-			Model:                   "gpt-5-nano-2025-08-07",
-			PricePerPromptToken:     0.00005, // $0.05 per 1M tokens
-			PricePerCompletionToken: 0.0004,  // $0.40 per 1M tokens
-			PriceCachedToken:        0.000005,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-5-mini": {
-			Provider:                "openai",
-			Model:                   "gpt-5-mini",
-			PricePerPromptToken:     0.00025, // $0.25 per 1M tokens
-			PricePerCompletionToken: 0.002,   // $2 per 1M tokens
-			PriceCachedToken:        0.000025,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-5-mini-2025-08-07": {
-			Provider:                "openai",
-			Model:                   "gpt-5-mini-2025-08-07",
-			PricePerPromptToken:     0.00025, // $0.25 per 1M tokens
-			PricePerCompletionToken: 0.002,   // $2 per 1M tokens
-			PriceCachedToken:        0.000025,
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2025, 8, 7, 0, 0, 0, 0, time.UTC),
-		},
-
-		// OpenAI GPT-4 models
-		"gpt-4-turbo-preview": {
-			Provider:                "openai",
-			Model:                   "gpt-4-turbo-preview",
-			PricePerPromptToken:     0.01, // $10 per 1M tokens
-			PricePerCompletionToken: 0.03, // $30 per 1M tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-4": {
-			Provider:                "openai",
-			Model:                   "gpt-4",
-			PricePerPromptToken:     0.03, // $30 per 1M tokens
-			PricePerCompletionToken: 0.06, // $60 per 1M tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-4-32k": {
-			Provider:                "openai",
-			Model:                   "gpt-4-32k",
-			PricePerPromptToken:     0.06, // $60 per 1M tokens
-			PricePerCompletionToken: 0.12, // $120 per 1M tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-
-		// OpenAI GPT-3.5 models
-		"gpt-3.5-turbo": {
-			Provider:                "openai",
-			Model:                   "gpt-3.5-turbo",
-			PricePerPromptToken:     0.0005, // $0.50 per 1M tokens
-			PricePerCompletionToken: 0.0015, // $1.50 per 1M tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-		"gpt-3.5-turbo-16k": {
-			Provider:                "openai",
-			Model:                   "gpt-3.5-turbo-16k",
-			PricePerPromptToken:     0.003, // $3 per 1M tokens
-			PricePerCompletionToken: 0.004, // $4 per 1M tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-
-		// OpenAI o1 models (with reasoning tokens)
-		"o1-preview": {
-			Provider:                "openai",
-			Model:                   "o1-preview",
-			PricePerPromptToken:     0.015, // $15 per 1M tokens
-			PricePerCompletionToken: 0.06,  // $60 per 1M tokens
-			PriceReasoningToken:     0.015, // $15 per 1M reasoning tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-		"o1-mini": {
-			Provider:                "openai",
-			Model:                   "o1-mini",
-			PricePerPromptToken:     0.003, // $3 per 1M tokens
-			PricePerCompletionToken: 0.012, // $12 per 1M tokens
-			PriceReasoningToken:     0.003, // $3 per 1M reasoning tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-
-		// Anthropic Claude models
-		"claude-3-opus": {
-			Provider:                "anthropic",
-			Model:                   "claude-3-opus",
-			PricePerPromptToken:     0.015,   // $15 per 1M tokens
-			PricePerCompletionToken: 0.075,   // $75 per 1M tokens
-			PriceCachedToken:        0.00187, // $1.875 per 1M cached tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-		"claude-3-sonnet": {
-			Provider:                "anthropic",
-			Model:                   "claude-3-sonnet",
-			PricePerPromptToken:     0.003,   // $3 per 1M tokens
-			PricePerCompletionToken: 0.015,   // $15 per 1M tokens
-			PriceCachedToken:        0.00038, // $0.375 per 1M cached tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-		"claude-3-haiku": {
-			Provider:                "anthropic",
-			Model:                   "claude-3-haiku",
-			PricePerPromptToken:     0.00025, // $0.25 per 1M tokens
-			PricePerCompletionToken: 0.00125, // $1.25 per 1M tokens
-			PriceCachedToken:        0.00003, // $0.03 per 1M cached tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-
-		// Cerebras. Priced here rather than left to the provider's flat default
-		// because an unpriced model reports zero cost, and a secondary provider
-		// whose whole appeal is being cheaper is exactly the one a caller will
-		// want a real number for.
-		"gemma-4-31b": {
-			Provider:                "cerebras",
-			Model:                   "gemma-4-31b",
-			PricePerPromptToken:     0.00099, // $0.99 per 1M tokens
-			PricePerCompletionToken: 0.00149, // $1.49 per 1M tokens
-			Currency:                "USD",
-			EffectiveDate:           time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC),
-		},
-	}
-
-	// Cost tracking state
-	costMutex   sync.RWMutex
-	totalCosts  map[string]float64 // Track costs by dimension (e.g., "daily", "weekly", "monthly")
-	costHistory []CostRecord
-
-	// costStart and costCount turn costHistory into a ring buffer. It used to be
-	// an unbounded slice appended to on every call and never evicted, in a
-	// library whose whole purpose is to be called in a loop: a long-running
-	// process leaked a record per request forever, and GetRequestCost,
-	// GetCostSummary, and GetTotalCost each linear-scanned the leak under a lock.
-	costStart int
-	costCount int
-	costLimit = DefaultCostHistoryLimit
-
-	// costIndex maps a request ID to its slot, so GetRequestCost is a lookup
-	// rather than a scan. Entries are removed as their records are evicted.
-	costIndex map[string]int
-
-	budgetLimits   map[string]float64
-	budgetCallback func(current, limit float64, period string)
-
-	// budgetNotified remembers which period keys have already fired, so the
-	// callback is edge-triggered. It used to fire on every request once spend
-	// passed 80% of a limit -- with no debounce and no state, an alerting
-	// integration got one notification per call for the rest of the day.
-	budgetNotified map[string]bool
-
-	// budgetEnforce turns the alert into a limit. The default is false: budgets
-	// have always been advisory here, and silently starting to refuse calls
-	// would be a worse surprise than the noise it replaces.
-	budgetEnforce bool
+	priceLayersMu sync.Mutex
+	priceLayers   = map[string]*setting.Layers[*inner.PricingModel]{}
 )
 
-// DefaultCostHistoryLimit bounds the in-memory cost history. Ten thousand
-// records is a few megabytes and covers any interactive session; a service that
-// wants more should export the records, not retain them here.
-const DefaultCostHistoryLimit = 10000
-
-// ErrBudgetExceeded reports that a configured budget is exhausted and enforcing
-// mode is on. It is returned before the provider call, not after.
-var ErrBudgetExceeded = errors.New("cost budget exceeded")
-
-// CostRecord represents a single cost entry
-type CostRecord struct {
-	Timestamp     time.Time
-	RequestID     string
-	CorrelationID string
-	Operation     string
-	Model         string
-	Provider      string
-	TokenUsage    types.TokenUsage
-	Cost          types.CostInfo
-	Tags          map[string]string
-}
-
-// CalculateCost calculates the cost of an LLM operation
-func CalculateCost(usage *types.TokenUsage, model string, provider string) *types.CostInfo {
-	if usage == nil {
-		return nil
-	}
-
-	// Look up pricing for this exact model. There is deliberately no fallback to
-	// another model's rates: the previous behaviour priced every unrecognised
-	// Anthropic model at claude-3-haiku, understating an Opus call by roughly
-	// 60x while presenting the result as a precise USD figure.
-	pricing, exists := lookupPricingModel(model)
-	if !exists {
-		logger.GetLogger().Warn("No pricing information available; cost reported as unpriced",
-			"model", model, "provider", provider)
-		return &types.CostInfo{
-			Currency: "USD",
-			Priced:   false,
-			Quality:  types.PricingUnknown,
+// layersOf is the layers of prices for the model called name, made when it is
+// first registered.
+func layersOf(name string) *setting.Layers[*inner.PricingModel] {
+	priceLayersMu.Lock()
+	defer priceLayersMu.Unlock()
+	layers, ok := priceLayers[name]
+	if !ok {
+		layers = &setting.Layers[*inner.PricingModel]{
+			Apply: func(card *inner.PricingModel) { inner.ReplacePricingModel(name, card) },
+			Base: func() *inner.PricingModel {
+				if card, ok := inner.PricingModelNamed(name); ok {
+					return &card
+				}
+				return nil
+			},
 		}
+		priceLayers[name] = layers
 	}
-
-	// Calculate costs (prices are per 1K tokens)
-	promptCost := float64(usage.PromptTokens) * pricing.PricePerPromptToken / 1000.0
-	completionCost := float64(usage.CompletionTokens) * pricing.PricePerCompletionToken / 1000.0
-
-	var cachedCost, reasoningCost float64
-	if usage.CachedTokens > 0 && pricing.PriceCachedToken > 0 {
-		cachedCost = float64(usage.CachedTokens) * pricing.PriceCachedToken / 1000.0
-	}
-	if usage.ReasoningTokens > 0 && pricing.PriceReasoningToken > 0 {
-		reasoningCost = float64(usage.ReasoningTokens) * pricing.PriceReasoningToken / 1000.0
-	}
-
-	totalCost := promptCost + completionCost + cachedCost + reasoningCost
-
-	return &types.CostInfo{
-		TotalCost:               totalCost,
-		PromptCost:              promptCost,
-		CompletionCost:          completionCost,
-		CachedCost:              cachedCost,
-		ReasoningCost:           reasoningCost,
-		Currency:                pricing.Currency,
-		PricePerPromptToken:     pricing.PricePerPromptToken,
-		PricePerCompletionToken: pricing.PricePerCompletionToken,
-		Priced:                  true,
-		PricingSource:           pricing.Model,
-		// A rate card that prices everything at zero is a fact -- a local or
-		// mock provider, or a free tier -- and is not the same as having no
-		// rate card at all. Reporting both as "priced: true, total: 0" made
-		// them indistinguishable in the other direction (OB-003).
-		Quality: pricingQualityFor(pricing),
-	}
+	return layers
 }
 
-// pricingQualityFor classifies a rate card that was found. Usage here is always
-// the provider's reported figures, so a found rate card is exact; an estimate
-// is produced by whoever priced a call *before* making it, and marks itself.
-func pricingQualityFor(model PricingModel) types.PricingQuality {
-	if model.PricePerPromptToken == 0 && model.PricePerCompletionToken == 0 &&
-		model.PriceCachedToken == 0 && model.PriceReasoningToken == 0 {
-		return types.PricingFree
-	}
-	return types.PricingExact
-}
-
-// EstimateCost prices a call that has not been made yet, from projected token
-// counts, and marks the result estimated.
+// Register adds the price of a model to the process's price table, or replaces
+// the one the table has. A call on that model is priced at it from now on,
+// whichever client makes the call.
 //
-// A plan that reports a cost has to say that the number is a projection: the
-// token counts are guesses, and a projection presented as a measurement is the
-// same failure as an invented confidence. An unpriced model still reports
-// unknown here rather than zero.
-func EstimateCost(projected *types.TokenUsage, model, provider string) *types.CostInfo {
-	cost := CalculateCost(projected, model, provider)
-	if cost == nil {
-		return nil
-	}
-	if cost.Quality == types.PricingExact {
-		cost.Quality = types.PricingEstimated
-	}
-	return cost
-}
-
-// TrackCost records a cost entry for monitoring and budgeting
-func TrackCost(cost *types.CostInfo, metadata *types.ResultMetadata) {
-	if cost == nil || metadata == nil {
-		return
-	}
-
-	costMutex.Lock()
-	defer costMutex.Unlock()
-
-	// Initialize maps if needed
-	if totalCosts == nil {
-		totalCosts = make(map[string]float64)
-	}
-
-	// Create cost record
-	record := CostRecord{
-		Timestamp:     time.Now(),
-		RequestID:     metadata.RequestID,
-		CorrelationID: metadata.CorrelationID,
-		Operation:     metadata.Operation,
-		Model:         metadata.Model,
-		Provider:      metadata.Provider,
-		Cost:          *cost,
-	}
-	if !metadata.EndTime.IsZero() {
-		record.Timestamp = metadata.EndTime
-	}
-
-	if metadata.TokenUsage != nil {
-		record.TokenUsage = *metadata.TokenUsage
-	}
-
-	if metadata.Custom != nil {
-		record.Tags = make(map[string]string)
-		for k, v := range metadata.Custom {
-			record.Tags[k] = fmt.Sprintf("%v", v)
-		}
-	}
-
-	// Add to history
-	pushCostRecord(record)
-
-	// Update totals
-	now := time.Now()
-	updateCostTotal("all_time", cost.TotalCost)
-	updateCostTotal(fmt.Sprintf("daily_%s", now.Format("2006-01-02")), cost.TotalCost)
-	updateCostTotal(fmt.Sprintf("weekly_%s", getWeekKey(now)), cost.TotalCost)
-	updateCostTotal(fmt.Sprintf("monthly_%s", now.Format("2006-01")), cost.TotalCost)
-
-	// Check budget limits
-	checkBudgetLimits()
-
-	// Log high-cost operations
-	if cost.TotalCost > 0.10 { // Log operations over $0.10
-		totalTokens := 0
-		if metadata.TokenUsage != nil {
-			totalTokens = metadata.TokenUsage.TotalTokens
-		}
-		logger.GetLogger().Info("High-cost operation tracked",
-			"requestID", metadata.RequestID,
-			"operation", metadata.Operation,
-			"model", metadata.Model,
-			"cost", fmt.Sprintf("$%.4f", cost.TotalCost),
-			"tokens", totalTokens,
-		)
-	}
-}
-
-// GetTotalCost returns accumulated cost for a time period
-func GetTotalCost(since time.Time, filters map[string]string) float64 {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-
-	var total float64
-	forEachCostRecord(func(record CostRecord) {
-		if record.Timestamp.Before(since) || !matchesFilters(record, filters) {
-			return
-		}
-		total += record.Cost.TotalCost
-	})
-
-	return total
-}
-
-// SetBudget configures cost limits and alerts
-func SetBudget(daily, weekly, monthly float64, callback func(current, limit float64, period string)) {
-	costMutex.Lock()
-	defer costMutex.Unlock()
-
-	if budgetLimits == nil {
-		budgetLimits = make(map[string]float64)
-	}
-
-	budgetLimits["daily"] = daily
-	budgetLimits["weekly"] = weekly
-	budgetLimits["monthly"] = monthly
-	budgetCallback = callback
-
-	logger.GetLogger().Info("Budget limits configured",
-		"daily", fmt.Sprintf("$%.2f", daily),
-		"weekly", fmt.Sprintf("$%.2f", weekly),
-		"monthly", fmt.Sprintf("$%.2f", monthly),
-	)
-}
-
-// GetCostBreakdown returns detailed cost breakdown for a period
-func GetCostBreakdown(since time.Time) map[string]float64 {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-
-	breakdown := make(map[string]float64)
-
-	forEachCostRecord(func(record CostRecord) {
-		if record.Timestamp.Before(since) {
-			return
-		}
-
-		// By model
-		modelKey := fmt.Sprintf("model_%s", record.Model)
-		breakdown[modelKey] += record.Cost.TotalCost
-
-		// By operation
-		opKey := fmt.Sprintf("operation_%s", record.Operation)
-		breakdown[opKey] += record.Cost.TotalCost
-
-		// By provider
-		providerKey := fmt.Sprintf("provider_%s", record.Provider)
-		breakdown[providerKey] += record.Cost.TotalCost
-
-		// Total
-		breakdown["total"] += record.Cost.TotalCost
-	})
-
-	return breakdown
-}
-
-// ExportCostReport generates a detailed cost report
-func ExportCostReport(since time.Time, format string) (string, error) {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-
-	var report string
-
-	switch format {
-	case "csv":
-		report = "Timestamp,RequestID,CorrelationID,Operation,Model,Provider,PromptTokens,CompletionTokens,TotalTokens,Cost\n"
-		forEachCostRecord(func(record CostRecord) {
-			if record.Timestamp.Before(since) {
-				return
-			}
-			report += fmt.Sprintf("%s,%s,%s,%s,%s,%s,%d,%d,%d,%.4f\n",
-				record.Timestamp.Format(time.RFC3339),
-				record.RequestID,
-				record.CorrelationID,
-				record.Operation,
-				record.Model,
-				record.Provider,
-				record.TokenUsage.PromptTokens,
-				record.TokenUsage.CompletionTokens,
-				record.TokenUsage.TotalTokens,
-				record.Cost.TotalCost,
-			)
-		})
-	case "json":
-		records := make([]CostRecord, 0, costCount)
-		forEachCostRecord(func(record CostRecord) {
-			if record.Timestamp.Before(since) {
-				return
-			}
-			records = append(records, cloneCostRecord(record))
-		})
-		data, err := json.MarshalIndent(records, "", "  ")
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal cost report: %w", err)
-		}
-		report = string(data)
-	default:
-		return "", fmt.Errorf("unsupported format: %s", format)
-	}
-
-	return report, nil
-}
-
-// Helper functions
-
-func lookupPricingModel(model string) (PricingModel, bool) {
-	// Normalise before the exact lookup, not after. Every key in the table is
-	// lower case, so a caller passing "GPT-4" or a value with stray whitespace
-	// used to miss the exact match, fall through the prefix ladder, and be
-	// reported unpriced -- an accidental gap in the one signal that is supposed
-	// to mean "we genuinely do not know this model's rate".
-	model = strings.TrimSpace(strings.ToLower(model))
-
-	pricingMu.RLock()
-	defer pricingMu.RUnlock()
-
-	if pricing, exists := pricingModels[model]; exists {
-		return pricing, true
-	}
-
-	// Prefix matching exists to price dated snapshots (gpt-5-2025-08-07) at
-	// their base model's rates. It must not reach across model versions:
-	// "gpt-5.6-luna" starts with "gpt-5" but is a different model with
-	// different rates, and pricing it from the gpt-5 entry is the same
-	// substitution error as pricing every Anthropic model as Haiku.
-	for _, base := range []string{"gpt-5.4", "gpt-5-mini", "gpt-5-nano", "gpt-5"} {
-		if isSnapshotOf(model, base) {
-			pricing, ok := pricingModels[base]
-			return pricing, ok
-		}
-	}
-
-	return PricingModel{}, false
-}
-
-// isSnapshotOf reports whether model is base itself or a dated snapshot of it.
-// A suffix beginning with "." denotes a different version, not a snapshot.
-func isSnapshotOf(model, base string) bool {
-	if !strings.HasPrefix(model, base) {
-		return false
-	}
-	suffix := model[len(base):]
-	return suffix == "" || strings.HasPrefix(suffix, "-")
-}
-
-func updateCostTotal(key string, amount float64) {
-	totalCosts[key] += amount
-}
-
-func getWeekKey(t time.Time) string {
-	year, week := t.ISOWeek()
-	return fmt.Sprintf("%d-W%02d", year, week)
-}
-
-func matchesFilters(record CostRecord, filters map[string]string) bool {
-	for key, value := range filters {
-		switch key {
-		case "request_id":
-			if record.RequestID != value {
-				return false
-			}
-		case "correlation_id":
-			if record.CorrelationID != value {
-				return false
-			}
-		case "model":
-			if record.Model != value {
-				return false
-			}
-		case "provider":
-			if record.Provider != value {
-				return false
-			}
-		case "operation":
-			if record.Operation != value {
-				return false
-			}
-		default:
-			// Check tags
-			if tagValue, exists := record.Tags[key]; !exists || tagValue != value {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// budgetThresholds are the fractions of a limit worth telling somebody about.
+// It changes process state.
 //
-// The old check fired above 80% and had no memory, so an integration that pages
-// on the callback got paged once per request for the rest of the period --
-// which is how a budget alert becomes a filter rule, and then becomes nothing.
-var budgetThresholds = []float64{0.8, 1.0}
-
-func checkBudgetLimits() {
-	if budgetCallback == nil || budgetLimits == nil {
-		return
-	}
-
-	if budgetNotified == nil {
-		budgetNotified = make(map[string]bool)
-	}
-
-	now := time.Now()
-	periods := []struct {
-		name string
-		key  string
-	}{
-		{"daily", fmt.Sprintf("daily_%s", now.Format("2006-01-02"))},
-		{"weekly", fmt.Sprintf("weekly_%s", getWeekKey(now))},
-		{"monthly", fmt.Sprintf("monthly_%s", now.Format("2006-01"))},
-	}
-
-	for _, period := range periods {
-		limit, exists := budgetLimits[period.name]
-		if !exists || limit <= 0 {
-			continue
-		}
-
-		current, ok := totalCosts[period.key]
-		if !ok {
-			continue
-		}
-
-		for _, fraction := range budgetThresholds {
-			if current < limit*fraction {
-				continue
-			}
-			// The key carries the period instance, so tomorrow's budget alerts
-			// again rather than staying silent because yesterday's fired.
-			seen := fmt.Sprintf("%s@%.2f", period.key, fraction)
-			if budgetNotified[seen] {
-				continue
-			}
-			budgetNotified[seen] = true
-			budgetCallback(current, limit, period.name)
-		}
-	}
-}
-
-// pushCostRecord appends a record to the bounded history, evicting the oldest
-// when the ring is full. The caller holds costMutex.
-func pushCostRecord(record CostRecord) {
-	if costLimit <= 0 {
-		costLimit = DefaultCostHistoryLimit
-	}
-	if costIndex == nil {
-		costIndex = make(map[string]int, costLimit)
-	}
-	if costHistory == nil {
-		costHistory = make([]CostRecord, 0, min(costLimit, 1024))
-	}
-
-	if costCount < costLimit {
-		slot := (costStart + costCount) % costLimit
-		if slot < len(costHistory) {
-			costHistory[slot] = record
-		} else {
-			costHistory = append(costHistory, record)
-			slot = len(costHistory) - 1
-		}
-		costCount++
-		indexCostRecord(record, slot)
-		return
-	}
-
-	// Full: overwrite the oldest and move the window forward. The evicted
-	// record's index entry goes with it, or GetRequestCost would return a slot
-	// now holding somebody else's request.
-	slot := costStart
-	evicted := costHistory[slot]
-	if existing, ok := costIndex[evicted.RequestID]; ok && existing == slot {
-		delete(costIndex, evicted.RequestID)
-	}
-	costHistory[slot] = record
-	costStart = (costStart + 1) % costLimit
-	indexCostRecord(record, slot)
-}
-
-func indexCostRecord(record CostRecord, slot int) {
-	if record.RequestID == "" {
-		return
-	}
-	// A repeated request ID resolves to its most recent record, which is what a
-	// caller asking "what did this request cost" means after a retry.
-	costIndex[record.RequestID] = slot
-}
-
-// forEachCostRecord walks the history oldest-first. The caller holds costMutex.
-func forEachCostRecord(visit func(CostRecord)) {
-	if costLimit <= 0 {
-		return
-	}
-	for i := 0; i < costCount; i++ {
-		visit(costHistory[(costStart+i)%costLimit])
-	}
-}
-
-// SetCostHistoryLimit bounds how many cost records are retained in memory.
+// The returned function undoes this call: it puts back what was in force when
+// the call was made, unless something has been set since, in which case that
+// later setting stays in force until it is restored too, and then what is in
+// force is the newest setting not yet restored, or the original if there is none.
+// It does nothing when called a second time, may be called in any order relative
+// to the restore functions of other calls, and may be called from several
+// goroutines. What is put back for the name is the price the table held, the
+// built-in one or none. A test that registers a price still gives it a model name
+// of its own when it runs in parallel, because a price is looked up by the name
+// alone.
 //
-// Changing the limit discards the existing history rather than resizing it: the
-// alternative is a partial copy whose contents depend on the old and new sizes,
-// and a caller setting this is configuring a process, not curating a dataset.
-// A limit of zero or less restores the default.
-func SetCostHistoryLimit(limit int) {
-	costMutex.Lock()
-	defer costMutex.Unlock()
-
-	if limit <= 0 {
-		limit = DefaultCostHistoryLimit
+// A Model with no name or no provider, a name or a provider of more than 128
+// bytes, a rate that is not a number, is negative or is above $1,000 per million
+// tokens, and a Model that charges nothing for both Input and Output, are refused
+// with an *Error of kind ErrConfiguration, and the table is not changed. The
+// restore is then nil.
+func Register(m Model) (restore func(), err error) {
+	name := strings.TrimSpace(strings.ToLower(m.Name))
+	refuse := func(message string) (func(), error) {
+		return nil, &schemaflux.Error{Kind: schemaflux.ErrConfiguration, Op: "pricing.register", Message: message}
 	}
-	costLimit = limit
-	costHistory = nil
-	costIndex = nil
-	costStart = 0
-	costCount = 0
-}
-
-// CostHistoryLen reports how many records are currently retained.
-func CostHistoryLen() int {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-	return costCount
-}
-
-// SetBudgetEnforcement controls whether an exhausted budget refuses calls.
-//
-// Off by default. Budgets in this library have always been advisory, and a
-// release that quietly started returning errors mid-run would be a worse
-// surprise than the alert noise it replaces.
-func SetBudgetEnforcement(enforce bool) {
-	costMutex.Lock()
-	defer costMutex.Unlock()
-	budgetEnforce = enforce
-}
-
-// CheckBudget reports whether a call may proceed, so the caller can refuse
-// before spending rather than discovering the overrun in the invoice.
-//
-// It returns ErrBudgetExceeded only when enforcement is on. With enforcement
-// off it always allows the call, and the callback does the talking.
-func CheckBudget() error {
-	costMutex.RLock()
-	defer costMutex.RUnlock()
-
-	if !budgetEnforce || budgetLimits == nil {
-		return nil
-	}
-
-	now := time.Now()
-	for period, key := range map[string]string{
-		"daily":   fmt.Sprintf("daily_%s", now.Format("2006-01-02")),
-		"weekly":  fmt.Sprintf("weekly_%s", getWeekKey(now)),
-		"monthly": fmt.Sprintf("monthly_%s", now.Format("2006-01")),
-	} {
-		limit, ok := budgetLimits[period]
-		if !ok || limit <= 0 {
-			continue
-		}
-		if totalCosts[key] >= limit {
-			return fmt.Errorf("%w: %s spend $%.4f has reached the $%.2f limit",
-				ErrBudgetExceeded, period, totalCosts[key], limit)
-		}
-	}
-
-	return nil
-}
-
-// ResetBudget clears the configured limits, the callback, and the notification
-// state, leaving the recorded history alone.
-//
-// It is separate from ResetCostTracking on purpose. That function used to null
-// budgetLimits and budgetCallback as well, so a test or a service clearing its
-// history silently disabled budget alerting -- the two operations have nothing
-// to do with each other, and the one people call routinely was the one with the
-// side effect.
-func ResetBudget() {
-	costMutex.Lock()
-	defer costMutex.Unlock()
-
-	budgetLimits = nil
-	budgetCallback = nil
-	budgetNotified = nil
-	budgetEnforce = false
-}
-
-// pricingMu guards the rate table. It exists because RegisterPricingModel
-// makes the table writable at runtime, and a map written by one goroutine
-// while another prices a request is a data race that shows up as a corrupted
-// invoice rather than a crash.
-var pricingMu sync.RWMutex
-
-// ErrInvalidPricingModel reports a rate card this package will not accept.
-var ErrInvalidPricingModel = errors.New("pricing: invalid pricing model")
-
-// RegisterPricingModel adds or replaces a model's rates.
-//
-// It exists because the built-in table is a snapshot of public list prices and
-// will always be behind, and because a caller on negotiated or enterprise
-// rates has never been able to say so: their costs were either computed from
-// somebody else's prices or reported unpriced. Registering their own rate card
-// is the difference between an accounting figure they can reconcile and one
-// they cannot.
-//
-// The model name is normalised the same way lookups are, so registering
-// "GPT-5.6-Luna" prices "gpt-5.6-luna".
-//
-// Rates are per 1,000 tokens, matching the built-in table. Getting that wrong
-// by a factor of a thousand is the obvious mistake here, so a rate above
-// oneThousandTokenSanityCeiling is refused: no real model costs more than a
-// dollar per thousand tokens, and a caller who meant per-million has said
-// something this package can tell is wrong.
-func RegisterPricingModel(model PricingModel) error {
-	name := strings.TrimSpace(strings.ToLower(model.Model))
 	if name == "" {
-		return fmt.Errorf("%w: no model name", ErrInvalidPricingModel)
+		return refuse("the model has no name")
 	}
-	if strings.TrimSpace(model.Provider) == "" {
-		return fmt.Errorf("%w: %q has no provider", ErrInvalidPricingModel, name)
+	if len(name) > longest {
+		return refuse("the model name is longer than 128 bytes")
 	}
-
-	rates := map[string]float64{
-		"prompt":     model.PricePerPromptToken,
-		"completion": model.PricePerCompletionToken,
-		"cached":     model.PriceCachedToken,
-		"reasoning":  model.PriceReasoningToken,
+	provider := strings.TrimSpace(m.Provider)
+	if provider == "" {
+		return refuse("model " + quote(name) + " has no provider")
 	}
-	for _, kind := range []string{"prompt", "completion", "cached", "reasoning"} {
-		rate := rates[kind]
-		if rate < 0 {
-			return fmt.Errorf("%w: %q has a negative %s rate (%v)", ErrInvalidPricingModel, name, kind, rate)
+	if len(provider) > longest {
+		return refuse("the provider name of model " + quote(name) + " is longer than 128 bytes")
+	}
+	for _, rate := range []struct {
+		article, name string
+		value         float64
+	}{{"an", "input", m.Input}, {"an", "output", m.Output}, {"a", "cached", m.Cached}, {"a", "reasoning", m.Reasoning}} {
+		switch {
+		case math.IsNaN(rate.value):
+			return refuse("model " + quote(name) + " has " + rate.article + " " + rate.name + " rate that is not a number")
+		case rate.value < 0:
+			return refuse("model " + quote(name) + " has a negative " + rate.name + " rate")
+		case rate.value > maxRate:
+			return refuse("model " + quote(name) + " has " + rate.article + " " + rate.name + " rate above $1,000 per million tokens; rates are in US dollars per million tokens")
 		}
-		if rate > oneThousandTokenSanityCeiling {
-			return fmt.Errorf(
-				"%w: %q has a %s rate of %v per 1K tokens, which is implausible -- rates in this table are per 1,000 tokens, not per 1,000,000",
-				ErrInvalidPricingModel, name, kind, rate)
-		}
 	}
-
-	// A rate card with every rate at zero would report real spending as free.
-	// PR-001's rule is that unpriced is not free; this is the same rule from
-	// the other side, because "priced at nothing" is the more convincing lie.
-	if model.PricePerPromptToken == 0 && model.PricePerCompletionToken == 0 {
-		return fmt.Errorf(
-			"%w: %q prices both prompt and completion tokens at zero, which would report real spending as free; omit the model instead and let it report unpriced",
-			ErrInvalidPricingModel, name)
+	card := inner.PricingModel{
+		Provider:                provider,
+		Model:                   name,
+		PricePerPromptToken:     m.Input / 1000,
+		PricePerCompletionToken: m.Output / 1000,
+		PriceCachedToken:        m.Cached / 1000,
+		PriceReasoningToken:     m.Reasoning / 1000,
+		Currency:                "USD",
 	}
-
-	model.Model = name
-	if strings.TrimSpace(model.Currency) == "" {
-		model.Currency = "USD"
+	// The rates are tested as the table keeps them, per thousand tokens: one so
+	// small that it divides to nothing is a price of nothing too.
+	if card.PricePerPromptToken == 0 && card.PricePerCompletionToken == 0 {
+		return refuse("model " + quote(name) + " charges nothing for input and output, which would report real spending as free; leave it unregistered and it is reported unpriced")
 	}
-
-	pricingMu.Lock()
-	defer pricingMu.Unlock()
-	pricingModels[name] = model
-	return nil
+	return layersOf(name).Set(&card), nil
 }
 
-// oneThousandTokenSanityCeiling is the highest per-1K-token rate this package
-// will accept. The most expensive public model is comfortably under a cent per
-// thousand tokens; a dollar leaves three orders of magnitude of headroom and
-// still catches the per-million mix-up, which is the mistake that actually
-// happens.
-const oneThousandTokenSanityCeiling = 1.0
+// Models returns the names of the models the table has a price for, in lower
+// case and sorted, built-in and registered alike. A model that is absent is
+// reported unpriced and not free, though a dated snapshot of one that is listed
+// is priced as the one it is a snapshot of.
+func Models() []string {
+	return inner.RegisteredPricingModels()
+}
 
-// RegisteredPricingModels reports the models with known rates, sorted, so a
-// caller can see what is priced without guessing. A model absent from this
-// list reports unpriced rather than free.
-func RegisteredPricingModels() []string {
-	pricingMu.RLock()
-	defer pricingMu.RUnlock()
+// Price returns what u cost on model, at the table's price for it, as the
+// Cost a Record carries. provider is the provider the call went to, and only
+// matters for one that is not billed per token.
+//
+// Every token is priced once: Usage.Cached is part of Usage.Input and is
+// charged at the model's cached rate where it has one, and Usage.Reasoning is
+// part of Usage.Output and is charged at the model's reasoning rate where it
+// has one. A count above its total is held at the total, and a negative count is
+// read as zero.
+//
+// A model the table has no price for, and a provider that is not billed per
+// token, give a Cost that is not Priced, with a Total of zero. That zero is not a
+// price: it means the cost is not known, and a figure summed over it is a floor.
+// The Currency is "USD", as in a Record's Cost. A count of any size is held: a Total left at zero is the sum of
+// Input and Output, held at the largest count there is where it would pass it, and
+// a negative count is read as zero. Price does not change the ledger; the library
+// records its own calls.
+func Price(u schemaflux.Usage, model, provider string) schemaflux.Cost {
+	usage := bind.UsageToInternal(u)
+	return costOf(inner.CalculateCost(&usage, model, provider))
+}
 
-	names := make([]string, 0, len(pricingModels))
-	for name := range pricingModels {
-		names = append(names, name)
+// quote is s in quotation marks, cut to a length a message can carry.
+func quote(s string) string {
+	const longest = 80
+	if runes := []rune(s); len(runes) > longest {
+		s = string(runes[:longest]) + "..."
 	}
-	sort.Strings(names)
-	return names
+	return `"` + s + `"`
 }

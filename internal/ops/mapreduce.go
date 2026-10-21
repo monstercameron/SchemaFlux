@@ -2,10 +2,9 @@ package ops
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sort"
-	"sync"
+
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // There was no chunk → per-chunk operation → merge primitive. BatchProcessor
@@ -84,6 +83,29 @@ func (r MapReduceResult) Complete() bool { return len(r.Failed) == 0 }
 //
 // Order is preserved regardless of the order chunks finish in, because a caller
 // merging a Sort or a Filter needs the input's order to mean something.
+//
+// With ContinueOnError the returned slice holds only the chunks that succeeded,
+// in chunk order: it is shorter than the number of chunks when any failed, so
+// result k is not chunk k. The caller rebuilds the positions from
+// MapReduceResult.Failed, whose entries give each failed chunk's index and
+// offset. A caller that cancels its own context gets the context's error, not a
+// partial result: ContinueOnError is about chunks that fail, and a run that was
+// stopped did not finish.
+//
+// Without ContinueOnError the first chunk to fail stops the run: the chunks in
+// flight are cancelled, none after them starts, and the error returned is that
+// failure, the first in time and not the lowest by index, as a ChunkError. The
+// cancellation it caused in the others is never reported in its place.
+//
+// Chunks overlap, up to Concurrency of them, so the operation's calls are
+// started before the first of them has been paid for. An operation that calls a
+// provider through a client with a budget, which is checked as each call
+// starts, can overshoot that budget by up to Concurrency less one calls that
+// were already in flight when it ran out; with a Concurrency of one it cannot.
+//
+// A nil ctx is the background context, and an operation that panics fails its
+// chunk (with an error that carries nothing of the panic) and does not stop the
+// process.
 func MapReduce[T any, R any](
 	ctx context.Context,
 	items []T,
@@ -94,16 +116,20 @@ func MapReduce[T any, R any](
 	var summary MapReduceResult
 
 	if operation == nil {
-		return nil, summary, fmt.Errorf("mapreduce: no operation given")
+		return nil, summary, types.Newf(types.KindInvalidRequest, "mapreduce", "no operation given")
 	}
 	if len(items) == 0 {
 		return nil, summary, nil
 	}
+	ctx = flowContext(ctx)
 
 	chunkSize := opts.ChunkSize
 	if chunkSize <= 0 {
 		chunkSize = DefaultChunkSize
 	}
+	// A chunk cannot hold more items than there are, and nothing below is sized
+	// by a number the caller gave that is larger than that.
+	chunkSize = min(chunkSize, len(items))
 	concurrency := opts.Concurrency
 	if concurrency <= 0 {
 		concurrency = DefaultConcurrency
@@ -113,91 +139,37 @@ func MapReduce[T any, R any](
 	summary.Chunks = len(chunks)
 
 	results := make([]R, len(chunks))
-	errs := make([]error, len(chunks))
 
-	// A cancellable sub-context, so the first failure can stop the rest when
-	// the caller has not asked to continue.
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Every chunk starts as "not run". A chunk the feeder never dispatches --
-	// because an earlier one failed and cancelled the run -- must not fall out
-	// of the loop below with a nil error and a zero-valued result, which would
-	// report it as a successful empty chunk.
-	errNotRun := errors.New("chunk was not run: an earlier chunk failed")
-	for i := range errs {
-		errs[i] = errNotRun
-	}
-
-	// A bounded worker pool fed in index order, rather than one goroutine per
-	// chunk racing for a semaphore.
+	// The chunks run on the pool the batch functions share: a bounded set of
+	// workers handing out chunk indices in order, so that Concurrency: 1 is
+	// sequential and not merely serialized, and a failure leaves the chunks after
+	// it unstarted instead of racing to be the ones that were. Without
+	// ContinueOnError the first failure cancels the run.
 	//
-	// The semaphore version dispatched in whatever order the scheduler woke the
-	// goroutines, so `Concurrency: 1` was serialized but not sequential, and the
-	// documented reason for asking for it -- a rate-limited provider -- got
-	// chunk 7 before chunk 0. Worse, cancelling on the first failure saved
-	// nothing when the failing chunk happened to be scheduled last: every other
-	// chunk had already been paid for. That is what the test that caught this
-	// was asserting, and it only passed when the scheduler was kind.
-	workers := concurrency
-	if workers > len(chunks) {
-		workers = len(chunks)
-	}
-
-	indices := make(chan int)
-	var wg sync.WaitGroup
-
-	go func() {
-		defer close(indices)
-		for i := range chunks {
-			select {
-			case indices <- i:
-			case <-runCtx.Done():
-				return
+	// A chunk's operation that ends its goroutine without returning
+	// (runtime.Goexit, as t.FailNow does) is an error for its chunk, and the pool
+	// replaces the worker so that the chunks after it still run when the run goes
+	// on.
+	ran := runBounded(ctx, "mapreduce", len(chunks), boundedOptions{workers: concurrency, stopOnFailure: !opts.ContinueOnError},
+		func(runCtx context.Context, index int) error {
+			result, err := runChunk(runCtx, operation, chunks[index], index)
+			if err != nil {
+				return err
 			}
-		}
-	}()
+			results[index] = result
+			return nil
+		})
 
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for index := range indices {
-				if runCtx.Err() != nil {
-					return
-				}
-
-				result, err := operation(runCtx, chunks[index])
-				if err != nil {
-					errs[index] = err
-					if !opts.ContinueOnError {
-						cancel()
-						return
-					}
-					continue
-				}
-				results[index] = result
-				errs[index] = nil
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// Whatever the feeder did not reach is reported as cancelled rather than as
-	// the sentinel, which is an implementation detail.
-	for i, err := range errs {
-		if errors.Is(err, errNotRun) {
-			if runCtx.Err() != nil {
-				errs[i] = runCtx.Err()
-			} else {
-				errs[i] = context.Canceled
-			}
-		}
-	}
-
+	// A chunk that never started must not fall out of the loop below with a nil
+	// error and a zero-valued result, which would report it as a successful empty
+	// chunk. It is reported as cancelled, with the reason the run ended when the
+	// caller's context was it.
 	var successful []R
-	for i, err := range errs {
+	for i := range chunks {
+		err := ran.errs[i]
+		if err == nil && !ran.started[i] {
+			err = stoppedBy(ctx)
+		}
 		if err != nil {
 			summary.Failed = append(summary.Failed, ChunkError{
 				Index:  i,
@@ -209,19 +181,56 @@ func MapReduce[T any, R any](
 		successful = append(successful, results[i])
 	}
 
-	sort.SliceStable(summary.Failed, func(a, b int) bool {
-		return summary.Failed[a].Index < summary.Failed[b].Index
-	})
+	// The caller gave up. Chunks that were never run are in Failed as cancelled,
+	// and returning no error beside them would present a run that was stopped
+	// as one that finished.
+	if callerErr := ctx.Err(); callerErr != nil && len(summary.Failed) > 0 && opts.ContinueOnError {
+		return nil, summary, contextEnded(callerErr)
+	}
 
 	if len(summary.Failed) > 0 && !opts.ContinueOnError {
-		// Report the failure that caused the run to stop, not the cancellation
-		// it triggered. The first chunk by index is often one that was
-		// cancelled because a later chunk failed, and telling the caller
-		// "context canceled" hides the thing they need to fix.
-		return nil, summary, rootFailure(summary.Failed)
+		// Report the failure that stopped the run: the first in time, and never
+		// the cancellation it caused in the chunks that were in flight. The first
+		// chunk by index is often one that was cancelled because a later chunk
+		// failed, and telling the caller "context canceled" hides the thing they
+		// need to fix. When no chunk ran, because the caller's context was over
+		// before the first, the first chunk stands for the run.
+		for _, failure := range summary.Failed {
+			if failure.Index == ran.firstStep {
+				return nil, summary, failure
+			}
+		}
+		return nil, summary, summary.Failed[0]
 	}
 
 	return successful, summary, nil
+}
+
+// runChunk runs the operation on one chunk and turns a panic into an error.
+// Nothing the panic carried is kept: the recovered value can hold the chunk's
+// items, and the error is one every caller logs.
+func runChunk[T any, R any](
+	ctx context.Context,
+	operation func(ctx context.Context, chunk []T) (R, error),
+	chunk []T,
+	index int,
+) (result R, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			var zero R
+			result = zero
+			// A recovered panic is the library's own invariant ("an operation
+			// returns") broken, marked as one so that a boundary that tells it
+			// from an answer that failed its checks can. It had no kind.
+			err = &types.OperationError{
+				Kind:    types.KindInvariantViolation,
+				Narrow:  types.NarrowPanic,
+				Op:      "mapreduce",
+				Message: fmt.Sprintf("the operation panicked on chunk %d", index),
+			}
+		}
+	}()
+	return operation(ctx, chunk)
 }
 
 // MapReduceFlat is MapReduce for the common case where each chunk produces a
@@ -248,32 +257,23 @@ func MapReduceFlat[T any, R any](
 // Chunk splits a slice into runs of at most size. The final chunk holds the
 // remainder. A size of zero or less returns the whole slice as one chunk rather
 // than looping forever.
+//
+// The size is cut to the length of the slice before anything is computed from
+// it, so a size of any magnitude, math.MaxInt included, means one chunk and
+// neither the number of chunks nor an offset is a sum that can wrap.
 func Chunk[T any](items []T, size int) [][]T {
 	if len(items) == 0 {
 		return nil
 	}
-	if size <= 0 {
+	if size <= 0 || size >= len(items) {
 		return [][]T{items}
 	}
 
-	chunks := make([][]T, 0, (len(items)+size-1)/size)
-	for start := 0; start < len(items); start += size {
-		end := start + size
-		if end > len(items) {
-			end = len(items)
-		}
+	chunks := make([][]T, 0, (len(items)-1)/size+1)
+	for start := 0; start < len(items); {
+		end := start + min(size, len(items)-start)
 		chunks = append(chunks, items[start:end])
+		start = end
 	}
 	return chunks
-}
-
-// rootFailure picks the failure worth reporting: the first that is not a
-// cancellation, falling back to the first of any kind.
-func rootFailure(failures []ChunkError) ChunkError {
-	for _, failure := range failures {
-		if !errors.Is(failure.Err, context.Canceled) && !errors.Is(failure.Err, context.DeadlineExceeded) {
-			return failure
-		}
-	}
-	return failures[0]
 }

@@ -607,11 +607,9 @@ func TestMockShapedResponseDeclaringNothingReturnsEmpty(t *testing.T) {
 	}
 }
 
-// TestMockShapedResponseSkipsAnUnparsableCandidateAndUsesTheNextOne proves
-// jsonObjectCandidates' brace scanner is purely syntactic (unlike
-// firstJSONObject, it is not string/escape aware), so a balanced-but-invalid
-// JSON run is skipped rather than aborting the whole search -- a later,
-// well-formed candidate is still used.
+// TestMockShapedResponseSkipsAnUnparsableCandidateAndUsesTheNextOne proves a
+// balanced-but-invalid JSON run is skipped rather than aborting the whole
+// search -- a later, well-formed candidate is still used.
 func TestMockShapedResponseSkipsAnUnparsableCandidateAndUsesTheNextOne(t *testing.T) {
 	system := `Example shape: {not valid json at all} ` +
 		`Return a JSON object with: {"verdict": "...", "confidence": 0.0}`
@@ -626,6 +624,42 @@ func TestMockShapedResponseSkipsAnUnparsableCandidateAndUsesTheNextOne(t *testin
 	}
 	if _, present := decoded["verdict"]; !present {
 		t.Errorf("decoded = %v, want the verdict template's shape", decoded)
+	}
+}
+
+// Candidates are found by the same string-aware scanner as firstJSONObject: a
+// brace inside a quoted example does not end an object early, which it did when
+// they had a scanner each.
+func TestJSONObjectCandidatesAreStringAware(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want []string // last first
+	}{
+		{"none", "no braces at all", nil},
+		{"one", `x {"a": 1} y`, []string{`{"a": 1}`}},
+		{"two, last first", `{"a": 1} then {"b": 2}`, []string{`{"b": 2}`, `{"a": 1}`}},
+		{"a closing brace inside a string", `Example {"a": "}"} then {"b": 2}`, []string{`{"b": 2}`, `{"a": "}"}`}},
+		{"an opening brace inside a string", `{"a": "{"} {"b": 2}`, []string{`{"b": 2}`, `{"a": "{"}`}},
+		{"an escaped quote", `{"a": "say \"}\" now"} {"b": 2}`, []string{`{"b": 2}`, `{"a": "say \"}\" now"}`}},
+		{"nested", `{"a": {"b": {"c": 1}}} {"d": 2}`, []string{`{"d": 2}`, `{"a": {"b": {"c": 1}}}`}},
+		{"unbalanced stops the search", `{"a": 1} {"b": `, []string{`{"a": 1}`}},
+		{"an array is not an object", `[1, 2] {"a": 1}`, []string{`{"a": 1}`}},
+		{"adjacent", `{"a": 1}{"b": 2}`, []string{`{"b": 2}`, `{"a": 1}`}},
+		{"empty object", `{}`, []string{`{}`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := jsonObjectCandidates(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("candidates = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("candidate %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -650,5 +684,70 @@ func TestMockShapedResponseUsesJSONSchemaOverTemplate(t *testing.T) {
 	}
 	if _, present := decoded["unrelated_template_field"]; present {
 		t.Errorf("decoded = %v, the template was used despite a JSONSchema being present", decoded)
+	}
+}
+
+// A declared schema is the shape of the answer, whatever the message carries.
+// When the message held a JSON array and the system prompt had no JSON
+// template, the stand-in answered with the first element of that array: a
+// guess that is right for an operation that asks for "one of these" in prose
+// and wrong for one that declares what it wants. Verify declares its answer and
+// takes content that can hold a list, and its example failed on it.
+func TestADeclaredSchemaIsAnsweredWhateverTheMessageHolds(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{"type": "string"},
+			"score":   map[string]any{"type": "number"},
+			"issues":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		},
+		"required":             []any{"summary", "score", "issues"},
+		"additionalProperties": false,
+	}
+	messages := []struct {
+		name, user string
+	}{
+		{"no JSON", "Review this content:\n\nplain words"},
+		{"an object holding a list", `Review this content:` + "\n\n" + `{"name":"x","claims":[{"id":"A-1","text":"s"}],"reference":{"a":1}}`},
+		{"a bare list of objects", `Items:` + "\n" + `[{"id":"A-1"},{"id":"A-2"}]`},
+		{"a list of strings", `Items:` + "\n" + `["a","b"]`},
+		{"a list at the end of prose", `Compare ["a","b"] with the rest`},
+		{"two lists", `[1,2] and then [{"k":"v"}]`},
+		{"a nested list", `{"outer":{"inner":[{"deep":true}]}}`},
+		{"an empty list", `Items: []`},
+		{"numbered lines", "Items:\n0: \"a\"\n1: [\"b\"]"},
+		{"a list of lists", `[[1,2],[3,4]]`},
+	}
+	for _, message := range messages {
+		t.Run(message.name, func(t *testing.T) {
+			answer := mockShapedResponse(CompletionRequest{
+				SystemPrompt:   "You review content and report what you find. Return one JSON object.",
+				UserPrompt:     message.user,
+				ResponseFormat: "json",
+				JSONSchema:     schema,
+				SchemaName:     "review",
+			})
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(answer), &decoded); err != nil {
+				t.Fatalf("the answer is not a JSON object: %v\n%s", err, answer)
+			}
+			for _, field := range []string{"summary", "score", "issues"} {
+				if _, present := decoded[field]; !present {
+					t.Errorf("the answer has no %q, so it is not in the declared shape: %s", field, answer)
+				}
+			}
+			if len(decoded) != 3 {
+				t.Errorf("the answer has fields the schema does not declare: %s", answer)
+			}
+		})
+	}
+
+	// With no schema the guess stands: one of the items is the best answer the
+	// stand-in has for a prompt that declares nothing.
+	guess := mockShapedResponse(CompletionRequest{
+		SystemPrompt: "Choose one of the items.", UserPrompt: `Items:` + "\n" + `[{"id":"A-1"},{"id":"A-2"}]`, ResponseFormat: "json",
+	})
+	if guess != `{"id":"A-1"}` {
+		t.Errorf("with no schema the stand-in answered %s, want the first item", guess)
 	}
 }

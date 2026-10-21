@@ -86,11 +86,13 @@ SELF = os.path.normpath("scripts/secret_scan.py").replace(os.sep, "/")
 
 def tracked_files():
     out = subprocess.run(
-        ["git", "ls-files"], capture_output=True, text=True, check=True
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True, text=True, check=True
     ).stdout
     for line in out.splitlines():
         path = line.strip()
         if not path or path == SELF:
+            continue
+        if not os.path.isfile(path):
             continue
         if any(path.startswith(skip) for skip in SKIP_DIRS):
             continue

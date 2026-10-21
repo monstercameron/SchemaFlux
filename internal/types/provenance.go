@@ -128,13 +128,12 @@ const Version = "v1.1.0"
 // reproducing the output's shape one layer down.
 func NewResultID() string {
 	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// crypto/rand failing means the platform itself is broken. A silent
-		// zero-value ID would collide with every other zero-value ID this
-		// call ever produces; naming the failure in the ID itself is worse
-		// for readability but does not pretend nothing happened.
-		return "unavailable-" + err.Error()
-	}
+	// crypto/rand.Read cannot fail on the Go versions this module builds with
+	// (1.24 and later): a system without randomness ends the program instead of
+	// returning an error. The branch that used to return the error's text as the
+	// ID is gone with the error: that text was the same for every failure, so it
+	// collided with every other one and FullyTraced counted it as present.
+	_, _ = rand.Read(buf[:])
 	return hex.EncodeToString(buf[:])
 }
 

@@ -108,53 +108,6 @@ func TestRuneLen(t *testing.T) {
 	}
 }
 
-// runeSlice reports a bad range rather than panicking or clamping, because the
-// offsets it is given come from a model.
-func TestRuneSlice(t *testing.T) {
-	cases := []struct {
-		name    string
-		text    string
-		start   int
-		end     int
-		want    string
-		wantErr bool
-	}{
-		{"whole", "Montréal", 0, 8, "Montréal", false},
-		{"across_a_multibyte_rune", "Montréal", 4, 7, "réa", false},
-		{"single_multibyte_rune", "Montréal", 5, 6, "é", false},
-		{"empty_range", "Montréal", 3, 3, "", false},
-		{"japanese_middle", japanese, 1, 4, "京都渋", false},
-		{"emoji", "ab📦cd", 2, 3, "📦", false},
-		{"negative_start", "abc", -1, 2, "", true},
-		{"negative_end", "abc", 0, -1, "", true},
-		{"inverted", "abc", 2, 1, "", true},
-		{"past_the_end", "Montréal", 0, 99, "", true},
-		{"past_the_end_by_one", "Montréal", 0, 9, "", true},
-		{"byte_length_would_have_passed", "Montréal", 0, 9, "", true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := runeSlice(tc.text, tc.start, tc.end)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("runeSlice(%q, %d, %d) = %q, want an error", tc.text, tc.start, tc.end, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("runeSlice: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("runeSlice(%q, %d, %d) = %q, want %q", tc.text, tc.start, tc.end, got, tc.want)
-			}
-			if !utf8.ValidString(got) {
-				t.Errorf("produced invalid UTF-8: %q", got)
-			}
-		})
-	}
-}
-
 // truncateAtWord keeps the prefix and cuts on a space where it can.
 func TestTruncateAtWord(t *testing.T) {
 	cases := []struct {

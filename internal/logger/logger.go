@@ -1,23 +1,31 @@
 package logger
 
 import (
-	"github.com/monstercameron/schemaflux/internal/config"
-	telemetry "github.com/monstercameron/schemaflux/internal/telemetry"
+	telemetry "github.com/monstercameron/schemaflux/v2/internal/telemetry"
 )
 
+// The logger types and levels are those of internal/telemetry, which this
+// package re-exports for the operations that log through it.
 type (
-	Logger       = telemetry.Logger
-	LogEntry     = telemetry.LogEntry
+	// Logger is telemetry.Logger.
+	Logger = telemetry.Logger
+
+	// LogEntry is telemetry.LogEntry.
+	LogEntry = telemetry.LogEntry
+
+	// LoggerConfig is telemetry.LoggerConfig.
 	LoggerConfig = telemetry.LoggerConfig
-	LogLevel     = telemetry.LogLevel
+
+	// LogLevel is telemetry.LogLevel.
+	LogLevel = telemetry.LogLevel
 )
 
+// The log levels, from telemetry.
 const (
 	DebugLevel = telemetry.DebugLevel
 	InfoLevel  = telemetry.InfoLevel
 	WarnLevel  = telemetry.WarnLevel
 	ErrorLevel = telemetry.ErrorLevel
-	FatalLevel = telemetry.FatalLevel
 )
 
 // GetLogger returns the global structured logger instance.
@@ -38,14 +46,4 @@ func ConfigureLogger(cfg LoggerConfig) *Logger {
 // DefaultLoggerConfig returns logger configuration from the environment.
 func DefaultLoggerConfig() LoggerConfig {
 	return telemetry.DefaultLoggerConfig()
-}
-
-// GetDebugMode returns whether debug mode is enabled.
-func GetDebugMode() bool {
-	return config.GetDebugMode()
-}
-
-// IsMetricsEnabled returns whether metrics collection is enabled.
-func IsMetricsEnabled() bool {
-	return config.IsMetricsEnabled()
 }

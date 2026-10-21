@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // P-007. A non-200 was a fmt.Errorf with the raw body pasted in, so a caller
@@ -204,10 +205,17 @@ func TestTheErrorNamesTheRequest(t *testing.T) {
 		`{"message":"Model does not exist","type":"not_found_error","param":"model"}`)
 
 	message := err.Error()
-	for _, want := range []string{"cerebras", "404", "gemma-4-31b", "not_found_error", "model", "Model does not exist"} {
+	for _, want := range []string{"cerebras", "404", "gemma-4-31b", "not_found_error", "model"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the error does not mention %q: %s", want, message)
 		}
+	}
+	// The vendor's sentence is in Detail() and not in the text.
+	if strings.Contains(message, "Model does not exist") {
+		t.Errorf("the vendor's message is in the error's text: %s", message)
+	}
+	if !strings.Contains(err.Detail(), "Model does not exist") {
+		t.Errorf("Detail() lost the vendor's message: %s", err.Detail())
 	}
 }
 
@@ -276,9 +284,63 @@ func TestBothTransportsProduceTypedErrors(t *testing.T) {
 			if apiErr.Model != "gemma-4-31b" {
 				t.Errorf("Model = %q; the error does not say which model was refused", apiErr.Model)
 			}
-			if !strings.Contains(err.Error(), "nesting depth") {
-				t.Errorf("the vendor's explanation was lost: %v", err)
+			if !strings.Contains(apiErr.Detail(), "nesting depth") {
+				t.Errorf("the vendor's explanation was lost: %v", apiErr.Detail())
+			}
+			if strings.Contains(err.Error(), "nesting depth") {
+				t.Errorf("the vendor's explanation is in the error's text: %v", err)
 			}
 		})
+	}
+}
+
+// The cut was made at a byte offset, so a message whose 400th byte fell inside a
+// multi-byte character ended in a broken sequence, which log pipelines and JSON
+// encoders replace or refuse. Lengths over text are counted in runes.
+func TestTruncatedMessageIsAlwaysValidUTF8(t *testing.T) {
+	cases := []struct {
+		name string
+		unit string
+	}{
+		{"two-byte letters", "é"},
+		{"three-byte letters", "你"},
+		{"four-byte emoji", "👍"},
+		{"mixed widths", "aé你👍"},
+		{"ascii", "x"},
+		{"combining accent", "é"},
+		{"arabic", "م"},
+		{"cyrillic", "ж"},
+	}
+	for _, tc := range cases {
+		// Shifting the start by one to four ASCII bytes moves the cut through every
+		// offset inside a character of the unit.
+		for shift := 0; shift < 4; shift++ {
+			t.Run(fmt.Sprintf("%s_shift_%d", tc.name, shift), func(t *testing.T) {
+				message := strings.Repeat("a", shift) + strings.Repeat(tc.unit, maxMessageLength) + "tail"
+				got := truncateMessage(message)
+				if !utf8.ValidString(got) {
+					t.Fatalf("truncateMessage produced invalid UTF-8: %q", got)
+				}
+				if !strings.HasSuffix(got, "… (truncated)") {
+					t.Errorf("truncation was silent: %q", got)
+				}
+				body := strings.TrimSuffix(got, "… (truncated)")
+				if utf8.RuneCountInString(body) > maxMessageLength {
+					t.Errorf("kept %d runes, want at most %d", utf8.RuneCountInString(body), maxMessageLength)
+				}
+			})
+		}
+	}
+}
+
+// A message that fits is returned as it is, and one that fits only in runes and
+// not in bytes is not cut at all.
+func TestMessageWithinTheLimitIsNotTruncated(t *testing.T) {
+	exact := strings.Repeat("你", maxMessageLength)
+	if got := truncateMessage(exact); got != exact {
+		t.Errorf("a message of exactly %d runes was cut", maxMessageLength)
+	}
+	if got := truncateMessage("  padded  "); got != "padded" {
+		t.Errorf("truncateMessage = %q, want the trimmed message", got)
 	}
 }

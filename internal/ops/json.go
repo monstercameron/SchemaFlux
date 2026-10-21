@@ -1,13 +1,13 @@
 package ops
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ParseJSON parses a JSON string into a target struct, handling common LLM output issues
@@ -38,79 +38,30 @@ func ParseJSON(input string, target any) error {
 	return nil
 }
 
-// ParseJSONStrict parses like ParseJSON and additionally requires that the body
-// answered the question asked: at least one of the target's JSON field names
-// must appear in the response.
-//
-// encoding/json ignores fields it does not recognise, so a well-formed object of
-// entirely the wrong shape unmarshals into a zero value and returns no error.
-// An operation that only called ParseJSON therefore reported success with every
-// field empty — a cluster operation returning no clusters, a verification
-// returning no verdict — and the caller had nothing to check.
-//
-// The rule is deliberately weak: one recognised field is enough. It catches the
-// answer that is about something else, without rejecting a model that omits an
-// optional field or adds one of its own.
-func ParseJSONStrict(input string, target any) error {
-	if err := ParseJSON(input, target); err != nil {
-		return err
-	}
-	return requireRecognisedField(input, target)
-}
+// jsonNames are the names of the members encoding/json reads into a struct, each
+// with the rule by which a key is matched to it.
+type jsonNames map[string]jsonCaseRule
 
-// requireRecognisedField reports an error when a JSON object shares no field
-// name with the target struct. It returns nil for targets that have no field
-// names to match — slices, maps, scalars — and for non-object bodies, which
-// ParseJSON has already accepted against a matching target.
-func requireRecognisedField(input string, target any) error {
-	expected := jsonFieldNames(reflect.TypeOf(target))
-	if len(expected) == 0 {
-		return nil
+// matches reports whether encoding/json would put the value of a key into one of
+// the members: a key that is a member's name as it is written is, and otherwise
+// a key that differs from a name only in case is, except for a member tagged
+// case:strict, which only its own spelling matches.
+func (names jsonNames) matches(key string) bool {
+	if _, written := names[key]; written {
+		return true
 	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(cleanJSON(input)), &raw); err != nil {
-		// Not an object: ParseJSON accepted it against this target, so the
-		// shapes already agree.
-		return nil
-	}
-
-	for key := range raw {
-		if _, ok := expected[strings.ToLower(key)]; ok {
-			return nil
+	for name, rule := range names {
+		if rule != jsonCaseStrict && strings.EqualFold(name, key) {
+			return true
 		}
 	}
-
-	want := make([]string, 0, len(expected))
-	for name := range expected {
-		want = append(want, name)
-	}
-	sort.Strings(want)
-
-	if len(raw) == 0 {
-		return &types.OperationError{
-			Kind:    types.KindSchemaViolation,
-			Message: fmt.Sprintf("the response was an empty object, which answers nothing (wanted one of %v)", want),
-		}
-	}
-
-	present := make([]string, 0, len(raw))
-	for key := range raw {
-		present = append(present, key)
-	}
-	sort.Strings(present)
-
-	// Field names, not values: the keys describe the shape, not the payload.
-	return &types.OperationError{
-		Kind:    types.KindSchemaViolation,
-		Message: fmt.Sprintf("the response carried none of the expected fields; it has %v, wanted one of %v", present, want),
-	}
+	return false
 }
 
-// jsonFieldNames returns the lower-cased JSON names of a struct's exported
-// fields, following embedded structs. It returns nil for anything that is not a
-// struct.
-func jsonFieldNames(targetType reflect.Type) map[string]struct{} {
+// jsonKeyNames returns the names of the members encoding/json reads into a
+// struct (jsonMembers), as they are written, each with its rule of case. It
+// returns nil for anything that is not a struct.
+func jsonKeyNames(targetType reflect.Type) jsonNames {
 	for targetType != nil && (targetType.Kind() == reflect.Ptr || targetType.Kind() == reflect.Interface) {
 		if targetType.Kind() == reflect.Interface {
 			return nil
@@ -121,50 +72,12 @@ func jsonFieldNames(targetType reflect.Type) map[string]struct{} {
 		return nil
 	}
 
-	names := map[string]struct{}{}
-	var collect func(reflect.Type, int)
-	collect = func(structType reflect.Type, depth int) {
-		if depth > 3 {
-			return
-		}
-		for i := 0; i < structType.NumField(); i++ {
-			field := structType.Field(i)
-
-			// An embedded struct promotes its exported fields even when the
-			// embedded type itself is unexported, so the Anonymous case has to
-			// be handled before the IsExported gate.
-			tag := field.Tag.Get("json")
-			if field.Anonymous && tag == "" {
-				embedded := field.Type
-				if embedded.Kind() == reflect.Ptr {
-					embedded = embedded.Elem()
-				}
-				if embedded.Kind() == reflect.Struct {
-					collect(embedded, depth+1)
-					continue
-				}
-			}
-
-			if !field.IsExported() {
-				continue
-			}
-
-			name := field.Name
-			if tag != "" {
-				parts := strings.Split(tag, ",")
-				if parts[0] == "-" && len(parts) == 1 {
-					continue
-				}
-				if parts[0] != "" {
-					name = parts[0]
-				}
-			}
-
-			names[strings.ToLower(name)] = struct{}{}
+	names := jsonNames{}
+	for _, member := range jsonMembers(targetType) {
+		if answerMemberIsReadable(member) {
+			names[member.name] = parseJSONTagOptions(member.field.Tag.Get("json")).caseRule
 		}
 	}
-	collect(targetType, 0)
-
 	return names
 }
 
@@ -197,4 +110,22 @@ func describeShape(s string) string {
 // nothing else; see extractJSON in jsonextract.go for what it does now and why.
 func cleanJSON(input string) string {
 	return extractJSON(input)
+}
+
+// promptJSON writes a value as JSON for a prompt.
+//
+// It differs from json.Marshal in one way: "<", ">" and "&" are left as they
+// are. encoding/json escapes them so that JSON can be pasted into HTML, which a
+// prompt is not, and the escape cost both ways: "R&D" reached the model as six
+// characters of escape sequence, several tokens where one would do, and the
+// model was shown something other than what the caller wrote.
+func promptJSON(value any) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	// Encode ends its output with a newline.
+	return bytes.TrimSuffix(out.Bytes(), []byte("\n")), nil
 }

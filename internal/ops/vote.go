@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CF-002. Three samples agreeing on an invented figure is three samples wrong
@@ -48,9 +48,9 @@ type ReconcileOutcome[T any] struct {
 
 // Reconciler turns a set of samples into one winner, or an abstention.
 //
-// It receives every sample that succeeded, in no particular order beyond
-// "the order MapReduce's worker pool finished them" -- a reconciler that cares
-// about order should sort by its own key. An error return that is not the
+// It receives every sample that succeeded, in the order the samples were
+// started (MapReduce collects results by chunk index, not by when each finished)
+// -- a reconciler that cares about any other order should sort by its own key. An error return that is not the
 // review sentinel is a reconciler malfunction (a bug in the reconciler itself,
 // or a validator it called failing for its own reasons), and is propagated as
 // a plain error rather than folded into an abstention: those are different
@@ -119,8 +119,9 @@ type VoteRecord struct {
 // A sample failure does not abort the run -- ContinueOnError is set on the
 // underlying MapReduce call, because one bad sample (a transient timeout) is
 // not a reason to throw away the samples that already succeeded. All samples
-// failing is: there is nothing to reconcile, and Vote returns that as a plain
-// error rather than calling reconcile with an empty slice.
+// failing is: there is nothing to reconcile, and Vote returns that as an error
+// that holds the first sample's own, rather than calling reconcile with an empty
+// slice.
 //
 // Evidence and invariant checks that apply to a single answer are not
 // re-applied here. Vote's Step already ran whatever checks the operation it
@@ -130,19 +131,19 @@ func Vote[T any](ctx context.Context, samples int, step Step[T], reconcile Recon
 	var zero T
 
 	if step == nil {
-		return zero, VoteRecord{}, errors.New("vote: no step to sample")
+		return zero, VoteRecord{}, types.Classified(types.KindConfiguration, errors.New("vote: no step to sample"))
 	}
 	if reconcile == nil {
 		// No default reconciler on purpose: agreement is a policy, not
 		// something this package gets to decide silently on the caller's
 		// behalf.
-		return zero, VoteRecord{}, errors.New("vote: no reconciler; agreement is a policy the caller must supply")
+		return zero, VoteRecord{}, types.Classified(types.KindConfiguration, errors.New("vote: no reconciler; agreement is a policy the caller must supply"))
 	}
 	if samples <= 0 {
-		return zero, VoteRecord{}, fmt.Errorf("vote: %d is not a number of samples", samples)
+		return zero, VoteRecord{}, types.Classified(types.KindConfiguration, fmt.Errorf("vote: %d is not a number of samples", samples))
 	}
 	if err := ctx.Err(); err != nil {
-		return zero, VoteRecord{}, err
+		return zero, VoteRecord{}, contextEnded(err)
 	}
 
 	indices := make([]int, samples)
@@ -188,10 +189,17 @@ func Vote[T any](ctx context.Context, samples int, step Step[T], reconcile Recon
 		return zero, record, fmt.Errorf("vote: reconciler failed: %w", err)
 	}
 
-	record.Agree = outcome.Agree
-	if record.Succeeded > 0 {
-		record.AgreementRate = float64(outcome.Agree) / float64(record.Succeeded)
+	// Agree is the reconciler's count over the samples it was given. A count
+	// that is negative or larger than the number of samples is not a count of
+	// them, and would have been reported as an agreement rate above 1 or below
+	// 0 beside an answer that was not abstained from.
+	if outcome.Agree < 0 || outcome.Agree > record.Succeeded {
+		return zero, record, types.Classified(types.KindConfiguration,
+			fmt.Errorf("vote: the reconciler reported %d samples agreeing out of %d that succeeded",
+				outcome.Agree, record.Succeeded))
 	}
+	record.Agree = outcome.Agree
+	record.AgreementRate = float64(outcome.Agree) / float64(record.Succeeded)
 
 	if outcome.Abstain {
 		evidence := append([]string{
@@ -217,15 +225,20 @@ func Vote[T any](ctx context.Context, samples int, step Step[T], reconcile Recon
 
 // ExactAgreement is a ready Reconciler for comparable types: the largest group
 // of identical samples wins, and the vote abstains when that group's size is
-// below min.
+// below minimum, which has to be at least 1: a minimum of zero or less can never
+// abstain, so the reconciler returns an error for it instead.
 //
 // It is provided as the trivial pluggable case, not as a recommended default.
 // "Largest group wins" cannot tell a correct answer from a popular one, and
 // correlated models make correlated mistakes -- the exact failure mode CF-002
 // exists to name. Ties are broken by first occurrence in samples, which keeps
 // the result deterministic without needing samples to be orderable.
-func ExactAgreement[T comparable](min int) Reconciler[T] {
+func ExactAgreement[T comparable](minimum int) Reconciler[T] {
 	return func(_ context.Context, samples []T) (ReconcileOutcome[T], error) {
+		if minimum < 1 {
+			return ReconcileOutcome[T]{}, types.Classified(types.KindConfiguration,
+				fmt.Errorf("vote: ExactAgreement needs a minimum of at least 1, got %d", minimum))
+		}
 		counts := make(map[T]int, len(samples))
 		for _, sample := range samples {
 			counts[sample]++
@@ -241,11 +254,11 @@ func ExactAgreement[T comparable](min int) Reconciler[T] {
 		}
 
 		outcome := ReconcileOutcome[T]{Winner: winner, Agree: best}
-		if best < min {
+		if best < minimum {
 			outcome.Abstain = true
 			outcome.FailedChecks = []string{"agreement below minimum"}
 			outcome.SuggestedAction = fmt.Sprintf(
-				"no sample group reached the required agreement of %d; review manually", min)
+				"no sample group reached the required agreement of %d; review manually", minimum)
 		}
 		return outcome, nil
 	}

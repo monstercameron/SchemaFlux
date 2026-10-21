@@ -1,42 +1,31 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
-	"path/filepath"
+	"strings"
 
-	"github.com/joho/godotenv"
-	"github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
-func loadEnv() {
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
-			godotenv.Load(filepath.Join(dir, ".env"))
-			return
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+func main() {
+	if err := run(context.Background(), os.Stdout); err != nil {
+		log.Printf("critique example failed: %v", err)
+		os.Exit(1)
 	}
 }
 
-func main() {
-	loadEnv()
-	schemaflux.InitWithEnv()
-
-	fmt.Println("=== Critique Example ===")
-	fmt.Println("Provides structured feedback with scores and actionable suggestions")
-	fmt.Println()
+func run(ctx context.Context, out io.Writer) error {
+	var b strings.Builder
+	fmt.Fprintln(&b, "=== Critique Example ===")
+	fmt.Fprintln(&b, "Provides structured feedback with scores and actionable suggestions")
+	fmt.Fprintln(&b)
 
 	// Business Use Case: Executive presentation review
-	fmt.Println("--- Business Use Case: Executive Presentation Review ---")
+	fmt.Fprintln(&b, "--- Business Use Case: Executive Presentation Review ---")
 
 	type Presentation struct {
 		Title   string `json:"title"`
@@ -50,44 +39,39 @@ func main() {
 		Author:  "Sales Team",
 	}
 
-	fmt.Println("INPUT: Presentation struct")
-	fmt.Printf("  Title:   %q\n", presentation.Title)
-	fmt.Printf("  Content: %q\n", presentation.Content)
-	fmt.Printf("  Author:  %q\n\n", presentation.Author)
+	fmt.Fprintln(&b, "INPUT: Presentation struct")
+	fmt.Fprintf(&b, "  Title:   %q\n", presentation.Title)
+	fmt.Fprintf(&b, "  Content: %q\n", presentation.Content)
+	fmt.Fprintf(&b, "  Author:  %q\n\n", presentation.Author)
 
-	opts := ops.NewCritiqueOptions().
-		WithCriteria([]string{"professionalism", "specificity", "impact"}).
-		WithIncludeSuggestions(true).
-		WithIncludeFixes(true).
-		WithStyle("constructive").
-		WithIntelligence(types.Smart)
-
-	// CritiqueWithModel, not Critique: the name says the review is a model's
-	// opinion rather than a check the library decided.
-	result, err := ops.CritiqueWithModel(presentation, opts)
+	// Critique reports the model's opinion; the library works the verdict out from its issues.
+	result, err := schemaflux.Critique(ctx, presentation, []string{"professionalism", "specificity", "impact"}, schemaflux.CritiqueOptions{
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+		Style:   "constructive",
+	})
 	if err != nil {
-		log.Fatalf("Critique failed: %v", err)
+		return fmt.Errorf("review the presentation failed; check the request and provider configuration: %w", err)
 	}
 
-	fmt.Println("OUTPUT: JudgmentResult")
-	fmt.Printf("  Verdict: %s\n", result.Verdict)
-	fmt.Println("  Issues:")
+	fmt.Fprintln(&b, "OUTPUT: CritiqueResult")
+	fmt.Fprintf(&b, "  Verdict: %s\n", result.Verdict)
+	fmt.Fprintln(&b, "  Issues:")
 	for i, issue := range result.Issues {
-		fmt.Printf("    %d. [%s/%s] %s\n", i+1, issue.Category, issue.Severity, issue.Message)
+		fmt.Fprintf(&b, "    %d. [%s/%s] %s\n", i+1, issue.Category, issue.Severity, issue.Message)
 		if issue.Suggestion != "" {
-			fmt.Printf("       Suggestion: %s\n", issue.Suggestion)
+			fmt.Fprintf(&b, "       Suggestion: %s\n", issue.Suggestion)
 		}
 	}
-	fmt.Printf("  Summary: %q\n", result.Summary)
-	// The model's scores are claims and live apart from the verdict.
-	fmt.Printf("  Model-claimed confidence: %.2f\n", result.ModelConfidence)
-	if scores, ok := result.ModelClaims["criteria_scores"]; ok {
-		fmt.Printf("  Model-claimed criteria scores: %v\n", scores)
+	fmt.Fprintf(&b, "  Summary: %q\n", result.Summary)
+	// The model's scores are claims and stay separate from the verdict.
+	fmt.Fprintf(&b, "  Model-claimed confidence: %.2f\n", result.ModelConfidence)
+	if len(result.CriteriaScores) > 0 {
+		fmt.Fprintf(&b, "  Model-claimed criteria scores: %v\n", result.CriteriaScores)
 	}
-	fmt.Println()
+	fmt.Fprintln(&b)
 
 	// Business Use Case: Code review
-	fmt.Println("--- Business Use Case: Automated Code Review ---")
+	fmt.Fprintln(&b, "--- Business Use Case: Automated Code Review ---")
 
 	code := `func processData(data []string) {
     for i := 0; i < len(data); i++ {
@@ -99,32 +83,35 @@ func main() {
     }
 }`
 
-	fmt.Println("INPUT: string (Go code)")
-	fmt.Printf("  %s\n\n", code)
+	fmt.Fprintln(&b, "INPUT: string (Go code)")
+	fmt.Fprintf(&b, "  %s\n\n", code)
 
-	codeOpts := ops.NewCritiqueOptions().
-		WithDomain("software").
-		WithRubric(map[string]string{
+	codeResult, err := schemaflux.Critique(ctx, code, nil, schemaflux.CritiqueOptions{
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+		Domain:  "software",
+		Rubric: map[string]string{
 			"readability":    "Is the code easy to understand?",
 			"best_practices": "Does it follow Go idioms?",
-		}).
-		WithIncludeFixes(true).
-		WithIntelligence(types.Smart)
-
-	codeResult, err := ops.CritiqueWithModel(code, codeOpts)
+		},
+	})
 	if err != nil {
-		log.Fatalf("Code critique failed: %v", err)
+		return fmt.Errorf("review the code failed; check the request and provider configuration: %w", err)
 	}
 
-	fmt.Println("OUTPUT: JudgmentResult")
-	fmt.Printf("  Verdict: %s\n", codeResult.Verdict)
-	fmt.Println("  Issues:")
+	fmt.Fprintln(&b, "OUTPUT: CritiqueResult")
+	fmt.Fprintf(&b, "  Verdict: %s\n", codeResult.Verdict)
+	fmt.Fprintln(&b, "  Issues:")
 	for i, issue := range codeResult.Issues {
-		fmt.Printf("    %d. [%s/%s] %s\n", i+1, issue.Category, issue.Severity, issue.Message)
+		fmt.Fprintf(&b, "    %d. [%s/%s] %s\n", i+1, issue.Category, issue.Severity, issue.Message)
 		if issue.Suggestion != "" {
-			fmt.Printf("       Suggestion: %s\n", issue.Suggestion)
+			fmt.Fprintf(&b, "       Suggestion: %s\n", issue.Suggestion)
 		}
 	}
 
-	fmt.Println("\n=== Critique Example Complete ===")
+	fmt.Fprintln(&b, "\n=== Critique Example Complete ===")
+	_, err = io.WriteString(out, b.String())
+	if err != nil {
+		return fmt.Errorf("write example output: %w", err)
+	}
+	return nil
 }

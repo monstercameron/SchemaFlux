@@ -2,15 +2,12 @@ package ops
 
 import (
 	"context"
-	"sync"
 	"testing"
-	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// PL-010's own verify line: "a two-stage extract-then-verify plan sends the
+// The verify line of a staged plan: "a two-stage extract-then-verify plan sends the
 // source once; a case where the deterministic check suffices makes ONE
 // provider call, not two." This file is that proof, plus the rest of the
 // task's reuse and concurrency clauses -- everything stagedplan_test.go's
@@ -58,7 +55,7 @@ func TestRunStagedPlan_DeterministicCheckSkipsSecondProviderCall(t *testing.T) {
 	if got := provider.callCount(); got != 1 {
 		t.Fatalf("provider called %d times, want exactly 1 (extract only; verify's deterministic check should have skipped its model call)", got)
 	}
-	if !result.Steps[1][0].Skipped {
+	if !result.Stages[1].Skipped {
 		t.Fatal("verify stage's StageOutcome.Skipped = false, want true")
 	}
 	if result.Value.Name != "Alice" || !result.Value.Verified {
@@ -83,7 +80,7 @@ func TestRunStagedPlan_NoDeterministicCheckCallsBothStages(t *testing.T) {
 	if got := provider.callCount(); got != 2 {
 		t.Fatalf("provider called %d times, want exactly 2 (no check registered, so verify must call its model)", got)
 	}
-	if result.Steps[1][0].Skipped {
+	if result.Stages[1].Skipped {
 		t.Fatal("verify stage's StageOutcome.Skipped = true with no DeterministicCheck registered")
 	}
 }
@@ -108,7 +105,7 @@ func TestRunStagedPlan_InsufficientCheckLevelFallsThroughToModel(t *testing.T) {
 	if got := provider.callCount(); got != 2 {
 		t.Fatalf("provider called %d times, want exactly 2 (check level too low to skip)", got)
 	}
-	if result.Steps[1][0].Skipped {
+	if result.Stages[1].Skipped {
 		t.Fatal("Skipped = true despite the check reporting a level below RequiredContract")
 	}
 }
@@ -128,7 +125,7 @@ func TestRunStagedPlan_InapplicableCheckFallsThroughToModel(t *testing.T) {
 	if got := provider.callCount(); got != 2 {
 		t.Fatalf("provider called %d times, want exactly 2 (check could not decide)", got)
 	}
-	if result.Steps[1][0].Skipped {
+	if result.Stages[1].Skipped {
 		t.Fatal("Skipped = true despite the check reporting ok=false")
 	}
 }
@@ -148,7 +145,7 @@ func TestRunStagedPlan_SkippedStageHasZeroMetaButRealLineage(t *testing.T) {
 		t.Fatalf("RunStagedPlan: %v", err)
 	}
 
-	verify := result.Steps[1][0]
+	verify := result.Stages[1]
 	if verify.Meta.Attempts != 0 {
 		t.Fatalf("skipped stage Meta.Attempts = %d, want 0", verify.Meta.Attempts)
 	}
@@ -158,7 +155,7 @@ func TestRunStagedPlan_SkippedStageHasZeroMetaButRealLineage(t *testing.T) {
 	if verify.Provenance.ResultID == "" {
 		t.Fatal("skipped stage produced no ResultID")
 	}
-	extractID := result.Steps[0][0].Provenance.ResultID
+	extractID := result.Stages[0].Provenance.ResultID
 	if len(verify.Provenance.ParentResultIDs) != 1 || verify.Provenance.ParentResultIDs[0] != extractID {
 		t.Fatalf("skipped stage ParentResultIDs = %v, want [%s]", verify.Provenance.ParentResultIDs, extractID)
 	}
@@ -197,9 +194,9 @@ func TestRunStagedPlan_ReusesSameOpOptionsAcrossStages(t *testing.T) {
 	}
 	plan := StagedPlan[testDatum]{
 		ID: types.OperationID{Name: "reuse"},
-		Steps: []PlanStep[testDatum]{
-			{Stages: []Stage[testDatum]{{Op: extractOp}}},
-			{Stages: []Stage[testDatum]{{Op: verifyOp}}},
+		Stages: []Stage[testDatum]{
+			{Op: extractOp},
+			{Op: verifyOp},
 		},
 	}
 
@@ -217,109 +214,5 @@ func TestRunStagedPlan_ReusesSameOpOptionsAcrossStages(t *testing.T) {
 	}
 	if verifySeen.SchemaID != opt.SchemaID || verifySeen.CacheIdentity != opt.CacheIdentity || verifySeen.Model != opt.Model {
 		t.Fatalf("verify stage saw a rebuilt OpOptions: %+v", verifySeen)
-	}
-}
-
-// 7. Concurrent stages in a group, submitted through the SAME *Scheduler,
-// are bounded by ONE shared admission budget -- MaxConcurrent: 1 serializes
-// them deterministically (Scheduler.Submit only admits the second stage
-// after the first's run releases its slot; there is no timing involved).
-func TestRunStagedPlan_SchedulerBoundsGroupConcurrencyUnderOneBudget(t *testing.T) {
-	checkA := Op[testDatum, testDatum]{
-		ID:          types.OperationID{Name: "check-a"},
-		Contract:    OutputContract[testDatum]{SchemaName: "testDatum", Decode: decodeTestDatum},
-		BuildPrompt: func(input testDatum, opt types.OpOptions) (string, string) { return "a", input.Name },
-	}
-	checkB := Op[testDatum, testDatum]{
-		ID:          types.OperationID{Name: "check-b"},
-		Contract:    OutputContract[testDatum]{SchemaName: "testDatum", Decode: decodeTestDatum},
-		BuildPrompt: func(input testDatum, opt types.OpOptions) (string, string) { return "b", input.Name },
-	}
-
-	provider := &stagedFakeProvider{
-		sleep:   20 * time.Millisecond,
-		respond: func(call int, req llm.CompletionRequest) string { return `{"name":"bounded"}` },
-	}
-	ctx := WithProvider(context.Background(), provider)
-
-	sched := NewScheduler(SchedulerLimits{MaxConcurrent: 1})
-	t.Cleanup(func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = sched.Close(closeCtx)
-	})
-
-	plan := StagedPlan[testDatum]{
-		ID:        types.OperationID{Name: "bounded-group"},
-		Scheduler: sched,
-		Steps: []PlanStep[testDatum]{
-			{Stages: []Stage[testDatum]{{Op: checkA}, {Op: checkB}}},
-		},
-	}
-
-	if _, err := RunStagedPlan(ctx, plan, testDatum{Name: "seed"}, types.OpOptions{Model: "test-model"}); err != nil {
-		t.Fatalf("RunStagedPlan: %v", err)
-	}
-
-	provider.mu.Lock()
-	maxConc := provider.maxConc
-	calls := provider.calls
-	provider.mu.Unlock()
-
-	if calls != 2 {
-		t.Fatalf("provider called %d times, want 2 (both stages must still run)", calls)
-	}
-	if maxConc != 1 {
-		t.Fatalf("observed max concurrency %d, want 1: one Scheduler with MaxConcurrent:1 must serialize the whole group under one budget", maxConc)
-	}
-}
-
-// 8. Without a Scheduler, the same group's two stages genuinely run at the
-// same time -- proved deterministically with a barrier that only releases
-// once BOTH stages' Complete calls have started, rather than by timing.
-// This is the contrast case for test 7: it shows the plan's default
-// behavior really is concurrent, so test 7's MaxConcurrent:1 result is the
-// Scheduler doing something, not the plan being sequential all along.
-func TestRunStagedPlan_GroupIsConcurrentWithoutAScheduler(t *testing.T) {
-	var barrier sync.WaitGroup
-	barrier.Add(2)
-
-	checkA := Op[testDatum, testDatum]{
-		ID:          types.OperationID{Name: "check-a"},
-		Contract:    OutputContract[testDatum]{SchemaName: "testDatum", Decode: decodeTestDatum},
-		BuildPrompt: func(input testDatum, opt types.OpOptions) (string, string) { return "a", input.Name },
-	}
-	checkB := Op[testDatum, testDatum]{
-		ID:          types.OperationID{Name: "check-b"},
-		Contract:    OutputContract[testDatum]{SchemaName: "testDatum", Decode: decodeTestDatum},
-		BuildPrompt: func(input testDatum, opt types.OpOptions) (string, string) { return "b", input.Name },
-	}
-
-	provider := &stagedFakeProvider{
-		barrier: &barrier,
-		respond: func(call int, req llm.CompletionRequest) string { return `{"name":"concurrent"}` },
-	}
-	ctx := WithProvider(context.Background(), provider)
-
-	plan := StagedPlan[testDatum]{
-		ID: types.OperationID{Name: "unbounded-group"}, // no Scheduler
-		Steps: []PlanStep[testDatum]{
-			{Stages: []Stage[testDatum]{{Op: checkA}, {Op: checkB}}},
-		},
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := RunStagedPlan(ctx, plan, testDatum{Name: "seed"}, types.OpOptions{Model: "test-model"})
-		done <- err
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("RunStagedPlan: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("group did not run concurrently: the barrier (which needs both stages in flight at once) never released")
 	}
 }

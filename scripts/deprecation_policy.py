@@ -127,12 +127,12 @@ def find_marker(name: str, replacement: str, source_text: str) -> bool:
 
 def tracked_go_files() -> list[str]:
     out = subprocess.run(
-        ["git", "ls-files", "*.go"], capture_output=True, text=True, check=True, cwd=ROOT
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.go"], capture_output=True, text=True, check=True, cwd=ROOT
     ).stdout
     files = []
     for line in out.splitlines():
         path = line.strip()
-        if not path or path.endswith("_test.go"):
+        if not path or path.endswith("_test.go") or not (ROOT / path).is_file():
             continue
         if any(path.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
             continue

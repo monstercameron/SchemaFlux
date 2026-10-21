@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 FLOOR_FILE = ".audit/coverage_floor.txt"
 
@@ -27,8 +28,15 @@ FLOOR_FILE = ".audit/coverage_floor.txt"
 # demonstrate it.
 PACKAGES = [
     "./",
+    "./chat/...",
+    "./exp/...",
+    "./flow/...",
     "./internal/...",
+    "./op/...",
     "./pricing/...",
+    "./provider/...",
+    "./redact/...",
+    "./requestid/...",
     "./telemetry/...",
     "./schemafluxtest/...",
     "./mw/...",
@@ -57,19 +65,22 @@ def measure():
     handle, profile = tempfile.mkstemp(prefix="schemaflux_coverage", suffix=".out")
     os.close(handle)
 
-    result = subprocess.run(
-        # -coverpkg is what keeps this number meaningful after the black-box
-        # tests moved to ./tests/. Without it, `go test` credits coverage only
-        # to the package under test, so 29 test files exercising the library
-        # from an external package would have counted for nothing and the floor
-        # would have collapsed for a reason that had nothing to do with the
-        # tests. With it, coverage measures the library's statements regardless
-        # of which package's tests reached them, which is the question the floor
-        # was always asking.
+    command = (
+        # -coverpkg measures the library's statements even when a test in
+        # another package exercises them.
         ["go", "test", "-coverpkg=" + ",".join(PACKAGES),
-         "-coverprofile=" + profile] + PACKAGES + ["./tests/..."],
-        capture_output=True, text=True,
+         "-coverprofile=" + profile] + PACKAGES + ["./tests/..."]
     )
+    result = subprocess.run(
+        command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    # Windows antivirus can briefly hold a Go test executable after it exits.
+    # Retry only that cleanup failure; a test failure must still fail the gate.
+    if result.returncode and "go: unlinkat " in result.stderr and "Access is denied" in result.stderr:
+        time.sleep(2)
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
     if result.returncode != 0:
         print("the test run failed, so coverage was not measured:\n")
         print(result.stdout[-4000:])

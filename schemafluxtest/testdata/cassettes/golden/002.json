@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "provider": "golden",
+  "request": {
+    "model": "gold-1",
+    "user": "again"
+  },
+  "failure": {
+    "kind": "rate limited",
+    "status": 429,
+    "retry_after": "1.5s"
+  }
+}

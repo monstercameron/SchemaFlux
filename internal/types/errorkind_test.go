@@ -3,6 +3,7 @@ package types
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,24 @@ func TestErrorKindDispositions(t *testing.T) {
 		// Unclassified is none of the three, deliberately: treating it as
 		// retryable or as terminal would both be guesses.
 		{KindUnknown, false, false, false},
+
+		// These two have no disposition yet. A request that does not fit the
+		// context will not fit it again, and a scheduler refusal may clear when
+		// load does, so neither is obviously one of the three; the owner has not
+		// said which, and the test records the gap rather than a guess.
+		{KindContextTooLarge, false, false, false},
+		{KindAdmissionRejected, false, false, false},
+	}
+
+	// Every kind is in the table, so a kind added later is considered here.
+	listed := map[ErrorKind]bool{}
+	for _, tc := range cases {
+		listed[tc.kind] = true
+	}
+	for kind := KindUnknown; kind <= lastKind; kind++ {
+		if !listed[kind] {
+			t.Errorf("kind %v is not in the disposition table", kind)
+		}
 	}
 
 	for _, tc := range cases {
@@ -101,9 +120,14 @@ func TestErrorsIsReachesTheSentinel(t *testing.T) {
 			t.Errorf("the sentinel does not survive wrapping for %v", pair.kind)
 		}
 
-		// And it must not match a different kind's sentinel.
-		if errors.Is(err, ErrAuthentication) && pair.kind != KindAuthentication {
-			t.Errorf("%v matched the authentication sentinel", pair.kind)
+		// And it must not match any other kind's sentinel, wrapped or not.
+		for _, other := range everyKind() {
+			if other == pair.kind {
+				continue
+			}
+			if errors.Is(err, sentinelFor(other)) || errors.Is(wrapped, sentinelFor(other)) {
+				t.Errorf("%v matched the sentinel of %v", pair.kind, other)
+			}
 		}
 	}
 }
@@ -133,14 +157,14 @@ func TestTheMessageIsSanitized(t *testing.T) {
 		t.Fatal("no message")
 	}
 	for _, forbidden := range []string{"SSN", "@example.com", "4111"} {
-		if contains(err.Error(), forbidden) {
+		if strings.Contains(err.Error(), forbidden) {
 			t.Errorf("the message carries a payload fragment: %s", err.Error())
 		}
 	}
-	if !contains(err.Error(), "extract") {
+	if !strings.Contains(err.Error(), "extract") {
 		t.Error("the message does not name the operation")
 	}
-	if !contains(err.Error(), "schema violation") {
+	if !strings.Contains(err.Error(), "schema violation") {
 		t.Error("the message does not name the kind")
 	}
 }
@@ -149,12 +173,12 @@ func TestTheMessageIsSanitized(t *testing.T) {
 // callers do, and a timeout after the request was sent may have been served.
 func TestAmbiguityIsStated(t *testing.T) {
 	err := &OperationError{Kind: KindTimeout, Op: "extract", Ambiguous: true}
-	if !contains(err.Error(), "may have been served") {
+	if !strings.Contains(err.Error(), "may have been served") {
 		t.Errorf("an ambiguous timeout does not say so: %s", err.Error())
 	}
 
 	clear := &OperationError{Kind: KindTimeout, Op: "extract"}
-	if contains(clear.Error(), "may have been served") {
+	if strings.Contains(clear.Error(), "may have been served") {
 		t.Errorf("an unambiguous failure claims ambiguity: %s", clear.Error())
 	}
 }
@@ -162,7 +186,7 @@ func TestAmbiguityIsStated(t *testing.T) {
 // Every kind names itself, so a log line is readable and a metric label is
 // stable.
 func TestEveryKindHasAName(t *testing.T) {
-	for kind := KindUnknown; kind <= KindReviewRequired; kind++ {
+	for kind := KindUnknown; kind <= lastKind; kind++ {
 		name := kind.String()
 		if name == "" {
 			t.Errorf("kind %d has no name", kind)
@@ -171,15 +195,4 @@ func TestEveryKindHasAName(t *testing.T) {
 			t.Errorf("kind %d falls through to \"unknown\"", kind)
 		}
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && func() bool {
-		for i := 0; i+len(needle) <= len(haystack); i++ {
-			if haystack[i:i+len(needle)] == needle {
-				return true
-			}
-		}
-		return false
-	}()
 }

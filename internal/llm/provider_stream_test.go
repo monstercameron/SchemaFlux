@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // sseFrame renders one SSE "data:" frame from a JSON-able value. Real SSE
@@ -41,7 +41,8 @@ func sseServer(t *testing.T, write func(w http.ResponseWriter, r *http.Request, 
 		}
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			t.Fatal("ResponseRecorder must support flushing for a real SSE test")
+			t.Error("ResponseRecorder must support flushing for a real SSE test")
+			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -188,9 +189,14 @@ func TestOpenAIStreamMidStreamErrorEventIsAnError(t *testing.T) {
 	server := sseServer(t, func(w http.ResponseWriter, r *http.Request, f http.Flusher) {
 		_, _ = w.Write([]byte(sseFrame(t, deltaFrame("partial answer"))))
 		f.Flush()
+		// The Responses API nests the failure in the response, not at the top
+		// level of the event.
 		_, _ = w.Write([]byte(sseFrame(t, map[string]any{
-			"type":  "response.failed",
-			"error": map[string]any{"message": "the model provider had an internal error", "type": "server_error"},
+			"type": "response.failed",
+			"response": map[string]any{
+				"id": "resp_1", "status": "failed",
+				"error": map[string]any{"code": "server_error", "message": "the model provider had an internal error"},
+			},
 		})))
 		f.Flush()
 	})
@@ -209,6 +215,15 @@ func TestOpenAIStreamMidStreamErrorEventIsAnError(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Message != "the model provider had an internal error" || apiErr.Code != "server_error" {
+		t.Errorf("the vendor's message and code were lost: %+v", apiErr)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("StatusCode = %d, want 500 for a server_error", apiErr.StatusCode)
+	}
+	if got := Classify(err); got != types.KindProviderUnavailable {
+		t.Errorf("Classify = %v, want %v", got, types.KindProviderUnavailable)
 	}
 }
 
@@ -283,12 +298,8 @@ func TestOpenAIStreamTruncationClassifiesLikeBuffered(t *testing.T) {
 		_, _ = w.Write([]byte(sseFrame(t, deltaFrame(`{"name":"Jo`))))
 		f.Flush()
 		// The incomplete reason is left blank so finishReason() falls back
-		// to "incomplete" -- a value classify.go's ClassifyCompletion
-		// recognizes. The Responses API's real reason text
-		// ("max_output_tokens") is not one of the phrases that switch
-		// matches; that gap belongs to classify.go, which is out of this
-		// change's reach, and is reported as a limitation rather than
-		// worked around here.
+		// to "incomplete", which ClassifyCompletion reads as a truncation, as
+		// it does the Responses API's own "max_output_tokens".
 		_, _ = w.Write([]byte(sseFrame(t, completedFrame(`{"name":"Jo`, "incomplete", "", 10, 4))))
 		f.Flush()
 	})

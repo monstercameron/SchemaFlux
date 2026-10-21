@@ -3,7 +3,7 @@ package ops
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // OB-003. `Priced bool` cannot distinguish the three things that all produce a

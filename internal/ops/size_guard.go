@@ -1,10 +1,8 @@
 package ops
 
 import (
-	"fmt"
-
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every collection operation marshals the whole slice into one prompt with no
@@ -21,13 +19,15 @@ import (
 // What this does is refuse the call that cannot succeed, and say why — which is
 // the difference between a limit and a trap.
 
-// charactersPerToken is a deliberately conservative approximation. Counting
-// tokens exactly needs the model's tokeniser, which this library does not have;
-// under-estimating the budget is the safe direction, because the cost of being
-// wrong is a refused call rather than a truncated answer.
+// charactersPerToken is the approximation estimateTokens divides bytes by.
+// Counting tokens exactly needs the model's tokeniser, which this library does
+// not have. The figure is for English prose; dense JSON and text in scripts
+// that need several bytes a character carry more tokens than this counts, so the
+// estimate can be low and a call it admits can still be truncated.
 const charactersPerToken = 4
 
-// estimateTokens approximates the token count of a rendered payload.
+// estimateTokens approximates the token count of a rendered payload: its bytes
+// over charactersPerToken, rounded up.
 func estimateTokens(payload string) int {
 	return (len(payload) + charactersPerToken - 1) / charactersPerToken
 }
@@ -55,15 +55,16 @@ func checkEchoBudget(operation string, payload string, itemCount int, intelligen
 
 	// Roughly how many items would fit, so the error names a number the caller
 	// can act on rather than only a number they cannot.
-	perItem := needed / itemCount
-	fits := itemCount
-	if perItem > 0 {
-		fits = maxTokens / perItem
-	}
+	//
+	// It is the share of the items the budget covers, itemCount*maxTokens/needed.
+	// Dividing needed by itemCount first rounded the per-item cost down to zero
+	// for a small echo factor over many items, and the error then said every
+	// item would fit.
+	fits := int(int64(itemCount) * int64(maxTokens) / int64(needed))
 
-	return fmt.Errorf(
-		"%s cannot return %d items within the %d-token output budget for the %s tier: "+
+	return types.Newf(types.KindContextTooLarge, operation,
+		"cannot return %d items within the %d-token output budget for the %s tier: "+
 			"the result needs roughly %d tokens, so about %d items would fit. "+
 			"Reduce the batch, raise the tier, or set SCHEMAFLUX_MODEL to a model with a larger output budget",
-		operation, itemCount, maxTokens, intelligence.String(), needed, fits)
+		itemCount, maxTokens, intelligence.String(), needed, fits)
 }

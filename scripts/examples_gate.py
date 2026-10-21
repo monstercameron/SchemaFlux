@@ -1,13 +1,11 @@
-"""Run the numbered examples against the local provider and gate on the result.
+"""Run each numbered example's offline tests and gate on the result.
 
 TODOS.md CI-004. The examples are the documented feature set, and a documented
 feature that does not run is a claim rather than a feature.
 
-The gate is ratcheted rather than all-or-nothing. Twelve of the forty-five still
-fail, for reasons recorded in `.audit/examples_expected.txt`, and waiting for all
-forty-five before turning any gate on means the thirty-three that work are
-unprotected in the meantime -- which is how they became nineteen failures in the
-first place. So:
+The v2 examples configure in-process scripted providers in their tests. Their
+main programs intentionally require a real configured provider and are not run
+by this gate. The gate is ratcheted:
 
   * an example that passes and then breaks fails the build;
   * an example that was failing and now passes fails the build too, with an
@@ -28,10 +26,10 @@ import sys
 
 EXPECTED_FILE = ".audit/examples_expected.txt"
 EXAMPLES_DIR = "examples"
-TIMEOUT_SECONDS = 90
+TIMEOUT_SECONDS = 180
 
-# The local provider, and no credential. An example that reaches a paid endpoint
-# during a build is the failure B-04 exists to prevent.
+# No credential. An example test that reaches a paid endpoint during a build is
+# the failure B-04 exists to prevent.
 ENVIRONMENT = {
     "SCHEMAFLUX_PROVIDER": "local",
     "SCHEMAFLUX_API_KEY": "",
@@ -51,31 +49,43 @@ def examples():
     return sorted(names)
 
 
-def run(name):
+def run_all(names):
     env = dict(os.environ)
     env.update(ENVIRONMENT)
 
-    try:
-        result = subprocess.run(
-            ["go", "run", "./" + EXAMPLES_DIR + "/" + name],
-            capture_output=True, text=True, timeout=TIMEOUT_SECONDS, env=env,
-        )
-    except subprocess.TimeoutExpired as expired:
-        # A timeout carries whatever was written before the deadline, and it may
-        # be None rather than an empty string.
-        del expired
-        return False, "timed out after %ds" % TIMEOUT_SECONDS
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                ["go", "test", "-p", "1", "-count=1"]
+                + ["./" + EXAMPLES_DIR + "/" + name for name in names],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=TIMEOUT_SECONDS, env=env,
+            )
+        except subprocess.TimeoutExpired as expired:
+            # A timeout carries whatever was written before the deadline, and it may
+            # be None rather than an empty string.
+            del expired
+            return ({name: False for name in names},
+                    {name: "timed out after %ds" % TIMEOUT_SECONDS for name in names})
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0 or attempt or not (
+            "go: unlinkat" in output and "Access is denied" in output
+        ):
+            break
 
-    if result.returncode == 0:
-        return True, ""
-
-    # The last error line is the useful one; the rest is progress logging.
-    reason = ""
-    output = (result.stdout or "") + (result.stderr or "")
+    results = {name: False for name in names}
+    reasons = {name: "no test result was reported" for name in names}
+    package_result = re.compile(r"^(ok|FAIL)\s+\S+/examples/(\d\d-[^\s/]+)")
     for line in output.splitlines():
-        if "level=ERROR" in line or "error=" in line:
-            reason = line.strip()
-    return False, reason[:300]
+        match = package_result.match(line)
+        if match and match.group(2) in results:
+            name = match.group(2)
+            results[name] = match.group(1) == "ok"
+            reasons[name] = "" if results[name] else line.strip()[:300]
+    if result.returncode != 0 and all(results.values()):
+        diagnostic = next((line.strip() for line in reversed(output.splitlines()) if line.strip()), "go test failed")
+        return ({name: False for name in names}, {name: diagnostic[:300] for name in names})
+    return results, reasons
 
 
 def read_expected():
@@ -121,13 +131,9 @@ def main():
         print("no numbered examples found")
         return 1
 
-    results = {}
-    reasons = {}
+    results, reasons = run_all(names)
     for name in names:
-        ok, reason = run(name)
-        results[name] = ok
-        reasons[name] = reason
-        print("%s %s" % ("PASS" if ok else "FAIL", name))
+        print("%s %s" % ("PASS" if results[name] else "FAIL", name))
 
     passing = sum(1 for ok in results.values() if ok)
     print("\n%d of %d examples pass" % (passing, len(results)))

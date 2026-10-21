@@ -3,9 +3,10 @@ package ops
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 func approvingGate(context.Context, string) (ApprovalOutcome, error) {
@@ -97,8 +98,10 @@ func TestApproveReturnsAReviewPacketWhenTheGateDeclines(t *testing.T) {
 	if len(packet.FailedChecks) != 1 || packet.FailedChecks[0] != "providers disagreed" {
 		t.Errorf("Packet.FailedChecks = %v", packet.FailedChecks)
 	}
-	if packet.Attempts != 1 {
-		t.Errorf("Packet.Attempts = %d, want 1", packet.Attempts)
+	// Approve does not know how many regenerations step spent, so it says none
+	// rather than a count it did not measure.
+	if packet.Attempts != 0 {
+		t.Errorf("Packet.Attempts = %d, want 0 (not reported)", packet.Attempts)
 	}
 	if packet.SuggestedAction == "" {
 		t.Error("SuggestedAction was dropped")
@@ -226,4 +229,40 @@ func containsSubstring(haystack, needle string) bool {
 		}
 	}
 	return len(needle) == 0
+}
+
+func TestApproveInventsNoAttemptCountAndNamesNoBudget(t *testing.T) {
+	for _, kind := range []types.ErrorKind{types.KindRepairExhausted, types.KindInvariantViolation, types.KindEvidenceViolation, types.KindSchemaViolation} {
+		step := func(context.Context) (string, error) { return "", &types.OperationError{Kind: kind} }
+		gate := func(context.Context, string) (ApprovalOutcome, error) { return ApprovalOutcome{Approved: true}, nil }
+		_, err := Approve(context.Background(), step, gate, nil)
+		var reviewErr *types.ReviewRequiredError[string]
+		if !errors.As(err, &reviewErr) {
+			t.Fatalf("kind %v: no review packet: %v", kind, err)
+		}
+		if reviewErr.Packet.Attempts != 0 {
+			t.Errorf("kind %v: Attempts = %d, want 0", kind, reviewErr.Packet.Attempts)
+		}
+		for _, check := range reviewErr.Packet.FailedChecks {
+			if strings.Contains(check, "budgeted") || strings.Contains(check, "regenerations") {
+				t.Errorf("kind %v: the reason claims a budget that was not reported: %q", kind, check)
+			}
+		}
+	}
+}
+
+func TestApproveRefusalsAreClassified(t *testing.T) {
+	gate := func(context.Context, string) (ApprovalOutcome, error) { return ApprovalOutcome{Approved: true}, nil }
+	step := func(context.Context) (string, error) { return "x", nil }
+	if _, err := Approve[string](context.Background(), nil, gate, nil); types.KindOf(err) != types.KindInvalidRequest {
+		t.Errorf("nil step: %v", err)
+	}
+	if _, err := Approve(context.Background(), step, nil, nil); types.KindOf(err) != types.KindInvalidRequest {
+		t.Errorf("nil gate: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Approve(cancelled, step, gate, nil); types.KindOf(err) != types.KindCanceled {
+		t.Errorf("cancelled context: kind = %v, err = %v", types.KindOf(err), err)
+	}
 }

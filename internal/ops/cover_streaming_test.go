@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // namedStreamProvider is a minimal llm.StreamingProvider with a caller-chosen
@@ -73,13 +73,15 @@ func TestStreamCancelStopsWorkRegardlessOfDetach(t *testing.T) {
 	}
 }
 
-// trySend's ctx.Done() branch: once the buffer is full and nobody is
-// consuming, a producer blocked on send must give up as soon as the stream's
-// context is cancelled, rather than staying blocked (which would leak the
-// goroutine) or delivering the rest of the chunks after cancellation.
-func TestTrySendStopsOnceContextCancelledWithAFullBuffer(t *testing.T) {
+// send's ctx.Done() branch: once the buffer is full and nobody is consuming, a
+// producer blocked on send must give up as soon as the stream is cancelled,
+// rather than staying blocked or delivering the rest of the chunks. The provider
+// reports when its yield returns false, which is the producer giving up; a send
+// that ignored the cancellation would leave that channel empty for ever.
+func TestSendStopsOnceTheStreamIsCancelledWithAFullBuffer(t *testing.T) {
 	const totalChunks = textStreamBufferSize + 40
 	var produced atomic.Int64
+	gaveUp := make(chan struct{})
 
 	provider := &fakeStreamingProvider{
 		captureProvider: &captureProvider{},
@@ -87,6 +89,7 @@ func TestTrySendStopsOnceContextCancelledWithAFullBuffer(t *testing.T) {
 			for i := 0; i < totalChunks; i++ {
 				produced.Add(1)
 				if !yield(llm.StreamChunk{Delta: "x"}, nil) {
+					close(gaveUp)
 					return
 				}
 			}
@@ -102,23 +105,29 @@ func TestTrySendStopsOnceContextCancelledWithAFullBuffer(t *testing.T) {
 		t.Fatalf("StreamSummarize: %v", err)
 	}
 
-	// Nobody reads stream.items: let the producer run ahead until it fills
-	// the bounded buffer and blocks on the next send.
-	time.Sleep(300 * time.Millisecond)
-	beforeCancel := produced.Load()
-	if beforeCancel >= totalChunks {
-		t.Fatalf("producer ran to completion (%d/%d) before cancellation -- the buffer did not bound it", beforeCancel, totalChunks)
+	// Nobody reads the stream: the producer fills the buffer and blocks on the
+	// next send, which is the chunk after the last one that fits.
+	deadline := time.Now().Add(5 * time.Second)
+	for produced.Load() < textStreamBufferSize+1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the producer reached only %d chunks", produced.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-gaveUp:
+		t.Fatal("the producer gave up before anything cancelled the stream")
+	default:
 	}
 
 	stream.Cancel()
-	time.Sleep(300 * time.Millisecond)
-	afterCancel := produced.Load()
-
-	if afterCancel >= totalChunks {
-		t.Fatalf("producer ran to completion (%d/%d) after cancellation -- trySend's ctx.Done() branch did not stop it", afterCancel, totalChunks)
+	select {
+	case <-gaveUp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the producer stayed blocked on a full buffer after the stream was cancelled")
 	}
-	if max := beforeCancel + 4; afterCancel > max {
-		t.Fatalf("producer advanced from %d to %d after cancellation, want at most %d further", beforeCancel, afterCancel, max)
+	if got := produced.Load(); got >= totalChunks {
+		t.Fatalf("the producer ran to completion (%d/%d) after cancellation", got, totalChunks)
 	}
 }
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The combinators exist because callers were writing these shapes by hand, and
@@ -20,6 +20,12 @@ func constantAnswer(value string) Step[string] {
 
 func failingAnswer(err error) Step[string] {
 	return func(context.Context) (string, error) { return "", err }
+}
+
+// failingAnswerWithValue is a step that fails and, against the rule, returns a
+// value beside its error.
+func failingAnswerWithValue(value string, err error) Step[string] {
+	return func(context.Context) (string, error) { return value, err }
 }
 
 func answeringStep(answers ...string) (Step[string], *int) {
@@ -216,8 +222,8 @@ func TestUntilExhaustedIsAnError(t *testing.T) {
 	if attempts != 4 || *calls != 4 {
 		t.Errorf("attempts = %d, calls = %d, want 4 and 4", attempts, *calls)
 	}
-	if value != "never good" {
-		t.Errorf("the rejected answer was not returned for inspection: %q", value)
+	if value != "" {
+		t.Errorf("the rejected answer was returned beside the error: %q", value)
 	}
 
 	var opErr *types.OperationError
@@ -322,5 +328,55 @@ func TestAnUnclassifiableErrorIsNotTreatedAsTerminal(t *testing.T) {
 	if !record.Escalated || *strongerCalls != 1 {
 		t.Errorf("an unclassified error was ruled terminal: escalated=%v calls=%d",
 			record.Escalated, *strongerCalls)
+	}
+}
+
+func TestUntilReturnsNothingBesideAnyError(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cases := []struct {
+		name string
+		ctx  context.Context
+		step Step[string]
+		pred func(string) bool
+		max  int
+	}{
+		{"the condition is never met", context.Background(), constantAnswer("rejected"), func(string) bool { return false }, 3},
+		{"the context is already cancelled", cancelled, constantAnswer("rejected"), func(string) bool { return false }, 3},
+		{"the last attempt fails", context.Background(), failingAnswer(errors.New("unclassified")), func(string) bool { return true }, 2},
+		{"a terminal failure", context.Background(), failingAnswer(&types.OperationError{Kind: types.KindPolicyViolation}), func(string) bool { return true }, 2},
+		{"the last attempt fails and returns a value", context.Background(), failingAnswerWithValue("junk", errors.New("unclassified")), func(string) bool { return true }, 2},
+		{"a terminal failure that returns a value", context.Background(), failingAnswerWithValue("junk", &types.OperationError{Kind: types.KindPolicyViolation}), func(string) bool { return true }, 2},
+		{"one attempt, rejected", context.Background(), constantAnswer("rejected"), func(string) bool { return false }, 1},
+		{"no attempts", context.Background(), constantAnswer("x"), func(string) bool { return true }, 0},
+		{"negative attempts", context.Background(), constantAnswer("x"), func(string) bool { return true }, -1},
+		{"no step", context.Background(), nil, func(string) bool { return true }, 1},
+		{"no predicate", context.Background(), constantAnswer("x"), nil, 1},
+		{"many attempts, never met", context.Background(), constantAnswer("rejected"), func(string) bool { return false }, 25},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			value, _, err := Until(c.ctx, c.step, c.pred, c.max)
+			if err == nil {
+				t.Fatalf("Until returned %q and no error", value)
+			}
+			if value != "" {
+				t.Errorf("value = %q beside an error", value)
+			}
+		})
+	}
+}
+
+func TestFallbackNamesItselfWhenAStepIsMissing(t *testing.T) {
+	ok := constantAnswer("fine")
+	if _, err := Fallback[string](context.Background(), nil, ok); err == nil || !strings.HasPrefix(err.Error(), "fallback:") {
+		t.Errorf("nil primary: %v", err)
+	}
+	if _, err := Fallback[string](context.Background(), ok, nil); err == nil || !strings.HasPrefix(err.Error(), "fallback:") {
+		t.Errorf("nil alternate: %v", err)
+	}
+	if value, err := Fallback(context.Background(), ok, ok); err != nil || value != "fine" {
+		t.Errorf("Fallback = %q, %v", value, err)
 	}
 }

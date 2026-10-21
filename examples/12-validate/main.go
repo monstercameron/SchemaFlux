@@ -1,40 +1,15 @@
-// Example: 12-validate
-//
-// Operation: Validate[T] - Validate data against semantic rules
-//
-// Input: 4 UserRegistration structs with various issues
-//   - Valid: johndoe123 (all rules pass)
-//   - Invalid Email: "not-an-email" (bad format)
-//   - Weak Password: "12345" (too short, missing requirements)
-//   - Underage: age 15 (must be 18+)
-//
-// Validation Rules:
-//   - Username: 3-20 chars, alphanumeric
-//   - Email: valid format
-//   - Password: 8+ chars, uppercase, lowercase, number, special char
-//   - Age: 18+
-//   - Country: valid name
-//
-// Expected Output:
-//   - Valid: ✅ accepted
-//   - Invalid Email: ❌ email format error
-//   - Weak Password: ❌ password requirements
-//   - Underage: ❌ age < 18
-//
-// Provider: Cerebras (gpt-oss-120b via Fast intelligence)
-// Expected Duration: ~500ms per validation
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
-// UserRegistration represents user registration data
 type UserRegistration struct {
 	Username string `json:"username"`
 	Email    string `json:"email"`
@@ -43,91 +18,26 @@ type UserRegistration struct {
 	Country  string `json:"country"`
 }
 
-// loadEnv loads environment variables from a .env file
-func loadEnv(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
+func main() {
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "validation example failed: %v\nCheck your provider configuration and try again.\n", err)
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			os.Setenv(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-		}
-	}
-	return scanner.Err()
 }
 
-func main() {
-	// Load .env file from project root
-	if err := loadEnv("../../.env"); err != nil {
-		fmt.Printf("Warning: Could not load .env file: %v\n", err)
-	}
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "✅ Validate Example - User Registration Validation")
+	fmt.Fprintln(out, strings.Repeat("=", 60))
 
-	// Initialize SchemaFlux
-	if err := schemaflux.InitWithEnv(); err != nil {
-		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
-		return
-	}
-
-	fmt.Println("✅ Validate Example - User Registration Validation")
-	fmt.Println("=" + string(make([]byte, 60)))
-
-	// Test cases
 	testCases := []struct {
 		name string
 		data UserRegistration
 	}{
-		{
-			name: "Valid Registration",
-			data: UserRegistration{
-				Username: "johndoe123",
-				Email:    "john.doe@example.com",
-				Password: "SecureP@ssw0rd!",
-				Age:      25,
-				Country:  "USA",
-			},
-		},
-		{
-			name: "Invalid Email",
-			data: UserRegistration{
-				Username: "janedoe",
-				Email:    "not-an-email",
-				Password: "GoodPassword123!",
-				Age:      30,
-				Country:  "Canada",
-			},
-		},
-		{
-			name: "Weak Password",
-			data: UserRegistration{
-				Username: "bobsmith",
-				Email:    "bob@example.com",
-				Password: "12345",
-				Age:      22,
-				Country:  "UK",
-			},
-		},
-		{
-			name: "Underage User",
-			data: UserRegistration{
-				Username: "younguser",
-				Email:    "young@example.com",
-				Password: "StrongPass123!",
-				Age:      15,
-				Country:  "Germany",
-			},
-		},
+		{"Valid Registration", UserRegistration{"johndoe123", "john.doe@example.com", "SecureP@ssw0rd!", 25, "USA"}},
+		{"Invalid Email", UserRegistration{"janedoe", "not-an-email", "GoodPassword123!", 30, "Canada"}},
+		{"Weak Password", UserRegistration{"bobsmith", "bob@example.com", "12345", 22, "UK"}},
+		{"Underage User", UserRegistration{"younguser", "young@example.com", "StrongPass123!", 15, "Germany"}},
 	}
 
-	// Define validation rules
 	validationRules := `
 Validation Rules:
 1. Username: 3-20 characters, alphanumeric only
@@ -136,43 +46,27 @@ Validation Rules:
 4. Age: Must be 18 or older
 5. Country: Must be a valid country name
 `
-
-	// Create validation options with the new typed API
-	opts := schemaflux.NewValidateOptions().
-		WithRules(validationRules).
-		WithAutoCorrect(false).
-		WithIncludeExplanations(true)
+	// The zero value keeps explanations enabled, matching the old example's
+	// WithIncludeExplanations(true). No corrected registration is requested.
+	options := schemaflux.ValidateOptions{Rules: validationRules, OmitCorrection: true}
 
 	for i, tc := range testCases {
-		fmt.Printf("\n%d. %s\n", i+1, tc.name)
-		fmt.Println("---")
-		fmt.Printf("   Username: %s\n", tc.data.Username)
-		fmt.Printf("   Email: %s\n", tc.data.Email)
-		fmt.Printf("   Password: %s (length: %d)\n", maskPassword(tc.data.Password), len(tc.data.Password))
-		fmt.Printf("   Age: %d\n", tc.data.Age)
-		fmt.Printf("   Country: %s\n", tc.data.Country)
+		fmt.Fprintf(out, "\n%d. %s\n---\n", i+1, tc.name)
+		fmt.Fprintf(out, "   Username: %s\n   Email: %s\n", tc.data.Username, tc.data.Email)
+		fmt.Fprintf(out, "   Password: %s (length: %d)\n", maskPassword(tc.data.Password), len([]rune(tc.data.Password)))
+		fmt.Fprintf(out, "   Age: %d\n   Country: %s\n", tc.data.Age, tc.data.Country)
 
-		// ValidateHybrid decides in Go what it can and asks a model about the
-		// rest. The name says which of the two this is;
-		// ValidateDeterministically is the one that never makes a network call.
-		result, err := schemaflux.ValidateHybrid[UserRegistration](tc.data, opts)
+		// Validate decides exact field rules in Go; these natural-language rules
+		// need a model, so this call uses the environment's configured provider.
+		result, err := schemaflux.Validate(ctx, tc.data, options)
 		if err != nil {
-			schemaflux.GetLogger().Error("Validation error", "error", err)
-			continue
+			return fmt.Errorf("validate %q: %w", tc.name, err)
 		}
-
 		if result.Verdict == schemaflux.VerdictPass {
-			fmt.Println()
-			fmt.Println("   ✅ VALID - Registration accepted")
-			// Labelled as the model's claim rather than printed beside the
-			// verdict as though the library had measured it.
-			fmt.Printf("   Model-claimed confidence: %.0f%%\n", result.ModelConfidence*100)
+			fmt.Fprintln(out, "\n   ✅ VALID - Registration accepted")
+			fmt.Fprintf(out, "   Model-claimed confidence: %.0f%%\n", result.ModelConfidence*100)
 		} else {
-			fmt.Println()
-			fmt.Println("   ❌ INVALID - Issues found:")
-
-			// One list now, with the severity on each issue, instead of three
-			// lists the caller had to know the names of.
+			fmt.Fprintln(out, "\n   ❌ INVALID - Issues found:")
 			for _, issue := range result.Issues {
 				marker := "ℹ️ "
 				switch issue.Severity {
@@ -181,29 +75,28 @@ Validation Rules:
 				case "warning":
 					marker = "⚠️ "
 				}
-				fmt.Printf("      %s [%s] %s\n", marker, issue.Subject, issue.Message)
+				fmt.Fprintf(out, "      %s [%s] %s\n", marker, issue.Subject, issue.Message)
 				if issue.Suggestion != "" {
-					fmt.Printf("         💡 Suggestion: %s\n", issue.Suggestion)
+					fmt.Fprintf(out, "         💡 Suggestion: %s\n", issue.Suggestion)
 				}
 			}
 		}
-
 		if result.Summary != "" {
-			fmt.Printf("\n   📝 Summary: %s\n", result.Summary)
+			fmt.Fprintf(out, "\n   📝 Summary: %s\n", result.Summary)
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("📊 Validation Summary:")
-	fmt.Println("   Total tested: 4 registrations")
-	fmt.Println("   Expected: 1 valid, 3 invalid")
-	fmt.Println()
-	fmt.Println("✨ Success! Validation complete")
+	fmt.Fprintln(out, "\n📊 Validation Summary:")
+	fmt.Fprintln(out, "   Total tested: 4 registrations")
+	fmt.Fprintln(out, "   Expected: 1 valid, 3 invalid")
+	fmt.Fprintln(out, "\n✨ Success! Validation complete")
+	return nil
 }
 
 func maskPassword(password string) string {
-	if len(password) <= 2 {
+	runes := []rune(password)
+	if len(runes) <= 2 {
 		return "***"
 	}
-	return password[:2] + strings.Repeat("*", len(password)-2)
+	return string(runes[:2]) + strings.Repeat("*", len(runes)-2)
 }

@@ -29,7 +29,7 @@ func TestConformRefusesAResponseCarryingNoConformedValue(t *testing.T) {
 		body string
 	}{
 		{"conformed absent entirely", `{"adjustments":[],"violations":[],"compliance":0.9}`},
-		{"conformed explicitly null", `{"conformed":null,"compliance":0.9}`},
+		{"conformed explicitly null", `{"conformed":null,"adjustments":[],"violations":[],"compliance":0.9}`},
 	}
 
 	for _, tc := range cases {
@@ -84,7 +84,7 @@ func TestInterpolateRefusesAChangeToAnItemThatWasNotAGap(t *testing.T) {
 	opts := NewInterpolateOptions()
 	opts.GapIndices = []int{1}
 
-	withResponse(t, `{"complete":[{"value":999},{"value":20},{"value":30}],"filled":[{"index":1}],"gap_count":1}`)
+	withResponse(t, `{"complete":[{"value":999},{"value":20},{"value":30}],"filled":[{"index":1,"confidence":0.8}],"gap_count":1,"average_confidence":0.8}`)
 
 	result, err := Interpolate(items, opts)
 	if err == nil {
@@ -102,7 +102,7 @@ func TestInterpolateRefusesAChangeToAnItemThatWasNotAGap(t *testing.T) {
 func TestInterpolateStillAcceptsAValidAnswerWhenGapsWereNotDeclared(t *testing.T) {
 	items := []fillItem{{Value: 10}, {}, {Value: 30}}
 
-	withResponse(t, `{"complete":[{"value":10},{"value":20},{"value":30}],"filled":[{"index":1}],"gap_count":1}`)
+	withResponse(t, `{"complete":[{"value":10},{"value":20},{"value":30}],"filled":[{"index":1,"confidence":0.8}],"gap_count":1,"average_confidence":0.8}`)
 
 	result, err := Interpolate(items, NewInterpolateOptions())
 	if err != nil {

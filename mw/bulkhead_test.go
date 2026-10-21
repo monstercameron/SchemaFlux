@@ -2,216 +2,280 @@ package mw
 
 import (
 	"context"
-	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
-// blockingProvider blocks Complete until release is closed, so a test can
-// hold a bulkhead slot open deterministically instead of racing a real call.
-type blockingProvider struct {
-	name    string
-	release chan struct{}
-	calls   int32
-	mu      sync.Mutex
+// held is a provider whose requests wait until the test lets them go, and that
+// counts how many are in the provider at once.
+type held struct {
+	*schemafluxtest.Provider
+	release  chan struct{}
+	inFlight atomic.Int32
+	peak     atomic.Int32
 }
 
-func (b *blockingProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	b.mu.Lock()
-	b.calls++
-	b.mu.Unlock()
-	select {
-	case <-b.release:
-	case <-ctx.Done():
-		return llm.CompletionResponse{}, ctx.Err()
-	}
-	return llm.CompletionResponse{Content: "ok"}, nil
+func newHeld() *held {
+	h := &held{Provider: new(schemafluxtest.Provider), release: make(chan struct{})}
+	h.Provider.Respond(func(int, schemaflux.Request) (schemaflux.Response, error) {
+		n := h.inFlight.Add(1)
+		defer h.inFlight.Add(-1)
+		for {
+			peak := h.peak.Load()
+			if n <= peak || h.peak.CompareAndSwap(peak, n) {
+				break
+			}
+		}
+		<-h.release
+		return schemaflux.Response{Content: "answer"}, nil
+	})
+	return h
 }
-func (b *blockingProvider) Name() string                                   { return b.name }
-func (b *blockingProvider) EstimateCost(req llm.CompletionRequest) float64 { return 0 }
-func (b *blockingProvider) RetryPolicy() (int, time.Duration)              { return 0, 0 }
 
-// TestBulkheadMiddlewareRejectsPastCapacity proves RejectWhenFull refuses a
-// call over the limit with a classified error instead of blocking.
-func TestBulkheadMiddlewareRejectsPastCapacity(t *testing.T) {
-	base := &blockingProvider{name: "p", release: make(chan struct{})}
-	wrapped := Bulkhead(1, RejectWhenFull())(base)
+// let releases one request that is waiting in the provider.
+func (h *held) let() { h.release <- struct{}{} }
 
-	done := make(chan struct{})
+// started runs a request on a goroutine and returns the channel its error comes
+// on.
+func started(ctx context.Context, p schemaflux.Provider) <-chan error {
+	done := make(chan error, 1)
 	go func() {
-		wrapped.Complete(context.Background(), llm.CompletionRequest{})
-		close(done)
+		_, err := p.Complete(ctx, ask("q"))
+		done <- err
 	}()
-
-	// Wait until the first call has actually entered the provider (holding
-	// the one slot) before trying the second.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		base.mu.Lock()
-		calls := base.calls
-		base.mu.Unlock()
-		if calls == 1 || time.Now().After(deadline) {
-			break
-		}
-	}
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("expected the second concurrent call to be refused at capacity 1")
-	}
-	var opErr *types.OperationError
-	if !errors.As(err, &opErr) || opErr.Kind != types.KindAdmissionRejected {
-		t.Fatalf("expected KindAdmissionRejected, got %v", err)
-	}
-
-	close(base.release)
-	<-done
+	return done
 }
 
-// TestBulkheadMiddlewareBlocksByDefaultUntilReleased proves the default
-// (non-reject) mode waits for a slot rather than refusing, synchronized via
-// channels rather than a sleep.
-func TestBulkheadMiddlewareBlocksByDefaultUntilReleased(t *testing.T) {
-	base := &blockingProvider{name: "p", release: make(chan struct{})}
-	wrapped := Bulkhead(1)(base)
+func TestBulkhead(t *testing.T) {
+	t.Parallel()
 
-	firstDone := make(chan struct{})
-	go func() {
-		wrapped.Complete(context.Background(), llm.CompletionRequest{})
-		close(firstDone)
-	}()
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		base.mu.Lock()
-		calls := base.calls
-		base.mu.Unlock()
-		if calls == 1 || time.Now().After(deadline) {
-			break
+	bubble(t, "no more than the limit are in the provider at once", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(2)(h)
+		var done []<-chan error
+		for range 5 {
+			done = append(done, started(t.Context(), wall))
 		}
-	}
-
-	secondStarted := make(chan struct{})
-	secondDone := make(chan struct{})
-	go func() {
-		close(secondStarted)
-		wrapped.Complete(context.Background(), llm.CompletionRequest{})
-		close(secondDone)
-	}()
-	<-secondStarted
-
-	select {
-	case <-secondDone:
-		t.Fatal("second call completed before the first released its slot")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(base.release)
-	<-firstDone
-	<-secondDone
-
-	base.mu.Lock()
-	calls := base.calls
-	base.mu.Unlock()
-	if calls != 2 {
-		t.Fatalf("provider calls = %d, want 2", calls)
-	}
-}
-
-// TestBulkheadMiddlewareHonoursContextCancellation proves a blocked wait
-// returns the classified cancellation instead of hanging.
-func TestBulkheadMiddlewareHonoursContextCancellation(t *testing.T) {
-	base := &blockingProvider{name: "p", release: make(chan struct{})}
-	defer close(base.release)
-	wrapped := Bulkhead(1)(base)
-
-	go wrapped.Complete(context.Background(), llm.CompletionRequest{})
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		base.mu.Lock()
-		calls := base.calls
-		base.mu.Unlock()
-		if calls == 1 || time.Now().After(deadline) {
-			break
+		synctest.Wait()
+		if got := h.inFlight.Load(); got != 2 {
+			t.Fatalf("%d requests are in the provider, want 2", got)
 		}
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := wrapped.Complete(ctx, llm.CompletionRequest{})
-		errCh <- err
-	}()
-	cancel()
-
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected a cancellation error")
+		for range 5 {
+			h.let()
+			synctest.Wait()
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("blocked Complete did not return promptly on cancellation")
-	}
-}
-
-// TestBulkheadMiddlewareIsolatesProvidersByName proves two differently
-// named providers do not share capacity.
-func TestBulkheadMiddlewareIsolatesProvidersByName(t *testing.T) {
-	mwFn := Bulkhead(1, RejectWhenFull())
-
-	a := &blockingProvider{name: "a", release: make(chan struct{})}
-	wrappedA := mwFn(a)
-	go wrappedA.Complete(context.Background(), llm.CompletionRequest{})
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		a.mu.Lock()
-		calls := a.calls
-		a.mu.Unlock()
-		if calls == 1 || time.Now().After(deadline) {
-			break
+		for i, d := range done {
+			if err := <-d; err != nil {
+				t.Errorf("request %d: %v", i+1, err)
+			}
 		}
-	}
+		if h.peak.Load() != 2 {
+			t.Errorf("the peak was %d, want 2", h.peak.Load())
+		}
+		if h.Calls() != 5 {
+			t.Errorf("%d requests were served, want 5", h.Calls())
+		}
+	})
 
-	b := &fakeProvider{name: "b", responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	wrappedB := mwFn(b)
-	if _, err := wrappedB.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("provider b should be unaffected by provider a's full bulkhead: %v", err)
-	}
+	bubble(t, "a request that finds the wall full waits and goes when a slot is given back", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(1)(h)
+		first := started(t.Context(), wall)
+		synctest.Wait()
+		second := started(t.Context(), wall)
+		synctest.Wait()
+		if h.Calls() != 1 {
+			t.Fatalf("the provider was asked %d times while the wall was full, want 1", h.Calls())
+		}
+		h.let()
+		synctest.Wait()
+		if h.Calls() != 2 {
+			t.Fatalf("the provider was asked %d times after a slot was given back, want 2", h.Calls())
+		}
+		h.let()
+		if err := <-first; err != nil {
+			t.Error(err)
+		}
+		if err := <-second; err != nil {
+			t.Error(err)
+		}
+	})
 
-	close(a.release)
-}
+	bubble(t, "Reject fails a request that finds the wall full at once with ErrBusy", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(1, BulkheadOptions{Reject: true})(h)
+		first := started(t.Context(), wall)
+		synctest.Wait()
+		_, err := wall.Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrBusy)
+		if h.Calls() != 1 {
+			t.Errorf("the provider was asked %d times, want 1", h.Calls())
+		}
+		h.let()
+		<-first
+	})
 
-// TestBulkheadMiddlewareDelegatesNameCostAndRetryPolicy matches every other
-// middleware's transparency contract.
-func TestBulkheadMiddlewareDelegatesNameCostAndRetryPolicy(t *testing.T) {
-	fake := &fakeProvider{name: "delegate-test", maxRetries: 3, backoff: 2 * time.Second}
-	wrapped := Bulkhead(2)(fake)
+	bubble(t, "a slot is given back when the request fails", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		p.FailThen(1, unavailable(), "answer")
+		wall := Bulkhead(1, BulkheadOptions{Reject: true})(&p)
+		if _, err := wall.Complete(t.Context(), ask("q")); err == nil {
+			t.Fatal("the first request should have failed")
+		}
+		if _, err := wall.Complete(t.Context(), ask("q")); err != nil {
+			t.Errorf("the second request found the wall still full: %v", err)
+		}
+	})
 
-	if wrapped.Name() != "delegate-test" {
-		t.Fatalf("Name() = %q, want %q", wrapped.Name(), "delegate-test")
-	}
-	if got := wrapped.EstimateCost(llm.CompletionRequest{}); got != 0.01 {
-		t.Fatalf("EstimateCost() = %v, want 0.01", got)
-	}
-	retries, backoff := wrapped.RetryPolicy()
-	if retries != 3 || backoff != 2*time.Second {
-		t.Fatalf("RetryPolicy() = (%d, %v), want (3, 2s)", retries, backoff)
-	}
-}
+	bubble(t, "a slot is given back when the provider panics", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		p.Respond(func(call int, _ schemaflux.Request) (schemaflux.Response, error) {
+			if call == 0 {
+				panic("provider bug")
+			}
+			return schemaflux.Response{Content: "answer"}, nil
+		})
+		wall := Bulkhead(1, BulkheadOptions{Reject: true})(&p)
+		func() {
+			defer func() { _ = recover() }()
+			_, _ = wall.Complete(t.Context(), ask("q"))
+		}()
+		if _, err := wall.Complete(t.Context(), ask("q")); err != nil {
+			t.Errorf("the request after the panic found the wall full: %v", err)
+		}
+	})
 
-// TestBulkheadMiddlewareZeroOrNegativeLimitTreatedAsOne proves a
-// misconfigured limit still yields a working bulkhead rather than an
-// always-full or always-open one.
-func TestBulkheadMiddlewareZeroOrNegativeLimitTreatedAsOne(t *testing.T) {
-	fake := &fakeProvider{name: "p", responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	wrapped := Bulkhead(0)(fake)
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("a zero limit should default to 1, not refuse every call: %v", err)
-	}
+	bubble(t, "a waiter whose context ends leaves no slot taken", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(1)(h)
+		first := started(t.Context(), wall)
+		synctest.Wait()
+		ctx, cancel := context.WithCancel(t.Context())
+		waiter := started(ctx, wall)
+		synctest.Wait()
+		cancel()
+		err := <-waiter
+		wantKind(t, err, schemaflux.ErrCanceled)
+		h.let()
+		<-first
+		third := started(t.Context(), wall)
+		synctest.Wait()
+		h.let()
+		if err := <-third; err != nil {
+			t.Errorf("the request after the waiter left failed: %v", err)
+		}
+	})
+
+	bubble(t, "a deadline that passes while waiting for a slot is a timeout", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(1)(h)
+		first := started(t.Context(), wall)
+		synctest.Wait()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		_, err := wall.Complete(ctx, ask("q"))
+		wantKind(t, err, schemaflux.ErrTimeout)
+		h.let()
+		<-first
+	})
+
+	t.Run("a limit below one fails every request as a configuration error", func(t *testing.T) {
+		t.Parallel()
+		for _, limit := range []int{0, -3, -1 << 63} {
+			var p schemafluxtest.Provider
+			_, err := Bulkhead(limit)(&p).Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrConfiguration)
+			if e.Op != "mw.bulkhead" || p.Calls() != 0 {
+				t.Errorf("limit %d: Op %q, %d requests", limit, e.Op, p.Calls())
+			}
+		}
+	})
+
+	bubble(t, "providers with one name share a limit and providers with two names have one each", func(t *testing.T) {
+		wall := Bulkhead(1, BulkheadOptions{Reject: true})
+
+		a, b := newHeld(), newHeld()
+		first := started(t.Context(), wall(a))
+		synctest.Wait()
+		_, err := wall(b).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrBusy)
+		a.let()
+		<-first
+
+		c, d := newHeld(), newHeld()
+		c.SetName("c")
+		d.SetName("d")
+		wall = Bulkhead(1, BulkheadOptions{Reject: true})
+		firstC := started(t.Context(), wall(c))
+		synctest.Wait()
+		firstD := started(t.Context(), wall(d))
+		synctest.Wait()
+		if c.Calls() != 1 || d.Calls() != 1 {
+			t.Errorf("c was asked %d times and d %d, want one each", c.Calls(), d.Calls())
+		}
+		c.let()
+		d.let()
+		<-firstC
+		<-firstD
+	})
+
+	bubble(t, "the refusal says the bulkhead is full and carries no text of the request", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(1, BulkheadOptions{Reject: true})(h)
+		first := started(t.Context(), wall)
+		synctest.Wait()
+		_, err := wall.Complete(t.Context(), ask("the secret text "+testEmail))
+		e := wantKind(t, err, schemaflux.ErrBusy)
+		if e.Message == "" {
+			t.Error("the refusal says nothing of why")
+		}
+		mustNotContain(t, "the error", err.Error(), "secret", testEmail)
+		h.let()
+		<-first
+	})
+
+	bubble(t, "Retry does not repeat a refusal of the program's own limit", func(t *testing.T) {
+		h := newHeld()
+		chain := Chain(h, Retry(), Bulkhead(1, BulkheadOptions{Reject: true}))
+		first := started(t.Context(), chain)
+		synctest.Wait()
+		_, err := chain.Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrBusy)
+		h.let()
+		<-first
+	})
+
+	bubble(t, "many requests at once never pass the limit", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(3)(h)
+		var wg sync.WaitGroup
+		for range 20 {
+			wg.Go(func() { _, _ = wall.Complete(t.Context(), ask("q")) })
+		}
+		for range 20 {
+			synctest.Wait()
+			h.let()
+		}
+		wg.Wait()
+		if h.peak.Load() > 3 || h.Calls() != 20 {
+			t.Errorf("the peak was %d (limit 3) and %d requests were served (want 20)", h.peak.Load(), h.Calls())
+		}
+	})
+
+	bubble(t, "option values merge left to right with a later non-zero field winning", func(t *testing.T) {
+		h := newHeld()
+		wall := Bulkhead(1, BulkheadOptions{Reject: true}, BulkheadOptions{})(h)
+		first := started(t.Context(), wall)
+		synctest.Wait()
+		_, err := wall.Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrBusy)
+		h.let()
+		<-first
+	})
 }

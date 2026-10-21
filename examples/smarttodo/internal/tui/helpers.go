@@ -7,7 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 const panelChromeWidth = 6
@@ -179,10 +180,7 @@ func (m Model) renderEnhancedStatsBar() string {
 		completionRate = (completed * 100) / total
 	}
 
-	cost := "AI idle"
-	if m.processor != nil && m.processor.TotalCost > 0 {
-		cost = fmt.Sprintf("Session cost $%.4f", m.processor.TotalCost)
-	}
+	cost := sessionSpend()
 
 	parts := []string{
 		renderTag(fmt.Sprintf("open %d", pending), primaryColor),
@@ -196,6 +194,24 @@ func (m Model) renderEnhancedStatsBar() string {
 		Width(m.width-2).
 		Padding(0, 1).
 		Render(strings.Join(parts, "  "))
+}
+
+// sessionSpend never presents a partial price as the complete bill.
+func sessionSpend() string {
+	record, connected := appclient.Usage()
+	if !connected {
+		return "AI not connected"
+	}
+	if record.Requests == 0 {
+		return "AI idle"
+	}
+	if record.Cost.Priced {
+		return fmt.Sprintf("Session cost $%.4f", record.Cost.Total)
+	}
+	if record.Cost.Total > 0 {
+		return fmt.Sprintf("Session cost at least $%.4f (some calls unpriced)", record.Cost.Total)
+	}
+	return "Session cost unpriced"
 }
 
 func renderRecentLogs(logs []string, width int, height int) string {

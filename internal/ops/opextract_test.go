@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// A-012's own tests: the descriptor Extract now runs through, checked
-// directly rather than only through the pre-existing extract tests (which
-// this port leaves untouched and unmoved).
+// Tests of the descriptor Extract runs through, checked directly rather than
+// only through the extract tests.
 
 type opExtractTicket struct {
 	ID     string  `json:"id"`
@@ -161,7 +161,7 @@ func TestRunExtractOpRepairsOnMalformedBody(t *testing.T) {
 // DefaultRepairAttempts. This is the case the comment in opextract.go
 // documents; this test is what would fail if that decision were reverted.
 func TestRunExtractOpRespectsConfiguredRepairBudget(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_REPAIR_ATTEMPTS", "3")
+	configtest.Setenv(t, "SCHEMAFLUX_REPAIR_ATTEMPTS", "3")
 
 	calls := 0
 	setLLMCaller(func(_ context.Context, _, _ string, _ types.OpOptions) (string, error) {
@@ -205,5 +205,105 @@ func TestExtractUnchangedForCallerCode(t *testing.T) {
 	}
 	if value.ID != "T-77" || value.Amount != 100 {
 		t.Fatalf("Extract() = %+v", value)
+	}
+}
+
+// An answer that decodes only in part must not hand the part to the caller of
+// Decode: a value filled in beside an error is one a loop that keeps the last
+// attempt could return.
+func TestNewExtractOpDecodeReturnsTheZeroValueWithEveryError(t *testing.T) {
+	cases := []struct {
+		name string
+		mode types.Mode
+		opts types.OpOptions
+		body string
+	}{
+		{"one good field and one of the wrong type", types.TransformMode, types.OpOptions{}, `{"id":"T-1","amount":"a lot"}`},
+		{"one good field and one of the wrong type, strict", types.Strict, types.OpOptions{}, `{"id":"T-1","amount":"a lot"}`},
+		{"an unrecognised field, exact", types.TransformMode, types.OpOptions{ExactFields: true}, `{"id":"T-1","amount":42.5,"extra":1}`},
+		{"an unrecognised field, strict", types.Strict, types.OpOptions{}, `{"id":"T-1","amount":42.5,"extra":1}`},
+		{"a repeated key, exact", types.TransformMode, types.OpOptions{ExactFields: true}, `{"id":"T-1","id":"T-2","amount":1}`},
+		{"a second value after the first, exact", types.TransformMode, types.OpOptions{ExactFields: true}, `{"id":"T-1","amount":1} {"id":"T-2"}`},
+		{"a missing required field, complete", types.TransformMode, types.OpOptions{CompleteFields: true}, `{"id":"T-1"}`},
+		{"a null required field, strict", types.Strict, types.OpOptions{}, `{"id":"T-1","amount":null}`},
+		{"no recognised field at all", types.TransformMode, types.OpOptions{}, `{"other":1}`},
+		{"not json", types.TransformMode, types.OpOptions{}, `no braces here`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.Mode = tc.mode
+			op := newExtractOp[opExtractTicket](opts, "sys", "usr")
+			value, err := op.Contract.Decode(tc.body)
+			if err == nil {
+				t.Fatalf("Decode accepted %s as %+v", tc.name, value)
+			}
+			if value != (opExtractTicket{}) {
+				t.Errorf("Decode returned %+v beside its error", value)
+			}
+		})
+	}
+}
+
+// Extract's own answer is the caller's type, so what a field has to carry is the
+// option's to say: without CompleteFields (or Strict) a field the answer leaves
+// out is the zero value, and with it the check that runs after the reader refuses
+// the same answer. The reader's own refusals are classified under extract.
+func TestNewExtractOpReadsTheCallersTypeAndThenChecksTheMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode types.Mode
+		opts types.OpOptions
+		body string
+		want opExtractTicket
+		// kind is the kind of the refusal; KindUnknown when the body is accepted, or
+		// when the check that refuses it is the mode's own and does not classify.
+		kind    types.ErrorKind
+		refused bool
+	}{
+		{"a field left out is the zero value", types.TransformMode, types.OpOptions{}, `{"id":"T-1"}`, opExtractTicket{ID: "T-1"}, types.KindUnknown, false},
+		{"a field that is null is the zero value", types.TransformMode, types.OpOptions{}, `{"id":"T-1","amount":null}`, opExtractTicket{ID: "T-1"}, types.KindUnknown, false},
+		{"an unknown field beside a known one", types.TransformMode, types.OpOptions{}, `{"id":"T-1","extra":true}`, opExtractTicket{ID: "T-1"}, types.KindUnknown, false},
+		{"a code fence", types.TransformMode, types.OpOptions{}, "```json\n{\"id\":\"T-1\",\"amount\":2}\n```", opExtractTicket{ID: "T-1", Amount: 2}, types.KindUnknown, false},
+		{"complete fields, nothing left out", types.TransformMode, types.OpOptions{CompleteFields: true}, `{"id":"T-1","amount":2}`, opExtractTicket{ID: "T-1", Amount: 2}, types.KindUnknown, false},
+		{"a field left out under complete fields", types.TransformMode, types.OpOptions{CompleteFields: true}, `{"id":"T-1"}`, opExtractTicket{}, types.KindUnknown, true},
+		{"a field left out under strict", types.Strict, types.OpOptions{}, `{"id":"T-1"}`, opExtractTicket{}, types.KindUnknown, true},
+		{"an object that shares no field", types.TransformMode, types.OpOptions{}, `{"other":1}`, opExtractTicket{}, types.KindSchemaViolation, false},
+		{"an empty object", types.TransformMode, types.OpOptions{}, `{}`, opExtractTicket{}, types.KindSchemaViolation, false},
+		{"a field of the wrong kind", types.TransformMode, types.OpOptions{}, `{"id":"T-1","amount":"a lot"}`, opExtractTicket{}, types.KindSchemaViolation, false},
+		{"null", types.TransformMode, types.OpOptions{}, `null`, opExtractTicket{}, types.KindMalformedOutput, false},
+		{"an array", types.TransformMode, types.OpOptions{}, `[{"id":"T-1"}]`, opExtractTicket{}, types.KindMalformedOutput, false},
+		{"prose", types.TransformMode, types.OpOptions{}, `I could not find a ticket.`, opExtractTicket{}, types.KindMalformedOutput, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.Mode = tc.mode
+			op := newExtractOp[opExtractTicket](opts, "sys", "usr")
+			value, err := op.Contract.Decode(tc.body)
+			if tc.kind == types.KindUnknown && !tc.refused {
+				if err != nil || value != tc.want {
+					t.Fatalf("Decode = %+v, %v, want %+v", value, err, tc.want)
+				}
+				return
+			}
+			if tc.refused {
+				if err == nil {
+					t.Fatalf("Decode accepted %+v", value)
+				}
+			} else {
+				wantKind(t, err, tc.kind)
+			}
+			if value != (opExtractTicket{}) {
+				t.Errorf("Decode returned %+v beside its error", value)
+			}
+		})
+	}
+
+	// The reader's refusals name the operation.
+	op := newExtractOp[opExtractTicket](types.OpOptions{Mode: types.TransformMode}, "sys", "usr")
+	_, err := op.Contract.Decode(`{"other":1}`)
+	if !strings.Contains(err.Error(), "extract") {
+		t.Errorf("the refusal does not name the operation: %v", err)
 	}
 }

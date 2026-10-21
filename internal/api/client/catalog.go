@@ -102,11 +102,11 @@ func init() {
 	stable := map[OperationCategory][]string{
 		CategoryExtract:   {"Extract", "ExtractResult", "Parse", "Infer"},
 		CategoryTransform: {"Transform", "Summarize", "SummarizeResult", "Rewrite", "RewriteResult", "Translate", "TranslateResult", "Expand", "ExpandResult", "Normalize", "NormalizeText", "NormalizeBatch", "Redact", "Format", "Merge", "Compress", "CompressText", "Chunk"},
-		CategoryGenerate:  {"Generate", "Complete", "CompleteField", "Suggest", "Annotate", "Explain", "Question"},
+		CategoryGenerate:  {"Generate", "GenerateResult", "Complete", "CompleteField", "Suggest", "Annotate", "Explain", "Question"},
 		CategoryClassify:  {"Classify", "Score", "Cluster", "Compare", "Similar", "Diff", "Deduplicate"},
 		CategorySelect:    {"Choose", "ChooseBy", "Filter", "FilterBy", "Decide", "Match", "MatchOne", "SemanticMatch"},
 		CategoryOrder:     {"Sort", "SortBy", "SortResult", "Rank"},
-		CategoryReview:    {"VerifyWithModel", "AuditWithModel", "CritiqueWithModel", "Guard", "Approve"},
+		CategoryReview:    {"VerifyWithModel", "AuditWithModel", "AuditWithMeta", "CritiqueWithModel", "Guard", "Approve"},
 		CategoryValidate:  {"ValidateDeterministically", "ValidateHybrid"},
 	}
 	for category, names := range stable {
@@ -122,8 +122,13 @@ func init() {
 	experimental := map[OperationCategory][]string{
 		CategoryGenerate:  {"Synthesize", "Predict", "Assemble", "Derive", "Interpolate"},
 		CategorySelect:    {"Arbitrate", "Resolve", "Settle", "SettleAdversarial", "Vote"},
-		CategoryTransform: {"Conform", "Project", "Pivot", "Enrich", "EnrichInPlace", "Decompose", "DecomposeToSlice", "RedactLLM"},
-		CategoryClassify:  {"CheckingSimilarity"},
+		CategoryTransform: {"Conform", "Project", "Pivot", "Enrich", "EnrichInPlace", "Decompose", "DecomposeToSlice", "RedactLLM", "RedactLLMWithMeta"},
+		// CheckingSimilarity, and the decisions a program branches on (BM-001)
+		// with the two combinators that ask one. The decisions are
+		// experimental until they have been through review and a live
+		// measurement; the answer they return is checked in Go either way.
+		CategoryClassify: {"CheckingSimilarity",
+			"Is", "IsResult", "Which", "WhichResult", "WhichOrNone", "WhichOrNoneResult", "Rate", "RateResult", "Assess", "AssessResult", "Whether", "RouteBy"},
 	}
 	for category, names := range experimental {
 		for _, name := range names {

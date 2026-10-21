@@ -5,32 +5,21 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // SEC-004. Custom endpoint policy.
 //
 // The library accepts a caller- or configuration-supplied BaseURL for every
 // OpenAI-compatible provider (internal/llm/provider.go's ProviderConfig.
-// BaseURL, consumed by chatcompletions.go, embeddings.go, and provider.go's
-// request builders) and validates nothing about it today -- a config value
-// or a caller option can point a request at loopback, link-local, or a cloud
-// metadata service exactly as easily as at a real provider.
-//
-// EndpointPolicy and ValidateEndpoint are the check. They are NOT wired into
-// internal/llm/provider.go, chatcompletions.go, embeddings.go, client.go, or
-// internal/ops/configvalidate.go here: every one of those is outside this
-// task's edit scope (the task's own file list permits internal/telemetry/
-// logger.go, internal/types/policy.go, and new files under internal/types/,
-// internal/ops/, or mw/ -- provider.go and client.go are explicitly excluded,
-// and chatcompletions.go/embeddings.go/configvalidate.go are not on the
-// permitted list either). ValidateEndpoint is written so wiring it in is one
-// call at whichever of those layers eventually owns "reject a BaseURL before
-// using it" -- see the doc comment on ValidateEndpoint for the call shape --
-// but that call does not exist yet. This is a real limitation, not a
-// completed task: SEC-004 asks for a policy that stops requests from
-// reaching internal infrastructure, and until something calls
-// ValidateEndpoint on the way to a request, nothing does.
+// BaseURL), and a config value or a caller option can point a request at
+// loopback, link-local, or a cloud metadata service exactly as easily as at a
+// real provider. EndpointPolicy and ValidateEndpoint are the check: a provider
+// built with ProviderConfig.EndpointPolicy set calls ValidateEndpoint on its
+// BaseURL before it builds any client. A provider built with none enforces
+// nothing, which is the default.
 //
 // # Never fail open
 //
@@ -79,8 +68,26 @@ type EndpointPolicy struct {
 // taxonomy, applied to this policy's one failure mode.
 var ErrEndpointNotAllowed = errors.New("endpoint not allowed by policy")
 
-// ValidateEndpoint reports whether rawURL is permitted under p, returning
-// ErrEndpointNotAllowed (wrapped with the specific reason) when it is not.
+// refuseEndpoint builds ValidateEndpoint's refusal: a configuration error, of kind
+// KindConfiguration, that errors.Is also matches to ErrEndpointNotAllowed.
+func refuseEndpoint(format string, args ...any) error {
+	return &OperationError{
+		Kind:    KindConfiguration,
+		Op:      "endpoint policy",
+		Message: fmt.Sprintf(format, args...),
+		Cause:   ErrEndpointNotAllowed,
+	}
+}
+
+// ValidateEndpoint reports whether rawURL is permitted under p, returning a
+// configuration error that wraps ErrEndpointNotAllowed, with the specific
+// reason, when it is not.
+//
+// The error describes the URL and does not repeat it. A BaseURL may carry a
+// user name and password, or a key in its query, and the error is logged by
+// whoever configured the provider: it names the scheme and the host, which the
+// policy judged, and for a value that does not parse, or has no host, only its
+// size.
 //
 // It performs no DNS resolution and makes no network call: a hostname like
 // "internal-metadata.example" is judged only by AllowedHosts membership, not
@@ -92,7 +99,7 @@ var ErrEndpointNotAllowed = errors.New("endpoint not allowed by policy")
 // directly against the private-address ranges below, since no resolution is
 // needed to know what it is.
 //
-// The intended call shape at whichever layer eventually wires this in is:
+// The call shape is:
 //
 //	if err := policy.ValidateEndpoint(config.BaseURL); err != nil {
 //	    return nil, fmt.Errorf("configuring provider %q: %w", name, err)
@@ -112,24 +119,24 @@ func (p EndpointPolicy) ValidateEndpoint(rawURL string) error {
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return fmt.Errorf("%w: %q does not parse as a URL", ErrEndpointNotAllowed, redactURLForError(trimmed))
+		return refuseEndpoint("the value (%d bytes) does not parse as a URL", len(trimmed))
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("%w: %q has no host", ErrEndpointNotAllowed, redactURLForError(trimmed))
+		return refuseEndpoint("the value (%d bytes) has no host", len(trimmed))
 	}
 
 	if !containsFold(p.AllowedSchemes, parsed.Scheme) {
-		return fmt.Errorf("%w: scheme %q is not on the allowlist", ErrEndpointNotAllowed, redactURLForError(parsed.Scheme))
+		return refuseEndpoint("scheme %q is not on the allowlist", boundedForError(parsed.Scheme))
 	}
 
 	hostname := parsed.Hostname()
 	if !containsFold(p.AllowedHosts, hostname) {
-		return fmt.Errorf("%w: host %q is not on the allowlist", ErrEndpointNotAllowed, redactURLForError(hostname))
+		return refuseEndpoint("host %q is not on the allowlist", boundedForError(hostname))
 	}
 
 	if !p.AllowPrivateAddresses {
 		if reason := privateAddressReason(hostname); reason != "" {
-			return fmt.Errorf("%w: host %q %s (set AllowPrivateAddresses to permit it)", ErrEndpointNotAllowed, redactURLForError(hostname), reason)
+			return refuseEndpoint("host %q %s (set AllowPrivateAddresses to permit it)", boundedForError(hostname), reason)
 		}
 	}
 
@@ -153,8 +160,14 @@ var cloudMetadataAddresses = map[string]bool{
 // name this function recognises without resolving it) falls under the
 // private-address rule, or "" if it does not. See ValidateEndpoint's doc
 // comment for why this never resolves a name via DNS.
+//
+// The host is normalised first, so a spelling of an address that net.ParseIP
+// does not read as one is not a way round the rule: a trailing dot
+// ("localhost."), a zone ("fe80::1%eth0"), and the numeric forms an IPv4 address
+// has in a URL ("2130706433", "0x7f.1", "0177.0.0.1" are all 127.0.0.1).
 func privateAddressReason(hostname string) string {
 	lower := strings.ToLower(strings.TrimSpace(hostname))
+	lower = strings.TrimSuffix(lower, ".")
 
 	// Names ValidateEndpoint refuses without resolution: not real DNS
 	// results, but well-known local/internal conventions a policy should
@@ -169,7 +182,7 @@ func privateAddressReason(hostname string) string {
 		return "uses an internal-only domain suffix"
 	}
 
-	ip := net.ParseIP(hostname)
+	ip := parseHostIP(lower)
 	if ip == nil {
 		// Not an IP literal and not one of the recognised names above --
 		// nothing more to check without a DNS lookup this function does not
@@ -189,21 +202,73 @@ func privateAddressReason(hostname string) string {
 		return "is the unspecified address"
 	case ip.IsPrivate():
 		return "is a private-range address"
+	case sharedAddressSpace.Contains(ip):
+		return "is a shared (carrier NAT) address"
 	}
 	return ""
 }
 
-// redactURLForError returns raw truncated to a bounded length for inclusion
-// in an error string. A URL a caller configured is not the same class of
-// secret CaptureDiagnostic guards against (it is configuration, not request
-// content), but AGENTS.md's "no request or response body in an error string"
-// still argues for bounding it rather than echoing an arbitrarily long value
-// verbatim -- a malformed "URL" could be megabytes of unrelated text handed
-// to url.Parse by mistake.
-func redactURLForError(raw string) string {
-	const maxLen = 200
-	if len(raw) <= maxLen {
-		return raw
+// sharedAddressSpace is 100.64.0.0/10, the range carriers use for NAT. It is not
+// private in RFC 1918's sense and is not reachable from the internet, and a
+// cloud provider's metadata service answers in it (100.100.100.200).
+var sharedAddressSpace = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// parseHostIP reads host as an IP address, or returns nil. It reads what
+// net.ParseIP reads, with a zone removed, and the other numeric spellings of an
+// IPv4 address that the platform's resolvers accept: one to four parts, each
+// decimal, octal (leading 0) or hexadecimal (leading 0x), the last part filling
+// the remaining bytes.
+func parseHostIP(host string) net.IP {
+	if percent := strings.IndexByte(host, '%'); percent >= 0 {
+		host = host[:percent]
 	}
-	return raw[:maxLen] + "...(truncated)"
+	if ip := net.ParseIP(host); ip != nil {
+		return ip
+	}
+
+	parts := strings.Split(host, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return nil
+	}
+	var values [4]uint64
+	for i, part := range parts {
+		if part == "" {
+			return nil
+		}
+		value, err := strconv.ParseUint(part, 0, 32)
+		if err != nil {
+			return nil
+		}
+		values[i] = value
+	}
+
+	// All but the last part are one byte each; the last fills the rest.
+	var address uint64
+	for i := 0; i < len(parts)-1; i++ {
+		if values[i] > 255 {
+			return nil
+		}
+		address |= values[i] << (8 * uint(3-i))
+	}
+	remaining := uint(4 - (len(parts) - 1))
+	if remaining < 4 && values[len(parts)-1] >= 1<<(8*remaining) {
+		return nil
+	}
+	address |= values[len(parts)-1]
+	return net.IPv4(byte(address>>24), byte(address>>16), byte(address>>8), byte(address))
+}
+
+// boundedForError returns text cut to a length that is safe to put in an error,
+// at a character boundary. A scheme or a host comes from a parsed URL, but what
+// was handed to the parser may have been megabytes of unrelated text.
+func boundedForError(text string) string {
+	const maxLen = 100
+	if len(text) <= maxLen {
+		return text
+	}
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "...(truncated)"
 }

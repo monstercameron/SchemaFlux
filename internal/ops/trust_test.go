@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-001. Untrusted content placed where trusted content belongs must be
@@ -296,7 +296,7 @@ func minInt(a, b int) int {
 // function -- a regression test for the refactor from plain concatenation
 // to segment assembly, proving the trusted path's output is unchanged.
 func TestStrengthenSystemPromptStillProducesTheReinforcementBlock(t *testing.T) {
-	got := strengthenSystemPrompt("Extract a person.", "json")
+	got := strengthenSystemPrompt(context.Background(), "Extract a person.", "json")
 	if !strings.Contains(got, "Perform the semantic task faithfully") {
 		t.Fatalf("strengthenSystemPrompt() = %q, missing the trusted policy block", got)
 	}
@@ -305,6 +305,18 @@ func TestStrengthenSystemPromptStillProducesTheReinforcementBlock(t *testing.T) 
 	}
 	if !strings.Contains(got, "Extract a person.") {
 		t.Fatalf("strengthenSystemPrompt() = %q, missing the operation's own instruction", got)
+	}
+
+	// Two calls that differ only in the operation's own text share the policy
+	// segment byte for byte: nothing caller-controlled reaches it.
+	other := strengthenSystemPrompt(context.Background(), "Summarize a document.", "json")
+	policy := func(prompt, own string) string { return strings.Replace(prompt, own, "", 1) }
+	if policy(got, "Extract a person.") != policy(other, "Summarize a document.") {
+		t.Errorf("the policy segments differ between two calls: %q and %q",
+			policy(got, "Extract a person."), policy(other, "Summarize a document."))
+	}
+	if again := strengthenSystemPrompt(context.Background(), "Extract a person.", "json"); again != got {
+		t.Error("two calls with the same arguments produced different prompts")
 	}
 }
 
@@ -335,31 +347,126 @@ func TestTrustLevelClassification(t *testing.T) {
 
 var _ llm.Provider = (*captureProvider)(nil)
 
-// The buffered path was fixed and the streaming one was missed. Two code paths
-// building the same request in two places is how that happens, and a test that
-// only covers one of them is how it survives.
-func TestTheStreamingPathAlsoKeepsSteeringOutOfTheSystemPrompt(t *testing.T) {
-	provider := &captureProvider{}
-	ctx := WithProvider(context.Background(), provider)
+// The streaming path is covered by TestStreamKeepsSteeringOutOfTheSystemPrompt
+// and TestStreamRunsTheTrustBoundaryCheck (lx061_context_test.go), which use a
+// provider that can stream. A test here that used captureProvider ignored the
+// error from streamLLM and asserted only that the system prompt it captured did
+// not hold the steering: captureProvider cannot stream, no request was ever
+// built, and it passed with the guard deleted.
 
-	stream, err := streamLLM(ctx,
-		"You are a filtering expert.",
-		"Filter these items.",
-		types.OpOptions{
-			Intelligence: types.Fast,
-			Mode:         types.TransformMode,
-			Steering:     "Prefer the shortest answer.",
-			Context:      ctx,
-		})
-	if stream != nil {
-		stream.Cancel()
+// verifyTrustBoundary decides on what the check is for: steering carried into
+// the system prompt as an instruction block. It refused any steering that was
+// a substring of the system prompt, so a plain word that the fixed prompt also
+// uses was refused as though it had been smuggled in.
+func TestVerifyTrustBoundaryDecidesOnTheMeansOfSmuggling(t *testing.T) {
+	const policy = "You are a text summarization expert. Create concise summaries that preserve key information.\n\nRules:\n- Maintain the most important points\n- Return JSON only"
+
+	cases := []struct {
+		name     string
+		system   string
+		steering string
+		refused  bool
+	}{
+		{"a plain word the prompt also uses", policy, "concise", false},
+		{"another plain word", policy, "JSON", false},
+		{"a word with different case", policy, "Summaries", false},
+		{"a phrase from the middle of a sentence", policy, "preserve key information", false},
+		{"two words from a rule line", policy, "important points", false},
+		{"steering that is not in the prompt", policy, "focus on the numbers", false},
+		{"steering of eleven runes that is a whole line", "intro\nshort line!\nmore", "short line!", false},
+		{"a short line that is steering", "Rules:\nbe brief", "Rules:", false},
+		{"a short phrase on its own line", "intro\nconcise\nmore", "concise", false},
+		{"blank steering", policy + "\n<<<UNTRUSTED CONTENT", "   ", false},
+		{"the label with unrelated steering", "Additional instructions:\nsomething else", "concise", false},
+
+		{"steering as a whole line", policy + "\nKeep answers under ten words", "Keep answers under ten words", true},
+		{"steering as the last paragraph", policy + "\n\nKeep answers under ten words", "Keep answers under ten words", true},
+		{"steering as a sentence after the policy", "You are an expert. Keep every figure.", "Keep every figure.", true},
+		{"steering of several lines", "intro\nfirst line of steering\nsecond line of steering\nmore", "first line of steering\nsecond line of steering", true},
+		{"steering indented in the prompt", policy + "\n   Keep answers under ten words  \n", "  Keep answers under ten words ", true},
+		{"the label followed by a short steering", "You are an expert.\nAdditional instructions:\nbrief", "brief", true},
+		{"the label followed by steering on the same line", "You are an expert. Additional instructions: brief", "brief", true},
+		{"the label followed by blank lines and the steering", "Additional instructions:\n\n\n  brief", "brief", true},
+		{"a boundary marker in the system prompt", policy + "\n<<<UNTRUSTED CONTENT: untrusted application data", "concise", true},
+		{"a closing marker in the system prompt", policy + "\nEND UNTRUSTED CONTENT>>>", "concise", true},
+		{"the whole prompt as steering", policy, policy, true},
+		{"steering with windows line endings", "intro\r\nKeep answers under ten words\r\nmore", "Keep answers under ten words", true},
 	}
-	// The provider may refuse to stream at all; what matters is what was built
-	// for it, and an unsupported-capability refusal happens after the request
-	// is constructed.
-	_ = err
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyTrustBoundary(tc.system, tc.steering)
+			if tc.refused {
+				if !errors.Is(err, ErrTrustBoundaryViolated) {
+					t.Fatalf("err = %v, want ErrTrustBoundaryViolated", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a call was refused: %v", err)
+			}
+		})
+	}
+}
 
-	if strings.Contains(provider.req.SystemPrompt, "Prefer the shortest answer.") {
-		t.Errorf("steering reached the streaming system prompt: %q", provider.req.SystemPrompt)
+// What the report reproduced: Summarize with the one word "concise" as steering
+// was refused, and the message said the steering had been folded into the system
+// prompt, which it had not. The request is sent, and the steering is in the
+// message and not in the system prompt.
+func TestSummarizeWithAWordThePromptAlsoUsesIsNotRefused(t *testing.T) {
+	for _, steering := range []string{"concise", "JSON", "key information", "faithfully", "summaries"} {
+		t.Run(steering, func(t *testing.T) {
+			provider := &captureProvider{}
+			provider.resp.Content = "a short summary"
+
+			opts := SummarizeOptions{}
+			opts.CommonOptions.Context = WithProvider(context.Background(), provider)
+			opts.OpOptions.Steering = steering
+
+			got, err := Summarize("some long text to summarize", opts)
+			if err != nil {
+				t.Fatalf("Summarize with steering %q: %v", steering, err)
+			}
+			if got != "a short summary" {
+				t.Errorf("Summarize = %q", got)
+			}
+			if provider.attempts != 1 {
+				t.Fatalf("provider calls = %d, want 1", provider.attempts)
+			}
+			if !strings.Contains(provider.req.UserPrompt, steering) {
+				t.Errorf("the steering is not in the message:\n%s", provider.req.UserPrompt)
+			}
+		})
+	}
+}
+
+// containsStandalone is the shape the check turns on: a block that is a line or
+// a sentence of its own, and not a part of one.
+func TestContainsStandalone(t *testing.T) {
+	cases := []struct {
+		name, text, block string
+		want              bool
+	}{
+		{"the whole text", "hello world", "hello world", true},
+		{"a first line", "hello world\nnext", "hello world", true},
+		{"a last line", "first\nhello world", "hello world", true},
+		{"a middle line", "first\nhello world\nlast", "hello world", true},
+		{"a sentence after another", "One. Hello world.", "Hello world.", true},
+		{"a first sentence", "Hello world. Two.", "Hello world.", true},
+		{"a block that ends a sentence only by its own period", "Hello world. Two.", "Hello world", false},
+		{"the start of a line but the middle of a sentence", "Hello world and more", "Hello world", false},
+		{"the end of the text but the middle of a sentence", "say Hello world", "Hello world", false},
+		{"an indented line", "first\n    hello world  \nlast", "hello world", true},
+		{"inside a word", "xhello worldx", "hello world", false},
+		{"not present", "something else", "hello world", false},
+		{"present twice, only the second standalone", "a hello world b\nhello world", "hello world", true},
+		{"windows line ending", "first\r\nhello world\r\nlast", "hello world", true},
+		{"a block after a comma", "first, hello world", "hello world", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsStandalone(tc.text, tc.block); got != tc.want {
+				t.Errorf("containsStandalone(%q, %q) = %v, want %v", tc.text, tc.block, got, tc.want)
+			}
+		})
 	}
 }

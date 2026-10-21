@@ -4,50 +4,32 @@
 
 # SchemaFlux
 
-**Structured AI that ships.**
+**Structured AI that ships.** SchemaFlux turns language-model work into typed Go calls. It builds a request, checks the answer against the requested type and the operation's rules, and returns the value or a classified error. A `Recorder` keeps execution details separate from the answer.
 
-SchemaFlux is a Go library for typed LLM operations — it makes a language model return a typed Go
-value instead of a wall of text you have to parse.
+This README describes SchemaFlux v2.0.0. The module path is `github.com/monstercameron/schemaflux/v2`, with its packages at the repository root. V1 releases remain at the unsuffixed module path. The migration notes below describe the new API.
 
-It gives you a single public API built around fluent request builders so application code stays readable while retries, structured output contracts, logging, metrics, and cost tracking stay centralized.
+→ [Read the case study](https://www.earlcameron.com/projects/schemaflux)
 
-→ **[Read the case study](https://www.earlcameron.com/projects/schemaflux)** — what it does, what it
-is built on, and what was hard.
+## Requirements and installation
 
-**Status: v1.1.0.** The public API listed in `testdata/api_surface.txt` is
-stable under the deprecation policy below — a snapshot test fails the build if
-it changes, so an addition or a removal is a reviewed decision rather than a
-side effect. Every behaviour claim in this README is backed by a test in the
-repository.
-
-Twelve of the project's own 32 acceptance criteria were not met at 1.0. They are
-listed with a reason each in `TODOS.md`, and
-[ADR 0005](docs/adr/0005-shipping-1-0-with-twelve-unmet-criteria.md) says why
-the version ships anyway. The short version is in
-[What 1.0 does not include](#what-10-does-not-include) below; read it before
-depending on this for anything load-bearing.
-
-## Install
+SchemaFlux v2 requires Go 1.27 or later. Install the v2.0.0 release with:
 
 ```bash
-go get github.com/monstercameron/schemaflux
+go get github.com/monstercameron/schemaflux/v2@v2.0.0
 ```
 
-Set an API key for your provider. OpenAI is the default.
+For the default OpenAI provider, set `SCHEMAFLUX_OPENAI_API_KEY` or `OPENAI_API_KEY`. `SCHEMAFLUX_API_KEY` is a fallback. If no usable key is set, the first call returns `ErrConfiguration`; it does not send a request or invent an answer. Set `SCHEMAFLUX_PROVIDER` to select another built-in provider. See [`provider`](provider) for names and provider-specific variables.
 
-```bash
-export SCHEMAFLUX_API_KEY=your-api-key
-```
-
-## Quick Start
+## First call
 
 ```go
 package main
 
 import (
+    "context"
     "fmt"
 
-    schemaflux "github.com/monstercameron/schemaflux"
+    schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 type Person struct {
@@ -56,841 +38,110 @@ type Person struct {
 }
 
 func main() {
-    if err := schemaflux.InitWithEnv(); err != nil {
-        panic(err)
-    }
-
-    person, err := schemaflux.Extracting[Person]("John is 30 years old").
-        Strict().
-        Run()
+    person, err := schemaflux.Extract[Person](
+        context.Background(),
+        "Ada is 36 years old",
+        schemaflux.ExtractOptions{Options: schemaflux.Options{Mode: schemaflux.ModeStrict}},
+    )
     if err != nil {
         panic(err)
     }
-
-    fmt.Printf("%+v\n", person)
+    fmt.Printf("%s is %d\n", person.Name, person.Age)
 }
 ```
 
-## API Shape
+Every operation takes a `context.Context` at the call. An operation with its own settings takes a typed options value that embeds `schemaflux.Options`; operations without extra settings take `schemaflux.Options`. Several options values merge from left to right. The zero value chooses the operation's documented defaults. `Tier` chooses a quality and speed class when no exact model is pinned; `Model` pins one. `Steering` is guidance to the model, not a checked guarantee.
 
-The public API is the fluent builder stack at the root package.
+The root package includes `Extract`, `Transform`, `Generate`, `Infer`, `Parse`, text operations such as `Summarize`, `Rewrite` and `Translate`, collection operations such as `Choose`, `Filter`, `Sort` and `Cluster`, and judgment operations such as `Is`, `Rate`, `Which` and `Validate`. Functions that return just a value have `Detail` forms where a structured result matters. Operations still under experimentation live in [`exp`](exp).
 
-```go
-person, err := schemaflux.Extracting[Person](rawText).
-    Strict().
-    Smart().
-    Steer("Prefer explicit evidence over guesses").
-    Run()
+## Client and provider
 
-best, err := schemaflux.Choosing(products).
-    By("lowest total cost", "best battery life").
-    Fast().
-    Run()
-
-summary, err := schemaflux.Summarizing(longText).
-    MaxLength(120).
-    Run()
-```
-
-Builder conventions:
-- `Run()` executes the operation
-- `WithOptions(...)` replaces the full typed option object
-- `Configure(func(...))` lets you mutate the typed option object directly
-- common controls such as `Strict()`, `Smart()`, `Fast()`, `Quick()`, `Steer(...)`, `Context(...)`, and `RequestID(...)` are exposed where they make sense
-
-## Core Builders
-
-### Structured extraction and generation
-- `Extracting[T](input)`
-- `Transforming[T, U](input)`
-- `Generating[T](prompt)`
-- `Inferring[T](input)`
-- `Parsing[T](input)`
-- `Enriching[T, U](input)`
-- `EnrichingInPlace[T](input)`
-- `Normalizing[T](input)`
-- `NormalizingText(input)`
-- `NormalizingBatch[T](items)`
-- `Projecting[T, U](input)`
-- `Pivoting[T, U](input)`
-
-### Data reshaping and comparison
-- `Deduplicate(items, threshold)` — collapse semantically duplicate items,
-  keeping your own values. Note the cost: it asks the model about pairs, so it
-  is O(n²) calls in the worst case.
-- `Merge(sources, strategy)` / `MergeWithMetadata` — combine several records
-  into one.
-- `Format(data, template)` / `FormatWithMetadata` — render a value through a
-  natural-language template.
-
-### Text operations
-- `Summarizing(input)`
-- `Rewriting(input)`
-- `Translating(input)`
-- `Expanding(input)`
-- `Completing(input)`
-- `CompletingField[T](input, fieldName)`
-- `Redacting[T](input)` — see the note below on what it detects
-- `LLMRedacting(input)` — see the note below
-
-> **What redaction detects.** Field names are matched as whole names, not
-> substrings, so `FirstName` and `APIKey` are redacted while `Filename`,
-> `Username`, `Keywords`, `FirstSeen`, and `CardCount` are not. Card numbers are
-> validated with Luhn rather than recognised by shape, so an unformatted PAN is
-> caught and a 16-digit order number is not. `RedactWithResult` reports the
-> fields and values it replaced.
->
-> **It is a pattern matcher, not a classifier.** It finds what its categories
-> describe and nothing else: a person's name inside a free-text note is not
-> detected, and a bare nine-digit number is deliberately not treated as an SSN
-> because it is indistinguishable from an order ID. Tag the fields you know with
-> `redact:"..."`; the patterns are a safety net under that, not a substitute
-> for it.
->
-> **Jumbling is obfuscation, not anonymization.** `RedactJumble` and
-> `RedactScramble` permute characters, which preserves length, alphabet, and
-> frequency. Use them for demo data that has to look realistic, not where
-> re-identification matters.
-
-### Analysis and validation
-- `Classifying[T, C](input)`
-- `Scoring[T](input)`
-- `Comparing[T](left, right)`
-- `CheckingSimilarity[T](left, right)`
-- `Validating[T](input)`
-- `Asking[T, A](input, question)`
-- `Explaining(input)`
-- `Verifying(input)`
-- `VerifyingClaim(claim)`
-
-### Collection and reasoning
-- `Choosing[T](items)`
-- `Filtering[T](items)`
-- `Sorting[T](items)`
-- `Ranking[T](items)`
-- `Clustering[T](items)`
-- `Matching[S, T](sources, targets)`
-- `MatchingOne[S, T](source, targets)`
-- `Annotating[T](input)`
-- `Compressing[T](input)`
-- `CompressingText(input)`
-- `Decomposing[T](input)`
-- `DecomposingInto[T, U](input)`
-- `Critiquing[T](input)`
-- `Synthesizing[T](sources)`
-- `Predicting[T](input)`
-- `Negotiating[T](constraints)`
-- `NegotiatingAdversarially[T](context)`
-- `Resolving[T](sources)`
-- `Deriving[T, U](input)`
-- `Conforming[T](input, standard)`
-- `Interpolating[T](items)`
-- `Arbitrating[T](options)`
-- `Auditing[T](input)`
-- `Assembling[T](parts)`
-
-### Compact helpers
-- `ChooseBy(items, criteria...)`
-- `FilterBy(items, criteria)`
-- `SortBy(items, criteria)`
-
-Full API reference: [docs/reference/API.md](docs/reference/API.md)
-
-## Usage Examples
-
-### Extract typed data
+The zero `Client` is usable: it resolves the provider and model from the environment when a call starts. For explicit configuration, build a provider and put it in a client:
 
 ```go
-type Invoice struct {
-    Number string  `json:"number"`
-    Total  float64 `json:"total"`
-}
-
-invoice, err := schemaflux.Extracting[Invoice](rawEmail).
-    Strict().
-    Fast().
-    Run()
-```
-
-### Transform one type into another
-
-```go
-type Lead struct {
-    Name  string `json:"name"`
-    Email string `json:"email"`
-}
-
-type CRMContact struct {
-    FullName string `json:"full_name"`
-    Email    string `json:"email"`
-}
-
-contact, err := schemaflux.Transforming[Lead, CRMContact](lead).
-    Strict().
-    Steer("Preserve exact identifiers and emails").
-    Run()
-```
-
-### Generate typed output
-
-```go
-type ReleaseNote struct {
-    Title   string   `json:"title"`
-    Bullets []string `json:"bullets"`
-}
-
-note, err := schemaflux.Generating[ReleaseNote]("Write release notes for version 2.3").
-    Creative().
-    Smart().
-    Run()
-```
-
-### Filter and sort collections
-
-```go
-urgent, err := schemaflux.Filtering(tasks).
-    By("high priority tasks due today").
-    Run()
-
-ordered, err := schemaflux.Sorting(urgent).
-    By("most urgent operational risk first").
-    Smart().
-    Run()
-```
-
-### Summarize and rewrite text
-
-```go
-summary, err := schemaflux.Summarizing(article).
-    MaxLength(160).
-    Run()
-
-rewrite, err := schemaflux.Rewriting(summary).
-    Tone("executive").
-    Run()
-```
-
-### Validate structured data
-
-```go
-result, err := schemaflux.Validating(customer).
-    Rules("email must be valid, country must be ISO alpha-2, age must be at least 18").
-    Run()
-
+p, err := provider.New("openai", provider.Config{APIKey: key})
 if err != nil {
-    panic(err)
+    return err
 }
-if !result.Valid {
-    fmt.Println(result.Issues)
-}
+client := schemaflux.Client{Provider: p, Model: "gpt-6-luna"}
+ctx := schemaflux.WithClient(ctx, client)
+result, err := schemaflux.Extract[Invoice](ctx, invoiceText)
 ```
 
-### Ask typed questions over context
+This example also imports `github.com/monstercameron/schemaflux/v2/provider`. `WithClient` keeps a snapshot of the client on the context; `SetDefault` changes the process default for calls without one. Configure a client before sharing it across goroutines. `Client.Warm(ctx)` checks its configuration and opens a provider connection without sending a prompt. The client can also carry a timeout, retry and repair settings, a `Budget`, a `Scheduler`, a `DataPolicy`, a `Recorder`, and a `slog.Logger`.
+
+`provider.New` builds OpenAI, Anthropic, OpenRouter, Cerebras, DeepSeek, Qwen, Z.ai, and the supported typed-decision providers. `provider.OpenAICompatible` connects to a server using the chat-completions dialect. A custom provider implements `schemaflux.Provider`. The optional [`provider/codex`](provider/codex) adapter uses a local Codex login and must be chosen explicitly. A client cannot use a missing credential as an offline provider.
+
+## Results, errors, and records
+
+An operation's return value is the answer. A failed or unusable answer returns a `*schemaflux.Error` with a `Kind`, such as `ErrInvalidAnswer`, `ErrPolicy`, `ErrBudgetExceeded`, `ErrRateLimited`, or `ErrTimeout`. Use `errors.Is(err, schemaflux.ErrInvalidAnswer)` or `errors.As` rather than matching message text. Error and log messages omit caller and provider payloads. `Error.Detail()` is for a developer inspecting data they are allowed to see.
 
 ```go
-answer, err := schemaflux.Asking[string, string](report, "What changed from last quarter?").
-    Strict().
-    Run()
+var recorder schemaflux.Recorder
+ctx = schemaflux.WithRecorder(ctx, &recorder)
+answer, err := schemaflux.Summarize(ctx, article)
+records := recorder.Records()
+_ = answer
+_ = err
+_ = records
 ```
 
-## Confidence, and what it is not
+A `Record` reports the operation, route, request count, timing, usage, cost, contract, checks, and provenance available for that call. A refused call that sent no request also gets a record. A client can keep a standing recorder; set its `Handle` callback or reset it so records do not accumulate indefinitely. A `DataPolicy` can restrict providers, regions, retention, caching, and the minimum delivered contract. A call that cannot meet it fails before sending data.
 
-Result types carry `ModelConfidence`, not `Confidence`. The number is the
-model's own claim about its own answer, produced by the same process that
-produced the answer being scored. It is not calibrated, it is not comparable
-across models or prompts, and it is not a measurement.
+A schema-conforming value is not proof that its claims are true. SchemaFlux distinguishes prompt-only, schema-constrained, invariant-checked, evidence-checked, and more governed contract levels. The delivered level depends on the operation and the caller's output type. Use the record and domain checks when the distinction matters.
 
-Use it as a tie-breaker or a review trigger. Do not use it as a threshold that
-decides whether a result is correct — a wrong answer with a stated 0.95 is a
-normal event, not an anomaly. The fields renamed by this rule are
-`ModelConfidence`, `ModelTrustScore`, `ModelOverallConfidence`, and
-`ModelOverallScore`.
+## Other packages
 
-## Testing code that uses SchemaFlux
+| Package | Purpose |
+| --- | --- |
+| [`chat`](chat) | A conversation session with caller-run tools; it keeps history and checks tool calls. |
+| [`flow`](flow) | Decisions, branches, agreement, review, checkpoints, and bounded parallel work. |
+| [`op`](op) | Typed operation descriptors, preflight plans, stages, and batch runners. |
+| [`exp`](exp) | Experimental transformation and reasoning operations. |
+| [`redact`](redact) | Redact values locally or text with a model. |
+| [`mw`](mw) | Compose provider middleware for caching, routing, retries, limits, and more. |
+| [`pricing`](pricing) | Price tables and process-level spend limits. |
+| [`telemetry`](telemetry) | Observer events, metrics, and optional OpenTelemetry adapter. |
+| [`schemafluxtest`](schemafluxtest) | Scripted provider, recordings, and test helpers. |
 
-`schemafluxtest` ships a fake provider, so your tests need no API key, no
-network, and no money.
+`StreamSummarize`, `StreamRewrite`, `StreamTranslate`, and `StreamExpand` return a `TextStream`. Range over `All`, call `Text`, or call `Cancel` when abandoning it. A stream reports prompt-only delivery and needs a provider that supports streaming. The current middleware wrappers do not forward streams, so a streaming client must use an unwrapped streaming provider.
+
+## Redaction and its limits
+
+`redact.Value` works locally on a Go value. For a known shape, tag sensitive fields with `redact` tags. Its field-name detector matches whole names, not substrings: `FirstName` and `APIKey` match while `Filename` and `CardCount` do not. Its card detector checks Luhn, so it can distinguish a valid unformatted card number from a same-length order number. A bare nine-digit number is deliberately not treated as an SSN because it is indistinguishable from an order ID. This is a pattern matcher, not a classifier; it does not find a person's name inside an arbitrary note. The `Jumble` and `Scramble` strategies are obfuscation, not anonymization: the value's length and shape survive.
+
+`redact.Text` sends free text to the client's provider for model-assisted detection, with local pattern checks beside it. It cannot guarantee that every sensitive span will be found. Use `redact.Value` and field tags when the data's shape is known. In v1, `RedactWithResult` reports the fields and values it replaced; v2 `redact.Value` returns the cleaned value and an error, without a replacement report. Migrate callers that used the report deliberately.
+
+## Tests without an API key
+
+Inject a scripted provider. It records the requests it receives and makes plain `go test` runs offline:
 
 ```go
-import "github.com/monstercameron/schemaflux/schemafluxtest"
-
-func TestRouting(t *testing.T) {
-    provider := schemafluxtest.New().
-        Reply(`{"queue":"billing","priority":"high"}`)
-    defer schemafluxtest.Install(t, provider)()
-
-    result, err := schemaflux.Extract[Triage](ticket, schemaflux.NewExtractOptions())
-    // ... assert on result ...
-
-    // And on what your code actually sent:
-    if !strings.Contains(provider.LastRequest().UserPrompt, "charged twice") {
-        t.Error("the ticket text did not reach the model")
-    }
-}
+var model schemafluxtest.Provider
+model.Reply(`{"name":"Ada","age":36}`)
+ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: &model})
+got, err := schemaflux.Extract[Person](ctx, "Ada is 36 years old")
 ```
 
-The cases worth testing are the ones that cost money to reproduce:
+The example also imports `github.com/monstercameron/schemaflux/v2/schemafluxtest`. More runnable examples are in [`examples`](examples). Tests that reach a paid provider run only with `SCHEMAFLUX_LIVE_TESTS=1`; do not set it for the normal test suite.
 
-- `Fail(err)` — the provider is unreachable
-- `FailThen(2, err, body)` — it fails twice, then works
-- `Reply(a, b, c)` — a different answer per call; the last repeats
-- `Slow(30 * time.Second)` — for timeouts and cancellation; the wait is cancellable
-- `WithUsage(...)` — for cost accounting
-- `Requests()`, `LastRequest()`, `CallCount()` — what your code sent
+## Migrating from v1
 
-`Install` calls `t.Setenv`, which makes Go fail any test that also calls
-`t.Parallel`. That is deliberate: SchemaFlux resolves its provider through a
-package global, so two parallel tests with different providers would silently
-share one. Failing loudly beats a flake nobody can reproduce.
+V2 is a major API change. Update the module import to `github.com/monstercameron/schemaflux/v2`, then make these changes:
 
-## What the type contract covers
+| V1 pattern | V2 pattern |
+| --- | --- |
+| `InitWithEnv()` | Configure `Client`, or use the zero/default client with environment variables. |
+| `Extracting[T](input).Strict().Run()` | `Extract[T](ctx, input, ExtractOptions{Options: Options{Mode: ModeStrict}})` |
+| `Summarizing(text).MaxLength(n).Run()` | `Summarize(ctx, text, SummarizeOptions{TargetLength: n, LengthUnit: "words"})` when the old limit meant words; check the option's units. |
+| `Choosing(items).By(criteria...).Run()` | `Choose(ctx, items, ChooseOptions{Criteria: criteria})`. |
+| Builder `.Context(ctx)` | Pass `ctx` as the first operation argument. |
+| Process-wide provider setup | `WithClient(ctx, client)` for an invocation or `SetDefault(client)` for the process. |
+| Reading global metrics or relying on a logged error | Attach a `Recorder`, inspect `Record`, and handle the returned `*Error`. |
+| Experimental root functions | Import `exp` and call its functions with a context and typed options. |
 
-`Extract[Person]` gives you a `Person`. What that guarantees depends on the mode
-and on what you have told the library about your type, and the distinctions are
-worth knowing because they are the ones people assume away.
+Review each operation's new options and result type rather than doing a mechanical rename. A few operations now refuse output the old API accepted: malformed structure, violations of an offered collection, unmet checked options, and results below a data-policy floor. The v2 API does not ship the old fluent builders. The [`examples`](examples) directory contains end-to-end ports.
 
-**Required fields.** Say so with a tag:
+## Development and release checks
 
-```go
-type Applicant struct {
-    Email  string  `json:"email"  schemaflux:"required"`
-    Middle *string `json:"middle"`                       // pointers are optional
-    Notes  string  `json:"notes,omitempty"`              // legacy: omitempty still means optional
-}
-```
-
-Requiredness used to be inferred from `omitempty` alone, which is a
-*serialization* directive — it tells `encoding/json` to leave a zero value out
-of the output. Reading it as "optional" cut both ways: adding `omitempty` to
-keep your JSON tidy silently made a field optional to `Strict()`, and a field
-you meant to be optional was required unless you knew the convention. The tag
-is explicit; the type is the next signal, since a pointer can be nil; and
-`omitempty` remains the fallback so existing types behave as they did.
-
-The same answer drives all three descriptions of the contract: the schema in the
-prompt, the JSON Schema sent to a provider that enforces one, and the check
-applied to the answer.
-
-**Modes.** `Strict()` requires every required field and validates recursively.
-`Transform()` infers what it reasonably can. `Creative()` reads the source as
-generously as possible — and does **not** invent: it used to instruct the model
-to "generate plausible values for missing fields", on the one operation whose
-purpose is faithfulness to a source. It now says the opposite out loud.
-
-**Confidence floors are enforced where a confidence is reported.** `Classify`,
-`Verify`, and `Derive` refuse a result the model itself scored below the floor
-you set — the option used to reach the prompt and never be read back, on
-operations whose defaults are 0.5, 0.6, and 0.7. `Filter` has no per-item score
-in its response, so its `MinConfidence` is documented as an instruction rather
-than a threshold.
-
-**Validation decides locally what it can.** `Validate`'s field rules are checked
-in Go when they are the kind of thing Go can check exactly:
-
-```go
-result, err := schemaflux.Validate(applicant, schemaflux.NewValidateOptions().
-    WithFieldRules(map[string]string{
-        "email":   "email",
-        "country": "iso3166-alpha2",
-        "age":     "min:18",
-        "tier":    "should sound premium",   // natural language: goes to the model
-    }))
-```
-
-`email`, `url`, `uuid`, `iso3166-alpha2`, `nonempty`, `min`, `max`, `minlen`,
-`maxlen`, `oneof:a|b|c`, and `regex:...` are decided locally. Anything else is
-passed through. If every rule is decidable there is **no provider call at all**,
-and the local findings survive the model's answer — a model that says "valid"
-does not overrule `mail.ParseAddress`.
-
-## Reliability
-
-SchemaFlux treats the shared LLM path as infrastructure.
-
-**Repair.** When an answer cannot be used — it is not JSON, it does not fit the
-type, a required field is missing under `Strict()` — the failure is fed back to
-the model and the request is made again with the problem named. That is
-different from a retry, which sends the same request and hopes. One repair is
-the default, which catches the common cases without turning one failed call
-into unbounded spend; `SCHEMAFLUX_REPAIR_ATTEMPTS` changes it, and `0` disables
-it.
-
-
-Built in:
-- automatic request IDs when missing
-- retries for transient provider failures and empty completions
-- fail-fast behavior for non-retryable auth and request errors
-- JSON response enforcement for structured operations
-- timeout control through context and client configuration
-- structured error and request logging
-
-**Prompt reinforcement is on by default and can be turned off.** Every request
-carries a short block telling the model to do the task rather than restate the
-schema, and to answer with JSON and nothing else. It costs about 53 tokens on a
-text request and 117 on a JSON one, on every call. Set
-`SCHEMAFLUX_PROMPT_REINFORCEMENT=0` to stop paying for it — worth doing only if
-you have measured your own prompts without it, because whether it improves
-answers is a question about your model and your task, not one this library can
-answer for you.
-
-Retry-related environment variables:
-- `SCHEMAFLUX_LLM_MAX_RETRIES`
-- `SCHEMAFLUX_LLM_RETRY_BACKOFF`
-- `SCHEMAFLUX_TIMEOUT`
-- `SCHEMAFLUX_REPAIR_ATTEMPTS`
-
-### Provider failures
-
-A non-200 arrives as a typed `*schemaflux.APIError`, so you branch on the
-status rather than on an English sentence:
-
-```go
-if status, ok := schemaflux.StatusCodeFrom(err); ok && status == 400 {
-    // your schema or your request is wrong; retrying will not help
-}
-
-var apiErr *schemaflux.APIError
-if errors.As(err, &apiErr) && apiErr.Retryable() {
-    // transient
-}
-```
-
-`Error()` prints the status, the model, and the vendor's own `message`, `type`,
-`code`, and `param` — but **not the raw response body**. A provider's error can
-quote your input back at you (a content filter naming the passage it objected
-to, a validation error echoing the field it could not parse), and this library
-exists to run invoices, tickets, and notes through models. That content does not
-belong in your logs by default. The body is retained on the value: use
-`apiErr.Body`, `apiErr.Detail()`, or set `SCHEMAFLUX_ERROR_DETAIL=1` while
-debugging against data you own.
-
-### Rate limits
-
-A 429 or 503 carries the wait the server wants in `Retry-After`, and that number
-is used in place of the local backoff. This matters more than it sounds: the
-computed backoff doubles from 500ms and stops at five seconds, so against a
-provider that limits *per minute* every retry landed inside the same closed
-window and the retry budget bought nothing but latency. The server's wait is
-bounded at two minutes, and the caller's own context deadline still cuts it
-short. When the server states no wait, the local backoff stays in charge.
-
-Client tuning:
-
-```go
-client := schemaflux.NewClient(apiKey).
-    WithRetries(3).
-    WithRetryBackoff(500 * time.Millisecond).
-    WithTimeout(30 * time.Second).
-    WithProvider("openai")
-```
-
-## Logging
-
-SchemaFlux uses structured logging backed by `slog`.
-
-Environment variables:
-- `SCHEMAFLUX_LOG_LEVEL=debug|info|warn|error`
-- `SCHEMAFLUX_LOG_FORMAT=text|json`
-- `SCHEMAFLUX_LOG_FILE=/path/to/schemaflux.log`
-- `SCHEMAFLUX_LOG_BUFFER=1000`
-- `SCHEMAFLUX_LOG_SOURCE=true`
-- `SCHEMAFLUX_LOG_DISABLE_STDERR=true`
-- `SCHEMAFLUX_LOG_DISABLE_CAPTURE=true`
-
-Programmatic configuration:
-
-```go
-schemaflux.ConfigureLogging(schemaflux.LoggerConfig{
-    Level:      schemaflux.LogDebug,
-    Format:     "json",
-    FilePath:   "schemaflux.log",
-    BufferSize: 2000,
-    Capture:    true,
-})
-
-entries := schemaflux.GetLogEntries()
-fmt.Println("captured logs:", len(entries))
-schemaflux.ResetLogEntries()
-```
-
-## Metrics And Cost Tracking
-
-SchemaFlux records:
-- request counts
-- request durations
-- prompt, completion, cached, reasoning, and total tokens when available
-- prompt, completion, cached, reasoning, and total USD cost when available
-
-Per-request cost history is tracked separately from low-cardinality aggregate metrics.
-
-**Unpriced is not free.** A model with no entry in the pricing table reports
-`Priced: false` and a zero cost, and those two things together mean "unknown".
-They are not the same as a zero cost with `Priced: true`, which would mean free.
-Check the flag before you add the numbers up:
-
-```go
-if !record.Cost.Priced {
-    // This call's cost is unknown, not zero. RegisterPricingModel, or exclude it.
-}
-```
-
-No model is ever priced at another model's rates. That substitution is what
-made an Opus call report Haiku's price — roughly 60x under — while presenting
-it as a precise figure. A dated snapshot (`gpt-5-2026-01-15`) still prices from
-its base model; a version bump (`gpt-5.6-luna`) does not, because it is a
-different model.
-
-**The history is bounded** at ten thousand records, oldest evicted;
-`SetCostHistoryLimit` changes it. `GetRequestCost` is a lookup rather than a
-scan. Aggregates describe the records still retained.
-
-**Budgets alert on an edge, and can enforce.** `SetBudget` fires its callback
-once per threshold crossing per period rather than on every request past 80%.
-`SetBudgetEnforcement(true)` makes an exhausted budget refuse calls *before*
-they are made, returning `pricing.ErrBudgetExceeded`; it is off by default,
-because budgets have been advisory here since the library shipped.
-
-```go
-import (
-    "fmt"
-    "time"
-
-    "github.com/monstercameron/schemaflux/pricing"
-)
-
-summary := pricing.GetCostSummary(time.Now().Add(-1*time.Hour), map[string]string{
-    "provider": "openai",
-})
-fmt.Printf("requests=%d avg_cost=%.6f avg_tokens=%.1f\n",
-    summary.RequestCount,
-    summary.AverageCostPerRequest,
-    summary.AverageTokensPerRequest,
-)
-
-record, ok := pricing.GetRequestCost("req-123")
-if ok {
-    fmt.Printf("request cost: %.6f total tokens: %d\n",
-        record.Cost.TotalCost,
-        record.TokenUsage.TotalTokens,
-    )
-}
-```
-
-## Providers
-
-Default provider:
-- `openai` (`gpt-5.6-luna` / `-sol` / `-terra` by tier, over the Responses API)
-
-Secondary provider:
-- `cerebras` (`gemma-4-31b`, over the OpenAI-compatible chat API)
-
-Built-in providers:
-- `openai`
-- `cerebras`
-- `anthropic`
-- `openrouter`
-- `deepseek`
-- `qwen`
-- `zai`
-- `local`
-
-```go
-client := schemaflux.NewClient(apiKey)
-
-client.WithProvider("openai")
-client.WithProvider("anthropic")
-client.WithProvider("deepseek")
-client.WithProvider("qwen")
-client.WithProvider("zai")
-client.WithProvider("local")
-```
-
-Provider notes:
-- `anthropic` uses the native Anthropic Messages API
-- `deepseek`, `qwen`, `zai`, `openrouter`, and `cerebras` use the shared OpenAI-compatible provider path
-- provider-specific env vars are supported, including `CEREBRAS_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`, and `ZAI_API_KEY`
-
-### Cerebras
-
-```go
-client := schemaflux.NewClient("").WithProvider("cerebras") // key from CEREBRAS_API_KEY
-schemaflux.SetDefaultClient(client)
-
-claim, err := schemaflux.Extract[ExpenseClaim](text, schemaflux.NewExtractOptions())
-```
-
-Nothing else about the call changes. `Extract[T]` sends the same strict JSON
-schema it sends to OpenAI, and Cerebras enforces it with constrained decoding —
-the guarantee is the provider's, not the prompt's. Runnable examples are
-`Example_secondaryProvider` and `Example_secondaryProviderEnforcesTheSchema`.
-
-Two things are worth knowing:
-
-- **All three tiers map to `gemma-4-31b`.** The tiers trade accuracy for
-  latency, and there is no cheaper Cerebras sibling whose accuracy loss buys
-  anything here. Mapping `Quick` to a smaller model would be inventing a
-  trade-off no benchmark has shown.
-- **Schema annotations are dropped.** Cerebras rejects `format`, `pattern`,
-  `minItems`, `minimum`, and their neighbours outright rather than ignoring
-  them, so a `time.Time` field — which the generator annotates with
-  `format: date-time` — would fail the whole request. The transport strips them.
-  They are annotations on top of a type, never the type itself, so nothing the
-  Go type enforces on unmarshal is lost.
-
-Free-tier keys are limited to **5 requests/minute**; paid keys to 500. Either
-way a 429 is waited out using the server's own `Retry-After`, not a local
-backoff — see the resilience note below.
-
-Custom provider registration:
-
-```go
-schemaflux.RegisterProviderFactory("myvendor", func(cfg schemaflux.ProviderConfig) (schemaflux.Provider, error) {
-    cfg.BaseURL = "https://vendor.example.com/v1"
-    return schemaflux.NewOpenAICompatibleProvider("myvendor", cfg)
-})
-
-client := schemaflux.NewClient("").
-    WithProviderConfig("myvendor", schemaflux.ProviderConfig{
-        APIKey: "vendor-key",
-    })
-```
-
-Default OpenAI intelligence mapping:
-- `Smart -> gpt-5.4`
-- `Fast -> gpt-5-mini`
-- `Quick -> gpt-5-nano`
-
-Overrides:
-- `SCHEMAFLUX_MODEL`
-- `SCHEMAFLUX_MODEL_SMART`
-- `SCHEMAFLUX_MODEL_FAST`
-- `SCHEMAFLUX_MODEL_QUICK`
-
-## Environment
-
-Common environment variables:
-- `SCHEMAFLUX_API_KEY`
-- `OPENAI_API_KEY`
-- `SCHEMAFLUX_PROVIDER`
-- `SCHEMAFLUX_TIMEOUT`
-- `SCHEMAFLUX_MODEL`
-- `SCHEMAFLUX_MODEL_SMART`
-- `SCHEMAFLUX_MODEL_FAST`
-- `SCHEMAFLUX_MODEL_QUICK`
-
-### Credential resolution
-
-`Init` and `InitWithEnv` take the first credential they find, in this order:
-
-1. the key passed to `Init(key)`, if it is not empty
-2. `SCHEMAFLUX_API_KEY`
-3. the provider-specific name — `SCHEMAFLUX_OPENAI_API_KEY`, `SCHEMAFLUX_ANTHROPIC_API_KEY`, and so on
-4. the provider's own conventional name — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
-5. for OpenAI only, the bare `OPENAI`, which is a common spelling in `.env` files
-
-If none of them resolves, `Init` returns an error rather than falling through to
-the mock provider. The mock answers every operation with `Mock response for: …`,
-which parses into zero-valued structs and is indistinguishable from a working
-deployment until someone reads the output. To use it deliberately, set
-`SCHEMAFLUX_PROVIDER=local`, or call `NewClient("").WithMockProvider()`.
-
-Both functions return an error. Check it:
-
-```go
-if err := schemaflux.InitWithEnv(); err != nil {
-    log.Fatal(err)
-}
-```
-
-An operation run before a provider exists reports what to do about it, but that
-is a fallback — the error from `Init` is the one that says why.
-
-### `.env` files
-
-`InitWithEnv()` with no arguments loads `./.env` when it exists, and is not an
-error when it does not. `InitWithEnv("config/dev.env", "config/local.env")`
-loads exactly those paths, in order, and reports a path that does not exist.
-
-**A `.env` file supplies defaults; it does not override the process
-environment.** A variable already exported in the shell keeps its value, so
-`SCHEMAFLUX_API_KEY=… go run ./cmd/app` behaves as expected regardless of what
-the file contains.
-
-## Repository layout
-
-```
-schemaflux.go        the only file at the root: the public API
-tests/               the black-box suite — package tests
-internal/api/client  the Client and catalogue, with their own tests
-internal/api/fluent  the builders
-internal/            the rest of the implementation, private by compiler rule
-internal/testfixtures  doubles shared between the test packages
-mw/                  optional middleware (cache, retry, circuit breaker)
-pricing/             cost calculation and budgets
-telemetry/           logging, metrics, tracing seams
-schemafluxtest/      fakes, recorder, and cassette replay for testing YOUR code
-cmd/                 a live smoke command
-examples/            45 runnable examples, plus smarttodo (its own module)
-```
-
-One file at the root, and it has to be there: for a Go module the root package is
-what `import "github.com/monstercameron/schemaflux"` resolves to, so the public
-API cannot live anywhere else. Moving it under `pkg/` would rename the import to
-`.../schemaflux/pkg` and break every consumer.
-
-Everything testable moved to where its tests can reach it. The `Client` and the
-catalogue are in `internal/api/client` with their own tests beside them, because
-Go requires a package's tests to sit in its directory and those tests reach
-unexported state. `schemaflux.Client` is a **type alias** for that package's
-type, not a wrapper, so it is the same type to the compiler and every method
-comes across without being re-declared.
-
-That alias has one consequence worth knowing: `testdata/api_surface.txt`
-snapshots declarations found in the root directory, so it can no longer see the
-client's fifteen methods. They are pinned instead by an interface assertion in
-`tests/client_methods_test.go`, which is a stronger guarantee — removing or
-re-typing one breaks the build rather than a golden-file comparison, and it
-cannot be silenced by regenerating a snapshot.
-
-Fixtures shared between the two test packages live in `internal/testfixtures`
-rather than being copied into both, which is how two fixtures meant to be
-identical drift apart and start proving different things. That is distinct from
-`schemafluxtest`, which exists for consumers testing code built on this library:
-one may know things about the implementation, the other must not.
-
-## Design Notes
-
-- The root package is the public facade for downstream Go projects.
-- Builder implementation lives under `internal/` so the exported API can evolve without exposing internal plumbing.
-- Prefer collection-aware builders when they exist instead of scattering raw single-call logic across application code.
-- The local provider is useful for tests and smoke runs, not for proving semantic correctness.
-
-## What 1.0 does not include
-
-The version number is a compatibility promise about the public Go API. It is
-not a claim that everything this project set out to build is finished. What is
-missing, honestly:
-
-**Two things cannot be verified on the maintainer's machine.** `-race` does not
-run on windows/arm64, so the race and full-CI-gate criteria are *unverified*
-rather than unmet — `-shuffle=on` is used throughout and is genuinely weaker, as
-it reorders tests without instrumenting memory access. The CI matrix covers
-ubuntu, macos, and windows; a green run there is what closes these.
-
-**Only OpenAI is live-verified.** Its smoke test ran across three models and the
-responses are committed as cassettes, so those assertions replay for free. The
-other six registered providers — anthropic, openrouter, cerebras, deepseek,
-qwen, zai — have never been called against their real endpoints. They are
-implemented and unit-tested; they are not proven.
-
-**Five operations have not been lowered onto the `Op` descriptor.** Question,
-Predict, Cluster, Compress, and Decompose still call the provider directly, so
-they declare no invariants and no batch algebra, and contract negotiation does
-not reach them. Everything else does.
-
-**Process-wide state still exists.** A `Client` owns an immutable per-call
-snapshot — provider, budget, scheduler, data policy — so two clients no longer
-interfere. But `ops.defaultProvider` remains for callers who never build a
-client, and the observer and cache policy are still process-wide.
-
-**Evidence does not join to lineage.** A claim resolves to the result that
-produced it, and separately to a source span, but nothing connects the two: a
-three-stage pipeline does not resolve back to a byte range in the original
-input.
-
-**No alert definitions ship.** Runbooks for twelve incident classes do, and they
-name the dashboard panels, but alerts are deployment-specific and this library
-ships no deployment.
-
-## Documentation
-
-- [API reference](docs/reference/API.md)
-- [Architecture decisions](docs/adr/) — why the awkward choices are the way they are
-- [Examples](examples/)
-- [Task list](TODOS.md) — what is being built, in what order, with the evidence for what is done
-
-## Compatibility
-
-**Both API styles are supported, and neither is deprecated.** The direct
-functions (`schemaflux.Extract[T](input, opts)`) are the canonical semantics:
-easiest to wrap, to test, and to construct options for dynamically. The fluent
-builders (`schemaflux.Extracting[T](input).Strict().Run()`) are the ergonomic
-surface. Every fluent call lowers to the same options and the same execution,
-and a test asserts they send identical requests.
-
-This corrected an earlier claim here that the direct API was
-"compatibility-only". It was not true — most of this README's own examples use
-it — and saying so while shipping no `// Deprecated:` marker anywhere meant no
-linter, IDE, or `staticcheck` run would have told a user they were on a legacy
-path even if they had been.
-
-What *is* deprecated carries the marker, so your tools will say so:
-`ValidateLegacy` (use `Validate`, which reports which field failed and how
-badly) and `QuestionLegacy` (use `Question`).
-
-### Breaking changes, and what to do about them
-
-These are behaviour changes that a recompile will not always catch. Each says
-what broke and what to write instead.
-
-**`Mode` and `Speed` renumbered so zero means unset.** `Strict` was `Mode(0)`
-and `Smart` was `Speed(0)`, and every option merge tests `if user.Mode != 0` —
-so on about ten operations there was no value you could pass that meant Strict
-or Smart. `ModeUnset` and `TierUnset` occupy zero now.
-
-- If you compared a `Mode` or `Speed` to an untyped `0`, compare it to
-  `schemaflux.ModeUnset` or `schemaflux.TierUnset` instead.
-- If you relied on a zero-valued options struct meaning Strict and Smart, say so
-  explicitly. An unset field now takes the operation's own default.
-
-**`Classify`'s category type is constrained to `~string`.** The category came
-back as a string and was converted through a JSON round trip, so
-`Classify[Ticket, Priority]` with `type Priority int` compiled and failed at run
-time. It is a compile error now. Use a string-kinded type:
-
-```go
-type Priority string    // was: type Priority int
-```
-
-**`ClassifyResult` gained `Categories []C`.** Additive. `MultiLabel` and
-`MaxCategories` previously changed the prompt and had nowhere to put an answer;
-`MaxCategories` is now enforced, so a model returning more labels than you asked
-for is an error rather than a longer list.
-
-**`Complete` and `CompleteField` no longer take a provider.** They were the only
-operations that did. Drop the argument; the client's provider is used, as with
-every other operation.
-
-**`Redact` takes typed options.** `Redact[T](input, opts ...interface{})` became
-`...RedactOptions`. Passing the wrong struct used to substitute the defaults
-silently; it is a compile error now.
-
-**Confidence floors are enforced.** `Classify`, `Verify`, and `Derive` return an
-error when the model's own reported confidence is below `MinConfidence`, whose
-defaults are 0.5, 0.6, and 0.7. If you were relying on low-confidence results
-coming back, set `WithMinConfidence(0)`.
-
-**`Summarize` checks `TargetLength`.** A summary more than 20% over the target
-is an error rather than a longer summary.
-
-**`ResetCostTracking` no longer clears budget configuration.** It used to null
-the limits and the callback, so clearing history silently disabled spend
-alerting. Use `ResetBudget` for that.
-
-**`SCHEMAFLUX_JAEGER_ENDPOINT` is no longer supported.** OpenTelemetry dropped
-the Jaeger exporter in 2023 and Jaeger accepts OTLP natively. Point
-`SCHEMAFLUX_OTLP_ENDPOINT` at the collector's OTLP port. Setting the old
-variable logs an error rather than silently exporting nothing.
-
-**`Init` returns an error for a provider it cannot resolve a model for.** It
-always had the error return; it now uses it. `WithProvider("qwen")` without
-`SCHEMAFLUX_MODEL` reports at construction instead of failing on the first call.
-
-**`WithContext` is `WithBackground` on four options types.** `CompleteOptions`,
-`InferOptions`, `DiffOptions`, and `ExplainOptions` each carried a prose
-`Context` field beside the embedded `context.Context` — two different things
-through one selector, one a deadline and the other prompt material. Rename the
-call; the meaning is unchanged.
-
-**Cost history is bounded.** Ten thousand records by default, oldest evicted;
-`SetCostHistoryLimit` changes it. Aggregates describe the retained history.
+Run `./scripts/check.sh` for the repository's CI gate; `./scripts/check.sh --list` shows its steps. The suite clears `SCHEMAFLUX_LIVE_TESTS` before running. See [`AGENTS.md`](AGENTS.md) for the project rules and [`TODOS.md`](TODOS.md) for the upgrade's evidence and remaining follow-ups.

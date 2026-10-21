@@ -1,0 +1,43 @@
+type ApprovalGate[T any] func(context.Context, T) (ApprovalOutcome, error)
+type ApprovalOutcome struct{Approved bool; Evidence []string; FailedChecks []string; SuggestedAction string}
+func Approve[T any](ctx context.Context, step schemaflux.Step[T], gate ApprovalGate[T], inputRefs []string) (T, error)
+func BranchAhead[T any](ctx context.Context, decide schemaflux.Step[bool], yes schemaflux.Step[T], no schemaflux.Step[T]) (T, error)
+func BranchBoth[T any](ctx context.Context, decide schemaflux.Step[bool], yes schemaflux.Step[T], no schemaflux.Step[T]) (T, error)
+type Case struct{Condition any; Action func()}
+func Checkpoint[T any](ctx context.Context, store CheckpointStore, runID string, step string, input any, produce schemaflux.Step[T]) (T, CheckpointOutcome, error)
+type CheckpointOutcome struct{Resumed bool; InputChanged bool}
+type CheckpointRecord struct{InputHash string; Value []byte}
+type CheckpointStore interface{Load(ctx context.Context, runID string, step string) (CheckpointRecord, bool, error); Save(ctx context.Context, runID string, step string, record CheckpointRecord) error}
+type ChunkError struct{Index int; Offset int; Err error}
+method (ChunkError).Error() string
+method (ChunkError).Unwrap() error
+func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], opts ...schemaflux.Options) (DecideResult[T], error)
+type DecideResult[T any] struct{Value T; Index int; Explanation string; ModelConfidence float64; Alternatives []int; Fallback bool; ByCondition bool}
+type Decision[T any] struct{Value T; Description string; Condition func(situation any) bool; Fallback bool}
+func Escalate[T any](ctx context.Context, first schemaflux.Step[T], stronger schemaflux.Step[T], accept func(T) bool) (T, EscalationRecord, error)
+type EscalationRecord struct{Escalated bool; Reason string; FirstError error}
+func ExactAgreement[T comparable](minimum int) Reconciler[T]
+func Guard[T any](state T, checks ...func(T) (bool, string)) GuardResult
+type GuardResult struct{CanProceed bool; FailedChecks []string}
+func MapReduce[T, R any](ctx context.Context, items []T, operation func(context.Context, []T) (R, error), opts ...MapReduceOptions) ([]R, MapReduceResult, error)
+type MapReduceOptions struct{ChunkSize int; Concurrency int; ContinueOnError bool}
+type MapReduceResult struct{Chunks int; Failed []ChunkError}
+method (MapReduceResult).Complete() bool
+func Match(ctx context.Context, input any, cases ...Case) (bool, error)
+type MemoryStore struct{}
+method (*MemoryStore).Delete(ctx context.Context, runID string, step string) error
+method (*MemoryStore).Load(ctx context.Context, runID string, step string) (CheckpointRecord, bool, error)
+method (*MemoryStore).Save(ctx context.Context, runID string, step string, record CheckpointRecord) error
+func Otherwise(action func()) Case
+type ReconcileOutcome[T any] struct{Winner T; Agree int; Abstain bool; Evidence []string; FailedChecks []string; SuggestedAction string}
+type Reconciler[T any] func(ctx context.Context, samples []T) (ReconcileOutcome[T], error)
+type Review[T any] struct{Candidate T; InputRefs []string; Evidence []string; FailedChecks []string; Attempts int; SuggestedAction string}
+type ReviewError[T any] struct{Review Review[T]}
+method (*ReviewError[T]).Error() string
+method (*ReviewError[T]).Is(target error) bool
+func RouteAhead[T any](ctx context.Context, decide schemaflux.Step[string], likely string, routes ...schemaflux.Route[T]) (T, error)
+func Until[T any](ctx context.Context, step schemaflux.Step[T], pred func(T) bool, attempts int) (T, int, error)
+func Vote[T any](ctx context.Context, samples int, step schemaflux.Step[T], reconcile Reconciler[T], opts ...VoteOptions) (T, VoteRecord, error)
+type VoteOptions struct{Concurrency int}
+type VoteRecord struct{Requested int; Succeeded int; Failed int; Internal int; Agree int; AgreementRate float64}
+func When(condition any, action func()) Case

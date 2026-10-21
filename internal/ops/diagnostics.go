@@ -3,10 +3,10 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// The kernel side of A-011's diagnostic sink: a way for a caller to attach a
+// The kernel side of diagnostic sink: a way for a caller to attach a
 // sink to a context so RunOp's repair loop can hand it a failing answer's raw
 // body, without RunOp taking a sink as a parameter every operation in this
 // package would then have to thread through -- the same reasoning

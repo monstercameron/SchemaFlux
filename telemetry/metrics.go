@@ -1,239 +1,129 @@
 package telemetry
 
 import (
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/logger"
+	wrapped "github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
 )
 
-// MetricEvent represents a single metric observation before aggregation.
-type MetricEvent struct {
-	Name      string
-	Value     float64
-	Tags      map[string]string
+// A Metric is one observation of one of the library's own metrics, as it is
+// recorded, before it is aggregated.
+type Metric struct {
+	// Name is the metric's name: "llm_requests", "llm_request_duration_ms".
+	Name string
+
+	// Value is the observation. It is always a finite number: the library does
+	// not record one that is not.
+	Value float64
+
+	// Tags describe what the observation is about: the provider, the model, the
+	// mode, the tier, the outcome. Every value of a tag that came from outside
+	// the program is at most 64 bytes of printable ASCII. A nil or empty Tags
+	// means the observation has none. The map is the Sink's own: each sink is
+	// handed a copy, so one that keeps it or changes it is not seen by another.
+	Tags map[string]string
+
+	// Timestamp is when the observation was recorded, in UTC.
 	Timestamp time.Time
 }
 
-// MetricSnapshot is an aggregated view of all observations for a metric/tag set.
-type MetricSnapshot struct {
-	Name      string
-	Tags      map[string]string
-	Count     int64
-	Sum       float64
-	Min       float64
-	Max       float64
+// A Snapshot is the aggregate of every observation of one metric with one set
+// of tags.
+type Snapshot struct {
+	// Name and Tags identify the series. A series with no tags has an empty,
+	// non-nil Tags.
+	Name string
+	Tags map[string]string
+
+	// Count is the number of observations, and Sum, Min and Max aggregate
+	// their values. A series is created by its first observation, so Count is
+	// at least 1.
+	Count int64
+	Sum   float64
+	// Min is the smallest observed value in this series.
+	Min float64
+	// Max is the largest observed value in this series.
+	Max float64
+
+	// LastValue is the most recent observation's value.
 	LastValue float64
+
+	// UpdatedAt is when the most recent observation was recorded, in UTC.
 	UpdatedAt time.Time
 }
 
-// MetricSink receives individual metric events for external export.
-type MetricSink interface {
-	RecordMetric(event MetricEvent)
-}
-
-type metricKey struct {
-	name string
-	tags string
-}
-
-type metricAggregate struct {
-	snapshot MetricSnapshot
-}
-
-var metricRegistry = struct {
-	mu      sync.RWMutex
-	metrics map[metricKey]*metricAggregate
-	sinks   map[uint64]MetricSink
-	nextID  uint64
-}{
-	metrics: make(map[metricKey]*metricAggregate),
-	sinks:   make(map[uint64]MetricSink),
-}
-
-// RecordMetric records an integer-valued metric observation.
-func RecordMetric(name string, value int64, tags map[string]string) {
-	RecordMetricValue(name, float64(value), tags)
-}
-
-// RecordMetricValue records a metric observation and updates the in-process aggregate registry.
-func RecordMetricValue(name string, value float64, tags map[string]string) {
-	if !config.IsMetricsEnabled() || strings.TrimSpace(name) == "" {
-		return
-	}
-
-	now := time.Now().UTC()
-	event := MetricEvent{
-		Name:      name,
-		Value:     value,
-		Tags:      cloneTags(tags),
-		Timestamp: now,
-	}
-
-	key := metricKey{
-		name: name,
-		tags: canonicalTags(event.Tags),
-	}
-
-	var sinks []MetricSink
-
-	metricRegistry.mu.Lock()
-	aggregate, ok := metricRegistry.metrics[key]
-	if !ok {
-		aggregate = &metricAggregate{
-			snapshot: MetricSnapshot{
-				Name:      name,
-				Tags:      cloneTags(event.Tags),
-				Min:       value,
-				Max:       value,
-				LastValue: value,
-				UpdatedAt: now,
-			},
-		}
-		metricRegistry.metrics[key] = aggregate
-	}
-
-	aggregate.snapshot.Count++
-	aggregate.snapshot.Sum += value
-	if aggregate.snapshot.Count == 1 || value < aggregate.snapshot.Min {
-		aggregate.snapshot.Min = value
-	}
-	if aggregate.snapshot.Count == 1 || value > aggregate.snapshot.Max {
-		aggregate.snapshot.Max = value
-	}
-	aggregate.snapshot.LastValue = value
-	aggregate.snapshot.UpdatedAt = now
-
-	for _, sink := range metricRegistry.sinks {
-		sinks = append(sinks, sink)
-	}
-	metricRegistry.mu.Unlock()
-
-	if config.GetDebugMode() {
-		logger.GetLogger().Debug("Metric recorded",
-			"name", name,
-			"value", value,
-			"tags", event.Tags,
-		)
-	}
-
-	for _, sink := range sinks {
-		sink.RecordMetric(event)
-	}
-}
-
-// GetMetricSnapshot returns the aggregate for a specific metric/tag set.
-func GetMetricSnapshot(name string, tags map[string]string) (MetricSnapshot, bool) {
-	metricRegistry.mu.RLock()
-	defer metricRegistry.mu.RUnlock()
-
-	snapshot, ok := metricRegistry.metrics[metricKey{
-		name: name,
-		tags: canonicalTags(tags),
-	}]
-	if !ok {
-		return MetricSnapshot{}, false
-	}
-
-	return cloneSnapshot(snapshot.snapshot), true
-}
-
-// SnapshotMetrics returns all metric aggregates sorted by name and tags.
-func SnapshotMetrics() []MetricSnapshot {
-	metricRegistry.mu.RLock()
-	defer metricRegistry.mu.RUnlock()
-
-	snapshots := make([]MetricSnapshot, 0, len(metricRegistry.metrics))
-	for _, aggregate := range metricRegistry.metrics {
-		snapshots = append(snapshots, cloneSnapshot(aggregate.snapshot))
-	}
-
-	slices.SortFunc(snapshots, func(a, b MetricSnapshot) int {
-		if cmp := strings.Compare(a.Name, b.Name); cmp != 0 {
-			return cmp
-		}
-		return strings.Compare(canonicalTags(a.Tags), canonicalTags(b.Tags))
-	})
-
-	return snapshots
-}
-
-// ResetMetrics clears all recorded metric aggregates.
-func ResetMetrics() {
-	metricRegistry.mu.Lock()
-	defer metricRegistry.mu.Unlock()
-	metricRegistry.metrics = make(map[metricKey]*metricAggregate)
-}
-
-// RegisterMetricSink registers an external sink and returns a function that removes it.
-func RegisterMetricSink(sink MetricSink) func() {
-	if sink == nil {
-		return func() {}
-	}
-
-	metricRegistry.mu.Lock()
-	id := metricRegistry.nextID
-	metricRegistry.nextID++
-	metricRegistry.sinks[id] = sink
-	metricRegistry.mu.Unlock()
-
-	return func() {
-		metricRegistry.mu.Lock()
-		delete(metricRegistry.sinks, id)
-		metricRegistry.mu.Unlock()
-	}
-}
-
-// Average returns the arithmetic mean of the observations in the snapshot.
-func (snapshot MetricSnapshot) Average() float64 {
-	if snapshot.Count == 0 {
+// Average returns the arithmetic mean of the observations of the snapshot, or
+// zero when it holds none.
+func (s Snapshot) Average() float64 {
+	if s.Count == 0 {
 		return 0
 	}
-	return snapshot.Sum / float64(snapshot.Count)
+	return s.Sum / float64(s.Count)
 }
 
-func cloneSnapshot(snapshot MetricSnapshot) MetricSnapshot {
-	return MetricSnapshot{
-		Name:      snapshot.Name,
-		Tags:      cloneTags(snapshot.Tags),
-		Count:     snapshot.Count,
-		Sum:       snapshot.Sum,
-		Min:       snapshot.Min,
-		Max:       snapshot.Max,
-		LastValue: snapshot.LastValue,
-		UpdatedAt: snapshot.UpdatedAt,
-	}
+// A Sink receives each observation of the library's metrics as it is recorded,
+// for export.
+//
+// Record runs on the goroutine that recorded the metric, which is usually the
+// one making a call, so a Sink that blocks stalls that call. A Sink with slow
+// work to do, a network export, hands the observation to its own queue and
+// returns. Sinks are called one after another in the order they were
+// registered, and one that panics is recovered and logged, by the metric's name
+// alone, without the observation, so it cannot stop the sinks after it or
+// unwind into the caller.
+type Sink interface {
+	Record(m Metric)
 }
 
-func cloneTags(tags map[string]string) map[string]string {
-	if len(tags) == 0 {
-		return map[string]string{}
+// RegisterSink registers s beside the sinks already registered and returns the
+// function that removes this registration and no other. The removals may run in
+// any order and more than once. A nil sink registers nothing, and its remove does
+// nothing.
+//
+// The library records its metrics while at least one sink is registered, or
+// while the process has turned recording on (SCHEMAFLUX_METRICS), and Snapshots
+// aggregates what is recorded. When the last sink is removed recording stops,
+// unless the process turned it on, and the aggregates are left as they were.
+func RegisterSink(s Sink) (remove func()) {
+	if s == nil {
+		return func() {}
 	}
-
-	cloned := make(map[string]string, len(tags))
-	for key, value := range tags {
-		cloned[key] = value
-	}
-	return cloned
+	removeBase := wrapped.RegisterMetricSink(sink{s})
+	var once sync.Once
+	return func() { once.Do(removeBase) }
 }
 
-func canonicalTags(tags map[string]string) string {
-	if len(tags) == 0 {
-		return ""
-	}
+// sink is a registered Sink as the package it wraps sees it.
+type sink struct{ sink Sink }
 
-	keys := make([]string, 0, len(tags))
-	for key := range tags {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
+func (s sink) RecordMetric(event wrapped.MetricEvent) {
+	s.sink.Record(Metric{Name: event.Name, Value: event.Value, Tags: event.Tags, Timestamp: event.Timestamp})
+}
 
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, key+"="+tags[key])
+// Snapshots returns the aggregate of every series recorded so far, sorted by
+// name and then by tags. Each snapshot is a copy: changing it changes nothing the
+// registry holds. A series is aggregated only while a sink is registered, so
+// with none ever registered the result is empty.
+//
+// The registry keeps at most 64 distinct values for each tag, and records a value
+// past that as "other", so that one tag cannot fill the registry for everything
+// else; and at most 2048 series, one for each distinct name and set of tags, for
+// the life of the process, because a tag whose values come from outside the
+// program would otherwise grow it without limit. An observation that
+// would start a series past the limit is counted in one series of its own, named
+// "schemaflux_metric_series_overflow", which has no tags and whose Count and Sum
+// are the number of observations turned away. It exists only once the limit has
+// been reached, and it is among the snapshots when it does.
+func Snapshots() []Snapshot {
+	recorded := wrapped.SnapshotMetrics()
+	snapshots := make([]Snapshot, len(recorded))
+	for i, s := range recorded {
+		snapshots[i] = Snapshot{
+			Name: s.Name, Tags: s.Tags,
+			Count: s.Count, Sum: s.Sum, Min: s.Min, Max: s.Max,
+			LastValue: s.LastValue, UpdatedAt: s.UpdatedAt,
+		}
 	}
-	return strings.Join(parts, ",")
+	return snapshots
 }

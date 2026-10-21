@@ -1,13 +1,15 @@
 package ops
 
 import (
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The type support matrix.
@@ -74,8 +76,11 @@ type TypeReport struct {
 // The worst, not the first: a struct with one rejected field is rejected
 // whatever else it holds, and telling a caller about a restricted map while a
 // channel sits two fields down wastes the trip.
+//
+// What it says about a type is worked out once for each type and read from
+// there after, since a type does not change between calls.
 func ClassifyType(targetType reflect.Type) TypeReport {
-	return classifyType(targetType, map[reflect.Type]bool{}, nil, 0)
+	return typePlanFor(targetType).classification()
 }
 
 func classifyType(targetType reflect.Type, seen map[reflect.Type]bool, path []string, depth int) TypeReport {
@@ -94,7 +99,16 @@ func classifyType(targetType reflect.Type, seen map[reflect.Type]bool, path []st
 	// A type that says how it serialises is taken at its word, but its wire
 	// form cannot be derived from its Go shape -- so the schema describes
 	// something the decode may not match.
-	if targetType != reflect.TypeOf(time.Time{}) && implementsJSONMarshaler(targetType) {
+	//
+	// time.Time is exempt, and so is a pointer to it: both are written as an
+	// RFC 3339 string, which the schema names.
+	if !isTimeType(targetType) && implementsJSONMarshaler(targetType) {
+		// A type that writes itself and does not read itself is still read field
+		// by field, and a field with the option format makes that fail. Only the
+		// fields it declares are looked at, as nothing else about them is.
+		if report, refused := formatOptionInOwnMembers(targetType, path); refused {
+			return report
+		}
 		return TypeReport{
 			Support: SupportRestricted,
 			Reason:  fmt.Sprintf("%s has a custom JSON representation, which the generated schema cannot see", targetType),
@@ -120,34 +134,46 @@ func classifyType(targetType reflect.Type, seen map[reflect.Type]bool, path []st
 		seen[targetType] = true
 		defer delete(seen, targetType)
 
+		// Neither the schema nor the answer can describe the fields of a type
+		// whose embedded structs lead back to itself: there is no end to the
+		// fields it promotes. It is refused, where a recursion through a named
+		// field is only restricted, because there the schema can stop and name
+		// the type, and here there is nothing to name.
+		if embeddingCycle(targetType) {
+			return TypeReport{
+				Support: SupportRejected,
+				Reason:  fmt.Sprintf("%s embeds structs that lead back to one of themselves, so the fields it promotes cannot be listed", targetType),
+				Path:    joinPath(path),
+			}
+		}
+
+		// What is classified is what the schema declares and the decoder reads:
+		// the members encoding/json finds in the struct. They include the
+		// exported fields of an embedded struct however its type is spelt, and
+		// leave out a name that is hidden or ambiguous. Classifying the struct's
+		// own exported fields, with one field for each exported embedded struct,
+		// skipped what an unexported embedded struct promotes and reported on
+		// names the decoder never reads.
 		worst := TypeReport{Support: SupportFull}
-		exported := 0
-		for i := 0; i < targetType.NumField(); i++ {
-			field := targetType.Field(i)
-			if !field.IsExported() {
-				continue
+		members := jsonMembers(targetType)
+		for _, member := range members {
+			var report TypeReport
+			if member.unexportedPointer != nil {
+				report = unexportedEmbeddedPointerReport(targetType, member.unexportedPointer, path)
+			} else if memberPath := append(append(slices.Clone(path), member.route...), member.name); hasFormatOption(member) {
+				report = formatOptionReport(targetType, memberPath)
+			} else {
+				report = classifyType(member.field.Type, seen, memberPath, depth+1)
 			}
-			tag := field.Tag.Get("json")
-			if strings.Split(tag, ",")[0] == "-" && !strings.Contains(tag, ",") {
-				continue
-			}
-			exported++
-
-			name := field.Name
-			if parts := strings.Split(tag, ","); parts[0] != "" {
-				name = parts[0]
-			}
-
-			report := classifyType(field.Type, seen, append(path, name), depth+1)
 			if report.Support > worst.Support {
 				worst = report
 			}
 		}
 
-		if exported == 0 && worst.Support == SupportFull {
+		if len(members) == 0 && worst.Support == SupportFull {
 			return TypeReport{
 				Support: SupportOpaque,
-				Reason:  fmt.Sprintf("%s has no exported fields, so there is nothing for the schema to describe", targetType),
+				Reason:  fmt.Sprintf("%s has no exported fields that encoding/json reads, so there is nothing for the schema to describe", targetType),
 				Path:    joinPath(path),
 			}
 		}
@@ -232,9 +258,145 @@ func classifyType(targetType reflect.Type, seen map[reflect.Type]bool, path []st
 	}
 }
 
+// unexportedEmbeddedPointerReport is the refusal of a struct that embeds a
+// pointer to a struct type that is not exported and promotes fields from it:
+// encoding/json writes through such a pointer, and fails with "cannot set
+// embedded pointer to unexported struct" when it has to allocate it to read an
+// answer. It is a configuration refusal made before a call, as a type that
+// embeds itself is.
+func unexportedEmbeddedPointerReport(structType reflect.Type, pointer *jsonUnexportedPointer, path []string) TypeReport {
+	return TypeReport{
+		Support: SupportRejected,
+		Reason: fmt.Sprintf("%s embeds a pointer to %s, a struct type that is not exported, which encoding/json cannot allocate when it decodes, so the fields it promotes cannot be read into the type",
+			structType, pointer.target),
+		Path: joinPath(append(slices.Clone(path), pointer.route...)),
+	}
+}
+
+// hasFormatOption reports whether the json tag of a member has the option
+// format, with a value encoding/json reads as one.
+func hasFormatOption(member jsonMember) bool {
+	return parseJSONTagOptions(member.field.Tag.Get("json")).format
+}
+
+// formatOptionReport is the refusal of a struct that has a member with the option
+// format in its json tag. encoding/json does not support the option: the first
+// time it writes or reads the struct it fails, whatever the type of the member
+// and the option's value, and it fails the same way each time after. An answer
+// that could never be read is a configuration refusal made before a call, as a
+// type that embeds itself is.
+func formatOptionReport(structType reflect.Type, memberPath []string) TypeReport {
+	return TypeReport{
+		Support: SupportRejected,
+		Reason: fmt.Sprintf("%s has a field whose json tag has the option format, which encoding/json does not support, so it fails to read or write any value of the type and no answer could be read into it",
+			structType),
+		Path: joinPath(memberPath),
+	}
+}
+
+// formatOptionInOwnMembers looks for a member with the option format among the
+// members of the struct a type is or points to, when the type does not read
+// itself: one that does is never read field by field.
+func formatOptionInOwnMembers(targetType reflect.Type, path []string) (TypeReport, bool) {
+	structType := targetType
+	for structType.Kind() == reflect.Ptr {
+		structType = structType.Elem()
+	}
+	if structType.Kind() != reflect.Struct || decodesItself(structType) {
+		return TypeReport{}, false
+	}
+	for _, member := range jsonMembers(structType) {
+		if member.unexportedPointer == nil && hasFormatOption(member) {
+			return formatOptionReport(structType, append(append(slices.Clone(path), member.route...), member.name)), true
+		}
+	}
+	return TypeReport{}, false
+}
+
+// embeddedStruct is the struct a field embeds in the way encoding/json promotes
+// the fields of, or nil: an anonymous field of a struct type or a pointer, to
+// any depth, to one, whose json tag gives it no name and does not leave it out.
+// It is what a walk over a type's promoted fields follows.
+func embeddedStruct(field reflect.StructField) reflect.Type {
+	if !field.Anonymous {
+		return nil
+	}
+	if name, omitted := jsonTagName(field.Tag.Get("json")); omitted || name != "" {
+		return nil
+	}
+	embedded := field.Type
+	for embedded.Kind() == reflect.Ptr {
+		embedded = embedded.Elem()
+	}
+	if embedded.Kind() != reflect.Struct {
+		return nil
+	}
+	return embedded
+}
+
+// embeddingCycle reports whether the structs a type embeds, and the structs
+// those embed, lead back to a struct that is already being followed. Only
+// embedding is followed: a field with a name of its own that refers back to its
+// struct is a recursive type, which is not this.
+func embeddingCycle(structType reflect.Type) bool {
+	for structType.Kind() == reflect.Ptr {
+		structType = structType.Elem()
+	}
+	if structType.Kind() != reflect.Struct {
+		return false
+	}
+	// A struct that embeds nothing, which is nearly every one, has no cycle to
+	// look for and is answered without a map.
+	embedsAnything := false
+	for i := 0; i < structType.NumField(); i++ {
+		if embeddedStruct(structType.Field(i)) != nil {
+			embedsAnything = true
+			break
+		}
+	}
+	if !embedsAnything {
+		return false
+	}
+	return embeddingCycleFrom(structType, map[reflect.Type]embeddingState{})
+}
+
+type embeddingState uint8
+
+const (
+	// embeddingFollowing is a struct on the path being followed. Meeting it
+	// again is a cycle.
+	embeddingFollowing embeddingState = iota + 1
+	// embeddingCleared is a struct whose embedded structs were all followed and
+	// led to no cycle, so that one embedded by several others is followed once.
+	embeddingCleared
+)
+
+func embeddingCycleFrom(structType reflect.Type, states map[reflect.Type]embeddingState) bool {
+	switch states[structType] {
+	case embeddingFollowing:
+		return true
+	case embeddingCleared:
+		return false
+	}
+	states[structType] = embeddingFollowing
+	for i := 0; i < structType.NumField(); i++ {
+		if embedded := embeddedStruct(structType.Field(i)); embedded != nil && embeddingCycleFrom(embedded, states) {
+			return true
+		}
+	}
+	states[structType] = embeddingCleared
+	return false
+}
+
 // PreflightType refuses a type no call could satisfy, before the call is made.
 func PreflightType(targetType reflect.Type) error {
-	report := ClassifyType(targetType)
+	return typePlanFor(targetType).preflight()
+}
+
+// preflightFailure is the error that refuses a type, made from what the matrix
+// reports for it, or nil when the type is not refused. Every call gets an error
+// of its own: a caller holds the one it is handed and may look inside it.
+func preflightFailure(report TypeReport) error {
 	if report.Support != SupportRejected {
 		return nil
 	}
@@ -246,18 +408,35 @@ func PreflightType(targetType reflect.Type) error {
 
 	return &types.OperationError{
 		Kind: types.KindConfiguration,
-		Message: fmt.Sprintf("%s cannot be used as an operation contract: %s. No provider call was made.",
+		Message: fmt.Sprintf("%s cannot be used as an operation contract: %s. No provider call was made",
 			where, report.Reason),
 	}
 }
 
-func implementsJSONMarshaler(targetType reflect.Type) bool {
-	marshaler := reflect.TypeOf((*json.Marshaler)(nil)).Elem()
-	if targetType.Implements(marshaler) {
-		return true
+// isTimeType reports whether a type is time.Time or a pointer, to any depth, to
+// it.
+func isTimeType(targetType reflect.Type) bool {
+	for targetType.Kind() == reflect.Ptr {
+		targetType = targetType.Elem()
 	}
-	if targetType.Kind() != reflect.Ptr {
-		return reflect.PointerTo(targetType).Implements(marshaler)
+	return targetType == reflect.TypeOf(time.Time{})
+}
+
+// implementsJSONMarshaler reports whether a type says how it is written as
+// JSON: by MarshalJSON, or by MarshalText, which encoding/json uses for a
+// value the same way and which is how a UUID or an IP address comes to be a
+// string in JSON and an array of bytes in Go. Only MarshalJSON was looked for.
+func implementsJSONMarshaler(targetType reflect.Type) bool {
+	for _, marshaler := range []reflect.Type{
+		reflect.TypeOf((*json.Marshaler)(nil)).Elem(),
+		reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem(),
+	} {
+		if targetType.Implements(marshaler) {
+			return true
+		}
+		if targetType.Kind() != reflect.Ptr && reflect.PointerTo(targetType).Implements(marshaler) {
+			return true
+		}
 	}
 	return false
 }

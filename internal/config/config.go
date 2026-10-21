@@ -2,60 +2,41 @@ package config
 
 import (
 	"os"
-	"strconv"
-	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 var (
-	debugMode      bool
-	traceEnabled   bool
-	metricsEnabled bool
-	apiKey         string
-	mu             sync.RWMutex
+	// The two switches the setters turn on. They are read on every call, so
+	// they are atomics: a read behind a lock is a shared cache line every call
+	// on every core touches.
+	debugMode      atomic.Bool
+	metricsEnabled atomic.Bool
 )
 
-// Init initializes the configuration with an API key
-func Init(key string) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	apiKey = key
-	if apiKey == "" {
-		apiKey = os.Getenv("SCHEMAFLUX_API_KEY")
-	}
-}
-
-// GetAPIKey returns the configured API key
-func GetAPIKey() string {
-	mu.RLock()
-	defer mu.RUnlock()
-	if apiKey != "" {
-		return apiKey
-	}
-	return os.Getenv("SCHEMAFLUX_API_KEY")
-}
-
-// GetTimeout returns the default timeout for operations
+// GetTimeout returns the default timeout for operations: SCHEMAFLUX_TIMEOUT when
+// it names a positive duration, and 30 seconds otherwise. A value that is not a
+// positive duration is reported once, naming the variable, and the default
+// applies; TimeoutFromEnv is the form that returns the refusal as an error.
+//
+// The variable is read once, when this is first called (ReloadEnvironment).
 func GetTimeout() time.Duration {
-	if timeoutStr := os.Getenv("SCHEMAFLUX_TIMEOUT"); timeoutStr != "" {
-		if duration, err := time.ParseDuration(timeoutStr); err == nil {
-			return duration
+	return timeoutEnvironment.get(func() time.Duration {
+		timeout, err := TimeoutFromEnv()
+		if err != nil {
+			reportEnvProblem("SCHEMAFLUX_TIMEOUT", os.Getenv("SCHEMAFLUX_TIMEOUT"), "a positive duration such as 30s")
+			return defaultTimeout
 		}
-	}
-	return 30 * time.Second
+		return timeout
+	})
 }
 
-// GetLLMMaxRetries returns the retry budget for LLM calls.
+// GetLLMMaxRetries returns the retry budget for LLM calls. The variable is
+// read once (ReloadEnvironment).
 func GetLLMMaxRetries() int {
-	if raw := os.Getenv("SCHEMAFLUX_LLM_MAX_RETRIES"); raw != "" {
-		if retries, err := strconv.Atoi(raw); err == nil && retries >= 0 {
-			return retries
-		}
-	}
-	return 3
+	return retriesEnvironment.get(func() int { return EnvInt("SCHEMAFLUX_LLM_MAX_RETRIES", 3, 0) })
 }
 
 // GetRepairAttempts returns how many times an operation may show the model its
@@ -66,101 +47,73 @@ func GetLLMMaxRetries() int {
 // where JSON was asked for, or a missing field -- without turning one failed
 // call into an unbounded spend. Set SCHEMAFLUX_REPAIR_ATTEMPTS=0 to disable it.
 func GetRepairAttempts() int {
-	if raw := os.Getenv("SCHEMAFLUX_REPAIR_ATTEMPTS"); raw != "" {
-		if attempts, err := strconv.Atoi(raw); err == nil && attempts >= 0 {
-			return attempts
-		}
-	}
-	return 1
+	return repairEnvironment.get(func() int { return EnvInt("SCHEMAFLUX_REPAIR_ATTEMPTS", 1, 0) })
 }
 
-// GetLLMRetryBackoff returns the base backoff for LLM retries.
+// GetLLMRetryBackoff returns the base backoff for LLM retries. The variable is
+// read once (ReloadEnvironment).
 func GetLLMRetryBackoff() time.Duration {
-	if raw := os.Getenv("SCHEMAFLUX_LLM_RETRY_BACKOFF"); raw != "" {
-		if delay, err := time.ParseDuration(raw); err == nil && delay > 0 {
-			return delay
-		}
-	}
-	return 500 * time.Millisecond
+	return backoffEnvironment.get(func() time.Duration {
+		return EnvPositiveDuration("SCHEMAFLUX_LLM_RETRY_BACKOFF", 500*time.Millisecond)
+	})
 }
 
-// GetDebugMode returns whether debug mode is enabled
+// GetDebugMode returns whether debug mode is enabled, by SetDebugMode or by
+// SCHEMAFLUX_DEBUG=true. The variable is read once (ReloadEnvironment).
 func GetDebugMode() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	if debugMode {
+	if debugMode.Load() {
 		return true
 	}
-	return os.Getenv("SCHEMAFLUX_DEBUG") == "true"
+	return debugEnvironment.get(func() bool { return EnvBool("SCHEMAFLUX_DEBUG") })
 }
 
 // SetDebugMode sets the debug mode
 func SetDebugMode(enabled bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	debugMode = enabled
+	debugMode.Store(enabled)
 }
 
-// GetTraceEnabled returns whether tracing is enabled
-func GetTraceEnabled() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	if traceEnabled {
-		return true
-	}
-	return envEnabled("SCHEMAFLUX_TRACE") || envEnabled("SCHEMAFLUX_ENABLE_TRACING")
-}
-
-// SetTraceEnabled sets tracing mode
-func SetTraceEnabled(enabled bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	traceEnabled = enabled
-}
-
-// IsMetricsEnabled returns whether metrics collection is enabled
+// IsMetricsEnabled returns whether metrics collection is enabled, by
+// SetMetricsEnabled or by SCHEMAFLUX_METRICS=true. It is asked on every call,
+// so with nothing set it is two atomic loads and no system call; the variable
+// is read once (ReloadEnvironment).
 func IsMetricsEnabled() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	if metricsEnabled {
+	if metricsEnabled.Load() {
 		return true
 	}
-	return os.Getenv("SCHEMAFLUX_METRICS") == "true"
+	return metricsEnvironment.get(func() bool { return EnvBool("SCHEMAFLUX_METRICS") })
 }
 
 // SetMetricsEnabled sets whether metrics collection is enabled
 func SetMetricsEnabled(enabled bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	metricsEnabled = enabled
+	metricsEnabled.Store(enabled)
 }
 
-func envEnabled(keys ...string) bool {
-	for _, key := range keys {
-		switch os.Getenv(key) {
-		case "true", "1":
-			return true
-		}
-	}
-	return false
-}
-
-// GetModel returns the appropriate model based on intelligence level
+// GetModel returns the appropriate model based on intelligence level. The
+// SCHEMAFLUX_MODEL variables are read once (ReloadEnvironment).
 func GetModel(intelligence types.Speed, provider string) string {
+	overrides := modelEnvironment.get(func() modelOverrides {
+		return modelOverrides{
+			all:   os.Getenv("SCHEMAFLUX_MODEL"),
+			smart: os.Getenv("SCHEMAFLUX_MODEL_SMART"),
+			fast:  os.Getenv("SCHEMAFLUX_MODEL_FAST"),
+			quick: os.Getenv("SCHEMAFLUX_MODEL_QUICK"),
+		}
+	})
+
 	// Check for global model override via environment variable
-	if envModel := os.Getenv("SCHEMAFLUX_MODEL"); envModel != "" {
-		return envModel
+	if overrides.all != "" {
+		return overrides.all
 	}
 
 	// Check for intelligence-level specific overrides
 	var envLevelModel string
 	switch intelligence {
 	case types.Smart:
-		envLevelModel = os.Getenv("SCHEMAFLUX_MODEL_SMART")
+		envLevelModel = overrides.smart
 	case types.Fast:
-		envLevelModel = os.Getenv("SCHEMAFLUX_MODEL_FAST")
+		envLevelModel = overrides.fast
 	case types.Quick:
-		envLevelModel = os.Getenv("SCHEMAFLUX_MODEL_QUICK")
+		envLevelModel = overrides.quick
 	}
 
 	if envLevelModel != "" {
@@ -195,51 +148,16 @@ func GetModel(intelligence types.Speed, provider string) string {
 	}
 }
 
-// OpenAI tier defaults, measured against the live API rather than assumed.
-//
-// The benchmark is .audit/live/bench.py (typed extraction) and bench2.py (a
-// proration with a distractor figure), four runs each across gpt-5.6-luna,
-// -sol, and -terra. What it found:
-//
-//	                 typed extraction        proration
-//	terra            959ms   4/4 correct     2050ms  4/4 correct
-//	sol             1594ms   4/4 correct     3925ms  4/4 correct
-//	luna            1680ms   4/4 correct     2094ms  4/4 correct
-//
-// On these tasks the three models are indistinguishable in accuracy and differ
-// only in latency. That supports exactly one assignment: Quick takes terra,
-// which is the fastest and gave up nothing to be so.
-//
-// It does not support a Smart/Fast split between luna and sol. Sol was the
-// slowest on the harder task without being more accurate, and assuming slower
-// means smarter is the kind of guess this library is trying to stop making.
-//
-// P-017 asked for a task set that WOULD discriminate, and .audit/live/bench4.py
-// is that attempt: recall with planted near-misses, instructions embedded in the
-// data, and arithmetic whose greedy reading is wrong — three families chosen
-// because each fails differently. Run 2026-08-08:
-//
-//	                     base set        hard set (two runs)
-//	terra            18/18  1109ms    15/15, 15/15   1327ms / 1536ms
-//	sol              18/18  1627ms    15/15, 15/15   1889ms / 1967ms
-//	luna             18/18  1302ms    14/15, 15/15   1699ms / 1549ms
-//
-// Luna's single miss did not reproduce. Its 95% interval [0.702, 0.988] overlaps
-// the others' [0.796, 1.000], so the difference is sampling noise, not a
-// finding — and separating a 0.933 from a 1.000 at this confidence would take
-// roughly 115 samples per model, which is 2000 calls to decide a tier.
-//
-// So the answer to P-017 is its own second option: these models should NOT be
-// split on quality. Four benchmarks at three difficulty levels have failed to
-// separate them, including on instruction-following under injection, where all
-// three refused every embedded order. Smart and Fast both stay on luna; the only
-// property that has ever been measurably different is latency, and Quick already
-// takes the fastest model. A caller who wants a specific model sets it with
-// SCHEMAFLUX_MODEL_*, or per call with the Model pin (TC-005).
+// The OpenAI tier defaults. All three tiers name one model, gpt-6-luna: no
+// comparison the library has run separates the models of a family on accuracy,
+// and a Smart/Fast split between them would assume that slower means smarter.
+// A caller who wants a specific model names it with SCHEMAFLUX_MODEL_*, with
+// Client.WithModel, or with the Model pin on a call. The benchmark scripts that
+// were run to reach this are under .audit/live/.
 const (
-	ModelDefaultSmart = "gpt-5.6-luna"
-	ModelDefaultFast  = "gpt-5.6-luna"
-	ModelDefaultQuick = "gpt-5.6-terra"
+	ModelDefaultSmart = "gpt-6-luna"
+	ModelDefaultFast  = "gpt-6-luna"
+	ModelDefaultQuick = "gpt-6-luna"
 )
 
 // GetMaxTokens returns the default output-token ceiling for an intelligence

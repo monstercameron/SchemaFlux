@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // This file raises coverage on parse.go's under-covered paths: the
@@ -105,7 +105,7 @@ func TestParseImpl_LLMFallbackSucceeds(t *testing.T) {
 		Age  int    `json:"age"`
 	}
 
-	installNormalizeCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
+	installScriptedCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
 		return `{"name":"Ada","age":36}`, nil
 	})
 
@@ -132,7 +132,7 @@ func TestParseImpl_LLMFallbackFailureModes(t *testing.T) {
 	}
 
 	t.Run("provider call fails", func(t *testing.T) {
-		installNormalizeCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
+		installScriptedCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
 			return "", errors.New("provider unavailable")
 		})
 		_, err := Parse[person]("unparseable text here", NewParseOptions().WithAllowLLMFallback(true))
@@ -142,7 +142,7 @@ func TestParseImpl_LLMFallbackFailureModes(t *testing.T) {
 	})
 
 	t.Run("provider answers with unparseable JSON", func(t *testing.T) {
-		installNormalizeCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
+		installScriptedCaller(t, func(context.Context, string, string, types.OpOptions) (string, error) {
 			return "not json at all", nil
 		})
 		_, err := Parse[person]("unparseable text here", NewParseOptions().WithAllowLLMFallback(true))
@@ -232,9 +232,9 @@ func TestParseCSV_SingleStructUsesJSONTag(t *testing.T) {
 	}
 }
 
-// mapDelimitedFieldsToStruct's hinted path (mapWithHints), including the
-// "hint present but names no valid field" tolerance and the "no pipe-shaped
-// hint at all" refusal.
+// The hinted path of mapDelimitedFieldsToStruct: a mapping hint places the
+// columns, a hint that names no field is refused, and hints that are not
+// mappings leave the positional mapping in place.
 func TestMapWithHints(t *testing.T) {
 	type person struct {
 		Name string
@@ -252,21 +252,26 @@ func TestMapWithHints(t *testing.T) {
 	})
 
 	t.Run("hint names a field the struct does not have", func(t *testing.T) {
-		// "nickname" has no counterpart field; mapWithHints must skip it rather
-		// than error, and still map the fields that do exist.
-		result, err := Parse[person]("Ada|36", NewParseOptions().WithFormatHints([]string{"nickname|age"}))
-		if err != nil {
-			t.Fatalf("Parse: %v", err)
+		// "nickname" has no counterpart field. Leaving the column out and
+		// returning success was a parse that said it worked and dropped data.
+		_, err := Parse[person]("Ada|36", NewParseOptions().WithFormatHints([]string{"nickname|age"}))
+		if err == nil {
+			t.Fatal("a hint naming no field was accepted")
 		}
-		if result.Data.Age != 36 {
-			t.Errorf("Age = %d, want 36 even though the first hinted field did not match", result.Data.Age)
+		// The hint maps the caller's keys to fields and can hold data, so the
+		// error says which column of it is wrong and never what it says.
+		if strings.Contains(err.Error(), "nickname") || !strings.Contains(err.Error(), "position 1 of 2") {
+			t.Errorf("the error does not name the position of the column, or it quotes the hint: %v", err)
 		}
 	})
 
-	t.Run("no pipe-shaped hint at all refuses", func(t *testing.T) {
-		_, err := Parse[person]("Ada|36", NewParseOptions().WithFormatHints([]string{"not a field mapping"}))
-		if err == nil {
-			t.Fatal("a hint with no '|' in it should not satisfy mapWithHints")
+	t.Run("no pipe-shaped hint at all keeps the positional mapping", func(t *testing.T) {
+		result, err := Parse[person]("Ada|36", NewParseOptions().WithFormatHints([]string{"not a field mapping"}))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if result.Data.Name != "Ada" || result.Data.Age != 36 {
+			t.Errorf("Data = %+v", result.Data)
 		}
 	})
 }
@@ -311,13 +316,6 @@ func TestSetFieldValue_Refusals(t *testing.T) {
 			t.Fatal("a slice-kind field was silently accepted by setFieldValue")
 		}
 	})
-}
-
-// capitalizeFirst's empty-string branch.
-func TestCapitalizeFirst_Empty(t *testing.T) {
-	if got := capitalizeFirst(""); got != "" {
-		t.Errorf("capitalizeFirst(%q) = %q, want empty", "", got)
-	}
 }
 
 // describeParseTarget names a concrete type, and does not crash on the
@@ -368,10 +366,10 @@ func TestBuildParseUserPrompt_IncludesHintsAndDelimitersWhenSet(t *testing.T) {
 		WithCustomDelimiters([]string{"|", ";"})
 
 	got := buildParseUserPrompt("Ada|36", "schema", "pipe-delimited", opts)
-	if !strings.Contains(got, "Format hints: name|age") {
+	if !strings.Contains(got, `Format hints: ["name|age"]`) {
 		t.Errorf("format hints missing from prompt: %q", got)
 	}
-	if !strings.Contains(got, "Custom delimiters: |, ;") {
+	if !strings.Contains(got, `Custom delimiters: ["|",";"]`) {
 		t.Errorf("custom delimiters missing from prompt: %q", got)
 	}
 

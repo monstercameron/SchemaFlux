@@ -2,272 +2,483 @@ package mw
 
 import (
 	"context"
-	"errors"
+	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/pricing"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
-// budgetFakeProvider is a minimal Handler whose cost estimate and behavior a
-// test controls directly. It exists separately from fakeProvider (mw_test.go)
-// because budget tests need a fixed EstimateCost independent of the scripted
-// response sequence, which fakeProvider's hardcoded 0.01 does not give.
-type budgetFakeProvider struct {
-	estimate float64
-	resp     llm.CompletionResponse
-	err      error
-	calls    int
-	mu       sync.Mutex
-}
-
-func (f *budgetFakeProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	f.mu.Lock()
-	f.calls++
-	f.mu.Unlock()
-	return f.resp, f.err
-}
-func (f *budgetFakeProvider) Name() string                                   { return "budget-fake" }
-func (f *budgetFakeProvider) EstimateCost(req llm.CompletionRequest) float64 { return f.estimate }
-func (f *budgetFakeProvider) RetryPolicy() (int, time.Duration)              { return 0, 0 }
-func (f *budgetFakeProvider) Calls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-// noCostFunc disables actual-cost reconciliation, so a test can reason about
-// the ledger purely in terms of EstimateCost without depending on the real
-// pricing table (which is package-global state this test package cannot
-// register a fixture model into).
-func noCostFunc(*types.TokenUsage, string, string) *types.CostInfo { return nil }
-
-func TestBudgetAllowsACallUnderTheLimit(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 1.0, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(10.0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "ok")
-	}
-	if fake.Calls() != 1 {
-		t.Fatalf("calls = %d, want 1", fake.Calls())
-	}
-}
-
-func TestBudgetRefusesBeforeCallingTheProviderWhenEstimateExceedsLimit(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 11.0, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(10.0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("Complete returned no error, want KindBudgetExceeded")
-	}
-	if fake.Calls() != 0 {
-		t.Fatalf("calls = %d, want 0 -- the provider must never be called once the estimate refuses the request", fake.Calls())
-	}
-	var opErr *types.OperationError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("error is not a *types.OperationError: %v", err)
-	}
-	if opErr.Kind != types.KindBudgetExceeded {
-		t.Fatalf("Kind = %v, want KindBudgetExceeded", opErr.Kind)
-	}
-	if opErr.Op != "mw.Budget" {
-		t.Fatalf("Op = %q, want %q", opErr.Op, "mw.Budget")
-	}
-}
-
-func TestBudgetErrorSatisfiesErrorsIsBudgetExceeded(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 5.0}
-	wrapped := Budget(1.0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	_, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if !errors.Is(err, types.ErrBudgetExceeded) {
-		t.Fatalf("errors.Is(err, types.ErrBudgetExceeded) = false, want true; err = %v", err)
-	}
-}
-
-func TestBudgetAllowsExactlyAtTheLimit(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 10.0, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(10.0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error at the exact limit: %v", err)
-	}
-}
-
-func TestBudgetAccumulatesAcrossCalls(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 4.0, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(10.0, WithBudgetCostFunc(noCostFunc))(fake)
-	ctx := context.Background()
-
-	// 4 + 4 = 8, fits.
-	if _, err := wrapped.Complete(ctx, llm.CompletionRequest{}); err != nil {
-		t.Fatalf("call 1: %v", err)
-	}
-	if _, err := wrapped.Complete(ctx, llm.CompletionRequest{}); err != nil {
-		t.Fatalf("call 2: %v", err)
-	}
-	// 8 + 4 = 12, does not fit.
-	if _, err := wrapped.Complete(ctx, llm.CompletionRequest{}); err == nil {
-		t.Fatal("call 3: want KindBudgetExceeded, got nil")
-	}
-	if fake.Calls() != 2 {
-		t.Fatalf("calls = %d, want 2 (the third must be refused before calling the provider)", fake.Calls())
-	}
-}
-
-func TestBudgetReleasesTheReservationOnFailure(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 6.0, err: errors.New("transport failed")}
-	wrapped := Budget(10.0, WithBudgetCostFunc(noCostFunc))(fake)
-	ctx := context.Background()
-
-	if _, err := wrapped.Complete(ctx, llm.CompletionRequest{}); err == nil {
-		t.Fatal("want the provider's own error, got nil")
-	}
-	// The reservation should have been released: a second 6.0 call still fits
-	// under a 10.0 limit, which it would not if the first, failed call had
-	// left its reservation on the ledger (6 + 6 = 12 > 10).
-	fake.err = nil
-	fake.resp = llm.CompletionResponse{Content: "ok"}
-	if _, err := wrapped.Complete(ctx, llm.CompletionRequest{}); err != nil {
-		t.Fatalf("second call refused, meaning the first call's failed reservation was never released: %v", err)
-	}
-}
-
-func TestBudgetZeroLimitMeansUnlimited(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 1_000_000, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("a zero limit refused a call, want unlimited: %v", err)
-	}
-}
-
-func TestBudgetNegativeEstimateIsTreatedAsZero(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: -5.0, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(1.0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	// A buggy provider returning a negative estimate must not let a caller
-	// mine free budget out of the ledger.
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error for a negative estimate: %v", err)
-	}
-	if got := wrapped.(*budgetProvider).Spent(); got != 0 {
-		t.Fatalf("Spent() = %v, want 0 (a negative estimate must not credit the ledger)", got)
-	}
-}
-
-func TestBudgetReconcilesToActualPricedCost(t *testing.T) {
-	fake := &budgetFakeProvider{
-		estimate: 5.0,
-		resp: llm.CompletionResponse{
-			Content: "ok",
-			Model:   "priced-model",
-			Usage:   types.TokenUsage{PromptTokens: 100, CompletionTokens: 100},
-		},
-	}
-	calc := func(usage *types.TokenUsage, model, provider string) *types.CostInfo {
-		return &types.CostInfo{TotalCost: 2.0, Priced: true}
-	}
-	wrapped := Budget(10.0, WithBudgetCostFunc(calc))(fake)
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	// Reserved 5.0 pre-call, then corrected down to the measured 2.0.
-	if got := wrapped.(*budgetProvider).Spent(); got != 2.0 {
-		t.Fatalf("Spent() = %v, want 2.0 (reconciled to the measured cost, not the estimate)", got)
-	}
-}
-
-func TestBudgetKeepsTheEstimateWhenCostIsUnpriced(t *testing.T) {
-	fake := &budgetFakeProvider{
-		estimate: 3.0,
-		resp:     llm.CompletionResponse{Content: "ok", Model: "unknown-model"},
-	}
-	calc := func(usage *types.TokenUsage, model, provider string) *types.CostInfo {
-		return &types.CostInfo{Priced: false} // unpriced, per pricing.CalculateCost's own contract
-	}
-	wrapped := Budget(10.0, WithBudgetCostFunc(calc))(fake)
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	// PR-001's rule: unpriced is not free. The 3.0 reservation must survive
-	// rather than being zeroed or replaced by a bogus 0.0 "measured" figure.
-	if got := wrapped.(*budgetProvider).Spent(); got != 3.0 {
-		t.Fatalf("Spent() = %v, want 3.0 (unpriced keeps the pre-call estimate)", got)
-	}
-}
-
-// TestBudgetConcurrentCallsCannotBothPassAnExceedingCheck is the concurrency
-// case the task calls out explicitly: two goroutines, each estimated at just
-// over half the limit, must not both be allowed through. If the check and
-// the reservation were not atomic, both could observe "under the limit" at
-// the same instant and both proceed, together exceeding it.
-func TestBudgetConcurrentCallsCannotBothPassAnExceedingCheck(t *testing.T) {
-	fake := &budgetFakeProvider{estimate: 6.0, resp: llm.CompletionResponse{Content: "ok"}}
-	wrapped := Budget(10.0, WithBudgetCostFunc(noCostFunc))(fake)
-
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i := range errs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, errs[i] = wrapped.Complete(context.Background(), llm.CompletionRequest{})
-		}(i)
-	}
-	wg.Wait()
-
-	succeeded := 0
-	for _, err := range errs {
-		if err == nil {
-			succeeded++
+// served sends n requests and returns how many were answered before the first
+// refusal, and that refusal.
+func served(t *testing.T, p schemaflux.Provider, n int) (answered int, refusal error) {
+	t.Helper()
+	for range n {
+		if _, err := p.Complete(t.Context(), ask("q")); err != nil {
+			return answered, err
 		}
+		answered++
 	}
-	if succeeded != 1 {
-		t.Fatalf("succeeded = %d of 2 concurrent 6.0 calls against a 10.0 limit, want exactly 1", succeeded)
-	}
-	if fake.Calls() != 1 {
-		t.Fatalf("provider calls = %d, want 1 -- the refused goroutine must never reach the provider", fake.Calls())
+	return answered, nil
+}
+
+// tokenCost is a cost function that prices every token, input and output alike,
+// at perToken, and knows every model. A request that sends one byte and names an
+// output ceiling of 99 is estimated at 100 tokens by it, which is 1.0 at a cent
+// a token.
+func tokenCost(perToken float64) func(schemaflux.Usage, string, string) schemaflux.Cost {
+	return func(u schemaflux.Usage, _, _ string) schemaflux.Cost {
+		return schemaflux.Cost{Total: float64(u.Input+u.Output) * perToken, Priced: true, Currency: "USD"}
 	}
 }
 
-// TestBudgetThroughChainWithScriptedProvider is the composition case: Budget
-// wired the way a caller actually wires it, through mw.Chain, with a second
-// middleware (RateLimit, effectively unlimited here) alongside it so the
-// seam is exercised and not just the bare middleware function.
-func TestBudgetThroughChainWithScriptedProvider(t *testing.T) {
-	fake := &fakeProvider{
-		responses: []fakeResponse{
-			{resp: llm.CompletionResponse{Content: "first"}},
-			{resp: llm.CompletionResponse{Content: "second"}},
-		},
-	}
-	// fakeProvider.EstimateCost always returns 0.01 (mw_test.go); a limit of
-	// 0.015 admits exactly one call and refuses the second.
-	wrapped := Chain(fake, RateLimit(100, time.Second), Budget(0.015, WithBudgetCostFunc(noCostFunc)))
+// hundredTokens is a request the budget estimates at 100 tokens.
+func hundredTokens() schemaflux.Request {
+	return schemaflux.Request{User: "q", MaxTokens: 99}
+}
 
-	ctx := context.Background()
-	if _, err := wrapped.Complete(ctx, llm.CompletionRequest{}); err != nil {
-		t.Fatalf("first call: %v", err)
+// reporting is a provider that answers with usage, and counts the requests.
+func reporting(usage schemaflux.Usage) (*schemafluxtest.Provider, *atomic.Int32) {
+	var n atomic.Int32
+	p := new(schemafluxtest.Provider)
+	p.Respond(func(int, schemaflux.Request) (schemaflux.Response, error) {
+		n.Add(1)
+		return schemaflux.Response{Content: "answer", Model: "test-model", Usage: usage}, nil
+	})
+	return p, &n
+}
+
+func TestBudget(t *testing.T) {
+	t.Parallel()
+
+	t.Run("requests are served while what is spent and the request's estimate are within the limit", func(t *testing.T) {
+		t.Parallel()
+		p, _ := answering("answer")
+		answered, err := served(t, Budget(10, BudgetOptions{Cost: priced(1)})(p), 5)
+		if answered != 5 || err != nil {
+			t.Errorf("answered %d, err %v, want 5 and none", answered, err)
+		}
+	})
+
+	t.Run("a request that would cross the limit is refused before it is sent", func(t *testing.T) {
+		t.Parallel()
+		p, calls := answering("answer")
+		// A call is estimated at 1 and costs 1. Two fit under 2.5 and the third
+		// would take the ledger to 3.
+		answered, err := served(t, Budget(2.5, BudgetOptions{Cost: priced(1)})(p), 10)
+		wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		if answered != 2 || calls.Load() != 2 {
+			t.Errorf("answered %d, provider asked %d times, want 2 and 2", answered, calls.Load())
+		}
+	})
+
+	t.Run("a request whose own estimate is over the limit is not sent at all", func(t *testing.T) {
+		t.Parallel()
+		p, calls := answering("answer")
+		_, err := Budget(0.5, BudgetOptions{Cost: priced(1)})(p).Complete(t.Context(), ask("q"))
+		e := wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		if calls.Load() != 0 {
+			t.Errorf("the provider was asked %d times, want 0", calls.Load())
+		}
+		if e.Message == "" || e.Op != "mw.budget" {
+			t.Errorf("the refusal is %+v, want a message and the op of the layer", e)
+		}
+	})
+
+	t.Run("the output ceiling the request names is part of its estimate", func(t *testing.T) {
+		t.Parallel()
+		p, calls := reporting(schemaflux.Usage{Input: 1, Output: 99})
+		budget := Budget(5, BudgetOptions{Cost: tokenCost(0.01)})(p)
+		if _, err := budget.Complete(t.Context(), schemaflux.Request{User: "q", MaxTokens: 99}); err != nil {
+			t.Fatalf("a request estimated at 1.0 under a limit of 5: %v", err)
+		}
+		_, err := budget.Complete(t.Context(), schemaflux.Request{User: "q", MaxTokens: 999})
+		wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		if calls.Load() != 1 {
+			t.Errorf("the provider was asked %d times, want 1: the request with a ceiling of 999 reserves 10", calls.Load())
+		}
+	})
+
+	t.Run("a refusal is made before the provider is asked", func(t *testing.T) {
+		t.Parallel()
+		p, calls := answering("answer")
+		budget := Budget(1.5, BudgetOptions{Cost: priced(1)})(p)
+		served(t, budget, 2)
+		before := calls.Load()
+		for range 3 {
+			_, err := budget.Complete(t.Context(), ask("q"))
+			wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		}
+		if calls.Load() != before {
+			t.Errorf("the provider was asked %d times after the refusals began, want 0", calls.Load()-before)
+		}
+	})
+
+	t.Run("a limit of zero is no limit and nothing is counted", func(t *testing.T) {
+		t.Parallel()
+		p, _ := answering("answer")
+		answered, err := served(t, Budget(0, BudgetOptions{Cost: priced(1000)})(p), 50)
+		if answered != 50 || err != nil {
+			t.Errorf("answered %d, err %v, want 50 and none", answered, err)
+		}
+	})
+
+	t.Run("a limit that is negative, not a number or infinite fails every request as a configuration error", func(t *testing.T) {
+		t.Parallel()
+		for _, limit := range []float64{-1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+			var p schemafluxtest.Provider
+			_, err := Budget(limit)(&p).Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrConfiguration)
+			if e.Op != "mw.budget" || p.Calls() != 0 {
+				t.Errorf("limit %v: Op %q, %d requests", limit, e.Op, p.Calls())
+			}
+		}
+	})
+
+	t.Run("a request that fails is not counted", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		p.FailThen(3, unavailable(), "answer")
+		budget := Budget(2.5, BudgetOptions{Cost: priced(1)})(&p)
+		for range 3 {
+			if _, err := budget.Complete(t.Context(), ask("q")); err == nil {
+				t.Fatal("a scripted failure succeeded")
+			}
+		}
+		answered, err := served(t, budget, 2)
+		if answered != 2 || err != nil {
+			t.Errorf("answered %d after three failures, err %v, want 2 and none: failures were counted", answered, err)
+		}
+	})
+
+	t.Run("a request that panics is an internal error and is not counted", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		p := Func("p", func(context.Context, schemaflux.Request) (schemaflux.Response, error) {
+			if calls.Add(1) <= 3 {
+				panic("provider bug")
+			}
+			return schemaflux.Response{Content: "answer", Usage: schemaflux.Usage{Input: 1, Output: 1}}, nil
+		})
+		budget := Budget(2.5, BudgetOptions{Cost: priced(1)})(p)
+		for range 3 {
+			_, err := budget.Complete(t.Context(), ask("q"))
+			wantKind(t, err, schemaflux.ErrInternal)
+		}
+		if answered, err := served(t, budget, 2); answered != 2 || err != nil {
+			t.Errorf("answered %d after three panics, err %v, want 2 and none: the reservations were kept", answered, err)
+		}
+	})
+
+	t.Run("a call nobody can price is refused before it is sent", func(t *testing.T) {
+		t.Parallel()
+		unpriced := func(schemaflux.Usage, string, string) schemaflux.Cost { return schemaflux.Cost{Total: 99} }
+		notANumber := func(schemaflux.Usage, string, string) schemaflux.Cost {
+			return schemaflux.Cost{Total: math.NaN(), Priced: true}
+		}
+		infinite := func(schemaflux.Usage, string, string) schemaflux.Cost {
+			return schemaflux.Cost{Total: math.Inf(1), Priced: true}
+		}
+		negative := func(schemaflux.Usage, string, string) schemaflux.Cost {
+			return schemaflux.Cost{Total: -5, Priced: true}
+		}
+		panics := func(schemaflux.Usage, string, string) schemaflux.Cost { panic("cost bug") }
+		for name, cost := range map[string]func(schemaflux.Usage, string, string) schemaflux.Cost{
+			"a cost with Priced false":     unpriced,
+			"a total that is not a number": notANumber,
+			"an infinite total":            infinite,
+			"a negative total":             negative,
+			"a cost function that panics":  panics,
+		} {
+			p, calls := answering("answer")
+			_, err := Budget(1, BudgetOptions{Cost: cost})(p).Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrBudgetExceeded)
+			if calls.Load() != 0 {
+				t.Errorf("%s: the provider was asked %d times, want 0", name, calls.Load())
+			}
+			mustNotContain(t, name+": the refusal", e.Error(), "test-model")
+		}
+	})
+
+	t.Run("with AllowUnpriced a call nobody can price goes through and counts as nothing", func(t *testing.T) {
+		t.Parallel()
+		unpriced := func(schemaflux.Usage, string, string) schemaflux.Cost { return schemaflux.Cost{Total: 99} }
+		panics := func(schemaflux.Usage, string, string) schemaflux.Cost { panic("cost bug") }
+		for name, cost := range map[string]func(schemaflux.Usage, string, string) schemaflux.Cost{
+			"a cost with Priced false":    unpriced,
+			"a cost function that panics": panics,
+		} {
+			p, _ := answering("answer")
+			answered, err := served(t, Budget(1, BudgetOptions{Cost: cost, AllowUnpriced: true})(p), 20)
+			if answered != 20 || err != nil {
+				t.Errorf("%s: answered %d, err %v, want all 20", name, answered, err)
+			}
+		}
+	})
+
+	t.Run("an answer that reports no usage is counted at its reservation", func(t *testing.T) {
+		t.Parallel()
+		// A cost function prices zero tokens at zero, which is a figure for a call
+		// nobody measured and not a measurement: such an answer is counted at what it
+		// was reserved at, so a ceiling around a provider that reports nothing still
+		// refuses.
+		p, calls := reporting(schemaflux.Usage{})
+		answered, err := servedRequest(t, Budget(10, BudgetOptions{Cost: tokenCost(0.01)})(p), hundredTokens(), 30)
+		wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		if answered != 10 || calls.Load() != 10 {
+			t.Errorf("answered %d, provider asked %d times, want 10 and 10: an answer with no usage was counted as free", answered, calls.Load())
+		}
+	})
+
+	t.Run("with AllowUnpriced an answer that reports no usage counts as nothing", func(t *testing.T) {
+		t.Parallel()
+		p, _ := reporting(schemaflux.Usage{})
+		answered, err := servedRequest(t, Budget(10, BudgetOptions{Cost: tokenCost(0.01), AllowUnpriced: true})(p), hundredTokens(), 30)
+		if answered != 30 || err != nil {
+			t.Errorf("answered %d, err %v, want all 30", answered, err)
+		}
+	})
+
+	t.Run("Cost is given the usage, the model and the provider the answer names", func(t *testing.T) {
+		t.Parallel()
+		var mu sync.Mutex
+		var gotUsage schemaflux.Usage
+		var gotModel, gotProvider string
+		cost := func(u schemaflux.Usage, model, provider string) schemaflux.Cost {
+			mu.Lock()
+			defer mu.Unlock()
+			gotUsage, gotModel, gotProvider = u, model, provider
+			return schemaflux.Cost{Priced: true}
+		}
+		var p schemafluxtest.Provider
+		p.Respond(func(int, schemaflux.Request) (schemaflux.Response, error) {
+			return schemaflux.Response{Content: "a", Model: "the-model", Provider: "the-provider",
+				Usage: schemaflux.Usage{Input: 11, Output: 7, Total: 18, Cached: 3, Reasoning: 2}}, nil
+		})
+		if _, err := Budget(5, BudgetOptions{Cost: cost})(&p).Complete(t.Context(), ask("q")); err != nil {
+			t.Fatal(err)
+		}
+		want := schemaflux.Usage{Input: 11, Output: 7, Total: 18, Cached: 3, Reasoning: 2}
+		if gotUsage != want || gotModel != "the-model" || gotProvider != "the-provider" {
+			t.Errorf("Cost was given %+v, %q, %q", gotUsage, gotModel, gotProvider)
+		}
+	})
+
+	t.Run("Cost is asked for the estimate with the request's own model and the tokens the request holds", func(t *testing.T) {
+		t.Parallel()
+		var mu sync.Mutex
+		var first schemaflux.Usage
+		var firstModel string
+		seen := 0
+		cost := func(u schemaflux.Usage, model, _ string) schemaflux.Cost {
+			mu.Lock()
+			defer mu.Unlock()
+			if seen++; seen == 1 {
+				first, firstModel = u, model
+			}
+			return schemaflux.Cost{Priced: true}
+		}
+		var p schemafluxtest.Provider
+		p.Reply("answer")
+		req := schemaflux.Request{Model: "asked-for", System: "12345678", User: "1234567890", MaxTokens: 40}
+		if _, err := Budget(5, BudgetOptions{Cost: cost})(&p).Complete(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		// 18 bytes at four to a token is 5 tokens, and the ceiling is 40.
+		if first.Input != 5 || first.Output != 40 || firstModel != "asked-for" {
+			t.Errorf("the estimate was asked of %+v and model %q, want 5 tokens in, 40 out and the request's model", first, firstModel)
+		}
+	})
+
+	t.Run("a nil Cost is the price table", func(t *testing.T) {
+		t.Parallel()
+		const model = "mw-budget-priced-model"
+		// $1000 per million tokens is a dollar for a thousand: a call of 10 input and
+		// 5 output tokens costs 1.5 cents, and a request of one byte with a ceiling
+		// of 5 is estimated at 6 tokens, 0.6 of a cent.
+		restore, err := pricing.Register(pricing.Model{Provider: "mw-budget-test", Name: model, Input: 1000, Output: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(restore)
+		var p schemafluxtest.Provider
+		p.SetName("mw-budget-test")
+		p.SetUsage(schemaflux.Usage{Input: 10, Output: 5, Total: 15})
+		budget := Budget(0.02)(&p)
+		var refusal error
+		answered := 0
+		for range 5 {
+			_, err := budget.Complete(t.Context(), schemaflux.Request{Model: model, User: "q", MaxTokens: 5})
+			if err != nil {
+				refusal = err
+				break
+			}
+			answered++
+		}
+		wantKind(t, refusal, schemaflux.ErrBudgetExceeded)
+		if answered != 1 {
+			t.Errorf("answered %d, want 1: 0.015 is spent, and 0.006 more would be over 0.02", answered)
+		}
+	})
+
+	t.Run("a model the price table does not know is refused before it is sent", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		p.SetUsage(schemaflux.Usage{Input: 1000, Output: 1000, Total: 2000})
+		_, err := Budget(0.000001)(&p).Complete(t.Context(), schemaflux.Request{Model: "no-such-model-in-the-table", User: "q"})
+		wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		if p.Calls() != 0 {
+			t.Errorf("the provider was asked %d times, want 0", p.Calls())
+		}
+	})
+
+	t.Run("with AllowUnpriced a model the price table does not know counts as nothing", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		p.SetUsage(schemaflux.Usage{Input: 1000, Output: 1000, Total: 2000})
+		answered, err := served(t, Budget(0.000001, BudgetOptions{AllowUnpriced: true})(&p), 10)
+		if answered != 10 || err != nil {
+			t.Errorf("answered %d, err %v", answered, err)
+		}
+	})
+
+	t.Run("the ledger belongs to the provider the middleware is applied to", func(t *testing.T) {
+		t.Parallel()
+		budget := Budget(1.5, BudgetOptions{Cost: priced(1)})
+		a, _ := answering("a")
+		b, _ := answering("b")
+		if answered, _ := served(t, budget(a), 10); answered != 1 {
+			t.Fatalf("the first provider answered %d, want 1", answered)
+		}
+		if answered, _ := served(t, budget(b), 10); answered != 1 {
+			t.Errorf("the second provider answered %d, want 1: it has a ledger of its own", answered)
+		}
+	})
+
+	t.Run("a refusal is not repeated by Retry and says nothing of the request", func(t *testing.T) {
+		t.Parallel()
+		p, calls := answering("answer")
+		chain := Chain(p, Retry(), Budget(1.5, BudgetOptions{Cost: priced(1)}))
+		served(t, chain, 1)
+		before := calls.Load()
+		_, err := chain.Complete(t.Context(), ask("the secret text "+testEmail))
+		e := wantKind(t, err, schemaflux.ErrBudgetExceeded)
+		mustNotContain(t, "the error", err.Error(), "secret", testEmail)
+		if e.Message == "" || calls.Load() != before {
+			t.Errorf("message %q, %d further provider calls", e.Message, calls.Load()-before)
+		}
+	})
+
+	t.Run("option values merge left to right with a later Cost that is not nil winning", func(t *testing.T) {
+		t.Parallel()
+		p, _ := answering("answer")
+		answered, _ := served(t, Budget(2.5, BudgetOptions{Cost: priced(100)}, BudgetOptions{}, BudgetOptions{Cost: priced(1)})(p), 10)
+		if answered != 2 {
+			t.Errorf("answered %d, want 2: the last Cost prices a call at 1", answered)
+		}
+	})
+
+	t.Run("AllowUnpriced loosens the budget, so it is refused in any value but the first", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		_, err := Budget(1, BudgetOptions{}, BudgetOptions{AllowUnpriced: true})(&p).Complete(t.Context(), ask("q"))
+		e := wantKind(t, err, schemaflux.ErrConfiguration)
+		if e.Op != "mw.budget" || p.Calls() != 0 {
+			t.Errorf("Op %q, %d requests", e.Op, p.Calls())
+		}
+		first, _ := answering("answer")
+		if answered, err := served(t, Budget(1, BudgetOptions{AllowUnpriced: true}, BudgetOptions{})(first), 5); answered != 5 || err != nil {
+			t.Errorf("AllowUnpriced in the first value: answered %d, err %v", answered, err)
+		}
+	})
+}
+
+// servedRequest is served for requests of one shape.
+func servedRequest(t *testing.T, p schemaflux.Provider, req schemaflux.Request, n int) (answered int, refusal error) {
+	t.Helper()
+	for range n {
+		if _, err := p.Complete(t.Context(), req); err != nil {
+			return answered, err
+		}
+		answered++
 	}
-	_, err := wrapped.Complete(ctx, llm.CompletionRequest{})
-	if err == nil {
-		t.Fatal("second call: want KindBudgetExceeded through the chain, got nil")
+	return answered, nil
+}
+
+// A thousand callers at the ceiling at once. The ledger holds the reservations of
+// the requests in flight, so no more are admitted than the limit has room for, and
+// the spend passes the limit by no more than the admitted requests cost beyond
+// what they were estimated at: the bound the doc comment of Budget states.
+func TestBudgetBoundsTheSpendUnderAThousandConcurrentCallers(t *testing.T) {
+	t.Parallel()
+	const callers, limit = 1000, 10.0
+	cases := []struct {
+		name string
+		// usage is what each answer reports. The request is estimated at 100 tokens,
+		// which is 1.0 at a cent a token.
+		usage schemaflux.Usage
+		// span is the most the spend can be, and reached says it is.
+		span    float64
+		reached bool
+	}{
+		{"estimates that are exact", schemaflux.Usage{Input: 1, Output: 99}, limit, true},
+		{"estimates that are too high", schemaflux.Usage{Input: 1, Output: 49}, limit, false},
+		// Ten requests are in flight, each reserved at 1.0 and costing 3.0.
+		{"estimates that are too low", schemaflux.Usage{Input: 100, Output: 200}, limit + 10*(3-1), true},
 	}
-	if types.KindOf(err) != types.KindBudgetExceeded {
-		t.Fatalf("Kind = %v, want KindBudgetExceeded", types.KindOf(err))
-	}
-	if fake.calls != 1 {
-		t.Fatalf("provider calls = %d, want 1", fake.calls)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			release := make(chan struct{})
+			var inProvider, refused, answered atomic.Int64
+			var p schemafluxtest.Provider
+			p.Respond(func(int, schemaflux.Request) (schemaflux.Response, error) {
+				inProvider.Add(1)
+				<-release
+				return schemaflux.Response{Content: "answer", Model: "m", Usage: tc.usage}, nil
+			})
+			budget := Budget(limit, BudgetOptions{Cost: tokenCost(0.01)})(&p)
+
+			var wg sync.WaitGroup
+			for range callers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if _, err := budget.Complete(t.Context(), hundredTokens()); err != nil {
+						refused.Add(1)
+						return
+					}
+					answered.Add(1)
+				}()
+			}
+			deadline := time.Now().Add(20 * time.Second)
+			for inProvider.Load()+refused.Load() < callers {
+				if time.Now().After(deadline) {
+					t.Fatalf("%d in the provider and %d refused of %d callers", inProvider.Load(), refused.Load(), callers)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			close(release)
+			wg.Wait()
+
+			if got := inProvider.Load(); got > int64(limit) {
+				t.Errorf("%d requests were in the provider at once, want at most %d: the limit has room to reserve no more", got, int(limit))
+			}
+			if got := answered.Load() + refused.Load(); got != callers {
+				t.Errorf("%d answered and refused of %d callers", got, callers)
+			}
+			// Every answer costs the same, so the spend is the answers' count times it.
+			total := float64(answered.Load()) * float64(tc.usage.Input+tc.usage.Output) * 0.01
+			if total > tc.span+1e-9 {
+				t.Errorf("spent %v, want at most %v", total, tc.span)
+			}
+			if tc.reached && total < tc.span-1e-9 {
+				t.Errorf("spent %v, want the bound %v reached", total, tc.span)
+			}
+		})
 	}
 }

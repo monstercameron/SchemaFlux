@@ -60,12 +60,12 @@ func TestDetailWithNoBodyFallsBackToError(t *testing.T) {
 }
 
 // TestDetailWithABodyAppendsIt proves the non-empty branch appends the
-// trimmed body after Error(), under the "body:" label.
+// trimmed body after the header Error() starts with, under the "body:" label.
 func TestDetailWithABodyAppendsIt(t *testing.T) {
 	err := &APIError{Provider: "openai", StatusCode: 500, Body: "  raw vendor text  "}
 	got := err.Detail()
-	if !strings.HasPrefix(got, err.Error()) {
-		t.Errorf("Detail() = %q, want it to start with Error()", got)
+	if !strings.HasPrefix(got, "openai API error (status 500)") || !strings.HasPrefix(err.Error(), "openai API error (status 500)") {
+		t.Errorf("Detail() = %q, want it to start with the header Error() starts with: %q", got, err.Error())
 	}
 	if !strings.Contains(got, "body: raw vendor text") {
 		t.Errorf("Detail() = %q, want the trimmed body appended under \"body:\"", got)

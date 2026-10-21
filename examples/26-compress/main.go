@@ -1,36 +1,35 @@
 // Example 26: Compress Operation
-// Compresses text/data while preserving essential meaning using LLM
-
+// Compresses text/data while preserving essential meaning using an LLM.
 package main
 
 import (
+	"context"
 	"fmt"
-	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"io"
 	"log"
+	"os"
+
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 func main() {
-
-	// Initialize SchemaFlux
-	if err := exampleutil.Bootstrap(); err != nil {
-		log.Fatalf("Failed to initialize SchemaFlux: %v", err)
+	if err := run(context.Background(), os.Stdout); err != nil {
+		log.Fatalf("Compression example failed: %v", err)
 	}
+}
 
-	fmt.Println("=== Compress Example ===")
-	fmt.Println("Compresses text while preserving essential meaning")
-	fmt.Println()
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "=== Compress Example ===")
+	fmt.Fprintln(out, "Compresses text while preserving essential meaning")
+	fmt.Fprintln(out)
 
-	// Example 1: Compress a document struct
-	fmt.Println("--- Example 1: Document Compression ---")
-
+	// Example 1: Compress a document struct.
+	fmt.Fprintln(out, "--- Example 1: Document Compression ---")
 	type Document struct {
 		Title   string `json:"title"`
 		Content string `json:"content"`
 		Author  string `json:"author"`
 	}
-
 	doc := Document{
 		Title:  "AI in Healthcare",
 		Author: "Dr. Smith",
@@ -43,32 +42,25 @@ discovery pipelines have been accelerated through AI-powered molecular analysis.
 However, the rapid advancement of AI also raises important ethical considerations around
 bias in training data, privacy concerns, and potential worker displacement.`,
 	}
+	fmt.Fprintln(out, "INPUT: Document struct")
+	fmt.Fprintf(out, "  Title: %q\n", doc.Title)
+	fmt.Fprintf(out, "  Author: %q\n", doc.Author)
+	fmt.Fprintf(out, "  Content: (%d chars) %q...\n\n", len(doc.Content), doc.Content[:80])
 
-	fmt.Println("INPUT: Document struct")
-	fmt.Printf("  Title: %q\n", doc.Title)
-	fmt.Printf("  Author: %q\n", doc.Author)
-	fmt.Printf("  Content: (%d chars) %q...\n\n", len(doc.Content), doc.Content[:80])
-
-	opts := ops.NewCompressOptions().
-		WithCompressionRatio(0.3).
-		WithStrategy("semantic").
-		WithPreserveInfo([]string{"key facts", "conclusions"}).
-		WithIntelligence(types.Smart)
-
-	result, err := ops.Compress(doc, opts)
+	result, err := schemaflux.Compress(ctx, doc, schemaflux.CompressOptions{
+		Ratio: 0.3, Strategy: "semantic", PreserveInfo: []string{"key facts", "conclusions"},
+	})
 	if err != nil {
-		log.Fatalf("Compression failed: %v", err)
+		return fmt.Errorf("compress the document; check the configured provider and retry: %w", err)
 	}
+	fmt.Fprintln(out, "OUTPUT: CompressResult[Document]")
+	fmt.Fprintf(out, "  OriginalSize: %d chars\n", result.OriginalSize)
+	fmt.Fprintf(out, "  CompressedSize: %d chars\n", result.CompressedSize)
+	fmt.Fprintf(out, "  ActualRatio: %.2f\n", result.ActualRatio)
+	fmt.Fprintf(out, "  Compressed: %q\n\n", result.Compressed)
 
-	fmt.Println("OUTPUT: CompressResult[Document]")
-	fmt.Printf("  OriginalSize: %d chars\n", result.OriginalSize)
-	fmt.Printf("  CompressedSize: %d chars\n", result.CompressedSize)
-	fmt.Printf("  ActualRatio: %.2f\n", result.ActualRatio)
-	fmt.Printf("  Compressed: %q\n\n", result.Compressed)
-
-	// Example 2: Compress meeting notes (as string)
-	fmt.Println("--- Example 2: Meeting Notes Compression ---")
-
+	// Example 2: Compress meeting notes as a string.
+	fmt.Fprintln(out, "--- Example 2: Meeting Notes Compression ---")
 	meeting := `Project Alpha Update
 Attendees: John (PM), Sarah (Dev Lead), Mike (Designer), Lisa (QA)
 
@@ -85,27 +77,21 @@ Action Items:
 4. Lisa to prioritize payment bugs
 
 Next Meeting: Friday 10 AM`
+	fmt.Fprintln(out, "INPUT: string")
+	fmt.Fprintf(out, "  Content: (%d chars)\n", len(meeting))
+	fmt.Fprintf(out, "  %q...\n\n", meeting[:100])
 
-	fmt.Println("INPUT: string")
-	fmt.Printf("  Content: (%d chars)\n", len(meeting))
-	fmt.Printf("  %q...\n\n", meeting[:100])
-
-	meetingOpts := ops.NewCompressOptions().
-		WithCompressionRatio(0.4).
-		WithStrategy("lossy").
-		WithPriority("actions").
-		WithIntelligence(types.Smart)
-
-	meetingResult, err := ops.Compress(meeting, meetingOpts)
+	meetingResult, err := schemaflux.Compress(ctx, meeting, schemaflux.CompressOptions{
+		Ratio: 0.4, Strategy: "lossy", Priority: "actions",
+	})
 	if err != nil {
-		log.Fatalf("Meeting compression failed: %v", err)
+		return fmt.Errorf("compress the meeting notes; check the configured provider and retry: %w", err)
 	}
-
-	fmt.Println("OUTPUT: CompressResult[string]")
-	fmt.Printf("  OriginalSize: %d chars\n", meetingResult.OriginalSize)
-	fmt.Printf("  CompressedSize: %d chars\n", meetingResult.CompressedSize)
-	fmt.Printf("  ActualRatio: %.2f\n", meetingResult.ActualRatio)
-	fmt.Printf("  Compressed: %q\n", meetingResult.Compressed)
-
-	fmt.Println("\n=== Compress Example Complete ===")
+	fmt.Fprintln(out, "OUTPUT: CompressResult[string]")
+	fmt.Fprintf(out, "  OriginalSize: %d chars\n", meetingResult.OriginalSize)
+	fmt.Fprintf(out, "  CompressedSize: %d chars\n", meetingResult.CompressedSize)
+	fmt.Fprintf(out, "  ActualRatio: %.2f\n", meetingResult.ActualRatio)
+	fmt.Fprintf(out, "  Compressed: %q\n", meetingResult.Compressed)
+	fmt.Fprintln(out, "\n=== Compress Example Complete ===")
+	return nil
 }

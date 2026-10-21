@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type auditSource struct {
@@ -39,15 +39,22 @@ func includesName(names []string, want string) bool {
 // is not an audit trail: a pivot that drops a field and does not mention it
 // reported no loss at all, and the caller's only evidence was the missing field.
 func TestPivotComputesItsDataLoss(t *testing.T) {
+	// The target type has all four fields, so a diff over the decoded value would
+	// find nothing lost whatever the model returned. The loss has to come from
+	// what the model's answer carried.
 	type pivoted struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		Email   string `json:"email"`
+		Phone   string `json:"phone"`
+		Country string `json:"country"`
 	}
 
-	// The model drops three fields and claims to have lost nothing.
+	// The model's answer carries only the name, and it claims to have lost
+	// nothing.
 	installAuditResponse(t, `{
 		"pivoted": {"name":"Ada"},
 		"mappings": [],
-		"stats": {"source_fields": 4, "target_fields": 1},
+		"stats": {"source_fields": 4, "target_fields": 1, "expansions": 0, "compressions": 3, "depth_change": 0},
 		"data_loss": []
 	}`)
 
@@ -78,7 +85,7 @@ func TestAFaithfulPivotReportsNoLoss(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	installAuditResponse(t, `{"pivoted":{"name":"Ada"},"mappings":[],"stats":{}}`)
+	installAuditResponse(t, `{"pivoted":{"name":"Ada"},"mappings":[],"stats":{"source_fields":4,"target_fields":4,"expansions":0,"compressions":0,"depth_change":0},"data_loss":[]}`)
 
 	result, err := Pivot[same, same](same{Name: "Ada"})
 	if err != nil {
@@ -144,7 +151,7 @@ func TestNormalizeComputesWhichFieldsChanged(t *testing.T) {
 	installAuditResponse(t, `{
 		"normalized": {"country":"US","phone":"+1-305-555-1234","name":"Ada"},
 		"changes": [{"field":"country","original":"usa","normalized":"US","reason":"ISO code"}],
-		"total_changes": 1
+		"warnings": []
 	}`)
 
 	result, err := Normalize(record{Country: "usa", Phone: "3055551234", Name: "Ada"},
@@ -183,7 +190,7 @@ func TestANormalizationThatChangedNothing(t *testing.T) {
 		Country string `json:"country"`
 	}
 
-	installAuditResponse(t, `{"normalized":{"country":"US"},"changes":[],"total_changes":0}`)
+	installAuditResponse(t, `{"normalized":{"country":"US"},"changes":[],"warnings":[]}`)
 
 	result, err := Normalize(record{Country: "US"}, NewNormalizeOptions())
 	if err != nil {
@@ -206,7 +213,7 @@ func TestFormattingIsNotAChange(t *testing.T) {
 		Total float64 `json:"total"`
 	}
 
-	installAuditResponse(t, `{"normalized":{"total":1284.50},"changes":[],"total_changes":0}`)
+	installAuditResponse(t, `{"normalized":{"total":1284.50},"changes":[],"warnings":[]}`)
 
 	result, err := Normalize(record{Total: 1284.5}, NewNormalizeOptions())
 	if err != nil {

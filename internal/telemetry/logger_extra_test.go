@@ -8,8 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
 )
 
 // These tests fill the coverage gaps left by logger_test.go and the
@@ -35,8 +38,8 @@ func TestNilLoggerMethodsAreSafe(t *testing.T) {
 	}
 	l.SetLevel(DebugLevel) // must not panic
 	l.SetLevelString("debug")
-	if got := l.Level(); got != InfoLevel {
-		t.Errorf("nil.Level() = %v, want InfoLevel", got)
+	if got := l.Level(); got != DefaultLevel {
+		t.Errorf("nil.Level() = %v, want DefaultLevel", got)
 	}
 	if got := l.Config(); got != (LoggerConfig{}) {
 		t.Errorf("nil.Config() = %+v, want zero value", got)
@@ -321,22 +324,56 @@ func TestMultiHandlerHandleSkipsDisabledHandlers(t *testing.T) {
 	}
 }
 
-// multiHandler.Handle stops and returns the first handler's error, rather
-// than continuing to call the rest -- so a caller sees the actual failure,
-// not a later handler's unrelated one.
-func TestMultiHandlerHandlePropagatesTheFirstError(t *testing.T) {
+// multiHandler.Handle gives the record to every enabled handler and returns the
+// failures joined. slog discards the error, so stopping at the first one did not
+// tell anybody anything: it only kept the later handlers, the history handler
+// among them, from seeing the record.
+func TestMultiHandlerRunsEveryHandlerAndReturnsTheFailures(t *testing.T) {
 	boom := errors.New("boom")
+	other := errors.New("other")
 	first := &fakeHandler{enabled: true, handleErr: boom}
 	second := &fakeHandler{enabled: true}
-	mh := &multiHandler{handlers: []slog.Handler{first, second}}
+	third := &fakeHandler{enabled: true, handleErr: other}
+	mh := &multiHandler{handlers: []slog.Handler{first, second, third}}
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)
 	err := mh.Handle(context.Background(), record)
-	if !errors.Is(err, boom) {
-		t.Fatalf("Handle() = %v, want %v", err, boom)
+	if !errors.Is(err, boom) || !errors.Is(err, other) {
+		t.Fatalf("Handle() = %v, want both failures joined", err)
 	}
-	if second.handled != 0 {
-		t.Error("a handler after one that errored must not be called")
+	if first.handled != 1 || second.handled != 1 || third.handled != 1 {
+		t.Errorf("handlers ran %d, %d, %d times, want once each", first.handled, second.handled, third.handled)
+	}
+}
+
+type failingWriter struct{ writes int }
+
+func (w *failingWriter) Write([]byte) (int, error) {
+	w.writes++
+	return 0, errors.New("the pipe is closed")
+}
+
+// The history is kept whether or not an output failed: a logger whose stderr is
+// a closed descriptor still records what it was told.
+func TestTheHistoryKeepsGrowingWhileAnOutputFails(t *testing.T) {
+	writer := &failingWriter{}
+	log := NewLoggerWithConfig(LoggerConfig{Level: InfoLevel, Output: writer, Capture: true, BufferSize: 50})
+	t.Cleanup(func() { _ = log.Close() })
+
+	for i := 0; i < 5; i++ {
+		log.Info("record", "n", i)
+	}
+	if writer.writes != 5 {
+		t.Fatalf("the failing output was written %d times, want 5", writer.writes)
+	}
+	entries := log.Entries()
+	if len(entries) != 5 {
+		t.Fatalf("the history holds %d entries after 5 records, want 5", len(entries))
+	}
+	for i, entry := range entries {
+		if entry.Attributes["n"] != int64(i) {
+			t.Errorf("entry %d carries n=%v", i, entry.Attributes["n"])
+		}
 	}
 }
 
@@ -552,7 +589,7 @@ func TestToSlogLevelCoversEveryLogLevel(t *testing.T) {
 
 func TestDefaultLoggerConfigDebugEnvRaisesToDebug(t *testing.T) {
 	t.Setenv("SCHEMAFLUX_LOG_LEVEL", "")
-	t.Setenv("SCHEMAFLUX_DEBUG", "true")
+	configtest.Setenv(t, "SCHEMAFLUX_DEBUG", "true")
 	t.Setenv("SCHEMAFLUX_LOG_FORMAT", "")
 	t.Setenv("SCHEMAFLUX_LOG_BUFFER", "")
 	t.Setenv("SCHEMAFLUX_LOG_SOURCE", "")
@@ -571,7 +608,7 @@ func TestDefaultLoggerConfigDebugEnvRaisesToDebug(t *testing.T) {
 // Info.
 func TestDefaultLoggerConfigExplicitLevelWinsOverDebugEnv(t *testing.T) {
 	t.Setenv("SCHEMAFLUX_LOG_LEVEL", "error")
-	t.Setenv("SCHEMAFLUX_DEBUG", "true")
+	configtest.Setenv(t, "SCHEMAFLUX_DEBUG", "true")
 
 	cfg := DefaultLoggerConfig()
 	if cfg.Level != ErrorLevel {
@@ -602,10 +639,10 @@ func TestDefaultLoggerConfigInvalidBufferSizeFallsBackToDefault(t *testing.T) {
 }
 
 func TestDefaultLoggerConfigDisableCaptureEnv(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_LOG_DISABLE_CAPTURE", "1")
+	t.Setenv("SCHEMAFLUX_LOG_DISABLE_CAPTURE", "true")
 	cfg := DefaultLoggerConfig()
 	if cfg.Capture {
-		t.Fatal("SCHEMAFLUX_LOG_DISABLE_CAPTURE=1 must turn Capture off")
+		t.Fatal("SCHEMAFLUX_LOG_DISABLE_CAPTURE=true must turn Capture off")
 	}
 }
 
@@ -613,9 +650,9 @@ func TestDefaultLoggerConfigDisableCaptureEnv(t *testing.T) {
 
 // When the file path's directory cannot be created (a path component is an
 // existing regular file, not a directory), NewLoggerWithConfig must not
-// panic or error -- it silently falls back to whatever other handlers are
-// configured, per its own "if err == nil" gate.
-func TestNewLoggerWithConfigToleratesAnUncreatableFilePath(t *testing.T) {
+// panic or error: it runs with the other handlers, and says once that the file
+// is off, where it used to say nothing.
+func TestNewLoggerWithConfigToleratesAnUncreatableFilePathAndSaysSo(t *testing.T) {
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
@@ -634,8 +671,15 @@ func TestNewLoggerWithConfigToleratesAnUncreatableFilePath(t *testing.T) {
 	t.Cleanup(func() { _ = log.Close() })
 
 	log.Info("still works despite the bad file path")
-	if entries := log.Entries(); len(entries) != 1 {
-		t.Fatalf("expected the history handler to still capture the entry, got %d entries", len(entries))
+	entries := log.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("expected the warning and the entry, got %d entries: %+v", len(entries), entries)
+	}
+	if entries[0].Level != "WARN" || !strings.Contains(entries[0].Message, "log file") {
+		t.Errorf("the first entry is not the warning about the log file: %+v", entries[0])
+	}
+	if entries[1].Message != "still works despite the bad file path" {
+		t.Errorf("the second entry is %+v", entries[1])
 	}
 }
 
@@ -649,5 +693,77 @@ func TestNewLoggerWithConfigFallsBackToDiscardWhenNoHandlersAreConfigured(t *tes
 	log.Info("goes nowhere, but must not panic")
 	if entries := log.Entries(); len(entries) != 0 {
 		t.Fatalf("expected no entries with Capture=false, got %v", entries)
+	}
+}
+
+// Handle over every arrangement of enabled, disabled and failing handlers: each
+// enabled one runs exactly once, a disabled one never runs, and the error is the
+// join of the failures.
+func TestMultiHandlerHandleEveryArrangement(t *testing.T) {
+	errA, errB, errC := errors.New("a failed"), errors.New("b failed"), errors.New("c failed")
+	type spec struct {
+		enabled bool
+		err     error
+	}
+	cases := []struct {
+		name     string
+		handlers []spec
+		wantErrs []error
+	}{
+		{"no handlers", nil, nil},
+		{"one that works", []spec{{true, nil}}, nil},
+		{"one that fails", []spec{{true, errA}}, []error{errA}},
+		{"one disabled that would fail", []spec{{false, errA}}, nil},
+		{"two that work", []spec{{true, nil}, {true, nil}}, nil},
+		{"the first fails", []spec{{true, errA}, {true, nil}}, []error{errA}},
+		{"the last fails", []spec{{true, nil}, {true, errA}}, []error{errA}},
+		{"the middle fails", []spec{{true, nil}, {true, errA}, {true, nil}}, []error{errA}},
+		{"all three fail", []spec{{true, errA}, {true, errB}, {true, errC}}, []error{errA, errB, errC}},
+		{"a disabled handler between two failures", []spec{{true, errA}, {false, errB}, {true, errC}}, []error{errA, errC}},
+		{"every handler disabled", []spec{{false, errA}, {false, nil}}, nil},
+		{"a failure then a disabled one", []spec{{true, errA}, {false, nil}}, []error{errA}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakes := make([]*fakeHandler, len(tc.handlers))
+			handlers := make([]slog.Handler, len(tc.handlers))
+			for i, h := range tc.handlers {
+				fakes[i] = &fakeHandler{enabled: h.enabled, handleErr: h.err}
+				handlers[i] = fakes[i]
+			}
+			mh := &multiHandler{handlers: handlers}
+
+			err := mh.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0))
+
+			for i, h := range tc.handlers {
+				want := 0
+				if h.enabled {
+					want = 1
+				}
+				if fakes[i].handled != want {
+					t.Errorf("handler %d ran %d times, want %d", i, fakes[i].handled, want)
+				}
+			}
+			if len(tc.wantErrs) == 0 {
+				if err != nil {
+					t.Errorf("Handle() = %v, want nil", err)
+				}
+				return
+			}
+			for _, want := range tc.wantErrs {
+				if !errors.Is(err, want) {
+					t.Errorf("Handle() = %v, missing %v", err, want)
+				}
+			}
+			for _, other := range []error{errA, errB, errC} {
+				expected := false
+				for _, want := range tc.wantErrs {
+					expected = expected || want == other
+				}
+				if !expected && errors.Is(err, other) {
+					t.Errorf("Handle() = %v contains %v, which did not fail", err, other)
+				}
+			}
+		})
 	}
 }

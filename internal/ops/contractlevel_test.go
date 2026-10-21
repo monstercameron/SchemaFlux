@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-004. Meta.RequestedContract/DeliveredContract (result.go) existed and
@@ -83,9 +84,24 @@ func TestDeclaredContractLevel(t *testing.T) {
 			types.ContractEvidenceChecked,
 		},
 		{
-			"evidence policy with no schema still reports evidence checked",
+			// The levels are cumulative: an evidence check on an answer that is
+			// not held to a schema has not established the levels below it.
+			"evidence policy with no schema stays at well-formed",
 			OutputContract[string]{EvidencePolicy: types.EvidenceAllModelDerived},
-			types.ContractEvidenceChecked,
+			types.ContractJSONWellFormed,
+		},
+		{
+			"EvidenceRequired with no schema stays at well-formed",
+			OutputContract[string]{EvidenceRequired: true},
+			types.ContractJSONWellFormed,
+		},
+		{
+			"invariants and evidence with no schema stay at well-formed",
+			OutputContract[string]{
+				Invariants:     []func(string) error{func(string) error { return nil }},
+				EvidencePolicy: types.EvidenceNoInference,
+			},
+			types.ContractJSONWellFormed,
 		},
 	}
 
@@ -117,7 +133,10 @@ func TestDeclaredContractLevelNeverClaimsFullyGoverned(t *testing.T) {
 
 // RunOpResult wires declaredContractLevel into Meta on a success, and
 // reports DeliveredContract at its zero value (ContractPromptOnly) on a
-// failure -- nothing was actually delivered.
+// failure -- nothing was actually delivered. The call here sends no schema, so
+// what it asked for and what it earned differ: the answer was held to nothing
+// the provider enforced, and it is delivered as well formed (see
+// negotiatedContractLevel).
 func TestRunOpResultReportsContractLevels(t *testing.T) {
 	setLLMCaller(func(context.Context, string, string, types.OpOptions) (string, error) {
 		return "even", nil
@@ -136,16 +155,31 @@ func TestRunOpResultReportsContractLevels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOpResult: %v", err)
 	}
-	if result.Meta.DeliveredContract != types.ContractSchemaAndInvariantChecked {
-		t.Fatalf("DeliveredContract = %v, want ContractSchemaAndInvariantChecked", result.Meta.DeliveredContract)
+	if result.Meta.RequestedContract != types.ContractSchemaAndInvariantChecked {
+		t.Fatalf("RequestedContract = %v, want ContractSchemaAndInvariantChecked", result.Meta.RequestedContract)
 	}
-	if result.Meta.RequestedContract != result.Meta.DeliveredContract {
-		t.Fatalf("RequestedContract = %v, DeliveredContract = %v; a success should not degrade at this layer",
-			result.Meta.RequestedContract, result.Meta.DeliveredContract)
+	if result.Meta.DeliveredContract != types.ContractJSONWellFormed {
+		t.Fatalf("DeliveredContract = %v, want ContractJSONWellFormed: no schema was sent", result.Meta.DeliveredContract)
 	}
-	if result.Meta.Degraded() {
-		t.Fatal("a successful call should not report itself as degraded")
+	if !result.Meta.Degraded() {
+		t.Fatal("an answer delivered below what was asked reports itself as degraded")
 	}
+}
+
+// routeThatEnforcesSchemas makes the route a call to provider on model goes to
+// one that is known to enforce a schema, and returns opt with a schema in it to
+// send: the two things a descriptor's level above well formed is delivered on.
+func routeThatEnforcesSchemas(t *testing.T, provider llm.Provider, model string, opt types.OpOptions) types.OpOptions {
+	t.Helper()
+	llm.ResetCapabilityRegistryForTest()
+	t.Cleanup(llm.ResetCapabilityRegistryForTest)
+	llm.RegisterCapabilities(llm.ProviderCapabilities{
+		Provider: provider.Name(), Model: model,
+		Supports: map[llm.Capability]bool{llm.CapNativeJSONSchema: true},
+	})
+	opt.Model = model
+	opt.JSONSchema = map[string]any{"type": "object"}
+	return opt
 }
 
 func TestRunOpResultReportsPromptOnlyDeliveredOnFailure(t *testing.T) {
@@ -226,9 +260,34 @@ func TestNegotiatedContractLevel(t *testing.T) {
 			types.ContractJSONWellFormed,
 		},
 		{
-			"no JSONSchema in opt: SchemaConstrained claim passes through unexamined",
+			"no JSONSchema in opt: a SchemaConstrained claim is lowered, nothing was sent",
 			types.ContractSchemaConstrained, types.OpOptions{}, "unknown", "unknown",
-			types.ContractSchemaConstrained,
+			types.ContractJSONWellFormed,
+		},
+		{
+			"no JSONSchema in opt: the same on a route that does enforce one",
+			types.ContractSchemaConstrained, types.OpOptions{}, "confirmed", "model-a",
+			types.ContractJSONWellFormed,
+		},
+		{
+			"no JSONSchema in opt: schema and invariants checked is lowered",
+			types.ContractSchemaAndInvariantChecked, types.OpOptions{}, "confirmed", "model-a",
+			types.ContractJSONWellFormed,
+		},
+		{
+			"no JSONSchema in opt: evidence checked is lowered",
+			types.ContractEvidenceChecked, types.OpOptions{}, "confirmed", "model-a",
+			types.ContractJSONWellFormed,
+		},
+		{
+			"no JSONSchema in opt: fully governed is lowered",
+			types.ContractFullyGoverned, types.OpOptions{}, "confirmed", "model-a",
+			types.ContractJSONWellFormed,
+		},
+		{
+			"a nil JSONSchema map is nothing sent",
+			types.ContractSchemaConstrained, types.OpOptions{JSONSchema: nil}, "confirmed", "model-a",
+			types.ContractJSONWellFormed,
 		},
 		{
 			"JSONSchema requested, route confirmed to support native schema: kept",
@@ -273,11 +332,25 @@ func TestNegotiatedContractLevel(t *testing.T) {
 			types.ContractJSONWellFormed,
 		},
 		{
-			"empty (non-nil-but-zero-length) JSONSchema map is still 'nothing requested'",
+			"empty (non-nil-but-zero-length) JSONSchema map is still 'nothing requested', and lowers",
 			types.ContractSchemaConstrained,
 			types.OpOptions{JSONSchema: map[string]any{}},
 			"nobody-registered-this", "mystery-model",
-			types.ContractSchemaConstrained,
+			types.ContractJSONWellFormed,
+		},
+		{
+			"the lowest levels are what was sent whatever the route",
+			types.ContractPromptOnly,
+			types.OpOptions{JSONSchema: schema},
+			"nobody-registered-this", "mystery-model",
+			types.ContractPromptOnly,
+		},
+		{
+			"well formed with a schema sent to a route that does not enforce it is kept",
+			types.ContractJSONWellFormed,
+			types.OpOptions{JSONSchema: schema},
+			"declined", "model-b",
+			types.ContractJSONWellFormed,
 		},
 	}
 
@@ -316,7 +389,7 @@ func (p *scriptedCapabilityProvider) RetryPolicy() (int, time.Duration)         
 // delivered less than it asked for, and Degraded() says so -- not silently,
 // which is what happened before negotiatedContractLevel existed.
 func TestRunOpResultNegotiatesDeliveredContractDown(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	llm.ResetCapabilityRegistryForTest()
 	t.Cleanup(llm.ResetCapabilityRegistryForTest)
 
@@ -352,7 +425,7 @@ func TestRunOpResultNegotiatesDeliveredContractDown(t *testing.T) {
 // support native json_schema enforcement is not penalized -- the caller
 // asked for it, and it was actually available.
 func TestRunOpResultKeepsDeliveredContractWhenRouteConfirmsNativeSchema(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	llm.ResetCapabilityRegistryForTest()
 	t.Cleanup(llm.ResetCapabilityRegistryForTest)
 
@@ -433,7 +506,7 @@ func TestEnforceContractPolicyAcceptsAtOrAboveMinimum(t *testing.T) {
 // negotiates down below that floor, gets ErrContractDegraded -- not a
 // Result[T] carrying the weaker answer.
 func TestRunOpResultRefusesDisallowedDegradation(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "fake-model")
+	configtest.Setenv(t, "SCHEMAFLUX_MODEL", "fake-model")
 	llm.ResetCapabilityRegistryForTest()
 	t.Cleanup(llm.ResetCapabilityRegistryForTest)
 

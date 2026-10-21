@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 )
 
 // PL-001/PL-002: the plan is a separate, inspectable thing from execution.
@@ -37,9 +40,11 @@ const (
 
 	// ShapeSDMP: single datum, many prompts. A staged pipeline over one
 	// input, passing structured intermediates between stages instead of
-	// resending the source (PL-010). No operation in this delivery declares
-	// a staged form; forcing this shape is refused at plan time and named as
-	// such, not silently downgraded to atomic.
+	// resending the source (PL-010). It is the shape of a staged plan, which
+	// PreflightStagedPlan plans: one datum taken through several operations.
+	// Preflight and RunOpMany plan one operation, and no single operation
+	// declares a staged form, so forcing this shape on one is refused at plan
+	// time and says so, not silently downgraded to atomic.
 	ShapeSDMP
 
 	// ShapeGlobal: an aggregate batch algebra whose validation spans the
@@ -116,6 +121,23 @@ type PolicySnapshot struct {
 	Threshold       float64
 	HasSteering     bool
 	ResponseFormat  string
+}
+
+// MarshalJSON writes the snapshot as plain JSON, except that a Threshold that is
+// not a finite number is written as the text "NaN", "+Inf" or "-Inf". JSON has
+// no such number, so encoding/json refused the whole snapshot, and Plan.Digest
+// answered with one fixed marker for every plan that carried one: two different
+// plans compared identical. The text keeps the plan serializable and the digest
+// a function of the plan.
+func (p PolicySnapshot) MarshalJSON() ([]byte, error) {
+	type plain PolicySnapshot
+	if !math.IsNaN(p.Threshold) && !math.IsInf(p.Threshold, 0) {
+		return json.Marshal(plain(p))
+	}
+	return json.Marshal(struct {
+		plain
+		Threshold string
+	}{plain: plain(p), Threshold: strconv.FormatFloat(p.Threshold, 'g', -1, 64)})
 }
 
 // PolicySnapshotFrom strips an OpOptions down to the fields that influence
@@ -219,9 +241,16 @@ type Plan struct {
 	// Eligible reports whether this operation can run at all against this
 	// input under this policy. IneligibleReason explains a false value --
 	// always the case a forced shape is illegal for the operation, or the
-	// operation itself is malformed (no BuildPrompt, no Decode).
+	// operation itself is malformed (no BuildPrompt, no Decode), or the plan is
+	// over the request's budget.
+	//
+	// IneligibleKind is what sort of refusal that is, as the library classifies
+	// every other failure, so that a caller (and RunOpMany, which returns it)
+	// does not have to read the reason's words to tell a budget from a
+	// configuration. It is the zero value, KindUnknown, for an eligible plan.
 	Eligible         bool
 	IneligibleReason string
+	IneligibleKind   ErrorKind
 
 	// Shape is what will run: the caller's forced choice, or the planner's.
 	ShapeForced bool
@@ -259,10 +288,9 @@ type Plan struct {
 
 // canonicalJSON marshals v with json.Marshal, which is deterministic for any
 // value containing no maps: struct fields serialize in declaration order,
-// slices in slice order. Every type in this file follows that rule on
-// purpose -- see the "no maps" note on Plan's doc comment -- so this
-// function, not a hand-rolled encoder, is what PL-001's byte-identical
-// requirement rests on.
+// slices in slice order. Every type in this file holds no map, and must keep
+// holding none, so this function, not a hand-rolled encoder, is what PL-001's
+// byte-identical requirement rests on.
 func canonicalJSON(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
@@ -271,10 +299,10 @@ func digestOf(v any) string {
 	encoded, err := canonicalJSON(v)
 	if err != nil {
 		// Every type this is called with is plain data with no channels,
-		// functions, or cyclic pointers, so this path is unreachable in
-		// practice; it degrades to a fixed marker rather than panicking, so
-		// a future field addition that breaks this assumption fails loudly
-		// in a test rather than crashing a caller's planning path.
+		// functions or cyclic pointers, and the one caller-set number JSON
+		// cannot carry, a non-finite Threshold, is handled by
+		// PolicySnapshot.MarshalJSON. A value that still cannot be encoded gets
+		// a fixed marker rather than a panic in a caller's planning path.
 		return "undigestable"
 	}
 	sum := sha256.Sum256(encoded)
@@ -303,26 +331,33 @@ func (p Plan) Explain() string {
 		return fmt.Sprintf("%s: not eligible -- %s", p.Operation, p.IneligibleReason)
 	}
 
-	summary := fmt.Sprintf("%s: %d item(s), shape %s", p.Operation, p.ItemCount, p.Shape)
+	// One fact to a line, so a reader can find the number of chunks or the call
+	// ceiling without parsing a sentence, and a rejected alternative's reason
+	// cannot be mistaken for part of what follows it.
+	var lines []string
+
+	first := fmt.Sprintf("%s: %d item(s), shape %s", p.Operation, p.ItemCount, p.Shape)
 	if p.ShapeForced {
-		summary += fmt.Sprintf(" (forced: %s)", p.ShapeReason)
+		first += fmt.Sprintf(" (forced: %s)", p.ShapeReason)
 	} else {
-		summary += fmt.Sprintf(" (%s)", p.ShapeReason)
+		first += fmt.Sprintf(" (%s)", p.ShapeReason)
 	}
-	for _, alt := range p.Alternatives {
-		summary += fmt.Sprintf("\nRejected: %s -- %s", alt.Shape, alt.Reason)
-	}
+	lines = append(lines, first)
+
 	if len(p.Chunks) > 0 {
-		summary += fmt.Sprintf(", %d chunk(s)", len(p.Chunks))
+		lines = append(lines, fmt.Sprintf("%d chunk(s)", len(p.Chunks)))
 	}
 	if len(p.OversizedItems) > 0 {
-		summary += fmt.Sprintf(", %d item(s) routed atomically (oversized)", len(p.OversizedItems))
+		lines = append(lines, fmt.Sprintf("%d item(s) routed atomically (oversized)", len(p.OversizedItems)))
 	}
-	summary += fmt.Sprintf(", at most %d call(s)", p.MaxCalls)
+	lines = append(lines, fmt.Sprintf("at most %d call(s)", p.MaxCalls))
 	if p.EstimatedCost.Priced {
-		summary += fmt.Sprintf(", estimated %s %.6f", p.EstimatedCost.Currency, p.EstimatedCost.EstimatedCost)
+		lines = append(lines, fmt.Sprintf("estimated %s %.6f", p.EstimatedCost.Currency, p.EstimatedCost.EstimatedCost))
 	} else {
-		summary += ", cost unpriced"
+		lines = append(lines, "cost unpriced")
 	}
-	return summary
+	for _, alt := range p.Alternatives {
+		lines = append(lines, fmt.Sprintf("Rejected: %s -- %s", alt.Shape, alt.Reason))
+	}
+	return strings.Join(lines, "\n")
 }

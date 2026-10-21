@@ -8,19 +8,22 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // PivotOptions configures the Pivot operation
 type PivotOptions struct {
-	// PivotOn specifies the field(s) to pivot around
+	// PivotOn specifies the field(s) to pivot around. Each has to be a field
+	// of the input (a dotted path is read by its first segment) when the input
+	// has field names to check it against.
 	PivotOn []string
 
-	// Aggregate specifies how to aggregate values ("first", "last", "sum", "avg", "list", "concat")
+	// Aggregate specifies how to aggregate values: one of "first", "last",
+	// "sum", "avg", "list", "concat". Any other value is refused.
 	Aggregate string
 
-	// GroupBy specifies fields to group on before pivoting
+	// GroupBy specifies fields to group on before pivoting, checked the same
+	// way as PivotOn.
 	GroupBy []string
 
 	// Flatten converts nested structures to flat key-value pairs
@@ -32,11 +35,19 @@ type PivotOptions struct {
 	Intelligence types.Speed
 
 	// Model pins the exact model for this call, bypassing the Intelligence
-	// tier's mapping (TC-005). These option types spell their common fields
-	// out rather than embedding CommonOptions, so the pin has to be declared
-	// here too -- otherwise `.Model(...)` on the builder would be a setter
-	// that changes nothing, which this repository fails the build over.
+	// tier's mapping. These option types spell their common fields out rather
+	// than embedding CommonOptions, so the pin has to be declared here too:
+	// otherwise `.Model(...)` on the builder would be a setter that changes
+	// nothing, which this repository fails the build over.
 	Model string
+	// Effort is how much the model reasons before it answers. The builder sets
+	// it here for the same reason it sets Model here.
+	Effort types.Effort
+
+	// MaxOutputTokens is the ceiling on the answer's length. Zero means the tier's.
+	MaxOutputTokens int
+	// WebSearch declares the provider's web-search tool on the call.
+	WebSearch bool
 
 	Context       context.Context
 	RequestID     string
@@ -81,19 +92,30 @@ type PivotResult[U any] struct {
 	// Pivoted is the restructured data
 	Pivoted U `json:"pivoted"`
 
-	// Mappings describes how each field was relocated
+	// Mappings describes how each field was relocated. It is the model's own
+	// account and is not checked.
 	Mappings []PivotMapping `json:"mappings"`
 
-	// Stats provides transformation statistics
+	// Stats provides transformation statistics. It is the model's own account
+	// and is not checked.
 	Stats PivotStats `json:"stats"`
 
-	// DataLoss names source fields that do not appear in the pivoted result,
-	// computed by diffing the two field sets rather than taken from the model.
+	// DataLoss names source fields whose name does not appear among the field
+	// names of the model's pivoted answer. It is computed here from the answer
+	// the model returned and the input, not taken from the model, which would
+	// be an audit trail written by the thing being audited.
 	//
-	// It was the model's own account: an audit trail written by the thing being
-	// audited, so a pivot that dropped a field and did not mention it reported
-	// no loss at all. OP-308, following OP-302.
+	// It is a comparison of top-level field names, over every element when
+	// either side is a list of objects. A field the pivot renamed therefore
+	// appears here, and Mappings is where the model says where it went.
+	// DataLossChecked says whether the comparison was made.
 	DataLoss []string `json:"data_loss,omitempty"`
+
+	// DataLossChecked reports that DataLoss was computed: the input and the
+	// answer both had object field names to compare. When it is false (a pivot
+	// of scalars, or of an empty list) an empty DataLoss means nothing was
+	// compared, not that nothing was lost.
+	DataLossChecked bool `json:"data_loss_checked"`
 
 	// ModelClaimedDataLoss is what the model said it lost. Kept because a
 	// disagreement between the two is worth seeing: a field the model says it
@@ -101,7 +123,7 @@ type PivotResult[U any] struct {
 	// reverse.
 	ModelClaimedDataLoss []string `json:"model_claimed_data_loss,omitempty"`
 
-	// Metadata contains additional operation information
+	// Metadata is not populated.
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
@@ -171,21 +193,22 @@ type PivotResult[U any] struct {
 //	    fmt.Printf("Warning: lost fields %v\n", result.DataLoss)
 //	}
 func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) {
-	log := logger.GetLogger()
+	// The first line is written before the options are looked at, so the client is
+	// found from the context they carry.
+	var callerCtx context.Context
+	if len(opts) > 0 {
+		callerCtx = opts[0].Context
+	}
+	log := loggerFor(callerCtx)
 	log.Debug("Starting pivot operation")
 
-	var result PivotResult[U]
-	result.Metadata = make(map[string]any)
-
 	// Apply defaults
-	opt := PivotOptions{
-		Aggregate:    "first",
-		Flatten:      false,
-		Mode:         types.TransformMode,
-		Intelligence: types.Smart,
-	}
+	opt := NewPivotOptions()
 	if len(opts) > 0 {
 		opt = mergePivotOptions(opt, opts[0])
+	}
+	if err := opt.validate(); err != nil {
+		return PivotResult[U]{}, err
 	}
 
 	// Get context
@@ -199,8 +222,20 @@ func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) 
 	// Convert input to JSON
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Pivot operation failed: marshal error", "error", err)
-		return result, fmt.Errorf("failed to marshal input: %w", err)
+		log.Error("Pivot operation failed: marshal error", "error", loggedError(err))
+		return PivotResult[U]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
+	}
+
+	// The fields the caller named have to be fields of the input. Only an
+	// input with field names can be checked; a list of scalars has none.
+	sourceNames, sourceNamed := rawFieldNames(inputJSON)
+	if sourceNamed {
+		if err := checkFieldNamesIn("pivot", "PivotOn", opt.PivotOn, sourceNames); err != nil {
+			return PivotResult[U]{}, err
+		}
+		if err := checkFieldNamesIn("pivot", "GroupBy", opt.GroupBy, sourceNames); err != nil {
+			return PivotResult[U]{}, err
+		}
 	}
 
 	// Get schemas
@@ -208,15 +243,16 @@ func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) 
 	var zero U
 	outputSchema := GenerateTypeSchema(reflect.TypeOf(zero))
 
-	// Build pivot description
+	// Build pivot description. The names are the caller's text, so they are
+	// written as a JSON list.
 	pivotDesc := ""
 	if len(opt.PivotOn) > 0 {
-		pivotDesc = fmt.Sprintf("\n\nPivot on: %s", strings.Join(opt.PivotOn, ", "))
+		pivotDesc = fmt.Sprintf("\n\nPivot on: %s", parsePromptQuote(opt.PivotOn))
 	}
 
 	groupDesc := ""
 	if len(opt.GroupBy) > 0 {
-		groupDesc = fmt.Sprintf("\n\nGroup by: %s", strings.Join(opt.GroupBy, ", "))
+		groupDesc = fmt.Sprintf("\n\nGroup by: %s", parsePromptQuote(opt.GroupBy))
 	}
 
 	flattenNote := ""
@@ -271,7 +307,7 @@ Preserve data semantics. Document any data loss.`,
 
 	steeringNote := ""
 	if opt.Steering != "" {
-		steeringNote = fmt.Sprintf("\n\nAdditional guidance: %s", opt.Steering)
+		steeringNote = fmt.Sprintf("\n\nAdditional guidance: %s", parsePromptQuote(opt.Steering))
 	}
 
 	userPrompt := fmt.Sprintf(`Pivot this data to the target structure:
@@ -280,21 +316,26 @@ Preserve data semantics. Document any data loss.`,
 
 	// Build OpOptions for LLM call
 	opOpts := types.OpOptions{
-		Mode:          opt.Mode,
-		Intelligence:  opt.Intelligence,
-		Model:         opt.Model,
-		Context:       ctx,
-		RequestID:     opt.RequestID,
-		CorrelationID: opt.CorrelationID,
+		Mode:            opt.Mode,
+		Intelligence:    opt.Intelligence,
+		Model:           opt.Model,
+		Effort:          opt.Effort,
+		MaxOutputTokens: opt.MaxOutputTokens,
+		WebSearch:       opt.WebSearch,
+		Context:         ctx,
+		RequestID:       opt.RequestID,
+		CorrelationID:   opt.CorrelationID,
 	}
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Pivot operation LLM call failed", "error", err)
-		return result, fmt.Errorf("pivot failed: %w", err)
+		log.Error("Pivot operation LLM call failed", "error", loggedError(err))
+		return PivotResult[U]{}, fmt.Errorf("pivot failed: %w", err)
 	}
 
-	// Parse response
+	// Parse the response. The prompt asks for every member, so an answer that
+	// leaves one out is refused by name, a statistic of zero is the model saying
+	// zero, and an empty list is how it says there was nothing to report.
 	var parsed struct {
 		Pivoted  json.RawMessage `json:"pivoted"`
 		Mappings []PivotMapping  `json:"mappings"`
@@ -302,27 +343,46 @@ Preserve data semantics. Document any data loss.`,
 		DataLoss []string        `json:"data_loss"`
 	}
 
-	if err := ParseJSONStrict(response, &parsed); err != nil {
+	if err := decodeAnswer("pivot", response, &parsed); err != nil {
 		// The response is the caller's data pivoted; it does not belong in a
-		// log line (X-03).
-		log.Error("Pivot operation failed: parse error", "error", err)
-		return result, fmt.Errorf("failed to parse pivot result: %w", err)
+		// log line.
+		log.Error("Pivot operation failed: parse error", "error", loggedError(err))
+		return PivotResult[U]{}, fmt.Errorf("failed to parse pivot result: %w", err)
 	}
 
-	// Parse pivoted data
-	if len(parsed.Pivoted) > 0 {
-		if err := json.Unmarshal(parsed.Pivoted, &result.Pivoted); err != nil {
-			log.Error("Pivot operation failed: pivoted data parse error", "error", err)
-			return result, fmt.Errorf("failed to parse pivoted data: %w", err)
-		}
+	// The pivoted value is what the caller asked for. The reader refuses an
+	// answer without it; a RawMessage can hold a null, which is not a pivot of
+	// nothing but an answer to a different question, and a zero U would pass for
+	// the result.
+	if rawValueAbsent(parsed.Pivoted) {
+		log.Error("Pivot operation failed: the pivoted value is null")
+		return PivotResult[U]{}, types.Newf(types.KindSchemaViolation, "pivot", "pivoted is null")
 	}
 
-	result.Mappings = parsed.Mappings
-	result.Stats = parsed.Stats
+	// Decoded into a local, and only assigned to the result once it has
+	// passed: json.Unmarshal fills what it can before it reports an error.
+	var pivoted U
+	if err := decodeCallerAnswer("pivot", string(parsed.Pivoted), &pivoted); err != nil {
+		log.Error("Pivot operation failed: pivoted data parse error", "error", loggedError(err))
+		return PivotResult[U]{}, fmt.Errorf("failed to parse pivoted data: %w", err)
+	}
 
-	// Computed, not reported. See the field's own comment.
-	result.DataLoss = missingFrom(jsonFieldNamesOfValue(input), jsonFieldNamesOfValue(result.Pivoted))
-	result.ModelClaimedDataLoss = parsed.DataLoss
+	result := PivotResult[U]{
+		Pivoted:              pivoted,
+		Mappings:             parsed.Mappings,
+		Stats:                parsed.Stats,
+		ModelClaimedDataLoss: parsed.DataLoss,
+	}
+
+	// Computed from the answer the model returned and the input, not reported.
+	// The names come from the raw answer: the decoded U carries every field of
+	// its type whether or not the model supplied it, so a diff over U would be
+	// fixed by the pair of types and identical for a perfect answer and for one
+	// that dropped everything.
+	if producedNames, producedNamed := rawFieldNames(parsed.Pivoted); sourceNamed && producedNamed {
+		result.DataLoss = missingFrom(sourceNames, producedNames)
+		result.DataLossChecked = true
+	}
 
 	log.Debug("Pivot operation succeeded",
 		"mappings", len(result.Mappings),
@@ -330,6 +390,41 @@ Preserve data semantics. Document any data loss.`,
 		"target_fields", result.Stats.TargetFields)
 
 	return result, nil
+}
+
+// pivotAggregates are the aggregation methods the prompt describes.
+var pivotAggregates = []string{"first", "last", "sum", "avg", "list", "concat"}
+
+// validate refuses a call that would weaken a lock on its context, and an
+// option value the prompt has no meaning for. Aggregate is written into the
+// prompt, so only the methods the prompt describes are let through.
+func (opt PivotOptions) validate() error {
+	// The ceiling a caller asks for is read against the lock as well: it reaches
+	// the request now, so a lock that did not look at it could be raised past.
+	if err := checkFlatLockedLimits(opt.Context, opt.Mode, opt.Intelligence, opt.MaxOutputTokens); err != nil {
+		return err
+	}
+	known := false
+	for _, aggregate := range pivotAggregates {
+		if opt.Aggregate == aggregate {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return types.Newf(types.KindConfiguration, "pivot", "Aggregate must be one of %s", strings.Join(pivotAggregates, ", "))
+	}
+	for i, name := range opt.PivotOn {
+		if strings.TrimSpace(name) == "" {
+			return types.Newf(types.KindConfiguration, "pivot", "PivotOn entry %d is blank", i+1)
+		}
+	}
+	for i, name := range opt.GroupBy {
+		if strings.TrimSpace(name) == "" {
+			return types.Newf(types.KindConfiguration, "pivot", "GroupBy entry %d is blank", i+1)
+		}
+	}
+	return nil
 }
 
 // mergePivotOptions merges user options with defaults
@@ -344,20 +439,12 @@ func mergePivotOptions(defaults, user PivotOptions) PivotOptions {
 		defaults.GroupBy = user.GroupBy
 	}
 	defaults.Flatten = user.Flatten
-	if user.Steering != "" {
-		defaults.Steering = user.Steering
-	}
-	if user.Mode != 0 {
-		defaults.Mode = user.Mode
-	}
-	if user.Intelligence != 0 {
-		defaults.Intelligence = user.Intelligence
-	}
-	if user.Model != "" {
-		defaults.Model = user.Model
-	}
-	if user.Context != nil {
-		defaults.Context = user.Context
-	}
+
+	common := mergeCallFields(
+		callFields{defaults.Steering, defaults.Mode, defaults.Intelligence, defaults.Model, defaults.Effort, defaults.MaxOutputTokens, defaults.WebSearch, defaults.Context, defaults.RequestID, defaults.CorrelationID},
+		callFields{user.Steering, user.Mode, user.Intelligence, user.Model, user.Effort, user.MaxOutputTokens, user.WebSearch, user.Context, user.RequestID, user.CorrelationID})
+	defaults.Steering, defaults.Mode, defaults.Intelligence, defaults.Model = common.Steering, common.Mode, common.Intelligence, common.Model
+	defaults.Effort, defaults.MaxOutputTokens, defaults.WebSearch = common.Effort, common.MaxOutputTokens, common.WebSearch
+	defaults.Context, defaults.RequestID, defaults.CorrelationID = common.Context, common.RequestID, common.CorrelationID
 	return defaults
 }

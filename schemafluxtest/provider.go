@@ -1,359 +1,572 @@
-// Package schemafluxtest provides a fake provider for testing code that uses
-// SchemaFlux, so those tests need no API key, no network, and no money.
-//
-// Without it, the only injection point was an unexported function, and every
-// downstream user faced a choice between paid, nondeterministic tests and
-// hand-rolling an interface around this library. That is a poor thing to ask of
-// someone for the privilege of testing their own code.
-//
-// # Using it
-//
-//	func TestRouting(t *testing.T) {
-//	    provider := schemafluxtest.New().
-//	        Reply(`{"selected":1,"confidence":0.9}`)
-//	    defer schemafluxtest.Install(t, provider)()
-//
-//	    department, _, err := schemaflux.Decide(ctx, ticket, departments)
-//	    // ...
-//	    // And check what your code actually sent:
-//	    if !strings.Contains(provider.LastRequest().UserPrompt, "invoice") {
-//	        t.Error("the ticket text did not reach the model")
-//	    }
-//	}
-//
-// # The global
-//
-// Install replaces a package-level provider, so tests that use it cannot run in
-// parallel with each other or with anything else that makes a SchemaFlux call.
-// Install registers a cleanup that restores the previous provider, and it calls
-// t.Setenv, which makes Go fail any test that also calls t.Parallel — so the
-// constraint is enforced rather than documented. Removing the global is
-// TODOS.md TI-002.
 package schemafluxtest
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"iter"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/internal/llm"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
 )
 
-// Provider is a fake LLM provider. Its zero value is not usable; call New.
+const (
+	// providerName is the name of a Provider that was not given another.
+	providerName = "test"
+
+	// modelName is the one model a Provider knows.
+	modelName = "test-model"
+)
+
+// A Provider is a scripted model. The zero value is ready to use: it is named
+// "test", knows one model, "test-model", and answers every request with "{}"
+// until it is scripted. It records every request it is sent, and it retries
+// nothing: it tells the library its own retry setting is none, so a test that
+// scripts one failure sees one request.
+//
+// A Provider takes the tool declarations and the message list of a request, which
+// a fake may, and records them: a chat session is tested against it. To script a
+// reply that is only tool calls, Respond returns a Response that has ToolCalls and
+// no Content; to script one that is text, Reply or a Response with Content. The
+// calls it returns are not checked against the tools of the request: a test that
+// scripts an undeclared tool is testing how the library refuses one.
+//
+// A Provider is safe for concurrent use. It must not be copied after first use.
+// Unlike the library's own types it is set up with methods and not with
+// fields, because a test changes its script while requests are in flight, which
+// needs a lock.
+//
+// Scripting a Provider has a single rule: Reply, Fail, FailThen, Shape, Respond
+// and RespondContext each set how the Provider answers a request that no
+// ReplyWhen claims,
+// and the last of them called wins. ReplyWhen adds a claim, which is tried
+// before the default, in the order they were added. A Provider whose only
+// script is ReplyWhen has no answer for a request nothing claims, and fails it
+// (see the package comment), where a Provider with no script at all answers
+// "{}".
 type Provider struct {
 	mu sync.Mutex
 
-	replies  []string
-	errs     []error
-	index    int
-	delay    time.Duration
-	requests []schemaflux.CompletionRequest
-	contexts []context.Context
-	usage    schemaflux.TokenUsage
-	name     string
+	// name is the name Name returns. Empty means providerName.
+	name string
 
-	// replyFunc answers from the request itself when set, taking precedence
-	// over the scripted list. See ReplyFunc.
-	replyFunc func(call int, req schemaflux.CompletionRequest) (string, error)
+	// usage is the token count every answer reports. The zero value means none.
+	usage schemaflux.Usage
 
-	// shaped answers from the request's own declared shape when nothing is
-	// scripted. See Shaped.
+	// delay is how long each request waits before it is answered.
+	delay time.Duration
+
+	// scripted is true once one of the default scripts has been set. Until then
+	// the default is the empty object.
+	scripted bool
+
+	// steps are the default script's answers in order. The last repeats. Empty
+	// when the default script is a function or none.
+	steps []step
+	taken int
+
+	// respond, when not nil, is the default script.
+	respond func(ctx context.Context, call int, req schemaflux.Request) (schemaflux.Response, error)
+
+	// label names the default script in the message of a failed script.
+	label string
+
+	// rules are the claims added by ReplyWhen, in order.
+	rules []*rule
+
+	// requests are the requests received, in the order they arrived.
+	requests []schemaflux.Request
+}
+
+// A step is one scripted answer: a body, an error, or a body shaped from the
+// request.
+type step struct {
+	body   string
+	err    error
 	shaped bool
 }
 
-// New returns a provider that replies with an empty JSON object until told
-// otherwise.
-func New() *Provider {
-	return &Provider{
-		replies: []string{"{}"},
-		name:    "local",
-	}
+// A rule is a ReplyWhen: the bodies to answer with the requests that mention
+// about.
+type rule struct {
+	about string // lower case
+	steps []step
+	taken int
 }
 
-// Shaped makes the provider answer with whatever shape the request declared --
-// its JSON Schema, or the JSON template in its system prompt -- instead of the
-// empty object it replies with by default.
+// matches reports whether the request's schema name or system prompt mentions
+// the rule's text, without regard to case.
+func (r *rule) matches(req schemaflux.Request) bool {
+	return strings.Contains(strings.ToLower(req.SchemaName), r.about) ||
+		strings.Contains(strings.ToLower(req.System), r.about)
+}
+
+// next returns the rule's next answer and counts it as taken. The last repeats.
+func next(steps []step, taken *int) step {
+	s := steps[min(*taken, len(steps)-1)]
+	*taken++
+	return s
+}
+
+// Reply sets the bodies the Provider answers with, in order: the first request
+// gets the first body, the second the second, and the last body repeats once the
+// list is used up, so a test that makes an unknown number of requests does not
+// have to count them. With no body it answers "{}". Reply replaces whatever
+// default script was set before, and starts the sequence again.
+func (p *Provider) Reply(bodies ...string) {
+	steps := make([]step, 0, max(len(bodies), 1))
+	for _, body := range bodies {
+		steps = append(steps, step{body: body})
+	}
+	if len(steps) == 0 {
+		steps = append(steps, step{body: "{}"})
+	}
+	p.setDefault(steps, nil, "Reply with "+count(len(steps), "body", "bodies"))
+}
+
+// ReplyWhen answers the requests that are about the operation named by about,
+// with bodies in order, the last repeating, as Reply does. A request is about
+// it when its SchemaName or its System prompt contains about, without regard to
+// case: Extract names its schema for the Go type it fills, and every other
+// operation's system prompt is fixed. The user message is not matched, because
+// it holds the caller's data: a test that answers by what was sent uses
+// Respond.
 //
-// It is for tests that care about what was *sent*: golden prompts, request
-// shape, cost accounting. Without it, those tests have to script a body per
-// operation just to get past the parse, which is a lot of fixture for a
-// question that is not about the answer.
+// Claims are tried in the order they were added, and the first that matches
+// answers, so the more specific text goes first. A request no claim matches is
+// answered by the default script (Reply, Fail, FailThen, Shape, Respond or RespondContext) or,
+// when none was set, fails: see the package comment. Each claim counts the
+// requests that matched it alone. With no body it answers "{}".
 //
-// A scripted reply always wins. This is a fallback, not a mode, and the values
-// it produces are obviously synthetic -- anything that needs a particular
-// answer should say so with Reply.
-func (p *Provider) Shaped() *Provider {
+// ReplyWhen panics if about is empty, which would claim every request and hide
+// every later claim.
+func (p *Provider) ReplyWhen(about string, bodies ...string) {
+	if about == "" {
+		panic("schemafluxtest: ReplyWhen needs the text to look for in the request, and was given none")
+	}
+	steps := make([]step, 0, max(len(bodies), 1))
+	for _, body := range bodies {
+		steps = append(steps, step{body: body})
+	}
+	if len(steps) == 0 {
+		steps = append(steps, step{body: "{}"})
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.shaped = true
-	// The constructor's default reply is what Shaped replaces; a caller who
-	// wants both scripts one with Reply after this.
-	p.replies = nil
-	return p
+	p.rules = append(p.rules, &rule{about: strings.ToLower(about), steps: steps})
 }
 
-// Reply sets the bodies the provider returns, in order. The last one repeats
-// once the list is exhausted, so a test that makes an unknown number of calls
-// does not have to predict it.
-func (p *Provider) Reply(bodies ...string) *Provider {
+// Respond sets a function that answers every request that no ReplyWhen claims,
+// from the request itself. It is the general form: the Response it returns is
+// handed back exactly as it is, so a test scripts any field of it, such as a
+// FinishReason of "length" for an answer cut short, a Usage that differs from
+// call to call, or a Model. The function's error is returned as it is.
+//
+// call is the zero-based position of the request among those the Provider has
+// received since it was made or last Reset, in the order they arrived. The
+// function runs on the goroutine of the request, with no lock held, after any
+// Delay; it must be safe for concurrent use if requests overlap. Respond panics
+// if f is nil: there is no way to say "no script" with it, and a nil that
+// cleared the script and left the Provider answering "{}" hid a test that had
+// meant to script something. Reply with no body sets the default answer again.
+// A function that waits, or whose answer depends on the request being cancelled,
+// uses RespondContext.
+func (p *Provider) Respond(f func(call int, req schemaflux.Request) (schemaflux.Response, error)) {
+	if f == nil {
+		panic("schemafluxtest: Respond needs a function, and was given none; Reply with no body sets the default answer")
+	}
+	p.setDefault(nil, func(_ context.Context, call int, req schemaflux.Request) (schemaflux.Response, error) {
+		return f(call, req)
+	}, "Respond")
+}
+
+// RespondContext is Respond for a function that is given the context of the
+// request, which is how a scripted provider tells that the call was cancelled or
+// timed out, and waits as a real one does (see Wait). The context is the one the
+// library gave Complete: a deadline, a cancellation and the values of the call.
+// Like Respond it panics if f is nil, and it replaces whatever default script was
+// set before.
+func (p *Provider) RespondContext(f func(ctx context.Context, call int, req schemaflux.Request) (schemaflux.Response, error)) {
+	if f == nil {
+		panic("schemafluxtest: RespondContext needs a function, and was given none; Reply with no body sets the default answer")
+	}
+	p.setDefault(nil, f, "RespondContext")
+}
+
+// Wait waits d, or until ctx ends, whichever is first, and returns nil in the
+// first case and the context's error in the second. It is the wait a function
+// given to RespondContext puts in front of one request's answer to make that
+// request slow, which Delay does for every request. It is a timer on the context
+// and nothing else, so it runs on the fake clock inside a testing/synctest
+// bubble. A d of zero or less returns at once, nil unless ctx has already ended.
+func Wait(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Fail makes every request fail with err. To script a kind, give an *Error:
+//
+//	model.Fail(&schemaflux.Error{Kind: schemaflux.ErrRateLimited, Status: 429, RetryAfter: time.Second})
+//
+// A bare Kind is also an error and also decides the kind. A nil err is the
+// provider being unavailable, which is how the library reads a failure that
+// says nothing of what it was.
+func (p *Provider) Fail(err error) {
+	p.setDefault([]step{{err: failure(err)}}, nil, "Fail")
+}
+
+// FailThen makes the first failures requests fail with err, and every request
+// after them answer body, which repeats. Because the Provider retries nothing
+// itself, it is how a test shows what a retry middleware or a repair loop does
+// with a failure that passes. A negative failures is none. A nil err is the
+// provider being unavailable.
+func (p *Provider) FailThen(failures int, err error, body string) {
+	steps := make([]step, 0, max(failures, 0)+1)
+	for range max(failures, 0) {
+		steps = append(steps, step{err: failure(err)})
+	}
+	steps = append(steps, step{body: body})
+	p.setDefault(steps, nil, "FailThen with "+count(max(failures, 0), "failure", "failures"))
+}
+
+// failure is err, or an unavailable provider for nil.
+func failure(err error) error {
+	if err != nil {
+		return err
+	}
+	return &schemaflux.Error{Kind: schemaflux.ErrUnavailable, Message: "the test scripted a failure and gave no error"}
+}
+
+// Shape makes the Provider answer each request with a value that fits the
+// request's own declared shape: its JSON Schema, or the JSON template in its
+// system prompt. A collection operation is answered with its own items
+// unchanged, which every relational check accepts. The values are plainly
+// synthetic. It is for a test about what was sent, that needs a request to get
+// past the parse and has no opinion on the answer.
+//
+// A request that declares no shape is not answered with an empty object: it
+// fails, with a message that says so, because a test that asked for a shaped
+// answer and did not get one has learned nothing about its code.
+func (p *Provider) Shape() {
+	p.setDefault([]step{{shaped: true}}, nil, "Shape")
+}
+
+// setDefault replaces the default script.
+func (p *Provider) setDefault(steps []step, respond func(context.Context, int, schemaflux.Request) (schemaflux.Response, error), label string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if len(bodies) == 0 {
-		p.replies = []string{"{}"}
-	} else {
-		p.replies = append([]string(nil), bodies...)
-	}
-	p.errs = nil
-	p.index = 0
-	return p
+	p.steps, p.taken = steps, 0
+	p.respond = respond
+	p.label = label
+	p.scripted = true
 }
 
-// Fail makes every call return err, which is how a test exercises the paths
-// that matter most: what your code does when the provider is unreachable.
-func (p *Provider) Fail(err error) *Provider {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if err == nil {
-		err = fmt.Errorf("schemafluxtest: provider unavailable")
-	}
-	p.errs = []error{err}
-	p.index = 0
-	return p
-}
-
-// FailThen makes the first calls fail and the rest succeed with body, for
-// testing retry behaviour.
-func (p *Provider) FailThen(failures int, err error, body string) *Provider {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if err == nil {
-		err = fmt.Errorf("schemafluxtest: provider unavailable")
-	}
-	p.errs = make([]error, failures)
-	for i := range p.errs {
-		p.errs[i] = err
-	}
-	p.replies = []string{body}
-	p.index = 0
-	return p
-}
-
-// Slow makes every call take at least d, for testing timeouts and
-// cancellation. The wait is cancellable, so a test that cancels does not sit
-// through it.
-func (p *Provider) Slow(d time.Duration) *Provider {
+// Delay makes every request wait d before it is answered, for a test of a
+// timeout, a hedge or a cancellation. The wait ends at once if the request's
+// context ends, and the request then fails with the context's error, as a real
+// provider's does. It is a timer on the request's context and nothing else, so
+// it runs on the fake clock inside a testing/synctest bubble. A Delay of zero or
+// less is none. The wait applies to every answer, a failure included, and the
+// request is counted when it arrives, not when it is answered.
+func (p *Provider) Delay(d time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.delay = d
-	return p
 }
 
-// WithUsage sets the token usage every reply reports, for testing cost
-// accounting.
-func (p *Provider) WithUsage(usage schemaflux.TokenUsage) *Provider {
+// SetUsage sets the token count every answer reports, for a test of cost
+// accounting. The zero Usage means the provider reports none, which is not a
+// count of zero tokens. It has no effect on an answer a Respond function builds.
+// A cost is worked out only for a model with a price: register one with
+// pricing.Register.
+func (p *Provider) SetUsage(u schemaflux.Usage) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.usage = usage
-	return p
+	p.usage = u
 }
 
-// As sets the provider name, which decides the model the library resolves.
-// The default is "local", the name reserved for an in-process double; a name
-// the library does not know resolves to no model at all and every call errors.
-func (p *Provider) As(name string) *Provider {
+// SetName sets the name Name returns, which is the name a data policy, a price
+// table and a route declaration know the provider by. Empty means "test".
+//
+// It exists for parallel tests that touch process state: pricing.Register and
+// provider.DeclareRoute have no undo, so a test that uses either gives its
+// fake a name of its own and registers under it, and no other test sees it.
+func (p *Provider) SetName(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.name = name
-	return p
 }
 
-// Requests returns every request the provider received, in order. This is how a
-// test checks what its code actually sent — the prompt, the model, the response
-// format — rather than only what came back.
-func (p *Provider) Requests() []schemaflux.CompletionRequest {
+// Name returns the provider's name: "test" unless SetName set another.
+func (p *Provider) Name() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]schemaflux.CompletionRequest(nil), p.requests...)
+	if p.name == "" {
+		return providerName
+	}
+	return p.name
 }
 
-// LastRequest returns the most recent request, or the zero value if there was
-// none.
-func (p *Provider) LastRequest() schemaflux.CompletionRequest {
+// Requests returns every request the Provider received, in the order they
+// arrived, whatever became of them: one that was failed, or cancelled in its
+// Delay, is there. The slice is a copy, and so are the Tools and the Messages of
+// each request, their calls and the bytes of the calls' arguments: what a test
+// does to what it read changes nothing the next read sees, and what a caller does
+// to its own history after a turn changes nothing recorded. A request's Schema
+// map, a tool's Parameters and the Decision are shared with the library and are
+// read-only.
+func (p *Provider) Requests() []schemaflux.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]schemaflux.Request, len(p.requests))
+	for i, req := range p.requests {
+		out[i] = cloneRequest(req)
+	}
+	return out
+}
+
+// Last returns the most recent request, with its Tools and Messages as Requests
+// copies them, or the zero Request when there has been none.
+func (p *Provider) Last() schemaflux.Request {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.requests) == 0 {
-		return schemaflux.CompletionRequest{}
+		return schemaflux.Request{}
 	}
-	return p.requests[len(p.requests)-1]
+	return cloneRequest(p.requests[len(p.requests)-1])
 }
 
-// CallCount returns how many calls were made.
-func (p *Provider) CallCount() int {
+// cloneRequest is req with its tool list, its message list, the calls of each
+// message and the bytes of each call's arguments copied. A nil list stays nil and
+// an empty one stays empty.
+func cloneRequest(req schemaflux.Request) schemaflux.Request {
+	req.Tools = cloneTools(req.Tools)
+	req.Messages = cloneMessages(req.Messages)
+	return req
+}
+
+// cloneTools is a copy of tools. A tool's parameters are shared: they are
+// read-only.
+func cloneTools(tools []schemaflux.Tool) []schemaflux.Tool {
+	if tools == nil {
+		return nil
+	}
+	return slices.Clone(tools)
+}
+
+// cloneMessages is a copy of messages that shares nothing with it but the
+// schemas of tools: the list, each message's call list and the bytes of each
+// call's arguments are new.
+func cloneMessages(messages []schemaflux.Message) []schemaflux.Message {
+	if messages == nil {
+		return nil
+	}
+	out := make([]schemaflux.Message, len(messages))
+	for i, m := range messages {
+		if m.ToolCalls != nil {
+			calls := make([]schemaflux.ToolCall, len(m.ToolCalls))
+			for j, c := range m.ToolCalls {
+				c.Arguments = bytes.Clone(c.Arguments)
+				calls[j] = c
+			}
+			m.ToolCalls = calls
+		}
+		out[i] = m
+	}
+	return out
+}
+
+// Calls returns how many requests the Provider has received.
+func (p *Provider) Calls() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.requests)
 }
 
-// Reset clears the recorded requests and rewinds the reply sequence.
-// ReplyFunc answers each call from the request it was sent, rather than from a
-// fixed list.
-//
-// Reply covers the common case, where the answer does not depend on the
-// question. It cannot cover the case where it does: a caller that batches work
-// -- splitting a catalogue into chunks and asking about each -- has to answer
-// with the keys THAT chunk asked about, and a fixed list cannot know which
-// those are without the fixture reimplementing the batching it is supposed to
-// be testing -- at which point the fixture shares the bug it was meant to
-// catch.
-//
-// The function receives the zero-based call index and the request. Returning an
-// error fails that call. It takes precedence over Reply and over Shaped;
-// scripted errors from Fail and FailThen are still applied first, so a test can
-// combine "fail twice, then answer from the request".
-func (p *Provider) ReplyFunc(fn func(call int, req schemaflux.CompletionRequest) (string, error)) *Provider {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.replyFunc = fn
-	return p
-}
-
-// Contexts returns the context each call arrived on, in call order.
-//
-// A context is not part of a prompt, so recording requests but not contexts is
-// a defensible default -- until a caller puts a per-operation deadline on its
-// calls, at which point the context handed to the provider is the only place
-// that deadline is observable. Asserting on the caller's own context proves
-// only that the caller built what it built; whether it reached the provider is
-// a different question, and the answer is here.
-func (p *Provider) Contexts() []context.Context {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]context.Context(nil), p.contexts...)
-}
-
-// ContextN returns the context of call n, or a background context when that
-// call never happened.
-//
-// Background rather than nil, so an assertion on a call that did not occur
-// reads a missing deadline and reports the real failure, instead of panicking
-// somewhere unrelated.
-func (p *Provider) ContextN(n int) context.Context {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if n < 0 || n >= len(p.contexts) {
-		return context.Background()
-	}
-	return p.contexts[n]
-}
-
-func (p *Provider) Reset() *Provider {
+// Reset forgets the requests received and starts every script again from its
+// first answer. The scripts, the name, the usage and the delay stay.
+func (p *Provider) Reset() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.requests = nil
-	p.contexts = nil
-	p.index = 0
-	return p
+	p.taken = 0
+	for _, r := range p.rules {
+		r.taken = 0
+	}
 }
 
-// Complete implements schemaflux.Provider.
-func (p *Provider) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+// Complete records the request and answers it as the script says. It is the
+// Provider's implementation of schemaflux.Provider, which the library calls; a
+// test calls it directly only to see what a script does.
+//
+// The request is counted when it arrives, before any Delay, and the script's
+// next answer is taken then, under the Provider's lock, so requests that arrive
+// together are each counted once and each answered with a different step of a
+// sequence. A request whose context has ended fails with the context's error
+// and is still counted.
+func (p *Provider) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	p.mu.Lock()
-	p.requests = append(p.requests, req)
-	p.contexts = append(p.contexts, ctx)
-	position := p.index
-	p.index++
-	replyFunc := p.replyFunc
-
-	delay := p.delay
-	errs := p.errs
-	replies := p.replies
-	usage := p.usage
-	name := p.name
+	call := len(p.requests)
+	p.requests = append(p.requests, cloneRequest(req))
+	delay, usage := p.delay, p.usage
+	answer, respond, covered := p.choose(req)
+	var unanswered error
+	if !covered {
+		unanswered = scriptFailure("no answer is scripted for request " + strconv.Itoa(call+1) +
+			", which asks for " + describeRequest(req) + "; scripted: " + p.describeScript())
+	}
+	label := p.label
 	p.mu.Unlock()
 
-	if delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			return schemaflux.CompletionResponse{}, ctx.Err()
+	if err := Wait(ctx, delay); err != nil {
+		return schemaflux.Response{}, err
+	}
+	if unanswered != nil {
+		return schemaflux.Response{}, unanswered
+	}
+	if respond != nil {
+		return respond(ctx, call, req)
+	}
+	if answer.err != nil {
+		return schemaflux.Response{}, answer.err
+	}
+	body := answer.body
+	if answer.shaped {
+		body = shapedBody(req)
+		if body == "" {
+			return schemaflux.Response{}, scriptFailure(label + " found nothing to shape an answer from in request " +
+				strconv.Itoa(call+1) + ", which asks for " + describeRequest(req) +
+				": it declares no schema and no JSON template in its system prompt")
 		}
 	}
-
-	// A cancelled context is reported even without a delay, so a test can check
-	// that its cancellation reached the call.
-	if err := ctx.Err(); err != nil {
-		return schemaflux.CompletionResponse{}, err
-	}
-
-	if position < len(errs) {
-		return schemaflux.CompletionResponse{}, errs[position]
-	}
-	if len(errs) > 0 && len(replies) == 0 {
-		return schemaflux.CompletionResponse{}, errs[len(errs)-1]
-	}
-
-	if replyFunc != nil {
-		body, err := replyFunc(position, req)
-		if err != nil {
-			return schemaflux.CompletionResponse{}, err
-		}
-		return schemaflux.CompletionResponse{
-			Content:      body,
-			Model:        req.Model,
-			Provider:     name,
-			FinishReason: "stop",
-			Usage:        usage,
-		}, nil
-	}
-
-	body := "{}"
-	if p.shaped && len(replies) == 0 {
-		// No scripted reply, and the caller asked for shape rather than
-		// silence: answer whatever the request declared. `{}` is a valid JSON
-		// object and an invalid answer to almost every operation, so a test
-		// that only cares about *what was sent* would otherwise have to script
-		// a body per operation to get past the parse.
-		if shaped := llm.ShapedMockResponse(req); shaped != "" {
-			body = shaped
-		}
-	}
-	if len(replies) > 0 {
-		replyIndex := position - len(errs)
-		if replyIndex < 0 {
-			replyIndex = 0
-		}
-		if replyIndex >= len(replies) {
-			replyIndex = len(replies) - 1
-		}
-		body = replies[replyIndex]
-	}
-
-	return schemaflux.CompletionResponse{
+	return schemaflux.Response{
 		Content:      body,
-		Model:        req.Model,
-		Provider:     name,
+		Model:        modelOf(req),
 		FinishReason: "stop",
 		Usage:        usage,
 	}, nil
 }
 
-// Name implements schemaflux.Provider.
-func (p *Provider) Name() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.name
+// choose picks the script that answers req and takes its next answer. covered
+// is false when no script does. The caller holds the lock.
+func (p *Provider) choose(req schemaflux.Request) (answer step, respond func(context.Context, int, schemaflux.Request) (schemaflux.Response, error), covered bool) {
+	for _, r := range p.rules {
+		if r.matches(req) {
+			return next(r.steps, &r.taken), nil, true
+		}
+	}
+	switch {
+	case p.respond != nil:
+		return step{}, p.respond, true
+	case len(p.steps) > 0:
+		return next(p.steps, &p.taken), nil, true
+	case !p.scripted && len(p.rules) == 0:
+		return step{body: "{}"}, nil, true
+	}
+	return step{}, nil, false
 }
 
-// EstimateCost implements schemaflux.Provider. A double costs nothing.
-func (p *Provider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
+// describeScript lists what the Provider is scripted to answer, for the message
+// of a request nothing covers. The caller holds the lock.
+func (p *Provider) describeScript() string {
+	const listed = 5
+	var parts []string
+	for i, r := range p.rules {
+		if i == listed {
+			parts = append(parts, "and "+count(len(p.rules)-listed, "more claim", "more claims"))
+			break
+		}
+		parts = append(parts, "ReplyWhen "+quoted(r.about, 24)+" ("+count(len(r.steps), "body", "bodies")+")")
+	}
+	if p.label != "" {
+		parts = append(parts, p.label)
+	} else {
+		parts = append(parts, "no answer for any other request")
+	}
+	return strings.Join(parts, ", ")
+}
 
-// RetryPolicy implements schemaflux.Provider. No retries by default, so a test
-// that scripts one failure sees one failure.
-func (p *Provider) RetryPolicy() (int, time.Duration) { return 0, 0 }
+// shapedBody is an answer that fits what req declares, or "" when it declares
+// nothing a body can be shaped from.
+func shapedBody(req schemaflux.Request) string {
+	return llm.ShapedMockResponse(llm.CompletionRequest{
+		Model:          req.Model,
+		SystemPrompt:   req.System,
+		UserPrompt:     req.User,
+		ResponseFormat: req.Format,
+		JSONSchema:     req.Schema,
+		SchemaName:     req.SchemaName,
+	})
+}
+
+// modelOf is the model a Provider reports for a request: the one asked for, or
+// the one it knows when none was.
+func modelOf(req schemaflux.Request) string {
+	if req.Model != "" {
+		return req.Model
+	}
+	return modelName
+}
+
+// RetryPolicy implements provider.Retrier. It returns a negative number of
+// retries, which means never: the library does not send a request to a
+// Provider again, so a test that scripts one failure sees one request and one
+// failure, and a test of retry puts the retrying middleware in front of it.
+func (p *Provider) RetryPolicy() (retries int, backoff time.Duration) { return -1, 0 }
+
+// ModelFor returns the model the Provider means by a tier: "test-model", for
+// every tier, which is the one model it knows. A Provider written outside the
+// library has no model for a tier and would need the client's Model; the fake
+// names one so that a test needs no setting to make a call.
+func (p *Provider) ModelFor(tier schemaflux.Tier) string { return modelName }
+
+// streamPiece is the most runes of an answer a Stream puts in one chunk. It is
+// small, so that an answer of any size an operation reads comes in several
+// pieces and a test of code that assembles them has something to assemble.
+const streamPiece = 4
+
+// Stream answers the request as Complete does, and delivers the answer in
+// pieces: chunks of at most four runes each, which never split a character,
+// and then a last chunk that has Done set and holds the whole Response, the
+// answer's text in its Content. It makes a Provider a provider.Streamer, so a
+// streamed operation is tested without a stub of its own.
+//
+// The request goes the way any other does: the script that answers it, the
+// Delay it waits and the failure it is given are Complete's, and it is recorded.
+// It is counted when the sequence is first ranged over, not when Stream is
+// called, and each range over the sequence sends a request of its own. A
+// failure, whether scripted or the context's, is yielded in place of the
+// chunks and ends the sequence: a stream that breaks is an error and never a
+// short answer, and no chunk comes before it. An answer with no text is the last
+// chunk alone. A caller that stops ranging early has still sent its request.
+func (p *Provider) Stream(ctx context.Context, req schemaflux.Request) iter.Seq2[schemaflux.Chunk, error] {
+	return func(yield func(schemaflux.Chunk, error) bool) {
+		resp, err := p.Complete(ctx, req)
+		if err != nil {
+			yield(schemaflux.Chunk{}, err)
+			return
+		}
+		runes := []rune(resp.Content)
+		for len(runes) > 0 {
+			n := min(streamPiece, len(runes))
+			if !yield(schemaflux.Chunk{Delta: string(runes[:n])}, nil) {
+				return
+			}
+			runes = runes[n:]
+		}
+		yield(schemaflux.Chunk{Done: true, Response: resp}, nil)
+	}
+}

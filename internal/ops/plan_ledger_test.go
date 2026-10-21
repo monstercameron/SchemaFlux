@@ -4,12 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // PL-014: pre-execution alternatives (types.Plan.Alternatives, populated by
-// chooseShape in plan.go) and the post-execution decision ledger
-// (types.BatchResult.Ledger, populated by RunOpManyRecover in recover.go).
+// chooseShape in plan.go).
 // "An explanation nobody can act on is decoration" is TODOS.md's own line
 // for why Alternatives exists: Plan.Explain() already said what ran; these
 // tests are about the other half -- what did NOT run, and why not.
@@ -122,102 +121,5 @@ func TestPreflightAlternativesAreDeterministic(t *testing.T) {
 	}
 	if plan1.Digest() != plan2.Digest() {
 		t.Error("two Preflight calls over identical input produced different plan digests")
-	}
-}
-
-// --- Post-execution: the decision ledger (RunOpManyRecover, recover.go).
-
-func TestRunOpManyRecoverLedgerRecordsEveryTopLevelChunk(t *testing.T) {
-	provider := newRecoverFakeProvider("fake-model")
-	ctx := recoverCtx(t, provider)
-
-	items := recoverWidgets(25)
-	cfg := RecoverConfig{MaxItemsPerCall: 10, StartItemsPerCall: 10}
-
-	result, err := RunOpManyRecover(ctx, recoverWidgetOp(), items, recoverCodec(), types.OpOptions{}, cfg)
-	if err != nil {
-		t.Fatalf("RunOpManyRecover failed: %v", err)
-	}
-	if !result.Complete() {
-		t.Fatalf("expected every item to resolve on the compliant path, got %s", result.String())
-	}
-
-	// 25 items at chunk size 10 is 3 top-level chunks (10, 10, 5); the
-	// ledger must have one entry per chunk, each with a non-empty reason.
-	if len(result.Ledger.Entries) != 3 {
-		t.Fatalf("expected 3 ledger entries (one per top-level chunk), got %d: %+v", len(result.Ledger.Entries), result.Ledger.Entries)
-	}
-	for _, e := range result.Ledger.Entries {
-		if e.Reason == "" {
-			t.Errorf("ledger entry %+v has no reason -- an adaptive decision that cannot explain itself is unauditable", e)
-		}
-	}
-}
-
-func TestRunOpManyRecoverLedgerRecordsAnAtomicFallbackEntry(t *testing.T) {
-	provider := newRecoverFakeProvider("fake-model")
-	provider.batchScript = []recoverBatchHandler{
-		omitBatch(itemID(0)), // pass 1: omit item 0
-		omitBatch(itemID(0)), // isolate pass: still omit item 0
-	}
-	ctx := recoverCtx(t, provider)
-
-	items := recoverWidgets(3)
-	result, err := RunOpManyRecover(ctx, recoverWidgetOp(), items, recoverCodec(), types.OpOptions{}, RecoverConfig{})
-	if err != nil {
-		t.Fatalf("RunOpManyRecover failed: %v", err)
-	}
-	if result.Summary.Succeeded != 3 {
-		t.Fatalf("expected all 3 items to eventually resolve (2 via MDSP, 1 via atomic fallback), got %d succeeded", result.Summary.Succeeded)
-	}
-
-	found := false
-	for _, e := range result.Ledger.Entries {
-		if strings.Contains(e.Node, "atomic fallback") {
-			found = true
-			if e.Reason == "" {
-				t.Error("the atomic fallback ledger entry has no reason")
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected a ledger entry naming the atomic fallback stage, got %+v", result.Ledger.Entries)
-	}
-}
-
-func TestRunOpManyPartialLeavesTheLedgerEmpty(t *testing.T) {
-	// RunOpManyPartial (partial.go) makes no adaptive sizing decisions --
-	// one call per item, unconditionally -- so its BatchResult.Ledger must
-	// stay at its honest zero value rather than reporting fabricated
-	// entries for decisions that were never made.
-	provider := newRecoverFakeProvider("fake-model")
-	ctx := recoverCtx(t, provider)
-
-	items := recoverWidgets(3)
-	result, err := RunOpManyPartial(ctx, recoverWidgetOp(), items, types.OpOptions{}, PartialConfig{Policy: types.PolicyCollectFailures})
-	if err != nil {
-		t.Fatalf("RunOpManyPartial failed: %v", err)
-	}
-	if len(result.Ledger.Entries) != 0 {
-		t.Errorf("RunOpManyPartial should leave Ledger empty, got %+v", result.Ledger.Entries)
-	}
-	if result.Ledger.Explain() == "" {
-		t.Error("an empty ledger's Explain() should still return a readable (non-empty) string")
-	}
-}
-
-func TestDecisionLedgerExplainRendersEntriesInOrder(t *testing.T) {
-	var ledger types.DecisionLedger
-	ledger.Record("chunk 1", "chunk size held at 20", "compliant (1/3 before growing)")
-	ledger.Record("chunk 2", "chunk size changed from 20 to 10", "halved from 20 to 10 after omission")
-
-	explanation := ledger.Explain()
-	firstIdx := strings.Index(explanation, "chunk 1")
-	secondIdx := strings.Index(explanation, "chunk 2")
-	if firstIdx == -1 || secondIdx == -1 || firstIdx > secondIdx {
-		t.Errorf("ledger entries are not rendered in order:\n%s", explanation)
-	}
-	if !strings.Contains(explanation, "halved from 20 to 10 after omission") {
-		t.Errorf("Explain() dropped an entry's reason:\n%s", explanation)
 	}
 }

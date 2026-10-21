@@ -1,32 +1,41 @@
-// package ops - Arbitrate operation for rule-based decisions with audit trail
 package ops
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"reflect"
-	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ArbitrateOptions configures the Arbitrate operation
 type ArbitrateOptions struct {
-	// Rules are natural language rules that must be evaluated
+	// Rules are the rules every option is evaluated against, in plain
+	// language. At least one is required and none may be blank.
 	Rules []string
 
-	// Weights assigns importance to each rule (same order as Rules)
+	// Weights is how much each rule counts, in the order of Rules. A rule with
+	// no weight counts 1. This library applies the weights: an option's total
+	// is the weighted mean of its rule scores. A weight may not be negative,
+	// and they may not all be zero.
 	Weights []float64
 
-	// RequireAllRules fails if any option doesn't satisfy all rules
+	// RequireAllRules disqualifies an option that fails any rule, whatever it
+	// scores. When every option is disqualified there is no winner, and
+	// Arbitrate returns an error that is ErrReviewRequired.
 	RequireAllRules bool
 
-	// IncludeReasoning includes detailed reasoning for each evaluation
+	// IncludeReasoning asks the model for a reason with every evaluation, one
+	// for each option on each rule, which is returned in
+	// RuleEvaluation.Reasoning. It is off unless set, here, in
+	// NewArbitrateOptions and on the fluent builder alike: the reasons are
+	// most of the answer's length, and an arbitration without them takes about
+	// half the time. ArbitrateResult.Reasoning, the account of how the options
+	// compare, is returned either way.
 	IncludeReasoning bool
 
-	// Tiebreaker specifies how to break ties ("first", "random", "most-confident")
+	// Tiebreaker says which of several options with the same total wins:
+	// "first", the earliest in the list; "random", any of them, which makes
+	// the result differ from call to call; or "most-confident", the default,
+	// the one that passed the most rules, and the earliest of those.
 	Tiebreaker string
 
 	// Common options
@@ -39,7 +48,16 @@ type ArbitrateOptions struct {
 	// out rather than embedding CommonOptions, so the pin has to be declared
 	// here too -- otherwise `.Model(...)` on the builder would be a setter
 	// that changes nothing, which this repository fails the build over.
-	Model         string
+	Model string
+	// Effort is how much the model reasons before it answers (LX-105). The
+	// builder sets it here for the same reason it sets Model here.
+	Effort types.Effort
+
+	// MaxOutputTokens is the ceiling on the answer's length. Zero means the tier's.
+	MaxOutputTokens int
+	// WebSearch declares the provider's web-search tool on the call.
+	WebSearch bool
+
 	Context       context.Context
 	RequestID     string
 	CorrelationID string
@@ -47,7 +65,7 @@ type ArbitrateOptions struct {
 
 // RuleEvaluation describes how a rule was evaluated for an option
 type RuleEvaluation struct {
-	// Rule is the rule text
+	// Rule is the rule, in the caller's own words
 	Rule string `json:"rule"`
 
 	// Passed indicates if the option satisfied the rule
@@ -56,7 +74,8 @@ type RuleEvaluation struct {
 	// Score is the degree of satisfaction (0.0-1.0)
 	Score float64 `json:"score"`
 
-	// Reasoning explains the evaluation
+	// Reasoning is the model's reason for this evaluation. It is empty unless
+	// ArbitrateOptions.IncludeReasoning was set.
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
@@ -65,7 +84,8 @@ type OptionEvaluation struct {
 	// Index is the option's position in the input array
 	Index int `json:"index"`
 
-	// TotalScore is the weighted sum of all rule scores
+	// TotalScore is the weighted mean of the rule scores, from 0 to 1. This
+	// library works it out from the caller's weights.
 	TotalScore float64 `json:"total_score"`
 
 	// RuleResults shows how each rule was evaluated
@@ -74,7 +94,7 @@ type OptionEvaluation struct {
 	// Disqualified indicates if the option was disqualified
 	Disqualified bool `json:"disqualified"`
 
-	// DisqualifyReason explains why it was disqualified
+	// DisqualifyReason says which rules it failed. This library writes it.
 	DisqualifyReason string `json:"disqualify_reason,omitempty"`
 }
 
@@ -86,19 +106,27 @@ type ArbitrateResult[T any] struct {
 	// WinnerIndex is the position of the winner in the input array
 	WinnerIndex int `json:"winner_index"`
 
-	// Scores maps option indices to their total scores
+	// Scores maps each option's index to its total, the weighted mean of its
+	// rule scores. It is empty when one option was offered and not evaluated.
 	Scores map[int]float64 `json:"scores"`
 
 	// Evaluations contains detailed evaluation for each option
 	Evaluations []OptionEvaluation `json:"evaluations"`
 
-	// Reasoning explains the overall decision
+	// Reasoning is the model's account of how the options compare on the
+	// rules. The model writes it without knowing the weights or the winner,
+	// which this library works out afterwards, so it explains the evaluations
+	// and not the choice. It names the options as the request did, o1, o2 and
+	// so on in the order given: o1 is index 0.
 	Reasoning string `json:"reasoning"`
 
-	// ModelConfidence in the decision (0.0-1.0)
+	// ModelConfidence is the model's own claim about its evaluations taken
+	// together (0.0-1.0), not a measurement. It is zero when one option was
+	// offered and not evaluated.
 	ModelConfidence float64 `json:"confidence"`
 
-	// TiesBroken indicates if ties were broken
+	// TiesBroken reports that more than one option had the highest total and
+	// the tiebreaker chose between them. Metadata["tied"] lists them.
 	TiesBroken bool `json:"ties_broken"`
 
 	// Metadata contains additional operation information
@@ -128,6 +156,7 @@ type ArbitrateResult[T any] struct {
 //	        "Must know Go or Python",
 //	        "Salary under $155,000",
 //	    },
+//	    IncludeReasoning: true, // a reason with every evaluation, printed below
 //	})
 //	fmt.Printf("Selected: %s (score: %.0f%%)\n", result.Winner.Name, result.Scores[result.WinnerIndex]*100)
 //	for _, eval := range result.Evaluations {
@@ -164,216 +193,7 @@ type ArbitrateResult[T any] struct {
 //	    Rules: []string{"best overall value"},
 //	})
 func Arbitrate[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResult[T], error) {
-	log := logger.GetLogger()
-	log.Debug("Starting arbitrate operation", "optionCount", len(options))
-
-	var result ArbitrateResult[T]
-	result.Scores = make(map[int]float64)
-	result.Metadata = make(map[string]any)
-
-	if len(options) == 0 {
-		return result, fmt.Errorf("no options to arbitrate")
-	}
-
-	if len(options) == 1 {
-		result.Winner = options[0]
-		result.WinnerIndex = 0
-		result.Scores[0] = 1.0
-		result.ModelConfidence = 1.0
-		result.Reasoning = "Only one option provided"
-		return result, nil
-	}
-
-	// Apply defaults
-	opt := ArbitrateOptions{
-		IncludeReasoning: true,
-		Tiebreaker:       "most-confident",
-		Mode:             types.TransformMode,
-		Intelligence:     types.Fast,
-	}
-	if len(opts) > 0 {
-		opt = mergeArbitrateOptions(opt, opts[0])
-	}
-
-	if len(opt.Rules) == 0 {
-		return result, fmt.Errorf("at least one rule is required")
-	}
-
-	// Get context
-	ctx := opt.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := operationContext(ctx, 0)
-	defer cancel()
-
-	// Convert options to JSON with indices
-	var optionsJSON []string
-	for i, option := range options {
-		optJSON, err := json.Marshal(option)
-		if err != nil {
-			log.Error("Arbitrate operation failed: marshal error", "optionIndex", i, "error", err)
-			return result, fmt.Errorf("failed to marshal option %d: %w", i, err)
-		}
-		optionsJSON = append(optionsJSON, fmt.Sprintf("Option %d: %s", i, string(optJSON)))
-	}
-
-	// Get type schema
-	var zero T
-	typeSchema := GenerateTypeSchema(reflect.TypeOf(zero))
-
-	// Build rules with weights
-	var rulesDesc []string
-	for i, rule := range opt.Rules {
-		weight := 1.0
-		if i < len(opt.Weights) {
-			weight = opt.Weights[i]
-		}
-		rulesDesc = append(rulesDesc, fmt.Sprintf("- Rule %d (weight %.2f): %s", i+1, weight, rule))
-	}
-
-	requireAllNote := ""
-	if opt.RequireAllRules {
-		requireAllNote = "\nMode: RequireAllRules - disqualify any option that fails ANY rule."
-	}
-
-	systemPrompt := fmt.Sprintf(`You are a decision arbitration expert. Evaluate options against rules and select the best one.
-
-Option schema: %s
-
-Rules to evaluate:
-%s%s
-
-Tiebreaker: %s
-
-Return a JSON object with:
-{
-  "winner_index": 0,
-  "scores": {"0": 0.85, "1": 0.72, ...},
-  "evaluations": [
-    {
-      "index": 0,
-      "total_score": 0.85,
-      "rule_results": [
-        {"rule": "rule text", "passed": true, "score": 0.9, "reasoning": "explanation"}
-      ],
-      "disqualified": false,
-      "disqualify_reason": ""
-    }
-  ],
-  "reasoning": "overall explanation of the decision",
-  "confidence": 0.0-1.0,
-  "ties_broken": false
-}
-
-Rules:
-- Evaluate EVERY option against EVERY rule
-- Calculate weighted scores for each option
-- Disqualify options that fail required rules
-- Select the option with the highest total score
-- Break ties using the specified tiebreaker method
-- Provide complete audit trail`,
-		typeSchema, strings.Join(rulesDesc, "\n"), requireAllNote, opt.Tiebreaker)
-
-	steeringNote := ""
-	if opt.Steering != "" {
-		steeringNote = fmt.Sprintf("\n\nAdditional guidance: %s", opt.Steering)
-	}
-
-	userPrompt := fmt.Sprintf(`Arbitrate between these options:
-
-%s%s`, strings.Join(optionsJSON, "\n\n"), steeringNote)
-
-	// Build OpOptions for LLM call
-	opOpts := types.OpOptions{
-		Mode:          opt.Mode,
-		Intelligence:  opt.Intelligence,
-		Model:         opt.Model,
-		Context:       ctx,
-		RequestID:     opt.RequestID,
-		CorrelationID: opt.CorrelationID,
-	}
-
-	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
-	if err != nil {
-		log.Error("Arbitrate operation LLM call failed", "error", err)
-		return result, fmt.Errorf("arbitration failed: %w", err)
-	}
-
-	// Parse response
-	var parsed struct {
-		WinnerIndex     int                `json:"winner_index"`
-		Scores          map[string]float64 `json:"scores"`
-		Evaluations     []OptionEvaluation `json:"evaluations"`
-		Reasoning       string             `json:"reasoning"`
-		ModelConfidence float64            `json:"confidence"`
-		TiesBroken      bool               `json:"ties_broken"`
-	}
-
-	if err := ParseJSONStrict(response, &parsed); err != nil {
-		log.Error("Arbitrate operation failed: parse error", "error", err, "response", response)
-		return result, fmt.Errorf("failed to parse arbitration result: %w", err)
-	}
-
-	// Validate winner index
-	if parsed.WinnerIndex < 0 || parsed.WinnerIndex >= len(options) {
-		return result, fmt.Errorf("invalid winner index: %d", parsed.WinnerIndex)
-	}
-
-	result.Winner = options[parsed.WinnerIndex]
-	result.WinnerIndex = parsed.WinnerIndex
-	result.Evaluations = parsed.Evaluations
-	result.Reasoning = parsed.Reasoning
-	result.ModelConfidence = parsed.ModelConfidence
-	result.TiesBroken = parsed.TiesBroken
-
-	// Convert scores from string keys to int keys
-	for key, score := range parsed.Scores {
-		var idx int
-		fmt.Sscanf(key, "%d", &idx)
-		result.Scores[idx] = score
-	}
-
-	// A winner the model itself disqualified is a self-contradictory answer, and
-	// it was being returned as the decision. This holds under any options: the
-	// disqualification is the model's own claim, and refusing to act on a claim
-	// it just made is not second-guessing it.
-	for _, evaluation := range result.Evaluations {
-		if evaluation.Index == result.WinnerIndex && evaluation.Disqualified {
-			log.Error("Arbitrate selected an option it had disqualified", "winnerIndex", result.WinnerIndex)
-			return result, fmt.Errorf(
-				"arbitrate: option %d was selected as the winner and also marked disqualified", result.WinnerIndex)
-		}
-	}
-
-	// RequireAllRules is stated in the prompt as "disqualify any option that
-	// fails ANY rule" and was checked nowhere, so the winner could be an option
-	// with a failing rule result -- which is the single thing the flag exists to
-	// prevent. Only the winner is held to it: the other options' evaluations are
-	// reported for the caller to read, and an option that failed a rule is
-	// exactly what a disqualification looks like.
-	if opt.RequireAllRules {
-		for _, evaluation := range result.Evaluations {
-			if evaluation.Index != result.WinnerIndex {
-				continue
-			}
-			for _, rule := range evaluation.RuleResults {
-				if !rule.Passed {
-					log.Error("Arbitrate selected a winner that failed a rule under RequireAllRules",
-						"winnerIndex", result.WinnerIndex)
-					return result, fmt.Errorf(
-						"arbitrate: RequireAllRules is set and the winning option %d failed a rule", result.WinnerIndex)
-				}
-			}
-		}
-	}
-
-	log.Debug("Arbitrate operation succeeded",
-		"winnerIndex", result.WinnerIndex,
-		"confidence", result.ModelConfidence,
-		"tiesBroken", result.TiesBroken)
-
-	return result, nil
+	return arbitrateCore(options, opts...)
 }
 
 // mergeArbitrateOptions merges user options with defaults
@@ -401,8 +221,25 @@ func mergeArbitrateOptions(defaults, user ArbitrateOptions) ArbitrateOptions {
 	if user.Model != "" {
 		defaults.Model = user.Model
 	}
+	if user.Effort != types.EffortDefault {
+		defaults.Effort = user.Effort
+	}
+	if user.MaxOutputTokens > 0 {
+		defaults.MaxOutputTokens = user.MaxOutputTokens
+	}
+	if user.WebSearch {
+		defaults.WebSearch = true
+	}
 	if user.Context != nil {
 		defaults.Context = user.Context
+	}
+	// The two identifiers were left out of this merge, so a caller's request
+	// id never reached the call.
+	if user.RequestID != "" {
+		defaults.RequestID = user.RequestID
+	}
+	if user.CorrelationID != "" {
+		defaults.CorrelationID = user.CorrelationID
 	}
 	return defaults
 }

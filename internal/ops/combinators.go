@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// The combinators from M08. Each one is a control-flow shape callers were
+// Each combinator is a control-flow shape callers were
 // writing by hand around operations, written once here so the fail-open
 // mistakes in those hand-rolled versions are made in one place and fixed in
 // one place.
@@ -63,13 +63,13 @@ func Escalate[T any](ctx context.Context, first, stronger Step[T], accept func(T
 	var zero T
 
 	if first == nil {
-		return zero, EscalationRecord{}, errors.New("escalate: no first step to run")
+		return zero, EscalationRecord{}, types.Classified(types.KindConfiguration, errors.New("escalate: no first step to run"))
 	}
 	if stronger == nil {
-		return zero, EscalationRecord{}, errors.New("escalate: no stronger step to escalate to")
+		return zero, EscalationRecord{}, types.Classified(types.KindConfiguration, errors.New("escalate: no stronger step to escalate to"))
 	}
 	if err := ctx.Err(); err != nil {
-		return zero, EscalationRecord{}, err
+		return zero, EscalationRecord{}, contextEnded(err)
 	}
 
 	value, err := first(ctx)
@@ -96,7 +96,7 @@ func Escalate[T any](ctx context.Context, first, stronger Step[T], accept func(T
 func runStronger[T any](ctx context.Context, stronger Step[T], record EscalationRecord) (T, EscalationRecord, error) {
 	if err := ctx.Err(); err != nil {
 		var zero T
-		return zero, record, err
+		return zero, record, contextEnded(err)
 	}
 
 	value, err := stronger(ctx)
@@ -120,6 +120,14 @@ func runStronger[T any](ctx context.Context, stronger Step[T], record Escalation
 // separately whether an error is worth retrying eventually disagree, and the
 // disagreement only shows up under the failure they were both written for.
 func Fallback[T any](ctx context.Context, primary, alternate Step[T]) (T, error) {
+	// Checked here so the error names the function the caller called.
+	var zero T
+	if primary == nil {
+		return zero, types.Classified(types.KindConfiguration, errors.New("fallback: no primary step to run"))
+	}
+	if alternate == nil {
+		return zero, types.Classified(types.KindConfiguration, errors.New("fallback: no alternate step to fall back to"))
+	}
 	value, _, err := Escalate(ctx, primary, alternate, nil)
 	return value, err
 }
@@ -132,29 +140,29 @@ func Fallback[T any](ctx context.Context, primary, alternate Step[T]) (T, error)
 // and handing it back as a success means the caller who wrote the predicate is
 // the one who does not find out it was violated.
 //
-// The value is still returned alongside the error, so a caller who wants to
-// inspect the rejected answer can, and a caller who checks err first cannot
-// use it by accident.
-func Until[T any](ctx context.Context, step Step[T], pred func(T) bool, max int) (T, int, error) {
+// Like every other operation, Until returns the zero value beside an error: the
+// rejected answer is not handed back, since a caller who checks err first and
+// one who does not would both be holding a value that failed their predicate. A
+// caller who wants to look at the rejected answers records them in step.
+func Until[T any](ctx context.Context, step Step[T], pred func(T) bool, attempts int) (T, int, error) {
 	var zero T
 
 	if step == nil {
-		return zero, 0, errors.New("until: no step to run")
+		return zero, 0, types.Classified(types.KindConfiguration, errors.New("until: no step to run"))
 	}
 	if pred == nil {
 		// A nil predicate would make the first answer satisfy the condition,
 		// which turns Until into a plain call and silently drops the check the
 		// caller asked for.
-		return zero, 0, errors.New("until: no predicate, so there is no condition to run until")
+		return zero, 0, types.Classified(types.KindConfiguration, errors.New("until: no predicate, so there is no condition to run until"))
 	}
-	if max <= 0 {
-		return zero, 0, fmt.Errorf("until: %d attempts is not a number of attempts", max)
+	if attempts <= 0 {
+		return zero, 0, types.Classified(types.KindConfiguration, fmt.Errorf("until: %d attempts is not a number of attempts", attempts))
 	}
 
-	var last T
-	for attempt := 1; attempt <= max; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return last, attempt - 1, err
+			return zero, attempt - 1, contextEnded(err)
 		}
 
 		value, err := step(ctx)
@@ -164,25 +172,31 @@ func Until[T any](ctx context.Context, step Step[T], pred func(T) bool, max int)
 			if isTerminal(err) {
 				return zero, attempt, err
 			}
-			last = zero
-			if attempt == max {
+			if attempt == attempts {
 				return zero, attempt, fmt.Errorf("until: %d attempts, the last one failed: %w", attempt, err)
 			}
 			continue
 		}
 
-		last = value
 		if pred(value) {
 			return value, attempt, nil
 		}
 	}
 
-	return last, max, &types.OperationError{
+	return zero, attempts, &types.OperationError{
 		Kind: types.KindRepairExhausted,
 		Op:   "until",
 		Message: fmt.Sprintf(
-			"the condition was not satisfied in %d attempts", max),
+			"the condition was not satisfied in %d attempts", attempts),
 	}
+}
+
+// contextEnded is the error of a context that is over, with the kind the rest of
+// the library gives it: canceled for a context cancelled, timeout for one past
+// its deadline. The text is the context's own, and errors.Is still matches
+// context.Canceled and context.DeadlineExceeded through it.
+func contextEnded(cause error) error {
+	return types.Classified(llm.Classify(cause), cause)
 }
 
 // isTerminal asks the shared taxonomy whether a failure is worth trying again

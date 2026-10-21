@@ -33,11 +33,16 @@ func TestCategoryIn(t *testing.T) {
 				if err == nil {
 					t.Fatalf("CategoryIn(%q) = %q, want an error", tc.answer, got)
 				}
-				// The answer is the model's, and naming it is what makes the
-				// error actionable: "billings" reads very differently from
-				// something unrelated.
-				if tc.answer != "" && !strings.Contains(err.Error(), tc.answer) {
-					t.Errorf("the error does not name what the model said: %v", err)
+				// Neither the model's answer nor the allowed labels are in the
+				// error: a classifier that answers with the text it was given
+				// would put that text into every caller's log.
+				if tc.answer != "" && strings.Contains(err.Error(), tc.answer) {
+					t.Errorf("the error carries what the model said: %v", err)
+				}
+				for _, label := range allowed {
+					if strings.Contains(err.Error(), label) {
+						t.Errorf("the error carries the allowed label %q: %v", label, err)
+					}
 				}
 				return
 			}

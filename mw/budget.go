@@ -1,163 +1,144 @@
 package mw
 
 import (
-	"context"
-	"fmt"
-	"sync"
-	"time"
+	"math"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/bind"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
+
+	impl "github.com/monstercameron/schemaflux/v2/internal/runtime/mw"
 )
 
-// Budget refuses a Complete call whose estimated cost would push spend past a
-// fixed ceiling, checked BEFORE the provider is ever called.
+// BudgetOptions are the settings of Budget. The zero value is the default.
+type BudgetOptions struct {
+	// Cost prices a call, twice: the estimate made before the call is sent, from
+	// the request, and the cost measured when it is over, from the tokens the
+	// provider reports for it. It is given the tokens, the model and the
+	// provider. A Cost with Priced false is a call nobody could price (see
+	// AllowUnpriced), and one that is not a finite number of at least zero is
+	// treated the same way. Nil is the library's price table (the prices
+	// registered with the pricing package), which prices a model it lists and no
+	// other.
+	//
+	// A budget is only as good as its prices: register the price of a model the
+	// table does not list, or give Cost.
+	Cost func(usage schemaflux.Usage, model, provider string) schemaflux.Cost
+
+	// AllowUnpriced lets a call that cannot be priced go through and count as
+	// nothing: a model the Cost has no price for, and an answer that reports no
+	// usage. The zero value refuses the first before it is sent, as a budget
+	// error, and counts the second at what it was reserved at, since a call nobody
+	// can price is not a free one and a ceiling that never refuses and never says
+	// so is not a ceiling. It loosens the budget, so it can be set in the first
+	// options value only.
+	AllowUnpriced bool
+}
+
+// Budget refuses a request that would take what has been spent past limit, a
+// fixed ceiling in the unit Cost measures in, dollars for the price table. It is
+// the budget of one chain, with no period and no process-wide state: a program
+// that wants a ceiling for each tenant or each batch makes one Budget for each.
+// It is separate from a client's own Budget and from the ceiling the pricing
+// package keeps: each of them is checked on its own.
 //
-// This is the difference between a budget and a receipt. pricing.CheckBudget
-// (PR-005) already refuses an exhausted process-wide, periodic (daily/
-// weekly/monthly) budget before CallLLM builds a request; this middleware is
-// a different, narrower thing on purpose -- a fixed ceiling scoped to
-// whichever *Client this wraps via WithProviderInstance, with no process-wide
-// state and no period rollover. A caller wanting per-tenant or per-batch
-// spend caps composes one mw.Budget per scope; a caller wanting the
-// account-wide daily/weekly/monthly alerting keeps using pricing.SetBudget.
-// The two are independent and may be composed in the same Chain.
+// A limit of zero is no limit: nothing is checked and nothing is counted. A
+// limit that is negative, not a number or infinite is not an amount a ceiling
+// can be made of, and every request fails with an error of kind
+// schemaflux.ErrConfiguration before the provider is asked; a program that
+// computes what is left of a budget has to test for zero itself, since zero left
+// is no ceiling here.
 //
-// # Concurrency
+// # How a request is held to the limit
 //
-// A budget two concurrent goroutines can both pass is not a budget: goroutine
-// A checks "would this exceed the limit", sees no, and is preempted before
-// it calls the provider; goroutine B runs the identical check against the
-// same not-yet-updated total, also sees no, and now both calls proceed even
-// though only one of them fit. Refusing AFTER the call returns has the same
-// hole in the other direction -- the money is already spent by the time
-// either goroutine finds out.
+// A request is reserved before it is sent. The budget estimates it from the
+// request itself, its prompt at four bytes to a token and its answer at the
+// output ceiling it names (500 tokens when it names none), priced by Cost, and
+// holds that estimate against the limit while the request is in flight. A request
+// whose reservation would take the ledger past the limit is refused before
+// anything is sent, with an error of kind schemaflux.ErrBudgetExceeded, which
+// nothing retries and nothing fails over from. When the request ends, the
+// reservation is replaced by the cost measured from the usage the provider
+// reported. One that fails is not counted: the ledger keeps no charge for a call
+// that returned an error, and one that reported no usage is counted at its
+// reservation.
 //
-// This is closed by treating "check" and "spend" as one atomic step: the
-// estimated cost is RESERVED against the ledger, under the same mutex that
-// performs the check, before the provider is called at all. A second
-// goroutine arriving concurrently sees the first goroutine's reservation
-// already counted against the limit, so the two together cannot both pass a
-// check that only one of them fits. Once the call returns, the reservation
-// is corrected to the measured cost (or released entirely on failure --
-// every provider in this codebase returns a zero-value response on every
-// error path, so nothing was actually billed).
-func Budget(limit float64, opts ...BudgetOption) Middleware {
-	cfg := budgetConfig{calc: pricing.CalculateCost}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
+// The bound on the spend is this. The ledger holds the measured cost of the
+// requests that have ended and the reservations of those in flight, and a request
+// is admitted only when the ledger and its own reservation are within the limit.
+// So with any number of callers at once the spend can pass the limit only by what
+// requests cost beyond their estimates, and by at most the sum of those
+// under-estimates over the requests that were in flight together when the limit
+// was reached: with a limit of 10, requests reserved at 1 that cost 3, and a
+// thousand callers at once, ten are admitted and the spend is 30. An estimate
+// that is exact, or too high, never takes the spend past the limit. The
+// estimate is of tokens at four bytes each, so a prompt of dense text, JSON or a
+// script that needs several bytes a character is under-estimated; leave headroom
+// for that, and for the copies of a Hedge, which the provider bills and no
+// ledger sees.
+//
+// A request that cannot be priced, because Cost has no price for its model, is
+// refused before it is sent, and an answer that reports no usage is counted at
+// its reservation: see AllowUnpriced for the other way. A request is not
+// estimated when the limit is zero.
+//
+// What the ledger sees depends on where the budget stands, and the package
+// comment says where: around a Hedge it counts the answer that was used and not
+// the copy that was cancelled, which the provider bills; around a Fallback it
+// counts whichever route answered; around a Decisions pair it counts the
+// generating provider's answer and not the decision provider's.
+//
+// The ledger belongs to the provider this middleware builds, not to the
+// Middleware: applied to two providers it gives each its own. Budget does not
+// forward streaming: a wrapped provider cannot stream.
+func Budget(limit float64, opts ...BudgetOptions) Middleware {
+	o, problem := mergeBudgetOptions(opts)
+	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 {
+		problem = "the limit must be zero, which is no limit, or a positive amount"
+	}
+
+	// The budget reserves what it estimates from the request before it sends it,
+	// and prices the estimate and the answer with the same function.
+	settings := []impl.BudgetOption{impl.WithBudgetRequestEstimate()}
+	if o.Cost != nil {
+		settings = append(settings, impl.WithBudgetCostFunc(internalCost(o.Cost)))
+	}
+	if o.AllowUnpriced {
+		settings = append(settings, impl.AllowUnpricedCalls())
+	}
+	build := impl.Budget(limit, settings...)
+
+	return func(next schemaflux.Provider) schemaflux.Provider {
+		return wrap("mw.budget", next, problem, build)
+	}
+}
+
+// internalCost is cost as the budget of the wrapped package takes it.
+func internalCost(cost func(schemaflux.Usage, string, string) schemaflux.Cost) func(*types.TokenUsage, string, string) *types.CostInfo {
+	return func(usage *types.TokenUsage, model, provider string) *types.CostInfo {
+		info := bind.CostToInternal(cost(bind.UsageFromInternal[schemaflux.Usage](*usage), model, provider))
+		return &info
+	}
+}
+
+// mergeBudgetOptions merges option values left to right, a later Cost that is
+// not nil winning. AllowUnpriced loosens the budget, so only the first value may
+// set it: in a later one it is a problem, and the second result says so, for the
+// caller to make a configuration error of.
+func mergeBudgetOptions(opts []BudgetOptions) (BudgetOptions, string) {
+	var merged BudgetOptions
+	var problem string
+	for i, o := range opts {
+		if o.Cost != nil {
+			merged.Cost = o.Cost
+		}
+		if o.AllowUnpriced {
+			if i == 0 {
+				merged.AllowUnpriced = true
+			} else if problem == "" {
+				problem = "AllowUnpriced is set in a later options value, which would loosen a budget an earlier one set: set it in the first"
+			}
 		}
 	}
-
-	return func(next Handler) Handler {
-		return &budgetProvider{next: next, limit: limit, calc: cfg.calc}
-	}
-}
-
-// BudgetOption configures Budget beyond the ceiling every caller supplies.
-type BudgetOption func(*budgetConfig)
-
-type budgetConfig struct {
-	// calc measures the actual cost of a completed call, reconciling the
-	// pre-call reservation to what was really spent. Nil disables
-	// reconciliation: every call is charged exactly its pre-call estimate,
-	// which is what a test wants when it is not exercising pricing's rate
-	// table at all.
-	calc func(usage *types.TokenUsage, model, provider string) *types.CostInfo
-}
-
-// WithBudgetCostFunc overrides how actual spend is measured after a call
-// succeeds. The default is pricing.CalculateCost, the same measured-cost
-// function the rest of the library uses -- so an unregistered model reports
-// unpriced rather than a guessed figure (PR-001's rule), and the pre-call
-// estimate is what the ledger keeps in that case. Pass nil to disable
-// reconciliation entirely and always charge the pre-call estimate.
-func WithBudgetCostFunc(calc func(usage *types.TokenUsage, model, provider string) *types.CostInfo) BudgetOption {
-	return func(cfg *budgetConfig) { cfg.calc = calc }
-}
-
-type budgetProvider struct {
-	next  Handler
-	limit float64
-	calc  func(usage *types.TokenUsage, model, provider string) *types.CostInfo
-
-	mu    sync.Mutex
-	spent float64
-}
-
-func (p *budgetProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	est := p.next.EstimateCost(req)
-	if est < 0 {
-		// A negative estimate would let a call spend down the ledger; treat
-		// an implausible estimate as zero rather than as free money.
-		est = 0
-	}
-
-	p.mu.Lock()
-	if p.limit > 0 && p.spent+est > p.limit {
-		remaining := p.limit - p.spent
-		if remaining < 0 {
-			remaining = 0
-		}
-		p.mu.Unlock()
-		return llm.CompletionResponse{}, &types.OperationError{
-			Kind: types.KindBudgetExceeded,
-			Op:   "mw.Budget",
-			Message: fmt.Sprintf(
-				"estimated cost %.6f would exceed remaining budget %.6f of %.6f",
-				est, remaining, p.limit),
-		}
-	}
-	// Reserve before the call, inside the same critical section as the
-	// check above -- see the concurrency note on Budget.
-	p.spent += est
-	p.mu.Unlock()
-
-	resp, err := p.next.Complete(ctx, req)
-
-	p.mu.Lock()
-	switch {
-	case err != nil:
-		// Every provider in this package returns a zero-value
-		// CompletionResponse on every error path (see internal/llm's
-		// provider.go), so nothing was actually billed. Release the
-		// reservation rather than leaving a phantom charge that a caller
-		// retrying the same budget would never be able to recover from.
-		p.spent -= est
-	case p.calc != nil:
-		if info := p.calc(&resp.Usage, resp.Model, resp.Provider); info != nil && info.Priced {
-			p.spent += info.TotalCost - est
-		}
-		// An unpriced or nil result leaves the reservation exactly as it
-		// was: an unpriced call is not a free one (PR-001), so the pre-call
-		// estimate stands in for the unknown real figure rather than being
-		// zeroed out.
-	}
-	if p.spent < 0 {
-		p.spent = 0
-	}
-	p.mu.Unlock()
-
-	return resp, err
-}
-
-func (p *budgetProvider) Name() string { return p.next.Name() }
-
-func (p *budgetProvider) EstimateCost(req llm.CompletionRequest) float64 {
-	return p.next.EstimateCost(req)
-}
-
-func (p *budgetProvider) RetryPolicy() (int, time.Duration) {
-	return p.next.RetryPolicy()
-}
-
-// Spent reports the ledger's current total, reservations included. It exists
-// for tests and for a caller that wants to surface remaining budget to an
-// operator; it is not part of the llm.Provider interface.
-func (p *budgetProvider) Spent() float64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.spent
+	return merged, problem
 }

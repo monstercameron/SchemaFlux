@@ -5,16 +5,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// Every OpenAI tier must resolve to a model that actually exists. The previous
-// defaults (gpt-5.4 / gpt-5-mini / gpt-5-nano) predate the gpt-5.6 family.
-func TestGetModelUsesGPT56FamilyForOpenAI(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "")
-	t.Setenv("SCHEMAFLUX_MODEL_SMART", "")
-	t.Setenv("SCHEMAFLUX_MODEL_FAST", "")
-	t.Setenv("SCHEMAFLUX_MODEL_QUICK", "")
+// Every OpenAI tier must resolve to a model that actually exists. The defaults
+// were gpt-5.4 / gpt-5-mini / gpt-5-nano, then the gpt-5.6 family, and moved to
+// gpt-6-luna on 2026-10-01 (LX-120).
+func TestGetModelUsesGPT6FamilyForOpenAI(t *testing.T) {
+	setenvAndReload(t, "SCHEMAFLUX_MODEL", "")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_SMART", "")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_FAST", "")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_QUICK", "")
 
 	for _, tc := range []struct {
 		name  string
@@ -26,43 +27,39 @@ func TestGetModelUsesGPT56FamilyForOpenAI(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := GetModel(tc.speed, "openai")
-			if !strings.HasPrefix(got, "gpt-5.6-") {
-				t.Fatalf("GetModel(%s) = %q, want a gpt-5.6-* model", tc.name, got)
+			if !strings.HasPrefix(got, "gpt-6") {
+				t.Fatalf("GetModel(%s) = %q, want a gpt-6 model", tc.name, got)
 			}
 		})
 	}
 }
 
-// The tier assignment is what the live benchmark supports and no more: Quick
-// takes terra because it was measurably fastest at no cost in accuracy, and
-// Smart and Fast stay on luna because nothing in the measurement separated luna
-// from sol. If a future benchmark splits them, this test is where the new
-// evidence gets recorded.
+// The tier assignment is what has been measured and no more. gpt-6-luna is the
+// only model in its family that has been run through this library, so all three
+// tiers name it. A split between tiers is a claim that one model is faster or
+// better than another, and nothing has compared them. When LX-121 produces that
+// measurement, this test is where it gets recorded.
 func TestTierDefaultsMatchTheMeasurement(t *testing.T) {
-	if ModelDefaultQuick != "gpt-5.6-terra" {
-		t.Errorf("ModelDefaultQuick = %q, want gpt-5.6-terra (fastest at equal accuracy)", ModelDefaultQuick)
-	}
-	if ModelDefaultSmart != "gpt-5.6-luna" {
-		t.Errorf("ModelDefaultSmart = %q, want gpt-5.6-luna", ModelDefaultSmart)
-	}
-	if ModelDefaultFast != "gpt-5.6-luna" {
-		t.Errorf("ModelDefaultFast = %q, want gpt-5.6-luna", ModelDefaultFast)
-	}
-
-	// Smart and Fast being equal is a recorded absence of evidence, not an
-	// oversight. When P-014 splits them, this assertion is the thing to change.
-	if ModelDefaultSmart != ModelDefaultFast {
-		t.Log("Smart and Fast have been split; update the comment in config.go with the measurement that justified it")
+	for name, model := range map[string]string{
+		"ModelDefaultSmart": ModelDefaultSmart,
+		"ModelDefaultFast":  ModelDefaultFast,
+		"ModelDefaultQuick": ModelDefaultQuick,
+	} {
+		if model != "gpt-6-luna" {
+			t.Errorf("%s = %q, want gpt-6-luna; a different model needs a measurement recorded in config.go", name, model)
+		}
 	}
 }
 
-// Every tier must name a model in the gpt-5.6 family, so a tier can never
-// silently resolve to a model the account cannot call.
+// Every tier must name a model that was on the account when the defaults were
+// set, so a tier can never silently resolve to a model that cannot be called.
+// Listed by GET /v1/models on 2026-10-01.
 func TestEveryTierNamesAKnownModel(t *testing.T) {
 	known := map[string]struct{}{
-		"gpt-5.6-luna":  {},
-		"gpt-5.6-sol":   {},
-		"gpt-5.6-terra": {},
+		"gpt-6-luna":  {},
+		"gpt-6-sol":   {},
+		"gpt-6-astra": {},
+		"gpt-6.1-sol": {},
 	}
 
 	for _, tc := range []struct {
@@ -75,25 +72,25 @@ func TestEveryTierNamesAKnownModel(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, ok := known[tc.model]; !ok {
-				t.Errorf("the %s tier resolves to %q, which is not a verified gpt-5.6 model", tc.name, tc.model)
+				t.Errorf("the %s tier resolves to %q, which is not a model the account listed", tc.name, tc.model)
 			}
 		})
 	}
 }
 
 // An explicit override must still win over the tier default, otherwise a caller
-// has no way to reach sol or terra before the split.
+// has no way to reach another model in the family.
 func TestExplicitModelOverrideBeatsTierDefault(t *testing.T) {
-	t.Setenv("SCHEMAFLUX_MODEL", "")
-	t.Setenv("SCHEMAFLUX_MODEL_SMART", "gpt-5.6-sol")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL", "")
+	setenvAndReload(t, "SCHEMAFLUX_MODEL_SMART", "gpt-6-sol")
 
-	if got := GetModel(types.Smart, "openai"); got != "gpt-5.6-sol" {
+	if got := GetModel(types.Smart, "openai"); got != "gpt-6-sol" {
 		t.Fatalf("GetModel(Smart) = %q, want the SCHEMAFLUX_MODEL_SMART override", got)
 	}
 }
 
 // The global override must beat every tier, and the per-tier override must beat
-// the default. These are the only ways to reach sol or terra before the split.
+// the default. These are the only ways to reach another model in the family.
 func TestModelOverridePrecedence(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -101,26 +98,26 @@ func TestModelOverridePrecedence(t *testing.T) {
 		speed  types.Speed
 		expect string
 	}{
-		{"global_beats_all", map[string]string{"SCHEMAFLUX_MODEL": "gpt-5.6-terra"}, types.Smart, "gpt-5.6-terra"},
+		{"global_beats_all", map[string]string{"SCHEMAFLUX_MODEL": "gpt-6-astra"}, types.Smart, "gpt-6-astra"},
 		{"global_beats_tier", map[string]string{
-			"SCHEMAFLUX_MODEL":       "gpt-5.6-terra",
-			"SCHEMAFLUX_MODEL_SMART": "gpt-5.6-sol",
-		}, types.Smart, "gpt-5.6-terra"},
-		{"tier_smart", map[string]string{"SCHEMAFLUX_MODEL_SMART": "gpt-5.6-sol"}, types.Smart, "gpt-5.6-sol"},
-		{"tier_fast", map[string]string{"SCHEMAFLUX_MODEL_FAST": "gpt-5.6-terra"}, types.Fast, "gpt-5.6-terra"},
-		{"tier_quick", map[string]string{"SCHEMAFLUX_MODEL_QUICK": "gpt-5.6-sol"}, types.Quick, "gpt-5.6-sol"},
-		{"tier_does_not_cross", map[string]string{"SCHEMAFLUX_MODEL_SMART": "gpt-5.6-sol"}, types.Quick, ModelDefaultQuick},
+			"SCHEMAFLUX_MODEL":       "gpt-6-astra",
+			"SCHEMAFLUX_MODEL_SMART": "gpt-6-sol",
+		}, types.Smart, "gpt-6-astra"},
+		{"tier_smart", map[string]string{"SCHEMAFLUX_MODEL_SMART": "gpt-6-sol"}, types.Smart, "gpt-6-sol"},
+		{"tier_fast", map[string]string{"SCHEMAFLUX_MODEL_FAST": "gpt-6-astra"}, types.Fast, "gpt-6-astra"},
+		{"tier_quick", map[string]string{"SCHEMAFLUX_MODEL_QUICK": "gpt-6-sol"}, types.Quick, "gpt-6-sol"},
+		{"tier_does_not_cross", map[string]string{"SCHEMAFLUX_MODEL_SMART": "gpt-6-sol"}, types.Quick, ModelDefaultQuick},
 		{"no_override", nil, types.Smart, ModelDefaultSmart},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, name := range []string{"SCHEMAFLUX_MODEL", "SCHEMAFLUX_MODEL_SMART", "SCHEMAFLUX_MODEL_FAST", "SCHEMAFLUX_MODEL_QUICK"} {
-				t.Setenv(name, "")
+				setenvAndReload(t, name, "")
 				os.Unsetenv(name)
 			}
 			for name, value := range tc.env {
-				t.Setenv(name, value)
+				setenvAndReload(t, name, value)
 			}
 			if got := GetModel(tc.speed, "openai"); got != tc.expect {
 				t.Errorf("GetModel = %q, want %q", got, tc.expect)
@@ -132,7 +129,7 @@ func TestModelOverridePrecedence(t *testing.T) {
 // Providers with their own mapping must not receive an OpenAI model ID.
 func TestNonOpenAIProvidersGetTheirOwnModels(t *testing.T) {
 	for _, name := range []string{"SCHEMAFLUX_MODEL", "SCHEMAFLUX_MODEL_SMART", "SCHEMAFLUX_MODEL_FAST", "SCHEMAFLUX_MODEL_QUICK"} {
-		t.Setenv(name, "")
+		setenvAndReload(t, name, "")
 		os.Unsetenv(name)
 	}
 

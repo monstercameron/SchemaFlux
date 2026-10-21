@@ -1,26 +1,15 @@
 package ops
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
-
-// hasJSONOption reports whether a struct tag carries the named option, testing
-// the comma-separated options rather than the tag as a whole.
-func hasJSONOption(tag, option string) bool {
-	parts := strings.Split(tag, ",")
-	for _, part := range parts[1:] {
-		if part == option {
-			return true
-		}
-	}
-	return false
-}
 
 // sortedKeys returns a map's keys in a stable order. Go randomizes map
 // iteration, so rendering a map into a prompt unsorted produces different bytes
@@ -47,8 +36,12 @@ func sortedKeys[V any](m map[string]V) []string {
 // produced `customer: main.Person` and `items: []main.OrderItem` — names that
 // mean nothing to a model, which then had to invent the shape of the thing it
 // was being asked to produce.
+//
+// It is written once for each type and read from there after, so the thirty
+// operations that put a type's shape in their prompt do not each walk the type
+// on every call.
 func GenerateTypeSchema(targetType reflect.Type) string {
-	return describeType(targetType, map[reflect.Type]bool{}, 0)
+	return typePlanFor(targetType).proseSchema()
 }
 
 // maxSchemaDepth bounds the expansion. A schema deeper than this is more prompt
@@ -83,51 +76,34 @@ func describeType(targetType reflect.Type, seen map[reflect.Type]bool, depth int
 		seen[targetType] = true
 		defer delete(seen, targetType)
 
+		// The members are the ones the JSON schema declares and encoding/json
+		// reads, each once and in the order encoding/json writes them: the
+		// fields of an embedded struct stand where the struct does, a name
+		// reached twice at one depth is left out, and an outer name hides an
+		// embedded one. Walking the fields here with a rule of its own is what
+		// printed a name twice, with two types, and showed a struct embedded
+		// under a tag of options only as an object, while the schema sent in
+		// the same request declared another shape.
 		var fields []string
-		for i := 0; i < targetType.NumField(); i++ {
-			field := targetType.Field(i)
-
-			tag := field.Tag.Get("json")
-			if field.Anonymous && tag == "" {
-				// An embedded struct promotes its fields, so it is flattened
-				// here as encoding/json would flatten it.
-				embedded := field.Type
-				if embedded.Kind() == reflect.Ptr {
-					embedded = embedded.Elem()
-				}
-				if embedded.Kind() == reflect.Struct {
-					inner := describeType(embedded, seen, depth)
-					fields = append(fields, indentSchemaBody(inner))
-					continue
-				}
-			}
-
-			if !field.IsExported() {
-				continue
-			}
-
-			fieldName := field.Name
-			if tag != "" {
-				parts := strings.Split(tag, ",")
-				if parts[0] == "-" && len(parts) == 1 {
-					continue
-				}
-				if parts[0] != "" {
-					fieldName = parts[0]
-				}
-			}
-
+		for _, member := range jsonMembers(targetType) {
 			// One resolution for both the schema the model sees and the
 			// validation Strict applies. They read the same function, so they
 			// cannot disagree about which fields are required -- which they
 			// would have, the moment one of them learned about the tag first.
 			requiredStr := ""
-			if IsRequired(field) {
+			if IsRequired(member.field) {
 				requiredStr = " (required)"
 			}
 
+			// While the fields of an embedded struct are described, that struct
+			// is on the path, so that a field that refers back to it is named
+			// as recursive and not expanded once more.
+			onPath := markEmbeddedOnPath(targetType, member.index, seen)
 			fields = append(fields, fmt.Sprintf("  %s: %s%s",
-				fieldName, indentNested(describeType(field.Type, seen, depth+1)), requiredStr))
+				member.name, indentNested(describeType(member.field.Type, seen, depth+1)), requiredStr))
+			for _, embedded := range onPath {
+				delete(seen, embedded)
+			}
 		}
 
 		if len(fields) == 0 {
@@ -160,12 +136,26 @@ func indentNested(body string) string {
 	return strings.Join(lines, "\n")
 }
 
-// indentSchemaBody strips the braces from an embedded struct's rendering so its
-// fields sit alongside the outer ones, as encoding/json promotes them.
-func indentSchemaBody(body string) string {
-	body = strings.TrimPrefix(body, "{\n")
-	body = strings.TrimSuffix(body, "\n}")
-	return body
+// markEmbeddedOnPath adds to seen the structs a member is promoted through,
+// which are the ones its index passes between the struct it is found in and the
+// member's own field, and returns the ones it added.
+func markEmbeddedOnPath(structType reflect.Type, index []int, seen map[reflect.Type]bool) []reflect.Type {
+	if len(index) < 2 {
+		return nil
+	}
+	var added []reflect.Type
+	current := structType
+	for _, position := range index[:len(index)-1] {
+		current = current.Field(position).Type
+		if current.Kind() == reflect.Ptr {
+			current = current.Elem()
+		}
+		if !seen[current] {
+			seen[current] = true
+			added = append(added, current)
+		}
+	}
+	return added
 }
 
 // GetTypeDescription returns a one-line description of a leaf type. Structs,
@@ -195,10 +185,15 @@ func GetTypeDescription(targetType reflect.Type) string {
 	}
 }
 
-// NormalizeInput converts various input types to string for LLM processing
+// NormalizeInput converts various input types to string for LLM processing. The
+// inputs it refuses are nil, which has no text, and a value that JSON cannot
+// write and that has no String method; both are an invalid request: the
+// caller's argument cannot be used. It is classified here, once, so that every
+// operation that normalises its input refuses it the same way and none has to
+// classify it again.
 func NormalizeInput(input any) (string, error) {
 	if input == nil {
-		return "", fmt.Errorf("input is nil")
+		return "", types.Classified(types.KindInvalidRequest, errors.New("input is nil"))
 	}
 
 	switch inputValue := input.(type) {
@@ -220,13 +215,21 @@ func NormalizeInput(input any) (string, error) {
 		// that is the form the schema describes, so it wins. Stringer is a
 		// display format and stays as the fallback for types JSON cannot
 		// render.
-		if b, err := json.Marshal(input); err == nil {
+		//
+		// promptJSON, not json.Marshal: the output goes into a prompt, where
+		// "<", ">" and "&" are themselves and not something to escape for HTML
+		// (LX-127).
+		if b, err := promptJSON(input); err == nil {
 			return string(b), nil
 		}
 		if stringer, ok := input.(fmt.Stringer); ok {
 			return stringer.String(), nil
 		}
-		return fmt.Sprint(input), nil
+		// Not fmt.Sprint: it prints every field of a struct, a field tagged
+		// `json:"-"` and an unexported one included, and the caller has said the
+		// type is not serialised that way. A value that JSON cannot write and that
+		// has no String method of its own has no text to send.
+		return "", types.Classified(types.KindInvalidRequest, errors.New("the input cannot be written as JSON"))
 	}
 }
 
@@ -311,15 +314,16 @@ func BuildGenerateStringPrompt(mode types.Mode) string {
 // Mark such fields `schemaflux:"optional"` to say so, or make them pointers.
 func ValidateExtractedData(data any) error {
 	if data == nil {
-		return fmt.Errorf("data cannot be nil")
+		return types.Classified(types.KindMalformedOutput, fmt.Errorf("data cannot be nil"))
 	}
 
 	value := reflect.ValueOf(data)
 	if !value.IsValid() {
-		return fmt.Errorf("invalid data")
+		return types.Classified(types.KindMalformedOutput, fmt.Errorf("invalid data"))
 	}
 
-	return validateRequiredFields(value, "", 0)
+	var trail fieldTrail
+	return validateRequiredFields(value, &trail, 0)
 }
 
 // maxValidationDepth bounds the walk, matching the schema's own bound: a
@@ -327,15 +331,106 @@ func ValidateExtractedData(data any) error {
 // enforce.
 const maxValidationDepth = maxSchemaDepth
 
-func validateRequiredFields(value reflect.Value, path string, depth int) error {
+// trailKind is what a step of a fieldTrail is.
+type trailKind int
+
+const (
+	trailField trailKind = iota
+	trailIndex
+	trailKey
+)
+
+// trailStep is one step of a fieldTrail: a struct field by name, a list element
+// by index, or a map element by key.
+type trailStep struct {
+	kind  trailKind
+	name  string
+	index int
+	key   reflect.Value
+}
+
+// fieldTrail is where in the value the check of required fields has got to: one
+// step for each struct field, list index or map key it has gone through.
+//
+// The steps are kept in an array on the stack of the call that started the
+// check, and the path they spell is written only for the message of a failure.
+// The path used to be written at every field and every list element of a value
+// that passed, which is where most of the check's allocations were. The steps
+// are not linked to each other, because a step that points at the one before it
+// is a cycle the compiler's escape analysis gives up on and moves to the heap.
+type fieldTrail struct {
+	steps  [maxValidationDepth + 2]trailStep
+	length int
+
+	// ownPlans holds the required-field plans of types the cache had no room for,
+	// so that such a type is worked out once in a check and not for each value of
+	// it. It stays nil, and costs nothing, while every type is one the cache keeps.
+	ownPlans map[reflect.Type]*requiredPlan
+}
+
+// requiredFieldsOf is the required-field plan of a struct type: the cache's when
+// it keeps the type, and otherwise one worked out the first time the check meets
+// the type and used for every later value of it.
+func (trail *fieldTrail) requiredFieldsOf(structType reflect.Type) *requiredPlan {
+	if own, found := trail.ownPlans[structType]; found {
+		return own
+	}
+	plan := typePlanFor(structType)
+	if plan.retained {
+		return plan.requiredFields()
+	}
+	if trail.ownPlans == nil {
+		trail.ownPlans = map[reflect.Type]*requiredPlan{}
+	}
+	own := plan.requiredFields()
+	trail.ownPlans[structType] = own
+	return own
+}
+
+// push adds a step. The check does not go deeper than maxValidationDepth, so
+// there is always room.
+func (trail *fieldTrail) push(step trailStep) {
+	trail.steps[trail.length] = step
+	trail.length++
+}
+
+func (trail *fieldTrail) pop() {
+	trail.length--
+}
+
+// String writes the path: field names joined by dots, with a list index or a map
+// key in brackets after what it belongs to.
+func (trail *fieldTrail) String() string {
+	var path strings.Builder
+	for _, step := range trail.steps[:trail.length] {
+		switch step.kind {
+		case trailField:
+			if path.Len() > 0 {
+				path.WriteByte('.')
+			}
+			path.WriteString(step.name)
+		case trailIndex:
+			path.WriteByte('[')
+			path.WriteString(strconv.Itoa(step.index))
+			path.WriteByte(']')
+		case trailKey:
+			fmt.Fprintf(&path, "[%v]", step.key.Interface())
+		}
+	}
+	return path.String()
+}
+
+// validateRequiredFields checks one value. trail holds the steps that lead to
+// it from the top, and is empty at the top.
+func validateRequiredFields(value reflect.Value, trail *fieldTrail, depth int) error {
 	if depth > maxValidationDepth {
 		return nil
 	}
 
 	for value.Kind() == reflect.Ptr || value.Kind() == reflect.Interface {
 		if value.IsNil() {
-			if path == "" {
-				return fmt.Errorf("data cannot be nil pointer")
+			if trail.length == 0 {
+				return types.Classified(types.KindMalformedOutput, fmt.Errorf("data cannot be nil pointer"))
 			}
 			return nil // a nil pointer field is checked by its own zero test
 		}
@@ -344,42 +439,36 @@ func validateRequiredFields(value reflect.Value, path string, depth int) error {
 
 	switch value.Kind() {
 	case reflect.Struct:
-		structType := value.Type()
-		for i := 0; i < structType.NumField(); i++ {
-			field := structType.Field(i)
-			if !field.IsExported() {
-				continue
+		// Which fields there are, what they are called and which of them have
+		// to be filled depends on the struct type alone, so it is read from the
+		// type's plan and not worked out from its tags for each value.
+		fields := trail.requiredFieldsOf(value.Type()).fields
+		for position := range fields {
+			field := &fields[position]
+			// A field of the struct itself is read directly, which is every
+			// field of a type that embeds nothing.
+			var fieldValue reflect.Value
+			reached := true
+			if len(field.index) == 1 {
+				fieldValue = value.Field(field.index[0])
+			} else {
+				fieldValue, reached = field.in(value)
 			}
+			empty := !reached || fieldValue.IsZero()
+			trail.push(trailStep{kind: trailField, name: field.path})
 
-			tag := field.Tag.Get("json")
-			parts := strings.Split(tag, ",")
-			if tag != "" && parts[0] == "-" && len(parts) == 1 {
-				continue
-			}
-
-			name := field.Name
-			if tag != "" && parts[0] != "" {
-				name = parts[0]
-			}
-			fieldPath := name
-			if path != "" {
-				fieldPath = path + "." + name
-			}
-
-			fieldValue := value.Field(i)
-			required := IsRequired(field)
-
-			if required && fieldValue.IsZero() {
-				return fmt.Errorf("required field %s is empty; %s", fieldPath, optionalFieldRemedy)
+			if field.required && empty {
+				return types.Classified(types.KindMalformedOutput, fmt.Errorf("required field %s is empty; %s", trail.String(), optionalFieldRemedy))
 			}
 
 			// Recurse into what was populated. An optional field that is
 			// present still has to be internally consistent.
-			if !fieldValue.IsZero() {
-				if err := validateRequiredFields(fieldValue, fieldPath, depth+1); err != nil {
+			if !empty {
+				if err := validateRequiredFields(fieldValue, trail, depth+1); err != nil {
 					return err
 				}
 			}
+			trail.pop()
 		}
 		return nil
 
@@ -387,20 +476,27 @@ func validateRequiredFields(value reflect.Value, path string, depth int) error {
 		for i := 0; i < value.Len(); i++ {
 			element := value.Index(i)
 			if element.Kind() == reflect.Struct || element.Kind() == reflect.Ptr || element.Kind() == reflect.Interface {
-				if err := validateRequiredFields(element, fmt.Sprintf("%s[%d]", path, i), depth+1); err != nil {
+				trail.push(trailStep{kind: trailIndex, index: i})
+				if err := validateRequiredFields(element, trail, depth+1); err != nil {
 					return err
 				}
+				trail.pop()
 			}
 		}
 		return nil
 
 	case reflect.Map:
-		for _, key := range value.MapKeys() {
+		// In the order of the keys, so that a value with more than one entry
+		// that fails reports the same one every time. The runtime's iteration
+		// order is not the same from one run to the next.
+		for _, key := range sortedMapKeys(value) {
 			element := value.MapIndex(key)
 			if element.Kind() == reflect.Struct || element.Kind() == reflect.Ptr || element.Kind() == reflect.Interface {
-				if err := validateRequiredFields(element, fmt.Sprintf("%s[%v]", path, key.Interface()), depth+1); err != nil {
+				trail.push(trailStep{kind: trailKey, key: key})
+				if err := validateRequiredFields(element, trail, depth+1); err != nil {
 					return err
 				}
+				trail.pop()
 			}
 		}
 		return nil
@@ -408,6 +504,28 @@ func validateRequiredFields(value reflect.Value, path string, depth int) error {
 	default:
 		return nil
 	}
+}
+
+// sortedMapKeys is the keys of a map value in a fixed order: by the text they
+// are written as in a path (the order of the strings for string keys).
+func sortedMapKeys(mapValue reflect.Value) []reflect.Value {
+	keys := mapValue.MapKeys()
+	if len(keys) < 2 {
+		return keys
+	}
+	type writtenKey struct {
+		text string
+		key  reflect.Value
+	}
+	written := make([]writtenKey, len(keys))
+	for i, key := range keys {
+		written[i] = writtenKey{text: fmt.Sprint(key.Interface()), key: key}
+	}
+	sort.SliceStable(written, func(a, b int) bool { return written[a].text < written[b].text })
+	for i := range written {
+		keys[i] = written[i].key
+	}
+	return keys
 }
 
 func Min(a, b int) int {
@@ -429,14 +547,18 @@ func contains(slice []string, item string) bool {
 
 // applyDefaults merges the caller's options over the operation defaults.
 //
-// It copies field by field *through reflection* rather than by naming each
-// field, because the hand-written version fell behind the struct: it copied
-// eight of the thirteen fields, so MaxOutputTokens, CacheIdentity,
-// ResponseFormat, JSONSchema, and SchemaName were set by a caller and silently
-// thrown away on the way to the provider. That is worse than a missing
-// feature -- it made ST-003's ceiling and P-009's cache identity unreachable
-// from every legacy entrypoint while both looked implemented and both had
-// passing tests, because the tests drove CallLLM directly. See A-014.
+// It names each field (mergeNonZeroOpOptions), and a test fills every field of
+// the struct by reflection and checks that each one comes through, so a field
+// added to the struct and not named there fails the test. The first hand-written
+// version fell behind the struct: it copied eight of the thirteen fields, so
+// MaxOutputTokens, CacheIdentity, ResponseFormat, JSONSchema, and SchemaName were
+// set by a caller and silently thrown away on the way to the provider. That is
+// worse than a missing feature -- it made ST-003's ceiling and P-009's cache
+// identity unreachable from every legacy entrypoint while both looked
+// implemented and both had passing tests, because the tests drove CallLLM
+// directly. See A-014. What replaced it walked the struct through reflection,
+// which was complete and cost one allocation and a pass over every field for each
+// option passed.
 //
 // The merge rule is that a non-zero field wins. A caller cannot use this to
 // set a field back to its zero value; that is what A-005's Opt[T] is for, and
@@ -444,20 +566,8 @@ func contains(slice []string, item string) bool {
 func applyDefaults(opts ...types.OpOptions) types.OpOptions {
 	result := types.OpOptions{}
 
-	for _, opt := range opts {
-		incoming := reflect.ValueOf(opt)
-		merged := reflect.ValueOf(&result).Elem()
-
-		for i := 0; i < incoming.NumField(); i++ {
-			field := incoming.Field(i)
-			if !merged.Field(i).CanSet() {
-				continue
-			}
-			if field.IsZero() {
-				continue
-			}
-			merged.Field(i).Set(field)
-		}
+	for i := range opts {
+		mergeNonZeroOpOptions(&result, &opts[i])
 	}
 
 	// Defaults last, and only where the caller chose nothing. Zero means unset
@@ -471,4 +581,67 @@ func applyDefaults(opts ...types.OpOptions) types.OpOptions {
 	}
 
 	return result
+}
+
+// mergeNonZeroOpOptions copies each field of src that is not its zero value into
+// dst. Every field of types.OpOptions is named here; applyDefaults' test fails
+// when one is not.
+func mergeNonZeroOpOptions(dst, src *types.OpOptions) {
+	if src.Steering != "" {
+		dst.Steering = src.Steering
+	}
+	if src.Threshold != 0 {
+		dst.Threshold = src.Threshold
+	}
+	if src.Mode != 0 {
+		dst.Mode = src.Mode
+	}
+	if src.ExactFields {
+		dst.ExactFields = true
+	}
+	if src.CompleteFields {
+		dst.CompleteFields = true
+	}
+	if src.Intelligence != 0 {
+		dst.Intelligence = src.Intelligence
+	}
+	if src.Context != nil {
+		dst.Context = src.Context
+	}
+	if src.RequestID != "" {
+		dst.RequestID = src.RequestID
+	}
+	if src.CorrelationID != "" {
+		dst.CorrelationID = src.CorrelationID
+	}
+	if src.JSONSchema != nil {
+		dst.JSONSchema = src.JSONSchema
+	}
+	if src.SchemaName != "" {
+		dst.SchemaName = src.SchemaName
+	}
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	if src.Effort != "" {
+		dst.Effort = src.Effort
+	}
+	if src.WebSearch {
+		dst.WebSearch = true
+	}
+	if src.SchemaID != "" {
+		dst.SchemaID = src.SchemaID
+	}
+	if src.ResponseFormat != "" {
+		dst.ResponseFormat = src.ResponseFormat
+	}
+	if src.CacheIdentity != "" {
+		dst.CacheIdentity = src.CacheIdentity
+	}
+	if src.MaxOutputTokens != 0 {
+		dst.MaxOutputTokens = src.MaxOutputTokens
+	}
+	if src.ParentResultIDs != nil {
+		dst.ParentResultIDs = src.ParentResultIDs
+	}
 }

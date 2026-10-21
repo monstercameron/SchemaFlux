@@ -1,15 +1,15 @@
 package ops
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
 
-// TestNoDeadOptionFields proves an option is read somewhere. It does not prove
-// the read does anything. These cases set each option that F-023 implemented,
-// capture the prompt the operation actually renders, and assert the option
-// changed it — which is the difference between a field being referenced and a
-// field being honoured.
+// TestImplementedOptionsReachThePrompt sets each option that F-023 implemented,
+// captures the prompt the operation actually renders, and asserts the option
+// changed it. TestNoDeadOptionFields shows a field is referenced; this shows it
+// is honoured, though only that its wording is present.
 func TestImplementedOptionsReachThePrompt(t *testing.T) {
 	type record struct {
 		Alpha string `json:"alpha"`
@@ -201,18 +201,22 @@ func TestImplementedOptionsReachThePrompt(t *testing.T) {
 // reinterpreted as prompt text, because no prompt can deliver a progress
 // callback or a resume point.
 func TestMachineryPromisingOptionsAreGone(t *testing.T) {
-	// Compile-time absence is what this asserts; the test body documents why.
 	// If any of these is reintroduced, TestNoDeadOptionFields fails until it
 	// has a reader, and a prompt clause is not an acceptable reader for them.
-	removed := []string{
-		"BatchOptions.OnProgress",
-		"BatchOptions.PreProcess",
-		"BatchOptions.PostProcess",
-		"PipelineOptions.SaveProgress",
-		"ProjectOptions.PreserveNulls",
-		"RedactOptions.PreserveFormat",
+	// This test fails first and says why.
+	removed := []struct {
+		owner reflect.Type
+		field string
+	}{
+		{reflect.TypeOf(BatchOptions{}), "OnProgress"},
+		{reflect.TypeOf(BatchOptions{}), "PreProcess"},
+		{reflect.TypeOf(BatchOptions{}), "PostProcess"},
+		{reflect.TypeOf(ProjectOptions{}), "PreserveNulls"},
+		{reflect.TypeOf(RedactOptions{}), "PreserveFormat"},
 	}
-	if len(removed) != 6 {
-		t.Fatal("the list is the documentation here")
+	for _, r := range removed {
+		if _, present := r.owner.FieldByName(r.field); present {
+			t.Errorf("%s.%s is back: no prompt can deliver what its name promises", r.owner.Name(), r.field)
+		}
 	}
 }

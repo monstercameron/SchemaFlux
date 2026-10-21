@@ -3,11 +3,12 @@ package ops
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // M12/SC-001..SC-006. MapReduce (CF-009) bounds concurrency for one chunked
@@ -64,10 +65,12 @@ type SchedulerLimits struct {
 
 	// MaxQueued bounds how many Submit calls may be waiting for a slot at
 	// once. This is deliberately a separate number from MaxConcurrent: a
-	// caller who wants to smooth a burst needs a queue; a caller who wants to
-	// refuse a burst outright sets MaxQueued to zero and gets an immediate
-	// ErrAdmissionRejected the moment MaxConcurrent is exhausted, with no
-	// goroutine ever parked waiting.
+	// caller who wants to smooth a burst gives it a queue, and a call that
+	// finds the queue full gets ErrAdmissionRejected at once.
+	//
+	// Zero means no bound, as it does for every limit here. This comment used
+	// to say zero refused a burst outright, which the code has never done; the
+	// smallest queue is one (LX-126).
 	MaxQueued int
 
 	// MaxInFlightTokens bounds the sum of EstimatedTokens across everything
@@ -122,6 +125,9 @@ type SubmitRequest struct {
 	// unmeetable deadline — SC-001 asks that this be refused rather than
 	// queued, because queuing something that cannot possibly be served in
 	// time only occupies a queue slot another request could have used.
+	// A request still queued when its deadline passes is refused the same way,
+	// with types.KindAdmissionRejected, the next time the scheduler considers
+	// its queue (a request arriving or finishing), and is never started late.
 	// Deadline does not bound how long the *work itself* runs — that is the
 	// caller's ctx.
 	Deadline time.Time
@@ -150,6 +156,15 @@ type Scheduler struct {
 	mu     sync.Mutex
 	closed bool
 	stopCh chan struct{}
+
+	// drained is closed once every accepted request has returned after Close.
+	// It is created by the first Close, under mu, and every Close waits on it,
+	// so a second Close does not report success while work is still running.
+	drained chan struct{}
+
+	// hasDeadlines is set the first time a request carrying a Deadline is
+	// queued, so a scheduler nobody gives deadlines to never scans for them.
+	hasDeadlines bool
 
 	// Admitted resource accounting. Protected by mu.
 	inFlight         int
@@ -201,6 +216,9 @@ type schedOutcome struct {
 // zero is an uncapped pass-through: Submit still enforces fairness and
 // cancellation, but nothing is ever queued or refused for being over a
 // ceiling that was never set.
+//
+// A Scheduler runs one goroutine of its own, which only Close ends: a Scheduler
+// dropped without being closed leaks that goroutine and everything it holds.
 func NewScheduler(limits SchedulerLimits) *Scheduler {
 	return newSchedulerWithClock(limits, realClock{})
 }
@@ -224,13 +242,22 @@ func newSchedulerWithClock(limits SchedulerLimits, c clock) *Scheduler {
 	return s
 }
 
-// Stats is a point-in-time snapshot for tests and operators. It is not part
-// of any hot path.
+// SchedulerStats is a point-in-time snapshot for tests and operators. It is not
+// part of any hot path.
 type SchedulerStats struct {
 	InFlight       int
 	Queued         int
 	InFlightTokens int64
 	InFlightCost   float64
+}
+
+// Closed reports whether Close has been called. Work that was in flight then
+// had its context cancelled, and this is how its caller tells that from a
+// cancellation of its own.
+func (s *Scheduler) Closed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 // Stats reports the scheduler's current admitted and queued counts.
@@ -260,10 +287,10 @@ func (s *Scheduler) Stats() SchedulerStats {
 func Submit[T any](ctx context.Context, s *Scheduler, req SubmitRequest, run func(ctx context.Context) (T, error)) (T, error) {
 	var zero T
 	if s == nil {
-		return zero, fmt.Errorf("scheduler: Submit called with a nil Scheduler")
+		return zero, types.Newf(types.KindInvalidRequest, "scheduler.Submit", "Submit called with a nil Scheduler")
 	}
 	if run == nil {
-		return zero, fmt.Errorf("scheduler: Submit called with no work to run")
+		return zero, types.Newf(types.KindInvalidRequest, "scheduler.Submit", "Submit called with no work to run")
 	}
 	if err := ctx.Err(); err != nil {
 		return zero, classifyBlockingErr(err)
@@ -297,9 +324,16 @@ func Submit[T any](ctx context.Context, s *Scheduler, req SubmitRequest, run fun
 		s.releaseReservationOnly(req)
 		return zero, err
 	}
+	// The derived context's cancel is called when the work returns. Left
+	// uncalled, every completed Submit under a long-lived cancellable parent
+	// kept a child context in the parent's bookkeeping until the parent ended.
+	//
+	// The reservation is given back before the wait group is released, so that
+	// when Close returns, Stats no longer counts the request as in flight.
 	defer func() {
-		s.wg.Done()
+		cancel()
 		s.release(req, seq)
+		s.wg.Done()
 	}()
 
 	result, runErr := run(runCtx)
@@ -335,6 +369,17 @@ func (s *Scheduler) enqueue(req SubmitRequest) (*schedWaiter, error) {
 		}
 	}
 
+	// A priority outside the three classes would be queued where nothing looks
+	// for it: the dispatcher and Close walk only those three, so the request
+	// would wait for ever and count against MaxQueued while it did.
+	if req.Priority < SchedPriorityLow || req.Priority > SchedPriorityHigh {
+		return nil, &types.OperationError{
+			Kind:    types.KindInvalidRequest,
+			Op:      "scheduler.Submit",
+			Message: fmt.Sprintf("priority %d is not one of the three scheduling classes", int(req.Priority)),
+		}
+	}
+
 	if !req.Deadline.IsZero() && req.Deadline.Before(s.clock.Now()) {
 		return nil, &types.OperationError{
 			Kind:    types.KindAdmissionRejected,
@@ -343,16 +388,64 @@ func (s *Scheduler) enqueue(req SubmitRequest) (*schedWaiter, error) {
 		}
 	}
 
-	if s.limits.MaxQueued > 0 && s.queuedTotal >= s.limits.MaxQueued {
+	// An estimate has to be a number a ceiling can be compared with. One that
+	// is not a number compares false with everything, so a request carrying it
+	// was admitted over any ceiling, and then made the running total not a
+	// number either, which switched the ceiling off for every request after.
+	if req.EstimatedTokens < 0 || req.EstimatedCost < 0 || math.IsNaN(req.EstimatedCost) || math.IsInf(req.EstimatedCost, 0) {
 		return nil, &types.OperationError{
-			Kind:    types.KindAdmissionRejected,
+			Kind:    types.KindInvalidRequest,
 			Op:      "scheduler.Submit",
-			Message: fmt.Sprintf("queue is full (%d waiting, limit %d)", s.queuedTotal, s.limits.MaxQueued),
+			Message: "the request's estimate of tokens or cost is negative or is not a number",
 		}
 	}
 
+	// A request whose own estimate is over a ceiling on what may be in flight
+	// can never be admitted, however empty the scheduler is. Queued, it would
+	// wait until its caller gave up, holding a place in the queue the whole
+	// time, which is the unmeetable deadline above in another form.
+	if limit := s.limits.MaxInFlightTokens; limit > 0 && req.EstimatedTokens > limit {
+		return nil, &types.OperationError{
+			Kind:    types.KindAdmissionRejected,
+			Op:      "scheduler.Submit",
+			Message: fmt.Sprintf("the request alone is estimated at %d tokens, over the ceiling of %d on tokens in flight", req.EstimatedTokens, limit),
+		}
+	}
+	if limit := s.limits.MaxInFlightCost; limit > 0 && req.EstimatedCost > limit {
+		return nil, &types.OperationError{
+			Kind:    types.KindAdmissionRejected,
+			Op:      "scheduler.Submit",
+			Message: fmt.Sprintf("the request alone is estimated at $%g, over the ceiling of $%g on cost in flight", req.EstimatedCost, limit),
+		}
+	}
+
+	// The bound is on requests that have to wait, so the new request joins the
+	// queue, whatever can run is admitted, and it is refused only if it is
+	// still waiting with the queue over its bound.
+	//
+	// It used to be measured before the request was let in. First that counted
+	// a request from the moment it asked until the dispatcher got round to it,
+	// so two calls arriving together at an idle scheduler with a queue of one
+	// could refuse the second while every slot was free. Then, measured after
+	// admitting what was already there, it still refused a request for an idle
+	// provider when the queue held one for a busy provider: the new request
+	// could have run at once and was never given the chance.
 	w := &schedWaiter{req: req, admitted: make(chan schedOutcome, 1)}
 	s.pushLocked(w)
+	s.admitAllLocked()
+	if s.limits.MaxQueued > 0 && s.queuedTotal > s.limits.MaxQueued && len(w.admitted) == 0 {
+		waiting := s.queuedTotal - 1
+		w.canceled = true
+		// Taking the waiter out of its queue also takes a tenant with nothing
+		// left queued out of the rotation, so a refused newcomer does not stay
+		// in it for the scheduler's life.
+		s.removeFromQueueLocked(w)
+		return nil, &types.OperationError{
+			Kind:    types.KindAdmissionRejected,
+			Op:      "scheduler.Submit",
+			Message: fmt.Sprintf("queue is full (%d waiting, limit %d)", waiting, s.limits.MaxQueued),
+		}
+	}
 	s.wakeLocked()
 	return w, nil
 }
@@ -365,6 +458,9 @@ func (s *Scheduler) pushLocked(w *schedWaiter) {
 	}
 	s.queues[tenant][w.req.Priority] = append(s.queues[tenant][w.req.Priority], w)
 	s.queuedTotal++
+	if !w.req.Deadline.IsZero() {
+		s.hasDeadlines = true
+	}
 }
 
 // cancelWaiter removes w from the queue if it is still there and delivers no
@@ -408,7 +504,64 @@ func (s *Scheduler) removeFromQueueLocked(w *schedWaiter) {
 		if candidate == w {
 			byPriority[w.req.Priority] = append(list[:i], list[i+1:]...)
 			s.queuedTotal--
+			s.dropIdleTenantLocked(w.req.Tenant)
 			return
+		}
+	}
+}
+
+// dropIdleTenantLocked takes a tenant with nothing queued out of the rotation.
+// Without it tenantOrder and queues held every tenant the scheduler had ever
+// seen, and each admission scanned all of them under the lock. A tenant's
+// running work is tracked apart from its queue, so its limits are unaffected.
+// Called with mu held.
+func (s *Scheduler) dropIdleTenantLocked(tenant string) {
+	for _, list := range s.queues[tenant] {
+		if len(list) > 0 {
+			return
+		}
+	}
+	delete(s.queues, tenant)
+	for i, name := range s.tenantOrder {
+		if name != tenant {
+			continue
+		}
+		s.tenantOrder = append(s.tenantOrder[:i], s.tenantOrder[i+1:]...)
+		// A cursor past the removed tenant moves back with the ones after it,
+		// so the rotation continues from the same tenant.
+		for p, at := range s.cursor {
+			if at > i {
+				s.cursor[p] = at - 1
+			}
+		}
+		return
+	}
+}
+
+// expireWaitersLocked refuses every queued request whose Deadline has passed.
+// Deadline was checked only when a request arrived, so one that waited behind
+// slow work was admitted and run after the time by which it should have
+// started. Called with mu held. The outcome channel holds one value and its
+// waiter has received none, so the send does not block.
+func (s *Scheduler) expireWaitersLocked() {
+	if !s.hasDeadlines {
+		return
+	}
+	now := s.clock.Now()
+	for _, tenant := range append([]string(nil), s.tenantOrder...) {
+		for _, p := range priorityOrder {
+			for _, w := range append([]*schedWaiter(nil), s.queues[tenant][p]...) {
+				if w.req.Deadline.IsZero() || !w.req.Deadline.Before(now) {
+					continue
+				}
+				w.canceled = true
+				s.removeFromQueueLocked(w)
+				w.admitted <- schedOutcome{err: &types.OperationError{
+					Kind:    types.KindAdmissionRejected,
+					Op:      "scheduler.Submit",
+					Message: "deadline passed while the request was queued",
+				}}
+			}
 		}
 	}
 }
@@ -460,6 +613,13 @@ func (s *Scheduler) unreserveLocked(req SubmitRequest) {
 	s.inFlight--
 	s.inFlightTokens -= req.EstimatedTokens
 	s.inFlightCost -= req.EstimatedCost
+	if s.inFlight == 0 {
+		// Cost is a float that is added to and taken from, so after many
+		// reservations an idle scheduler can hold a few ulps above zero, and a
+		// request estimated at exactly the ceiling would then find no room while
+		// nothing ran. Idle means zero.
+		s.inFlightCost = 0
+	}
 	s.providerInFlight[req.Provider]--
 	if s.providerInFlight[req.Provider] <= 0 {
 		delete(s.providerInFlight, req.Provider)
@@ -599,6 +759,7 @@ func (s *Scheduler) dispatchLoop() {
 // rotation, until a full pass finds nothing left that fits. Called with mu
 // held.
 func (s *Scheduler) admitAllLocked() {
+	s.expireWaitersLocked()
 	for {
 		w, ok := s.nextAdmittableLocked()
 		if !ok {
@@ -614,8 +775,7 @@ func (s *Scheduler) admitAllLocked() {
 // rotates through tenants starting after the last tenant serviced at that
 // class, so a tenant with ten thousand queued items and a tenant with ten
 // both get a turn each pass instead of the large tenant's backlog draining
-// first (SC-003). Canceled waiters found along the way are dropped, not
-// counted as a turn. Called with mu held.
+// first (SC-003). Called with mu held.
 func (s *Scheduler) nextAdmittableLocked() (*schedWaiter, bool) {
 	for _, p := range priorityOrder {
 		if w, ok := s.nextAdmittableAtPriorityLocked(p); ok {
@@ -638,14 +798,9 @@ func (s *Scheduler) nextAdmittableAtPriorityLocked(p SchedPriority) (*schedWaite
 		if byPriority == nil {
 			continue
 		}
+		// A waiter that has given up is taken out of its list in the same
+		// critical section that marks it, so none is ever found here.
 		list := byPriority[p]
-		// Drop any canceled waiters at the front so a stale entry never
-		// blocks this tenant's turn.
-		for len(list) > 0 && list[0].canceled {
-			list = list[1:]
-			s.queuedTotal--
-		}
-		byPriority[p] = list
 		if len(list) == 0 {
 			continue
 		}
@@ -666,9 +821,6 @@ func (s *Scheduler) nextAdmittableAtPriorityLocked(p SchedPriority) (*schedWaite
 		// FIFO still holds within a provider, because the scan preserves queue
 		// order and only steps over requests that could not run yet anyway.
 		for _, w := range list {
-			if w.canceled {
-				continue
-			}
 			if !s.globalCapacityLocked(w.req) {
 				return nil, false
 			}
@@ -685,7 +837,10 @@ func (s *Scheduler) nextAdmittableAtPriorityLocked(p SchedPriority) (*schedWaite
 // queued with a classified shutdown error, cancels every admitted request's
 // derived context, and waits for accepted work to actually return — up to
 // ctx's deadline, if it has one. It is safe to call more than once and from
-// more than one goroutine: the second and later calls are no-ops.
+// more than one goroutine: the second and later calls stop nothing again, but
+// each waits for the same drain under its own ctx, so a retry after a grace
+// period that elapsed waits for the work still running instead of reporting
+// success.
 //
 // Close does not, and cannot, kill the goroutine running a caller's `run`
 // function outright — Go has no such primitive. What it guarantees is that
@@ -696,11 +851,14 @@ func (s *Scheduler) nextAdmittableAtPriorityLocked(p SchedPriority) (*schedWaite
 func (s *Scheduler) Close(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
+		drained := s.drained
 		s.mu.Unlock()
-		return nil
+		return awaitSchedulerDrain(ctx, drained)
 	}
 	s.closed = true
 	close(s.stopCh)
+	drained := make(chan struct{})
+	s.drained = drained
 
 	// Refuse everything still queued, in one pass, rather than leaving them
 	// to time out on their own — an item nobody ever answers is a dropped
@@ -730,14 +888,24 @@ func (s *Scheduler) Close(ctx context.Context) error {
 		cancel()
 	}
 
-	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
-		close(done)
+		close(drained)
 	}()
 
+	return awaitSchedulerDrain(ctx, drained)
+}
+
+// awaitSchedulerDrain waits for drained to close or for ctx to end. A drain
+// that has already finished is reported as one even when ctx is also done.
+func awaitSchedulerDrain(ctx context.Context, drained <-chan struct{}) error {
 	select {
-	case <-done:
+	case <-drained:
+		return nil
+	default:
+	}
+	select {
+	case <-drained:
 		return nil
 	case <-ctx.Done():
 		return &types.OperationError{

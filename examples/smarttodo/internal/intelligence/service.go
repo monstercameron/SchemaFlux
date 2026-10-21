@@ -1,14 +1,17 @@
 package intelligence
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/exp"
 )
 
 type Service struct{}
@@ -102,71 +105,69 @@ type DayPlan struct {
 }
 
 func (s *Service) CaptureTodo(note string) (*models.SmartTodo, error) {
+	ctx := appclient.Context(context.Background())
 	note = strings.TrimSpace(note)
 	if note == "" {
 		return nil, fmt.Errorf("note cannot be empty")
 	}
 
 	base, err := schemaflux.Extract[models.SmartTodo](
-		note,
-		schemaflux.NewExtractOptions().
-			WithMode(schemaflux.TransformMode).
-			WithIntelligence(schemaflux.Fast).
-			WithSteering(`Extract a production-quality todo item.
+		ctx, note,
+		schemaflux.ExtractOptions{Options: schemaflux.Options{
+			Mode: schemaflux.ModeTransform, Tier: schemaflux.TierFast,
+			Steering: `Extract a production-quality todo item.
 - Title must be actionable and under 60 characters.
 - Infer priority, category, effort, and location when reasonable.
 - Create 2-5 subtasks when the note implies multiple steps.
 - Context should be a brief execution hint, not generic filler.
-- Prefer concrete deadlines over vague ones.`),
+- Prefer concrete deadlines over vague ones.`,
+		}},
 	)
 	if err != nil {
 		fallback := heuristicTodo(note)
 		return &fallback, nil
 	}
 
-	normalized, err := schemaflux.Normalize(base, schemaflux.NewNormalizeOptions().
-		WithCanonicalMappings(map[string]string{
+	normalized, err := schemaflux.Normalize(ctx, base, schemaflux.NormalizeOptions{
+		CanonicalMappings: map[string]string{
 			"asap":      "high",
 			"immediate": "high",
 			"quick":     "minimal",
 			"easy":      "low",
 			"office":    "office",
 			"home":      "home",
-		}).
-		WithFields([]string{"priority", "category", "location", "effort"}).
-		WithIntelligence(schemaflux.Fast))
+		},
+		Fields:  []string{"priority", "category", "location", "effort"},
+		Options: schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err == nil {
 		base = normalized.Normalized
 	}
 
-	enriched, err := schemaflux.EnrichInPlace(base, schemaflux.NewEnrichOptions().
-		WithDerivationRules(map[string]string{
+	enriched, err := exp.EnrichInPlace(ctx, base, exp.EnrichOptions{
+		Rules: map[string]string{
 			"context":  "add one concise tactical hint for executing this task",
 			"category": "fill when missing using the title and description",
 			"location": "fill when missing using the task context",
-		}).
-		WithAddOnly(true).
-		WithIntelligence(schemaflux.Fast))
+		},
+		Options: schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err == nil {
 		base = enriched
 	}
 
-	validation, err := schemaflux.Validate(base, schemaflux.NewValidateOptions().
-		WithRules("priority must be high, medium, or low; effort must be minimal, low, medium, high, or massive; title must be specific; context should be concise").
-		WithAutoCorrect(true).
-		WithIntelligence(schemaflux.Fast))
+	validation, err := schemaflux.Validate(ctx, base, schemaflux.ValidateOptions{
+		Rules:   "priority must be high, medium, or low; effort must be minimal, low, medium, high, or massive; title must be specific; context should be concise",
+		Options: schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err == nil && validation.Corrected != nil {
 		base = *validation.Corrected
 	}
 
 	if len(base.Tasks) == 0 && looksComplex(note) {
-		parts, err := schemaflux.DecomposeToSlice[string, models.Task](
-			note,
-			schemaflux.NewDecomposeOptions().
-				WithStrategy("sequential").
-				WithTargetParts(4).
-				WithIncludeDependencies(false).
-				WithIntelligence(schemaflux.Fast),
+		parts, err := exp.DecomposeToSlice[models.Task](
+			ctx, note,
+			exp.DecomposeToSliceOptions{Strategy: "sequential", TargetParts: 4, Options: schemaflux.Options{Tier: schemaflux.TierFast}},
 		)
 		if err == nil && len(parts) > 0 {
 			base.Tasks = parts
@@ -178,6 +179,7 @@ func (s *Service) CaptureTodo(note string) (*models.SmartTodo, error) {
 }
 
 func (s *Service) ReviseTodo(todo *models.SmartTodo, instruction string) (*models.SmartTodo, error) {
+	ctx := appclient.Context(context.Background())
 	if todo == nil {
 		return nil, fmt.Errorf("todo cannot be nil")
 	}
@@ -194,12 +196,12 @@ Instruction:
 %s
 
 Update the todo without dropping useful information.`, mustJSON(todo), instruction)
-	updated, err := schemaflux.Transform[string, models.SmartTodo](
-		prompt,
-		schemaflux.NewTransformOptions().
-			WithIntelligence(schemaflux.Fast).
-			WithMode(schemaflux.TransformMode).
-			WithSteering("Apply the instruction carefully. Preserve IDs, completed subtasks, and existing useful context unless the instruction overrides them."),
+	updated, err := schemaflux.Transform[models.SmartTodo](
+		ctx, prompt,
+		schemaflux.TransformOptions{Options: schemaflux.Options{
+			Tier: schemaflux.TierFast, Mode: schemaflux.ModeTransform,
+			Steering: "Apply the instruction carefully. Preserve IDs, completed subtasks, and existing useful context unless the instruction overrides them.",
+		}},
 	)
 	if err != nil {
 		copy := *todo
@@ -216,17 +218,18 @@ Update the todo without dropping useful information.`, mustJSON(todo), instructi
 		updated.Tasks = todo.Tasks
 	}
 
-	normalized, err := schemaflux.Normalize(updated, schemaflux.NewNormalizeOptions().
-		WithFields([]string{"priority", "category", "location", "effort"}).
-		WithIntelligence(schemaflux.Fast))
+	normalized, err := schemaflux.Normalize(ctx, updated, schemaflux.NormalizeOptions{
+		Fields:  []string{"priority", "category", "location", "effort"},
+		Options: schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err == nil {
 		updated = normalized.Normalized
 	}
 
-	validation, err := schemaflux.Validate(updated, schemaflux.NewValidateOptions().
-		WithRules("priority must be high, medium, or low; effort must be minimal, low, medium, high, or massive; title must remain actionable").
-		WithAutoCorrect(true).
-		WithIntelligence(schemaflux.Fast))
+	validation, err := schemaflux.Validate(ctx, updated, schemaflux.ValidateOptions{
+		Rules:   "priority must be high, medium, or low; effort must be minimal, low, medium, high, or massive; title must remain actionable",
+		Options: schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err == nil && validation.Corrected != nil {
 		updated = *validation.Corrected
 	}
@@ -236,6 +239,7 @@ Update the todo without dropping useful information.`, mustJSON(todo), instructi
 }
 
 func (s *Service) RecommendNext(todos []*models.SmartTodo) (*models.SmartTodo, error) {
+	ctx := appclient.Context(context.Background())
 	if len(todos) == 0 {
 		return nil, fmt.Errorf("no todos available")
 	}
@@ -251,13 +255,14 @@ func (s *Service) RecommendNext(todos []*models.SmartTodo) (*models.SmartTodo, e
 	}
 
 	ranked, err := schemaflux.Rank(
-		openTodos,
-		schemaflux.NewRankOptions().
-			WithQuery("best next task to work on now given urgency, deadline pressure, dependencies, effort, and momentum").
-			WithTopK(minInt(3, len(openTodos))).
-			WithRankingFactors([]string{"urgency", "deadline", "effort", "dependency pressure", "quick wins"}).
-			WithIncludeExplanation(true).
-			WithIntelligence(schemaflux.Smart),
+		ctx, openTodos,
+		"best next task to work on now given urgency, deadline pressure, dependencies, effort, and momentum",
+		schemaflux.RankOptions{
+			TopK:               minInt(3, len(openTodos)),
+			Factors:            []string{"urgency", "deadline", "effort", "dependency pressure", "quick wins"},
+			IncludeExplanation: true,
+			Options:            schemaflux.Options{Tier: schemaflux.TierSmart},
+		},
 	)
 	shortlist := openTodos
 	if err == nil && len(ranked.Items) > 0 {
@@ -268,13 +273,12 @@ func (s *Service) RecommendNext(todos []*models.SmartTodo) (*models.SmartTodo, e
 		}
 	}
 
-	best, err := schemaflux.Choose(shortlist, schemaflux.NewChooseOptions().WithCriteria([]string{
+	best, err := schemaflux.Choose(ctx, shortlist, schemaflux.ChooseOptions{Criteria: []string{
 		"urgency",
 		"leverage",
 		"available energy fit",
 		"likelihood of completion",
-	}).
-		WithIntelligence(schemaflux.Smart))
+	}, Options: schemaflux.Options{Tier: schemaflux.TierSmart}})
 	if err == nil {
 		return best, nil
 	}
@@ -284,6 +288,7 @@ func (s *Service) RecommendNext(todos []*models.SmartTodo) (*models.SmartTodo, e
 }
 
 func (s *Service) PrioritizeBoard(todos []*models.SmartTodo) ([]*models.SmartTodo, error) {
+	ctx := appclient.Context(context.Background())
 	if len(todos) <= 1 {
 		return cloneTodos(todos), nil
 	}
@@ -294,11 +299,12 @@ func (s *Service) PrioritizeBoard(todos []*models.SmartTodo) ([]*models.SmartTod
 	}
 
 	sorted, err := schemaflux.Sort(
-		openTodos,
-		schemaflux.NewSortOptions().
-			WithCriteria("priority considering overdue work, today's deadlines, blocked tasks, effort, and momentum").
-			WithIntelligence(schemaflux.Smart).
-			WithSteering("Return a total ordering of the open tasks from highest immediate value to lowest. Avoid ties."),
+		ctx, openTodos,
+		"priority considering overdue work, today's deadlines, blocked tasks, effort, and momentum",
+		schemaflux.SortOptions{Options: schemaflux.Options{
+			Tier:     schemaflux.TierSmart,
+			Steering: "Return a total ordering of the open tasks from highest immediate value to lowest. Avoid ties.",
+		}},
 	)
 	if err != nil {
 		sorted = heuristicSort(openTodos)
@@ -315,17 +321,18 @@ func (s *Service) PrioritizeBoard(todos []*models.SmartTodo) ([]*models.SmartTod
 }
 
 func (s *Service) FilterBoard(todos []*models.SmartTodo, query string) ([]*models.SmartTodo, error) {
+	ctx := appclient.Context(context.Background())
 	query = strings.TrimSpace(query)
 	if query == "" || len(todos) == 0 {
 		return cloneTodos(todos), nil
 	}
 
 	filtered, err := schemaflux.Filter(
-		todos,
-		schemaflux.NewFilterOptions().
-			WithCriteria(query).
-			WithIntelligence(schemaflux.Fast).
-			WithSteering("Filter tasks semantically. Match timing, urgency, location, energy, and title cues."),
+		ctx, todos, query,
+		schemaflux.FilterOptions{Options: schemaflux.Options{
+			Tier:     schemaflux.TierFast,
+			Steering: "Filter tasks semantically. Match timing, urgency, location, energy, and title cues.",
+		}},
 	)
 	if err == nil {
 		return filtered, nil
@@ -346,47 +353,44 @@ func (s *Service) FilterBoard(todos []*models.SmartTodo, query string) ([]*model
 }
 
 func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
+	ctx := appclient.Context(context.Background())
 	snapshot := buildBoardSnapshot(todos)
 	snapshotJSON := mustJSON(snapshot)
 
 	summary := "Board is quiet."
-	if text, err := schemaflux.Summarize(snapshotJSON, func() schemaflux.SummarizeOptions {
-		opts := schemaflux.NewSummarizeOptions()
-		opts.TargetLength = 5
-		opts.LengthUnit = "sentences"
-		opts.Style = "executive"
-		opts.FocusAreas = []string{"urgent work", "stale work", "quick wins"}
-		opts.CommonOptions = opts.CommonOptions.WithIntelligence(schemaflux.Fast)
-		return opts
-	}()); err == nil {
+	if text, err := schemaflux.Summarize(ctx, snapshotJSON, schemaflux.SummarizeOptions{
+		TargetLength: 5, LengthUnit: "sentences", Style: "executive",
+		FocusAreas: []string{"urgent work", "stale work", "quick wins"},
+		Options:    schemaflux.Options{Tier: schemaflux.TierFast},
+	}); err == nil {
 		summary = text
 	}
 
-	auditResult, auditErr := schemaflux.Audit(snapshot, schemaflux.AuditOptions{
+	auditResult, auditErr := schemaflux.Audit(ctx, snapshot, schemaflux.AuditOptions{
 		Policies: []string{
 			"High priority tasks should have either a clear deadline or a concrete next step",
 			"Tasks with many subtasks should not be missing context",
 			"Boards should avoid too many overdue open tasks",
 		},
-		Categories:   []string{"quality", "consistency", "planning"},
-		Threshold:    0.45,
-		Deep:         true,
-		Mode:         schemaflux.TransformMode,
-		Intelligence: schemaflux.Smart,
+		Categories: []string{"quality", "consistency", "planning"},
+		Threshold:  0.45,
+		Options:    schemaflux.Options{Mode: schemaflux.ModeTransform, Tier: schemaflux.TierSmart},
 	})
 
 	focus := FocusAnswer{}
-	focusResult, focusErr := schemaflux.Question[BoardSnapshot, FocusAnswer](snapshot, schemaflux.NewQuestionOptions("What are the top three focus areas, the biggest blocker, and the best quick wins?").WithIntelligence(schemaflux.Smart))
+	focusResult, focusErr := schemaflux.Question[FocusAnswer](ctx, snapshot,
+		"What are the top three focus areas, the biggest blocker, and the best quick wins?",
+		schemaflux.QuestionOptions{Options: schemaflux.Options{Tier: schemaflux.TierSmart}})
 	if focusErr == nil {
 		focus = focusResult.Answer
 	}
 
 	forecast := BoardForecast{}
-	forecastResult, forecastErr := schemaflux.Predict[BoardForecast](snapshot, schemaflux.NewPredictOptions().
-		WithHorizon("next 3 working sessions").
-		WithFactors([]string{"open count", "overdue work", "subtask load", "priority mix"}).
-		WithIncludeScenarios(false).
-		WithIntelligence(schemaflux.Smart))
+	forecastResult, forecastErr := exp.Predict[BoardForecast](ctx, snapshot, exp.PredictOptions{
+		Horizon: "next 3 working sessions",
+		Factors: []string{"open count", "overdue work", "subtask load", "priority mix"},
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+	})
 	if forecastErr == nil {
 		forecast = forecastResult.Prediction
 	}
@@ -396,19 +400,18 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 		FocusAreas:       focus.FocusAreas,
 		QuickWins:        focus.QuickWins,
 		BiggestBlocker:   focus.BiggestBlocker,
-		Risks:            extractAuditRisks(auditResult),
+		Risks:            auditRisks(auditResult, auditErr),
 		RecommendedMoves: forecast.RecommendedMoves,
 		Forecast:         forecast,
 	}
 
-	synthesized, synthErr := schemaflux.Synthesize[BoardReview](
-		[]any{summary, auditResult, focus, forecast},
-		schemaflux.NewSynthesizeOptions().
-			WithStrategy("integrate").
-			WithGenerateInsights(true).
-			WithCiteSources(false).
-			WithIntelligence(schemaflux.Smart).
-			WithSteering("Create an operator-friendly board review with concise risks, focus areas, and actionable next moves."),
+	synthesized, synthErr := exp.Synthesize[BoardReview](
+		ctx, []any{summary, auditSourceForSynthesis(auditResult, auditErr), focus, forecast},
+		exp.SynthesizeOptions{
+			Strategy: "integrate", OmitCitations: true,
+			Options: schemaflux.Options{Tier: schemaflux.TierSmart,
+				Steering: "Create an operator-friendly board review with concise risks, focus areas, and actionable next moves."},
+		},
 	)
 	if synthErr == nil {
 		review = synthesized.Synthesized
@@ -416,7 +419,7 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 			review.Summary = summary
 		}
 		if len(review.Risks) == 0 {
-			review.Risks = extractAuditRisks(auditResult)
+			review.Risks = auditRisks(auditResult, auditErr)
 		}
 		if len(review.RecommendedMoves) == 0 {
 			review.RecommendedMoves = forecast.RecommendedMoves
@@ -438,8 +441,14 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 	if review.BiggestBlocker == "" {
 		review.BiggestBlocker = heuristicBlocker(todos)
 	}
-	if len(review.Risks) == 0 && auditErr != nil {
-		review.Risks = []string{"Audit unavailable; using heuristic risk detection"}
+	// A review built from an audit that did not run says so, whatever the
+	// synthesis wrote. Its risks were composed from the summary, the focus and
+	// the forecast, none of which looked for structural problems, so they are
+	// not a finding of nothing wrong, and a clean bill of health from them
+	// would be the failure auditRisks exists to prevent. The text that used to
+	// stand here promised a heuristic risk detection that does not exist.
+	if auditErr != nil {
+		review.Risks = []string{auditUnavailableRisk}
 	}
 	if len(review.RecommendedMoves) == 0 && forecastErr != nil {
 		review.RecommendedMoves = []string{"Reduce overdue load", "Clear one quick win", "Protect one deep-work block"}
@@ -448,17 +457,17 @@ func (s *Service) BuildReview(todos []*models.SmartTodo) (BoardReview, error) {
 	return review, nil
 }
 
-func (s *Service) PlanDay(todos []*models.SmartTodo, context string) (DayPlan, error) {
+func (s *Service) PlanDay(todos []*models.SmartTodo, workContext string) (DayPlan, error) {
+	ctx := appclient.Context(context.Background())
 	snapshot := buildBoardSnapshot(todos)
-	candidates := defaultContextCandidates(context)
+	candidates := defaultContextCandidates(workContext)
 	matches := []ContextMatch{}
 
-	matchResult, err := schemaflux.SemanticMatch(snapshot.OpenTasks, candidates, schemaflux.NewMatchOptions().
-		WithStrategy("best-fit").
-		WithThreshold(0.4).
-		WithMatchCriteria("Match each task to the most appropriate work mode or time block").
-		WithIncludeExplanations(true).
-		WithIntelligence(schemaflux.Fast))
+	matchResult, err := schemaflux.SemanticMatch(ctx, snapshot.OpenTasks, candidates, schemaflux.SemanticMatchOptions{
+		Strategy: "best-fit", Threshold: 0.4,
+		Criteria: "Match each task to the most appropriate work mode or time block",
+		Options:  schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err == nil {
 		for _, pair := range matchResult.Matches {
 			matches = append(matches, ContextMatch{
@@ -477,15 +486,14 @@ func (s *Service) PlanDay(todos []*models.SmartTodo, context string) (DayPlan, e
 		Matches  []ContextMatch `json:"matches"`
 	}{
 		Snapshot: snapshot,
-		Context:  context,
+		Context:  workContext,
 		Matches:  matches,
 	}
 
-	projected, projectErr := schemaflux.Project[any, DayPlan](input, schemaflux.ProjectOptions{
+	projected, projectErr := exp.Project[any, DayPlan](ctx, input, exp.ProjectOptions{
 		InferMissing: true,
-		Mode:         schemaflux.TransformMode,
-		Intelligence: schemaflux.Smart,
-		Steering:     "Project the board into a realistic one-day plan with 3-5 work blocks, quick wins, and a clear recommended start.",
+		Options: schemaflux.Options{Mode: schemaflux.ModeTransform, Tier: schemaflux.TierSmart,
+			Steering: "Project the board into a realistic one-day plan with 3-5 work blocks, quick wins, and a clear recommended start."},
 	})
 	if projectErr == nil {
 		plan := projected.Projected
@@ -666,10 +674,45 @@ func cloneTodos(todos []*models.SmartTodo) []*models.SmartTodo {
 	return cloned
 }
 
+// auditUnavailableRisk is what the board review says about risks when the audit
+// could not be run: that nothing was assessed, not that nothing was found.
+const auditUnavailableRisk = "The board audit could not be run, so the board's risks have not been assessed."
+
+// auditSourceForSynthesis is the audit's place among the sources the review is
+// synthesized from. An audit that failed leaves a zero result, which reads as
+// an audit that found nothing, and the synthesis was free to turn it into a
+// clean bill of health. In its place goes a statement that the audit did not
+// run, so what the model is shown matches what happened.
+func auditSourceForSynthesis(result schemaflux.AuditResult[BoardSnapshot], err error) any {
+	if err != nil {
+		return auditUnavailableRisk
+	}
+	return result
+}
+
+// auditRisks is what the board review says about risks. An audit that failed
+// has found nothing, and that is not the same as an audit that found nothing
+// wrong: the review said "No critical structural issues detected." for both,
+// so a failed audit read as a clean bill of health.
+func auditRisks(result schemaflux.AuditResult[BoardSnapshot], err error) []string {
+	if err != nil {
+		return nil
+	}
+	return extractAuditRisks(result)
+}
+
+// extractAuditRisks lists what the audit found. The verdict is read from the
+// judgment and not from the list: the list holds what reached the threshold,
+// and an audit fails on any violation of a policy, listed or not. Reading the
+// list alone, a board that broke a policy at a severity under the threshold
+// was told it had no issues.
 func extractAuditRisks(result schemaflux.AuditResult[BoardSnapshot]) []string {
-	risks := make([]string, 0, len(result.Findings))
-	for _, finding := range result.Findings {
-		risks = append(risks, truncate(strings.TrimSpace(finding.Issue), 120))
+	risks := make([]string, 0, len(result.Issues)+1)
+	for _, finding := range result.Issues {
+		risks = append(risks, truncate(strings.TrimSpace(finding.Message), 120))
+	}
+	if result.Verdict == schemaflux.VerdictFail && result.BelowThreshold > 0 {
+		risks = append(risks, fmt.Sprintf("The board does not pass its audit: %d lesser finding(s) are not listed here.", result.BelowThreshold))
 	}
 	if len(risks) == 0 {
 		risks = append(risks, "No critical structural issues detected.")

@@ -3,7 +3,10 @@ package types
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // TC-002. Evidence is a claim the model made about its own answer unless
@@ -173,7 +176,14 @@ type ClaimProvenance struct {
 // point into: the source exists, the digest matches the source's current
 // text (so a stale or wrong reference is rejected rather than trusted
 // because it happens to be in range), and the locator -- byte range or JSON
-// pointer -- is present and, for a byte range, actually within the text.
+// pointer -- is present and points at something. A byte range has to be within
+// the text and cover at least one byte: an empty range cites nothing. A JSON
+// pointer has to resolve in the source, which then has to be a JSON document; a
+// pointer into text that is not JSON, or to a member that is not there, locates
+// nothing. When both are given, both are checked.
+//
+// A source id the reference names that was not supplied is reported by size, not
+// by value: the id is the model's text.
 //
 // It does not, and cannot, check that the referenced span supports the
 // claim. That is a judgment call this library does not make; see the
@@ -184,7 +194,7 @@ func ValidateEvidenceRef(ref EvidenceRef, sources map[string]EvidenceSource) err
 	}
 	source, found := sources[ref.SourceID]
 	if !found {
-		return fmt.Errorf("evidence reference names source %q, which was not supplied", ref.SourceID)
+		return fmt.Errorf("evidence reference names a source (%d bytes) which was not supplied", len(ref.SourceID))
 	}
 
 	digest := DigestSource(source.Text)
@@ -207,7 +217,67 @@ func ValidateEvidenceRef(ref EvidenceRef, sources map[string]EvidenceSource) err
 			return fmt.Errorf("evidence reference for source %q is out of bounds (%d bytes, source is %d bytes)",
 				ref.SourceID, ref.EndByte-ref.StartByte, length)
 		}
+		if ref.EndByte == ref.StartByte {
+			return fmt.Errorf("evidence reference for source %q has an empty byte range, which cites nothing", ref.SourceID)
+		}
+	}
+
+	if hasPointer {
+		if err := resolveJSONPointer(source.Text, ref.JSONPointer); err != nil {
+			return fmt.Errorf("evidence reference for source %q: %w", ref.SourceID, err)
+		}
 	}
 
 	return nil
+}
+
+// resolveJSONPointer checks that pointer (RFC 6901) names a member of the JSON
+// document text. It reports why not without repeating the pointer, which is the
+// model's text.
+func resolveJSONPointer(text, pointer string) error {
+	var document any
+	if err := json.Unmarshal([]byte(text), &document); err != nil {
+		return errors.New("the JSON pointer cannot be resolved, because the source is not a JSON document")
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return errors.New("the JSON pointer does not start with a slash")
+	}
+
+	current := document
+	for depth, token := range strings.Split(pointer[1:], "/") {
+		token = strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~")
+		switch node := current.(type) {
+		case map[string]any:
+			next, found := node[token]
+			if !found {
+				return fmt.Errorf("the JSON pointer names no member at its step %d", depth+1)
+			}
+			current = next
+		case []any:
+			index, ok := arrayIndex(token)
+			if !ok || index >= len(node) {
+				return fmt.Errorf("the JSON pointer names no element at its step %d", depth+1)
+			}
+			current = node[index]
+		default:
+			return fmt.Errorf("the JSON pointer goes past a value with no members at its step %d", depth+1)
+		}
+	}
+	return nil
+}
+
+// arrayIndex reads a JSON pointer token as an array index: decimal digits with no
+// leading zero and no sign.
+func arrayIndex(token string) (int, bool) {
+	if token == "" || (len(token) > 1 && token[0] == '0') || len(token) > 9 {
+		return 0, false
+	}
+	index := 0
+	for _, digit := range token {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		index = index*10 + int(digit-'0')
+	}
+	return index, true
 }
