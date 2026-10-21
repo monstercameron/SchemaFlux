@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    working-directory: v2
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -44,6 +48,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
+          cache-dependency-path: v2/go.sum
 
       - name: Build
         run: go build ./...
@@ -92,6 +97,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache-dependency-path: v2/go.sum
       - name: Run every gate in one command
         run: ./scripts/check.sh --fast
 
@@ -103,6 +109,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache-dependency-path: v2/go.sum
 
       # gofmt is only a gate now that CI-003 normalized line endings. Before
       # that it reported 179 files, 162 of which differed by nothing but CRLF.
@@ -145,7 +152,7 @@ jobs:
       # CI-007. An accidental export is a compatibility promise nobody decided
       # to make; a removal is a broken build for somebody who did not ask.
       - name: Public API surface
-        run: go test . -run TestPublicAPISurface
+        run: go test ./internal/guard -run 'TestSurfaceMatchesTheSnapshots|TestSurfaceCountsMatchTheAmendedA4' -count=1
 
       # A dirty tree after a build means something generated a file nobody
       # committed.
@@ -251,9 +258,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
+          cache-dependency-path: v2/examples/smarttodo/go.sum
       - name: Build
-        working-directory: examples/smarttodo
+        working-directory: v2/examples/smarttodo
         run: go build ./...
       - name: Test
-        working-directory: examples/smarttodo
+        working-directory: v2/examples/smarttodo
         run: go test ./...

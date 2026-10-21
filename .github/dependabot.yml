@@ -1,12 +1,12 @@
 version: 2
 updates:
   - package-ecosystem: "gomod"
-    directory: "/"
+    directory: "/v2"
     schedule:
       interval: "weekly"
 
   - package-ecosystem: "gomod"
-    directory: "/examples/smarttodo"
+    directory: "/v2/examples/smarttodo"
     schedule:
       interval: "weekly"
 

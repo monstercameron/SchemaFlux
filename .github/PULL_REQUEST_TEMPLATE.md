@@ -1,6 +1,6 @@
 <!--
 Read AGENTS.md and CONTRIBUTING.md before opening this. Find the governing
-task in TODOS.md and reference it below -- if none covers this change, add
+task in v2/TODOS.md and reference it below -- if none covers this change, add
 one in the same PR.
 -->
 
@@ -11,7 +11,7 @@ closes, and how the change closes it. -->
 
 ## Task
 
-<!-- TODOS.md item ID(s). If none exists, the item was added in this PR. -->
+<!-- v2/TODOS.md item ID(s). If none exists, the item was added in this PR. -->
 
 ## Evidence
 

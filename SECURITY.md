@@ -20,7 +20,7 @@ silence.
 
 The module is **unreleased**: there are no tags, so every consumer is on a
 pseudo-version pinned to a commit. Until `v0.2.0` is cut — the release ladder in
-`TODOS.md` (REL-001) and `scripts/release_gate.py` decide when that is earned —
+`v2/TODOS.md` (REL-001) and `v2/scripts/release_gate.py` decide when that is earned —
 only `main` is supported, and "supported" means fixes land there.
 
 Once tags exist, the intent is: the latest minor line receives security fixes,
@@ -54,7 +54,7 @@ storage. Recorded test cassettes are redacted before the file exists, and the
 writer refuses to write one that still matches a credential pattern.
 
 **Leaking credentials.** Four independent scrubbing points, each guarding a
-different moment: `scripts/secret_scan.py` at commit time, `mw.RedactEgress` on
+different moment: `v2/scripts/secret_scan.py` at commit time, `mw.RedactEgress` on
 outbound requests, the cassette writer on fixtures, and the diagnostic sink on
 captured bodies. A fifth guards log content. They are deliberately separate —
 each protects a different boundary — and each says so in its own file.
@@ -103,7 +103,7 @@ with an invented confidence.
 
 ## Known gaps
 
-Recorded here rather than left to be discovered, and tracked in `TODOS.md`:
+Recorded here rather than left to be discovered, and tracked in `v2/TODOS.md`:
 
 - Endpoint policy is **opt-in and off by default** (SEC-004). A base URL is
   checked only when a caller supplies an `EndpointPolicy`; without one, a

@@ -15,6 +15,10 @@ concurrency:
   group: smarttodo-demo
   cancel-in-progress: true
 
+defaults:
+  run:
+    working-directory: v2
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,7 +29,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: v2/go.mod
+          cache-dependency-path: |
+            v2/go.sum
+            v2/examples/smarttodo/go.sum
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -36,7 +43,7 @@ jobs:
         run: go test ./...
 
       - name: Test smarttodo module
-        working-directory: examples/smarttodo
+        working-directory: v2/examples/smarttodo
         run: go test ./...
 
       - name: Build demo bundle
@@ -45,7 +52,7 @@ jobs:
       - name: Install Playwright
         run: |
           npm init -y >/dev/null 2>&1 || true
-          npm install --no-save playwright
+          npm install --no-save playwright@1.64.1
           npx playwright install --with-deps chromium
 
       - name: Start demo server
@@ -64,7 +71,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: smarttodo-demo-smoke
-          path: artifacts/smarttodo-demo-smoke
+          path: v2/artifacts/smarttodo-demo-smoke
 
       - name: Stop demo server
         if: always()
@@ -81,7 +88,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: dist/smarttodo-demo
+          path: v2/dist/smarttodo-demo
 
   deploy:
     if: github.event_name != 'pull_request'

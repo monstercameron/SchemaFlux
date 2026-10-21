@@ -10,9 +10,9 @@ This file was, until now, CodeFlux's `AGENTS.md` copied verbatim. It declared it
 
 | Question | Authority |
 | --- | --- |
-| **In what order**, and what is done | [`TODOS.md`](TODOS.md) |
-| **Why** a task exists | [`docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md`](docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md) |
-| **What the end state is** | [`docs/engineering/plans/to-production.md`](docs/engineering/plans/to-production.md) |
+| **In what order**, and what is done | [`v2/TODOS.md`](v2/TODOS.md) |
+| **Why** a task exists | [`v2/docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md`](v2/docs/engineering/reviews/ADVERSARIAL_API_REVIEW.md) |
+| **What the end state is** | [`v2/docs/engineering/plans/to-production.md`](v2/docs/engineering/plans/to-production.md) |
 | **How** to work | this file |
 | **What already exists** | the source and its tests |
 
@@ -23,7 +23,7 @@ Do not build something because a plan anticipates it. Several documents under `d
 ## Before you start
 
 1. Read this file.
-2. Find the governing task in `TODOS.md`. Read the whole entry, including any **Revised** line — a Revised line supersedes the task body above it.
+2. Find the governing task in `v2/TODOS.md`. Read the whole entry, including any **Revised** line — a Revised line supersedes the task body above it.
 3. Read the source and tests actually in scope. The list is often behind the code.
 4. If no task covers the work, add one first. If you finish something the list does not contain, add the item and check it in the same commit, so the record matches the work.
 
@@ -133,7 +133,7 @@ Recently changed files are the register to match — `internal/ops/invariants.go
 - **Never create a new Markdown file** unless the user asks for that file by name. A plan, a convention, an inferred documentation need, or a framework default is not authorization.
 - Existing Markdown may be edited when the task requires it.
 - If useful documentation has no authorized destination, put it in the task response or in a doc comment.
-- Authorized and not clutter: the root `README.md`, `TODOS.md`, `AGENTS.md`, `CLAUDE.md`, and everything under `docs/`.
+- Authorized and not clutter: the root `README.md`, `AGENTS.md`, `CLAUDE.md`, `v2/README.md`, `v2/TODOS.md`, and everything under `v2/docs/`.
 
 ## Branches and commits
 
@@ -147,7 +147,8 @@ Recently changed files are the register to match — `internal/ops/invariants.go
 
 ## The gate
 
-`.github/workflows/ci.yml` is the required gate, and `./scripts/check.sh` runs
+`.github/workflows/ci.yml` is the required gate. Run Go commands from `v2/`;
+there, `./scripts/check.sh` runs
 every one of its steps in one command:
 
 ```

@@ -4,7 +4,7 @@
 
 1. [`AGENTS.md`](AGENTS.md) — how work is done here. It is short and it is
    binding.
-2. [`TODOS.md`](TODOS.md) — what is being done and in what order. Find the
+2. [`v2/TODOS.md`](v2/TODOS.md) — what is being done and in what order. Find the
    governing task before writing anything, and read its whole entry: a
    **Revised** line supersedes the task body above it.
 3. The source and its tests. The list is often behind the code.
@@ -74,7 +74,7 @@ rather than a failure.
 
 ## Before you send anything
 
-`.github/workflows/ci.yml` is the required gate, and `./scripts/check.sh` runs
+`.github/workflows/ci.yml` is the required gate. From `v2/`, `./scripts/check.sh` runs
 every one of its steps in one command:
 
 ```
@@ -147,7 +147,7 @@ Plain prose. No aphorisms.
 **Never create a new Markdown file** unless it was asked for by name. A plan, a
 convention, an inferred documentation need, or a framework default is not
 authorization. Existing Markdown may be edited when the task requires it, and
-anything under `docs/` is fair game.
+anything under `v2/docs/` is fair game.
 
 ## Reporting a security issue
 

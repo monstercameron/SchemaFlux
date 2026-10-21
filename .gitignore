@@ -31,6 +31,7 @@ coverage.txt
 # because the interesting artifact is the number in the floor file, not a
 # rendering of it.
 *.html
+!v2/examples/smarttodo/web/index.html
 coverage/
 
 # Logs
@@ -44,8 +45,8 @@ tmp_live_smoke/
 dist/
 *.wasm
 smarttodo-wasm
-!examples/smarttodo/cmd/smarttodo-wasm/
-!examples/smarttodo/cmd/smarttodo-wasm/main.go
+!v2/examples/smarttodo/cmd/smarttodo-wasm/
+!v2/examples/smarttodo/cmd/smarttodo-wasm/main.go
 .audit/passes.txt
 .audit/live/*.json
 scripts/__pycache__/
