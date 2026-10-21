@@ -323,6 +323,11 @@ type ExtractOptions struct {
 
 	// Field-specific extraction rules
 	FieldRules map[string]string
+
+	// allowPartialExplicit distinguishes the constructor's default from a
+	// caller's explicit choice. StrictSchema may turn off the default, while an
+	// explicit request to allow partial results remains a conflict to report.
+	allowPartialExplicit bool
 }
 
 // NewExtractOptions creates ExtractOptions with defaults
@@ -375,15 +380,22 @@ func (e ExtractOptions) WithSchemaHints(hints map[string]string) ExtractOptions 
 	return e
 }
 
-// WithStrictSchema enables strict schema validation
+// WithStrictSchema enables strict schema validation. When partial extraction
+// is still the constructor's default, enabling strict schema turns that
+// default off. An explicit WithAllowPartial(true) remains a conflict regardless
+// of setter order and is rejected by Validate.
 func (e ExtractOptions) WithStrictSchema(strict bool) ExtractOptions {
 	e.StrictSchema = strict
+	if !e.allowPartialExplicit {
+		e.AllowPartial = !strict
+	}
 	return e
 }
 
 // WithAllowPartial allows partial extraction
 func (e ExtractOptions) WithAllowPartial(allow bool) ExtractOptions {
 	e.AllowPartial = allow
+	e.allowPartialExplicit = true
 	return e
 }
 

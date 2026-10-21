@@ -53,6 +53,40 @@ func TestCommonOptions(t *testing.T) {
 	}
 }
 
+func TestExtractOptionsStrictAndPartialTransitions(t *testing.T) {
+	tests := []struct {
+		name        string
+		options     ExtractOptions
+		wantStrict  bool
+		wantPartial bool
+		wantErr     bool
+	}{
+		{"constructor defaults", NewExtractOptions(), false, true, false},
+		{"strict alone disables default partial", NewExtractOptions().WithStrictSchema(true), true, false, false},
+		{"strict false restores default partial", NewExtractOptions().WithStrictSchema(true).WithStrictSchema(false), false, true, false},
+		{"explicit partial false", NewExtractOptions().WithAllowPartial(false), false, false, false},
+		{"explicit partial true", NewExtractOptions().WithAllowPartial(true), false, true, false},
+		{"explicit partial true then strict conflicts", NewExtractOptions().WithAllowPartial(true).WithStrictSchema(true), true, true, true},
+		{"strict then explicit partial true conflicts", NewExtractOptions().WithStrictSchema(true).WithAllowPartial(true), true, true, true},
+		{"explicit partial false then strict", NewExtractOptions().WithAllowPartial(false).WithStrictSchema(true), true, false, false},
+		{"strict then explicit partial false", NewExtractOptions().WithStrictSchema(true).WithAllowPartial(false), true, false, false},
+		{"explicit partial true survives strict false", NewExtractOptions().WithAllowPartial(true).WithStrictSchema(false), false, true, false},
+		{"literal conflict remains invalid", ExtractOptions{StrictSchema: true, AllowPartial: true}, true, true, true},
+		{"zero value strict", ExtractOptions{}.WithStrictSchema(true), true, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.options.StrictSchema != tc.wantStrict || tc.options.AllowPartial != tc.wantPartial {
+				t.Errorf("StrictSchema/AllowPartial = %v/%v, want %v/%v", tc.options.StrictSchema, tc.options.AllowPartial, tc.wantStrict, tc.wantPartial)
+			}
+			err := tc.options.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestExtractOptions(t *testing.T) {
 	tests := []struct {
 		name    string

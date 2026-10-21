@@ -42,6 +42,24 @@ func TestExtractReadsTheAnswerIntoTheType(t *testing.T) {
 	}
 }
 
+func TestExtractStrictSchemaWorksAloneThroughThePublicCall(t *testing.T) {
+	t.Parallel()
+	model := answeringWith(invoiceAnswer)
+	got, err := schemaflux.Extract[extractedInvoice](operationClient(model), "Invoice A-17 for 12.50", schemaflux.ExtractOptions{StrictSchema: true})
+	if err != nil {
+		t.Fatalf("Extract with StrictSchema alone: %v", err)
+	}
+	if got != (extractedInvoice{Number: "A-17", Total: 12.5}) {
+		t.Fatalf("Extract = %+v, want complete invoice", got)
+	}
+	if model.Calls() != 1 {
+		t.Fatalf("provider calls = %d, want one", model.Calls())
+	}
+	if req := model.Last(); req.Schema == nil || !strings.Contains(req.User, "Enforce strict schema validation") || strings.Contains(req.User, "Allow partial extraction") {
+		t.Fatalf("strict schema request has schema=%v and prompt %q", req.Schema != nil, excerpt(req.User))
+	}
+}
+
 func TestExtractStrictChecksNumericFidelityThroughThePublicCall(t *testing.T) {
 	t.Parallel()
 	type account struct {

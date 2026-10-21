@@ -9493,9 +9493,15 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   and `CoversExactlyOnce(-1, nil)` returns an invariant error without panic.
   The complete v2 suite passes.
 
-- [ ] **QP-024** — Make enabling strict Extract schema from the default options
+- [x] **QP-024** — Make enabling strict Extract schema from the default options
   produce a valid configuration while retaining a clear rule for an explicitly
   requested partial result. Cover option transitions and exported Extract.
+  **Verified:** the direct regression failed when `WithStrictSchema(true)`
+  inherited the constructor's partial default. Twelve option transitions
+  now pass: strict disables only that default, while explicit partial=true
+  conflicts in either setter order. The public strict `Extract` provider path
+  and the complete v2 suite pass. Direct struct-field edits cannot carry the
+  setter's explicit-intent flag; validation still rejects a literal conflict.
 
 - [ ] **QP-025** — Reconcile SmartTodo's declared SchemaFlux version with the
   released module, and make its launcher accept an ancestor `.env` as the app
