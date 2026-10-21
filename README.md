@@ -8,7 +8,7 @@
 
 This README describes SchemaFlux v2.0.0. The module path is `github.com/monstercameron/schemaflux/v2`, with its packages at the repository root. V1 releases remain at the unsuffixed module path. The migration notes below describe the new API.
 
-For more detail, see the [v2 API reference](docs/reference/API.md), [build and test guide](docs/guides/BUILD.md), and [example status](docs/examples/STATUS_FINAL.md). The [SmartTodo browser demo](https://monstercameron.github.io/SchemaFlux/) is deployed from `main` after its browser smoke test passes.
+For more detail, see the [v2.0.0 release notes](https://github.com/monstercameron/SchemaFlux/releases/tag/v2.0.0), [v2 API reference](docs/reference/API.md), [build and test guide](docs/guides/BUILD.md), and [example status](docs/examples/STATUS_FINAL.md). The [SmartTodo browser demo](https://monstercameron.github.io/SchemaFlux/) is deployed from `main` after its browser smoke test passes.
 
 → [Read the case study](https://www.earlcameron.com/projects/schemaflux)
 

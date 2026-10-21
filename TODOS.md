@@ -7539,7 +7539,7 @@ session's working files and their findings are entered here as they are acted on
   stale comments that still name deleted files, in a dozen places; `BatchOptions` and
   `ConvertOpOptions`, which now look dead themselves; the unreachable neutral branch
   of the circuit breaker's report.
-- [ ] **WIP-001** - **State at the work-in-progress commit of 2026-10-03, and what is left.** The owner
+- [x] **WIP-001** - **State at the work-in-progress commit of 2026-10-03, and what is left.** The owner
   stopped the effort ("this is taking too long, commit everything as a wip and end here") and asked for
   notes on what is left. Every lane was stopped mid-work; nothing here was run as a whole suite afterwards.
   Version 2 lives in the staging directory `v2/` (import path `github.com/monstercameron/schemaflux/v2`)
@@ -7802,6 +7802,20 @@ session's working files and their findings are entered here as they are acted on
   all 45 numbered examples, with older 15-example plans labeled historical.
   The README links to those guides and the deployed demo. The README
   disclosure test and `git diff --check` passed after these edits.
+  **Release completed, 2026-10-21.** PR #18 merged into `main` at `01574b7`
+  after all 12 CI jobs passed on the reviewed tree. The v2 documentation
+  commit `23338da` also passed all 12 CI jobs. Its SmartTodo browser workflow
+  built, smoke-tested, and deployed to GitHub Pages; the Pages deployment
+  reports success at that SHA and the site returned HTTP 200. Annotated tag
+  `v2.0.0` points at `23338da`, and the published GitHub release is the latest.
+  `go mod download` resolved `github.com/monstercameron/schemaflux/v2@v2.0.0`
+  with checksum `h1:6IsI/GKJ1xLGXC8gfulAE3GMmO8n2yUbvg9li1aYTZQ=`.
+  The v2 restart checklist is complete. The separately tracked follow-ups and
+  the live Flowdesk label misses remain as stated limitations; the release
+  notes do not claim broader provider or statistical semantic verification.
+  `scripts/release_gate.py` still checks the v1 ladder and does not certify a
+  v2 tag; the v2 publication used the explicit CI, live checks, and module
+  resolution evidence above.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a
