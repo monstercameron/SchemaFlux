@@ -136,25 +136,32 @@ func runManyAtomic[In, Out any](ctx context.Context, op Op[In, Out], items []In,
 func runManyBatched[In, Out any](ctx context.Context, op Op[In, Out], items []In, opt types.OpOptions, plan types.Plan) ([]types.Result[Out], types.Plan, error) {
 	ctx = flowContext(ctx)
 	results := make([]types.Result[Out], len(items))
-
-	oversizedIndex := make(map[int]bool, len(plan.OversizedItems))
-	for _, o := range plan.OversizedItems {
-		oversizedIndex[o.Index] = true
+	if len(plan.OversizedItems) > len(items) {
+		return nil, plan, types.Newf(types.KindInvariantViolation, op.ID.Name,
+			"the plan names more oversized items than inputs")
 	}
 
 	// Chunked items, in the order Preflight assigned them: every index not
-	// in oversizedIndex, grouped by plan.Chunks' sizes.
-	var chunkedIndexes []int
+	// oversized, grouped by plan.Chunks' sizes. Preflight emits oversized
+	// indexes in input order, so one cursor avoids a map lookup per item.
+	chunkedIndexes := make([]int, 0, len(items)-len(plan.OversizedItems))
+	nextOversized := 0
 	for i := range items {
-		if !oversizedIndex[i] {
-			chunkedIndexes = append(chunkedIndexes, i)
+		if nextOversized < len(plan.OversizedItems) && plan.OversizedItems[nextOversized].Index == i {
+			nextOversized++
+			continue
 		}
+		chunkedIndexes = append(chunkedIndexes, i)
+	}
+	if nextOversized != len(plan.OversizedItems) {
+		return nil, plan, types.Newf(types.KindInvariantViolation, op.ID.Name,
+			"the plan's oversized indexes are not distinct indexes in input order")
 	}
 
 	// The whole plan is checked against the items before the first call. The
 	// chunks used to be sent one at a time and the mismatch found when the loop
 	// reached it or ended, after the earlier chunks had been paid for.
-	var chunks [][]int
+	chunks := make([][]int, 0, len(plan.Chunks))
 	offset := 0
 	for _, chunk := range plan.Chunks {
 		if chunk.ItemCount <= 0 {
