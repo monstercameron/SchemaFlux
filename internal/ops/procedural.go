@@ -88,6 +88,9 @@ func (o DecideOptions) WithMode(mode types.Mode) DecideOptions {
 	return o
 }
 
+// MaxDecisions is the largest list one strict answer can select from.
+const MaxDecisions = strictEnumBudget
+
 // Decide chooses among decisions, first by the programmatic conditions and then
 // by asking the model. situation is prompt data describing the circumstances;
 // ctx is the real context governing cancellation.

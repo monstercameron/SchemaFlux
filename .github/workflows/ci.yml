@@ -56,9 +56,13 @@ jobs:
       # globals it would catch go unchecked locally. TI-008.
       - name: Test with the race detector
         if: runner.os != 'Windows'
-        # The race runtime allocates; allocation-budget tests run in the normal
-        # and shuffled suites, while this pass checks concurrency behavior.
-        run: go test -race -skip='Allocat|TestDecideConvertsEightDecisionsOnTheStackAndMoreOnTheHeap' ./...
+        # The race runtime changes process-wide allocation measurements.
+        # Budget tests run in the normal and shuffled suites; this pass checks
+        # concurrency behavior.
+        run: >
+          go test -race
+          -skip='Allocat|EightDecisionsOnTheStack|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare'
+          ./...
 
       # Order dependence and shared package state hide from a single ordered
       # run. Ten shuffled runs is cheap and has found real bugs in this kind of

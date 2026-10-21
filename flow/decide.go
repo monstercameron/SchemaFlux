@@ -148,6 +148,11 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 		}
 		marked = i
 	}
+	if len(decisions) > ops.MaxDecisions {
+		return zero, call.Refuse(types.KindConfiguration,
+			"%d decisions is more than one choice can declare an answer for (at most %d); choose among them in smaller groups",
+			len(decisions), ops.MaxDecisions)
+	}
 
 	if call.Plain() {
 		var stack [decideStack]ops.Decision[T]
