@@ -9353,7 +9353,8 @@ and, where the boundary mattered, integration coverage; they do not all have exa
 - [ ] **QP-016** — Publish the relocated module as v2.0.1. Update the
   reported library version and installation docs, verify the complete tests
   from the Desktop checkout, then commit, tag, and push the module with its
-  Go-compatible repository tag. Preserve the unrelated untracked file.
+  Go-compatible repository tag. Ensure pull request demo runs cannot cancel
+  the `main` Pages deployment.
 
 ## Standing rules for this list
 
