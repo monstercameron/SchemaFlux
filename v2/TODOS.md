@@ -9432,6 +9432,23 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   CI run `39603582502` passed the race and shuffled jobs across the full
   platform matrix.
 
+- [x] **QP-019** — Measure and reduce allocations in telemetry's
+  `canonicalTags` key builder. It currently allocates a part string per tag,
+  a parts slice, and a joined string after sorting keys. Add direct benchmarks
+  for common and larger tag sets, preserve the exact bytes and the existing
+  collision distinctions across at least ten cases, and verify the exported
+  metric recording and snapshot path. Change the builder only if measured
+  allocations improve without a material regression in the common case.
+  **Measured:** three 300 ms runs under Go 1.27.3/windows-amd64 reduce the
+  four-tag helper from 7 to 1 allocation and 264 to 64 B/op (median 460.0
+  to 268.9 ns), twelve tags from 15 to 2 allocations and 490 to 256 B/op
+  (1,192 to 799.8 ns), and escaped tags from 7 to 2 allocations and 66 to
+  48 B/op (255.6 to 167.0 ns). The fixed-byte 13-case test and existing
+  13 collision cases pass. The allocation budget failed first at 7 and 15,
+  then passed at 1 and 2. The exported recording/snapshot collision test,
+  both telemetry packages with three shuffled runs, and focused `go vet`
+  pass. This is helper-level improvement; no full-call latency claim is made.
+
 ## Standing rules for this list
 
 Close each item in the same commit as the work it describes, with the evidence beneath it —

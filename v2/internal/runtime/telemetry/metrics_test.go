@@ -367,6 +367,55 @@ func TestCanonicalTagsKeepsDistinctTagSetsDistinct(t *testing.T) {
 	}
 }
 
+func TestCanonicalTagsStableEncoding(t *testing.T) {
+	cases := []struct {
+		name string
+		tags map[string]string
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty", map[string]string{}, ""},
+		{"one", map[string]string{"a": "1"}, "a=1"},
+		{"sorted", map[string]string{"b": "2", "a": "1"}, "a=1,b=2"},
+		{"empty key", map[string]string{"": "x"}, "=x"},
+		{"empty value", map[string]string{"a": ""}, "a="},
+		{"comma in key", map[string]string{"a,b": "c"}, `a\,b=c`},
+		{"equals in key", map[string]string{"a=b": "c"}, `a\=b=c`},
+		{"comma in value", map[string]string{"a": "b,c"}, `a=b\,c`},
+		{"equals in value", map[string]string{"a": "b=c"}, `a=b\=c`},
+		{"backslashes", map[string]string{`a\b`: `c\d`}, `a\\b=c\\d`},
+		{"empty pair", map[string]string{"": "", "x": "y"}, "=,x=y"},
+		{"newline", map[string]string{"a": "b\nc"}, "a=b\nc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := canonicalTags(tc.tags); got != tc.want {
+				t.Errorf("canonicalTags(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalTagsAllocationBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tags map[string]string
+		max  float64
+	}{
+		{"four", map[string]string{"provider": "openai", "model": "gpt-5.4", "mode": "transform", "intelligence": "fast"}, 1},
+		{"twelve", map[string]string{"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6", "g": "7", "h": "8", "i": "9", "j": "10", "k": "11", "l": "12"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			allocs := testing.AllocsPerRun(100, func() {
+				benchmarkCanonicalTagsResult = canonicalTags(tc.tags)
+			})
+			if allocs > tc.max {
+				t.Errorf("canonicalTags allocated %.0f times, want at most %.0f", allocs, tc.max)
+			}
+		})
+	}
+}
+
 func TestTagSetsThatLookAlikeAreSeparateSeries(t *testing.T) {
 	enableMetrics(t)
 

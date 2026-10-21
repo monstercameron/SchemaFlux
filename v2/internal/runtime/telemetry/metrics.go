@@ -376,9 +376,21 @@ func cloneTags(tags map[string]string) map[string]string {
 	return cloned
 }
 
-// tagEscaper escapes the three characters canonicalTags uses as syntax, so a
+// writeEscapedTag escapes the three bytes canonicalTags uses as syntax, so a
 // key or value that contains them cannot be read as a boundary.
-var tagEscaper = strings.NewReplacer(`\`, `\\`, `,`, `\,`, `=`, `\=`)
+func writeEscapedTag(encoded *strings.Builder, value string) {
+	start := 0
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '\\', ',', '=':
+			encoded.WriteString(value[start:i])
+			encoded.WriteByte('\\')
+			encoded.WriteByte(value[i])
+			start = i + 1
+		}
+	}
+	encoded.WriteString(value[start:])
+}
 
 // canonicalTags renders a tag set as one string that is the same for equal
 // sets and different for different ones, independent of map order. Without the
@@ -389,15 +401,31 @@ func canonicalTags(tags map[string]string) string {
 		return ""
 	}
 
-	keys := make([]string, 0, len(tags))
+	var smallKeys [8]string
+	keys := smallKeys[:0]
+	if len(tags) > len(smallKeys) {
+		keys = make([]string, 0, len(tags))
+	}
 	for key := range tags {
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
 
-	parts := make([]string, 0, len(keys))
+	// Most tag sets have no characters to escape. Reserve their exact encoded
+	// length; escaped sets may grow the builder, but never need per-tag strings.
+	length := len(keys) - 1
 	for _, key := range keys {
-		parts = append(parts, tagEscaper.Replace(key)+"="+tagEscaper.Replace(tags[key]))
+		length += len(key) + 1 + len(tags[key])
 	}
-	return strings.Join(parts, ",")
+	var encoded strings.Builder
+	encoded.Grow(length)
+	for i, key := range keys {
+		if i > 0 {
+			encoded.WriteByte(',')
+		}
+		writeEscapedTag(&encoded, key)
+		encoded.WriteByte('=')
+		writeEscapedTag(&encoded, tags[key])
+	}
+	return encoded.String()
 }
