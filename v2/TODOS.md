@@ -9348,7 +9348,8 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   `go test -p 1 ./... -count=1` run passes with exit zero from `v2/`.
   The Git Bash wrapper could not run in the earlier restricted Windows
   sandbox, so its individual build, test, analysis, and policy steps were
-  checked directly; CI must still verify the Linux and macOS legs.
+  checked directly. CI run `39603582502` later passed the Linux, Linux
+  ARM64, macOS, and Windows legs and the complete `scripts/check.sh` gate.
 
 - [x] **QP-016** — Publish the relocated module as v2.0.1. Update the
   reported library version and installation docs, verify the complete tests
@@ -9365,7 +9366,9 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   `39601135599`; the live URL returned HTTP 200. Scoping the workflow's
   concurrency group to `github.ref` stopped pull request runs from
   cancelling the main deployment. The first broader CI run exposed the
-  allocation-test exclusion gap tracked as QP-018; its rerun is pending.
+  allocation-test exclusion gap tracked as QP-018; follow-up CI run
+  `39603582502` passed every job, including race and shuffled tests on
+  Ubuntu amd64, Ubuntu ARM64, and macOS, plus shuffled tests on Windows.
 
 - [ ] **QP-017** — Isolate the Windows ARM64 Go 1.27.3 runtime crashes seen
   during the relocated module's local full-suite runs. The first run ended
@@ -9386,7 +9389,8 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   skip lists together and verify the test still runs normally.
   **Verified:** the targeted normal test passes, the same targeted test
   with the new skip reports no tests to run, and `check.sh --list` parses.
-  The corresponding CI rerun must still verify the race and shuffled jobs.
+  CI run `39603582502` passed the race and shuffled jobs across the full
+  platform matrix.
 
 ## Standing rules for this list
 
