@@ -19,7 +19,8 @@
 # this project once.
 #
 # It fails closed. A check whose tool is missing is reported as SKIPPED and
-# counted, never silently passed — see the note on govulncheck below.
+# counted, never silently passed. CI installs govulncheck before running this
+# script, so the vulnerability scan is part of the same gate there.
 
 set -uo pipefail
 
@@ -59,6 +60,7 @@ CHECKS=(
   "tests|go test ./... -count=1"
   "smarttodo module|cd examples/smarttodo && go test ./..."
   "coverage floor|python scripts/coverage_floor.py"
+  "govulncheck|govulncheck ./..."
 )
 
 SLOW=(
@@ -97,16 +99,19 @@ for entry in "${CHECKS[@]}"; do
 
   printf '\n\033[1;34m▸ %s\033[0m\n' "$label"
 
-  # A check whose tool is absent is SKIPPED, not passed. govulncheck is the
-  # usual case: it is a separate install, and reporting "no vulnerabilities"
-  # because the scanner is missing is the exact shape of lie these gates exist
-  # to prevent.
+  # A check whose tool is absent is SKIPPED, not passed. CI installs
+  # govulncheck before invoking this script.
   tool="$(printf '%s' "$command" | awk '{print $1}')"
   # `test` and `cd` are shell builtins, not programs on PATH; probing them with
   # `command -v` would report them missing and skip a check that works fine.
   if [ "$tool" != "test" ] && [ "$tool" != "cd" ] && ! command -v "$tool" >/dev/null 2>&1; then
-    printf '\033[1;33m  SKIPPED: %s is not installed\033[0m\n' "$tool"
-    SKIPPED+=("$label ($tool not installed)")
+    if [ "$label" = "govulncheck" ]; then
+      printf '\033[0;31m  FAILED: govulncheck is required; install with `go install golang.org/x/vuln/cmd/govulncheck@latest`\033[0m\n'
+      FAILED+=("$label (not installed)")
+    else
+      printf '\033[1;33m  SKIPPED: %s is not installed\033[0m\n' "$tool"
+      SKIPPED+=("$label ($tool not installed)")
+    fi
     continue
   fi
 
@@ -120,20 +125,6 @@ for entry in "${CHECKS[@]}"; do
     FAILED+=("$label")
   fi
 done
-
-# govulncheck last, because it is advisory here: the findings today are
-# standard-library advisories that need a toolchain upgrade rather than a code
-# change, so it reports and does not fail the run.
-printf '\n\033[1;34m▸ govulncheck (advisory)\033[0m\n'
-if command -v govulncheck >/dev/null 2>&1; then
-  if govulncheck ./... >/dev/null 2>&1; then
-    printf '\033[0;32m  ok\033[0m\n'
-  else
-    printf '\033[1;33m  findings present; run `govulncheck ./...` to read them\033[0m\n'
-  fi
-else
-  printf '\033[1;33m  SKIPPED: govulncheck is not installed (go install golang.org/x/vuln/cmd/govulncheck@latest)\033[0m\n'
-fi
 
 printf '\n\033[1;34m════ summary ════\033[0m\n'
 printf '  passed:  %d\n' "${#PASSED[@]}"

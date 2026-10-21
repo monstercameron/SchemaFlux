@@ -9514,9 +9514,15 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   suite passes. Launcher tests cover ancestor `.env` acceptance and missing
   `.env` refusal on Unix, but are skipped on this Windows host and await CI.
 
-- [ ] **QP-026** — Reconcile the local and CI vulnerability scan gates so
+- [x] **QP-026** — Reconcile the local and CI vulnerability scan gates so
   `check.sh` and the workflow report and enforce the same result. Verify the
   policy with a controlled nonzero scanner result and the normal gate.
+  **Verified:** `check.sh --list` includes govulncheck; a reduced copy of
+  the unchanged gate loop with a controlled exit-42 scanner reported FAILED
+  and exited 1. The current scanner reported no vulnerabilities. The full
+  `check.sh --fast` run passed 16 checks with no failures or skips under
+  windows/amd64; race was unavailable without cgo. The fast gate omits the
+  shuffled and examples checks, and this branch has not run remote CI.
 
 ## Standing rules for this list
 

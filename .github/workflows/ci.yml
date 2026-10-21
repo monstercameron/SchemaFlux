@@ -98,6 +98,8 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: v2/go.sum
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run every gate in one command
         run: ./scripts/check.sh --fast
 
