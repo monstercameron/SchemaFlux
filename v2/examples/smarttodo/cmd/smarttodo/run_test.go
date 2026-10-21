@@ -24,7 +24,7 @@ func TestRunScriptFindsAncestorEnv(t *testing.T) {
 	if !invokedGo {
 		t.Fatalf("run.sh found the ancestor .env but did not build the app:\n%s", output)
 	}
-	if !strings.Contains(output, "Build successful!") {
+	if !strings.Contains(output, "Build successful") {
 		t.Fatalf("run.sh did not finish its build step:\n%s", output)
 	}
 }
