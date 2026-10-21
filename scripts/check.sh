@@ -47,6 +47,7 @@ CHECKS=(
   "build|go build ./..."
   "build examples|go build ./examples/..."
   "vet|go vet ./..."
+  "staticcheck|go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tests=false -checks=inherit,-U1000 ./..."
   "secret scan|python scripts/secret_scan.py"
   "secret scan self-test|python scripts/secret_scan.py --self-test"
   "deprecation policy|python scripts/deprecation_policy.py --check"
@@ -82,7 +83,8 @@ if [ "$PLATFORM" = "windows/arm64" ]; then
 elif [ "$(go env CGO_ENABLED)" != "1" ]; then
   RACE_NOTE="SKIPPED on $PLATFORM (the race detector requires cgo; CI covers it)"
 else
-  CHECKS+=("race|go test -race ./... -count=1")
+  # Race instrumentation adds allocations; those budgets run above without it.
+  CHECKS+=("race|go test -race -skip=Allocat ./... -count=1")
   RACE_NOTE=""
 fi
 

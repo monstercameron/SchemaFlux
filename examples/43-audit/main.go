@@ -195,7 +195,7 @@ func run(ctx context.Context, out io.Writer) error {
 		Options: schemaflux.Options{Steering: "Calculate expected values and compare. Report discrepancies with expected vs actual values."},
 	})
 	if err != nil {
-		return fmt.Errorf("Financial audit failed: %w", err)
+		return fmt.Errorf("financial audit failed: %w", err)
 	}
 	fmt.Fprintf(out, "Financial Consistency Audit (%s):\n", financials.Period)
 	fmt.Fprintf(out, "  Verdict: %s\n  Consistency Issues: %d\n\nDiscrepancies Found:\n", financial.Verdict, len(financial.Issues))

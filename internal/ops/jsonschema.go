@@ -384,13 +384,9 @@ func parseJSONTag(tag string) jsonTag {
 type jsonCaseRule uint8
 
 const (
-	// jsonCaseDefault is a tag with no rule, or with one that is not read:
-	// case:ignore and case:strict together cancel each other, as a value that is
-	// neither word is not a rule at all.
-	jsonCaseDefault jsonCaseRule = iota
 	// jsonCaseIgnore is case:ignore, which is what the default already is under
 	// encoding/json (v2 by itself matches names exactly, and v1 does not).
-	jsonCaseIgnore
+	jsonCaseIgnore jsonCaseRule = iota + 1
 	// jsonCaseStrict is case:strict: only the name as it is written matches.
 	jsonCaseStrict
 )

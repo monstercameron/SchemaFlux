@@ -249,10 +249,7 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 	}
 	sourceNames, sourceNamed := rawFieldNames(sourceJSON)
 	if sourceNamed {
-		sources := make([]string, 0, len(opt.Mappings))
-		for _, source := range sortedKeys(opt.Mappings) {
-			sources = append(sources, source)
-		}
+		sources := sortedKeys(opt.Mappings)
 		if err := checkFieldNamesIn("project", "Mappings", sources, sourceNames); err != nil {
 			return ProjectResult[U]{}, err
 		}

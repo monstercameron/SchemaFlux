@@ -869,9 +869,8 @@ func answerWanted(t reflect.Type) string {
 type answerProblem uint8
 
 const (
-	answerFine answerProblem = iota
 	// answerMissing is a required member that is not there.
-	answerMissing
+	answerMissing answerProblem = iota + 1
 	// answerNull is a null where the Go type cannot hold nil.
 	answerNull
 )

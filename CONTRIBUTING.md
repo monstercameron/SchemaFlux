@@ -93,11 +93,11 @@ workflow are meant to stay identical, and drifted apart once already:
 ```
 go build ./...
 go test ./...
-go test -race ./...            # not on windows/arm64; CI covers it
+go test -race -skip=Allocat ./... # not on windows/arm64; allocation budgets run without race instrumentation
 go test -shuffle=on -count=10 ./...
 go vet ./...
 gofmt -l .                     # must be empty
-staticcheck ./...              # must be clean
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 -tests=false -checks=inherit,-U1000 ./... # shipped packages; invalid-input fixtures and their helpers are checked by go vet/tests
 python scripts/secret_scan.py
 python scripts/coverage_floor.py
 python scripts/examples_gate.py

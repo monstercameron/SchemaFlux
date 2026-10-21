@@ -284,7 +284,7 @@ func responseWireOf(r CassetteResponse) responseWire {
 		}
 	}
 	for _, call := range r.ToolCalls {
-		w.ToolCalls = append(w.ToolCalls, toolCallWire{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
+		w.ToolCalls = append(w.ToolCalls, toolCallWire(call))
 	}
 	return w
 }
@@ -331,7 +331,7 @@ func (f CassetteFailure) MarshalJSON() ([]byte, error) { return encodeJSON(failu
 
 // MarshalJSON writes the tool call as it is written inside a cassette file.
 func (c CassetteToolCall) MarshalJSON() ([]byte, error) {
-	return encodeJSON(toolCallWire{ID: c.ID, Name: c.Name, Arguments: c.Arguments})
+	return encodeJSON(toolCallWire(c))
 }
 
 // malformed is a cassette document that cannot be read, said without quoting the
@@ -449,7 +449,7 @@ func responseOfWire(w responseWire) (*CassetteResponse, error) {
 		}
 	}
 	for _, call := range w.ToolCalls {
-		r.ToolCalls = append(r.ToolCalls, CassetteToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
+		r.ToolCalls = append(r.ToolCalls, CassetteToolCall(call))
 	}
 	return r, nil
 }

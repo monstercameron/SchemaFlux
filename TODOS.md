@@ -7745,8 +7745,18 @@ session's working files and their findings are entered here as they are acted on
   `scripts/check.sh` gate passed 16/16 again with the dependency updates.
   The first draft-PR CI run found two race detector failures in test
   bookkeeping, an unmatched staticcheck directive, and a stale `Init` call
-  in the wasm entry point; those have been corrected. Linux CI on this
-  updated commit still needs verification.
+  in the wasm entry point; those have been corrected. The next CI run passed
+  the SmartTodo browser workflow and found that allocation-budget tests fail
+  under race instrumentation without a data race; the race pass now skips only
+  those tests, which still run in the ordinary and shuffled suites. Staticcheck
+  found deliberately invalid test fixtures and helpers used only by tests;
+  the pinned check now analyzes shipped packages and suppresses U1000 for
+  those helpers. Its remaining production findings were corrected, and that
+  command passed locally. A review also found that replacing an enforcing
+  process budget briefly disabled enforcement; the replacement now publishes
+  all fields under one ledger lock, with a concurrent regression test. The
+  focused pricing, runtime pricing, schemafluxtest and ops suites pass.
+  Linux CI on this updated commit still needs verification.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a
@@ -7930,6 +7940,10 @@ session's working files and their findings are entered here as they are acted on
   a panic in a chunk is an error for that chunk, where it used to end the process; a
   client budget is checked as each call starts, so the calls already in flight can
   take it past the ceiling, as on every other concurrent path.
+  **Optimization review, 2026-10-20.** `runManyBatched` now scans the sorted
+  oversized indexes once and reserves its temporary slices, removing a map
+  allocation and a lookup per input. The focused `RunManyBatched` and
+  `RunOpMany` tests pass; no speedup is claimed without a benchmark.
   **Not done:** `RunOpManyRecover` stays serial, because each chunk's size depends on
   how the last was answered. Five chunks take two rounds at a bound of 4; raising the
   bound is one line and is the owner's call. Chunk calls carry no tenant.
