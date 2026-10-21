@@ -3,7 +3,8 @@ package desk
 import (
 	"context"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/redact"
 )
 
 // The desk's smart features, each one a step: a function of a context that
@@ -12,9 +13,7 @@ import (
 // translate renders text in another language.
 func (d *Desk) translate(text, language string) schemaflux.Step[string] {
 	return func(ctx context.Context) (string, error) {
-		opts := schemaflux.NewTranslateOptions().WithTargetLanguage(language)
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		return schemaflux.Translate(text, opts)
+		return schemaflux.Translate(ctx, text, language)
 	}
 }
 
@@ -76,9 +75,7 @@ func (d *Desk) redact(text string) schemaflux.Step[string] {
 		// library's "all", the redaction was measured to mask "89 euros" as
 		// financial data, and the amount the customer wants back was gone
 		// from everything after it.
-		opts := schemaflux.NewRedactLLMOptions().WithCategories(sensitive)
-		opts.Context = ctx
-		redacted, err := schemaflux.RedactLLM(text, opts)
+		redacted, err := redact.Text(ctx, text, redact.TextOptions{Categories: sensitive})
 		return redacted.Text, err
 	}
 }
@@ -93,9 +90,8 @@ func (d *Desk) triage(text string) schemaflux.Step[Triage] {
 // details pulls out what the message says in so many words.
 func (d *Desk) details(text string) schemaflux.Step[Details] {
 	return func(ctx context.Context) (Details, error) {
-		opts := schemaflux.NewExtractOptions().WithSteering("Leave a field empty when the message does not mention it. Do not guess.")
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		return schemaflux.Extract[Details](text, opts)
+		opts := schemaflux.ExtractOptions{Options: schemaflux.Options{Steering: "Leave a field empty when the message does not mention it. Do not guess."}}
+		return schemaflux.Extract[Details](ctx, text, opts)
 	}
 }
 
@@ -173,9 +169,8 @@ func (d *Desk) ask(about brief) schemaflux.Step[string] {
 
 func (d *Desk) draft(instruction string, about brief) schemaflux.Step[string] {
 	return func(ctx context.Context) (string, error) {
-		opts := schemaflux.NewGenerateOptions().WithSeedData(about).WithSteering(about.Guidance)
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		reply, err := schemaflux.Generate[Reply](instruction, opts)
+		opts := schemaflux.GenerateOptions{Options: schemaflux.Options{Steering: about.Guidance}, SeedData: about}
+		reply, err := schemaflux.Generate[Reply](ctx, instruction, opts)
 		return reply.Body, err
 	}
 }
@@ -183,7 +178,7 @@ func (d *Desk) draft(instruction string, about brief) schemaflux.Step[string] {
 // audit holds a draft to the desk's policies.
 func (d *Desk) audit(draft string) schemaflux.Step[schemaflux.AuditResult[Reply]] {
 	return func(ctx context.Context) (schemaflux.AuditResult[Reply], error) {
-		return schemaflux.Audit(Reply{Body: draft}, schemaflux.AuditOptions{Policies: d.Policies, Context: ctx})
+		return schemaflux.Audit(ctx, Reply{Body: draft}, schemaflux.AuditOptions{Policies: d.Policies})
 	}
 }
 
@@ -191,26 +186,21 @@ func (d *Desk) audit(draft string) schemaflux.Step[schemaflux.AuditResult[Reply]
 // audit found it breaking.
 func (d *Desk) redraft(draft string, audit schemaflux.AuditResult[Reply]) schemaflux.Step[string] {
 	return func(ctx context.Context) (string, error) {
-		changes := make([]string, 0, len(audit.Findings)+len(d.Policies))
-		for _, finding := range audit.Findings {
-			changes = append(changes, finding.Recommendation)
+		changes := make([]string, 0, len(audit.Issues)+len(d.Policies))
+		for _, finding := range audit.Issues {
+			changes = append(changes, finding.Suggestion)
 		}
 		changes = append(changes, d.Policies...)
-		opts := schemaflux.NewRewriteOptions()
-		opts.Changes = changes
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		return schemaflux.Rewrite(draft, opts)
+		opts := schemaflux.RewriteOptions{Changes: changes}
+		return schemaflux.Rewrite(ctx, draft, opts)
 	}
 }
 
 // handoff summarises the message for whoever picks the ticket up.
 func (d *Desk) handoff(text string) schemaflux.Step[string] {
 	return func(ctx context.Context) (string, error) {
-		opts := schemaflux.NewSummarizeOptions()
-		opts.TargetLength = 30
-		opts.LengthUnit = "words"
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		return schemaflux.Summarize(text, opts)
+		opts := schemaflux.SummarizeOptions{TargetLength: 30, LengthUnit: "words"}
+		return schemaflux.Summarize(ctx, text, opts)
 	}
 }
 

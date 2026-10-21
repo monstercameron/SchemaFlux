@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
 )
 
 var defaultsPinned = Config{

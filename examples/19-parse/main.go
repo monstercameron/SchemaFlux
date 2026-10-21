@@ -1,18 +1,13 @@
-// 19-parse: Parse unstructured/semi-structured text into typed Go structs
-// Intelligence: Fast (Cerebras gpt-oss-120b) - for LLM fallback on complex formats
-// Expectations:
-// - Auto-detects JSON, XML, YAML, CSV formats
-// - Parses pipe-delimited and custom formats
-// - Converts types (string?int, string?bool, etc.)
-// - Falls back to LLM for malformed or ambiguous data
-
+// 19-parse demonstrates parsing structured and semi-structured text into Go values.
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 type Person struct {
@@ -35,143 +30,104 @@ type Config struct {
 }
 
 func main() {
-
-	fmt.Println("=== SchemaFlux Parse Operation Examples ===")
-
-	// Initialize SchemaFlux with Fast intelligence (Cerebras)
-	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
-		return
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+}
 
-	// Example 1: Parse standard JSON
-	fmt.Println("1. Parsing Standard JSON:")
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "=== SchemaFlux Parse Operation Examples ===")
+
+	fmt.Fprintln(out, "1. Parsing Standard JSON:")
 	jsonData := `{"name":"Alice","age":28,"job":"Engineer"}`
-	result1, err := schemaflux.Parse[Person](jsonData, schemaflux.NewParseOptions())
+	result1, err := schemaflux.Parse[Person](ctx, jsonData)
 	if err != nil {
-		schemaflux.GetLogger().Error("JSON parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %+v (Format: %s)\n", result1.Data, result1.Format)
+		return fmt.Errorf("parse the JSON example; check that the input is valid JSON: %w", err)
 	}
+	fmt.Fprintf(out, "   Result: %+v (Format: %s)\n", result1.Data, result1.Format)
 
-	// Example 2: Parse XML
-	fmt.Println("\n2. Parsing XML:")
+	fmt.Fprintln(out, "\n2. Parsing XML:")
 	xmlData := `<person><name>Bob</name><age>35</age><job>Manager</job></person>`
-	result2, err := schemaflux.Parse[Person](xmlData, schemaflux.NewParseOptions())
+	result2, err := schemaflux.Parse[Person](ctx, xmlData)
 	if err != nil {
-		schemaflux.GetLogger().Error("XML parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %+v (Format: %s)\n", result2.Data, result2.Format)
+		return fmt.Errorf("parse the XML example; check its elements and types: %w", err)
+	}
+	fmt.Fprintf(out, "   Result: %+v (Format: %s)\n", result2.Data, result2.Format)
+
+	fmt.Fprintln(out, "\n3. Parsing YAML:")
+	yamlData := "name: Charlie\nage: 42\njob: Director"
+	result3, err := schemaflux.Parse[Person](ctx, yamlData)
+	if err != nil {
+		return fmt.Errorf("parse the YAML example; check its keys and types: %w", err)
+	}
+	fmt.Fprintf(out, "   Result: %+v (Format: %s)\n", result3.Data, result3.Format)
+
+	fmt.Fprintln(out, "\n4. Parsing CSV:")
+	csvData := "Name,Age,Salary,Active\nJohn,30,75000,true\nJane,25,65000,false\nBob,35,80000,true"
+	result4, err := schemaflux.Parse[[]Employee](ctx, csvData)
+	if err != nil {
+		return fmt.Errorf("parse the employee CSV; check the header and each row: %w", err)
+	}
+	fmt.Fprintf(out, "   Result: %d employees parsed (Format: %s)\n", len(result4.Data), result4.Format)
+	for i, emp := range result4.Data {
+		fmt.Fprintf(out, "     Employee %d: %+v\n", i+1, emp)
 	}
 
-	// Example 3: Parse YAML
-	fmt.Println("\n3. Parsing YAML:")
-	yamlData := `name: Charlie
-age: 42
-job: Director`
-	result3, err := schemaflux.Parse[Person](yamlData, schemaflux.NewParseOptions())
+	fmt.Fprintln(out, "\n5. Parsing Pipe-Delimited Data:")
+	pipeData := "David|40|90000|true\nEva|28|70000|false"
+	result5, err := schemaflux.Parse[[]Employee](ctx, pipeData)
 	if err != nil {
-		schemaflux.GetLogger().Error("YAML parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %+v (Format: %s)\n", result3.Data, result3.Format)
+		return fmt.Errorf("parse the pipe-delimited employee data; check the row values: %w", err)
+	}
+	fmt.Fprintf(out, "   Result: %d employees parsed (Format: %s)\n", len(result5.Data), result5.Format)
+	for i, emp := range result5.Data {
+		fmt.Fprintf(out, "     Employee %d: %+v\n", i+1, emp)
 	}
 
-	// Example 4: Parse CSV data
-	fmt.Println("\n4. Parsing CSV:")
-	csvData := `Name,Age,Salary,Active
-John,30,75000,true
-Jane,25,65000,false
-Bob,35,80000,true`
-	result4, err := schemaflux.Parse[[]Employee](csvData, schemaflux.NewParseOptions())
+	fmt.Fprintln(out, "\n6. Parsing with Format Hints:")
+	customData := "Alice|29|Senior Developer"
+	result6, err := schemaflux.Parse[Person](ctx, customData, schemaflux.ParseOptions{FormatHints: []string{"name|age|job"}})
 	if err != nil {
-		schemaflux.GetLogger().Error("CSV parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %d employees parsed (Format: %s)\n", len(result4.Data), result4.Format)
-		for i, emp := range result4.Data {
-			fmt.Printf("     Employee %d: %+v\n", i+1, emp)
-		}
+		return fmt.Errorf("parse the hinted custom format; check the column names: %w", err)
 	}
+	fmt.Fprintf(out, "   Result: %+v (Format: %s)\n", result6.Data, result6.Format)
 
-	// Example 5: Parse pipe-delimited custom format
-	fmt.Println("\n5. Parsing Pipe-Delimited Data:")
-	pipeData := `David|40|90000|true
-Eva|28|70000|false`
-	result5, err := schemaflux.Parse[[]Employee](pipeData, schemaflux.NewParseOptions())
+	fmt.Fprintln(out, "\n7. Parsing Mixed Format Data:")
+	mixedData := "{\n  \"database\": \"host=localhost\\nport=5432\\nuser=admin\",\n  \"port\": 5432,\n  \"settings\": {\n    \"timeout\": \"30s\",\n    \"retries\": \"3\"\n  }\n}"
+	result7, err := schemaflux.Parse[Config](ctx, mixedData)
 	if err != nil {
-		schemaflux.GetLogger().Error("Pipe-delimited parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %d employees parsed (Format: %s)\n", len(result5.Data), result5.Format)
-		for i, emp := range result5.Data {
-			fmt.Printf("     Employee %d: %+v\n", i+1, emp)
-		}
+		return fmt.Errorf("parse the database configuration; check the JSON structure: %w", err)
 	}
+	fmt.Fprintf(out, "   Result: Database config parsed (Format: %s)\n", result7.Format)
+	fmt.Fprintf(out, "     Database: %q\n     Port: %d\n     Settings: %+v\n", result7.Data.Database, result7.Data.Port, result7.Data.Settings)
 
-	// Example 6: Parse with format hints for custom mapping
-	fmt.Println("\n6. Parsing with Format Hints:")
-	customData := `Alice|29|Senior Developer`
-	result6, err := schemaflux.Parse[Person](customData,
-		schemaflux.NewParseOptions().WithFormatHints([]string{"name|age|job"}))
+	fmt.Fprintln(out, "\n8. Parsing with Custom Delimiters:")
+	customDelimData := "Name;Age;Job\nFrank;45;Architect"
+	result8, err := schemaflux.Parse[Person](ctx, customDelimData, schemaflux.ParseOptions{CustomDelimiters: []string{";"}})
 	if err != nil {
-		schemaflux.GetLogger().Error("Custom format parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %+v (Format: %s)\n", result6.Data, result6.Format)
+		return fmt.Errorf("parse the semicolon-delimited data; check its delimiter and header: %w", err)
 	}
+	fmt.Fprintf(out, "   Result: %+v (Format: %s)\n", result8.Data, result8.Format)
 
-	// Example 7: Parse mixed format data (JSON containing other formats)
-	fmt.Println("\n7. Parsing Mixed Format Data:")
-	mixedData := `{
-  "database": "host=localhost\nport=5432\nuser=admin",
-  "port": 5432,
-  "settings": {
-    "timeout": "30s",
-    "retries": "3"
-  }
-}`
-	result7, err := schemaflux.Parse[Config](mixedData, schemaflux.NewParseOptions())
+	fmt.Fprintln(out, "\n9. Error Handling for Malformed Data:")
+	malformedData := `{"name":"Grace","age":32,"job":` // Missing closing quote and brace.
+	// Local parsers reject malformed JSON; the explicit fallback lets the model repair it.
+	result9, err := schemaflux.Parse[Person](ctx, malformedData, schemaflux.ParseOptions{AllowLLMFallback: true, AutoFix: true})
 	if err != nil {
-		schemaflux.GetLogger().Error("Mixed format parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: Database config parsed (Format: %s)\n", result7.Format)
-		fmt.Printf("     Database: %q\n", result7.Data.Database)
-		fmt.Printf("     Port: %d\n", result7.Data.Port)
-		fmt.Printf("     Settings: %+v\n", result7.Data.Settings)
+		return fmt.Errorf("repair the malformed JSON example; provide valid JSON or check provider configuration: %w", err)
 	}
+	fmt.Fprintf(out, "   Recovered: %+v (Format: %s)\n", result9.Data, result9.Format)
 
-	// Example 8: Parse with custom delimiters
-	fmt.Println("\n8. Parsing with Custom Delimiters:")
-	customDelimData := `Name;Age;Job
-Frank;45;Architect`
-	result8, err := schemaflux.Parse[Person](customDelimData,
-		schemaflux.NewParseOptions().WithCustomDelimiters([]string{";"}))
+	fmt.Fprintln(out, "\n10. Type Conversion:")
+	typeConversionData := "Name,Age,Salary,Active\nHelen,33,75000,true"
+	result10, err := schemaflux.Parse[Employee](ctx, typeConversionData)
 	if err != nil {
-		schemaflux.GetLogger().Error("Custom delimiter parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %+v (Format: %s)\n", result8.Data, result8.Format)
+		return fmt.Errorf("parse the employee type-conversion row; check numeric and boolean values: %w", err)
 	}
+	fmt.Fprintf(out, "   Result: %+v (Format: %s)\n", result10.Data, result10.Format)
+	fmt.Fprintf(out, "   Types: Name=%T, Age=%T, Salary=%T, Active=%T\n", result10.Data.Name, result10.Data.Age, result10.Data.Salary, result10.Data.Active)
 
-	// Example 9: Demonstrate error handling for malformed data
-	fmt.Println("\n9. Error Handling for Malformed Data:")
-	malformedData := `{"name":"Grace","age":32,"job":` // Missing closing quote and brace
-	result9, err := schemaflux.Parse[Person](malformedData, schemaflux.NewParseOptions())
-	if err != nil {
-		fmt.Printf("   Expected error for malformed JSON: %v\n", err)
-		fmt.Printf("   (This would succeed with AllowLLMFallback=true)\n")
-	} else {
-		fmt.Printf("   Unexpected success: %+v\n", result9.Data)
-	}
-
-	// Example 10: Type conversion demonstration
-	fmt.Println("\n10. Type Conversion:")
-	typeConversionData := `Name,Age,Height,Active,Count
-Helen,33,5.7,true,250`
-	result10, err := schemaflux.Parse[Employee](typeConversionData, schemaflux.NewParseOptions())
-	if err != nil {
-		schemaflux.GetLogger().Error("Type conversion parse error", "error", err)
-	} else {
-		fmt.Printf("   Result: %+v (Format: %s)\n", result10.Data, result10.Format)
-		fmt.Printf("   Types: Name=%T, Age=%T, Salary=%T, Active=%T\n",
-			result10.Data.Name, result10.Data.Age, result10.Data.Salary, result10.Data.Active)
-	}
-
-	fmt.Println("\n=== Parse Operation Examples Complete ===")
+	fmt.Fprintln(out, "\n=== Parse Operation Examples Complete ===")
+	return nil
 }

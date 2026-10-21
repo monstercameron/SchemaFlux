@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A-014. applyDefaults copied eight of OpOptions' thirteen fields by name, so

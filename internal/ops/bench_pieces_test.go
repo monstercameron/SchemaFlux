@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Measured allocations, per operation, median over the runs of the baseline

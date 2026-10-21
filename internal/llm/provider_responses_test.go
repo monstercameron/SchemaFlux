@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // responsesServer stands up a fake Responses API endpoint returning body verbatim.

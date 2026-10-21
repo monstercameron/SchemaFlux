@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Target types for the plan tests, one for each way a type can differ in what
@@ -856,6 +856,15 @@ func typePlanWithoutRoom(t *testing.T) {
 	t.Cleanup(func() { typePlans = previous })
 }
 
+// Allocation budgets measure warm plans. Earlier shuffled tests may have filled
+// the process-wide bounded cache, so each budget gets its own empty cache.
+func typePlanFreshCache(t *testing.T) {
+	t.Helper()
+	previous := typePlans
+	typePlans = newTypePlanCache(typePlanLimit)
+	t.Cleanup(func() { typePlans = previous })
+}
+
 // A type the cache has no room for gets a plan of its own for each ask. The check
 // of a Strict answer asks for the plan of every struct value it visits, so for
 // a list of a thousand lines it asked a thousand times, and worked the type's
@@ -1154,6 +1163,7 @@ func TestTypePlanOfATypeThatEmbedsItselfAnswersEveryRead(t *testing.T) {
 
 // Reading what a plan holds costs nothing: it is a lookup and a load.
 func TestTypePlanReadsAllocateNothing(t *testing.T) {
+	typePlanFreshCache(t)
 	for _, target := range benchBuildTypes {
 		plan := typePlanFor(target.typ)
 		// Worked out once, so that what is measured is a read.
@@ -1197,6 +1207,7 @@ func TestTypePlanReadsAllocateNothing(t *testing.T) {
 // drives the real Extract, Transform and Generate and is the test that fails
 // when core.go stops using the plan.
 func TestExtractBuildAllocationsStayWithinBudget(t *testing.T) {
+	typePlanFreshCache(t)
 	budgets := map[string]float64{"flat3": 0, "nested12": 0, "wide60": 0}
 	for _, target := range benchBuildTypes {
 		budget, ok := budgets[target.name]
@@ -1237,6 +1248,7 @@ func typePlanBuildAsExtractDoes(target reflect.Type) (system string, opt types.O
 // is so far below what the decoder of earlier releases needed. The "uncached" runs
 // of BenchmarkExtractThroughAStub show what the same calls cost without the plan.
 func TestCallAllocationsStayWithinBudget(t *testing.T) {
+	typePlanFreshCache(t)
 	typePlanQuietLogs(t)
 	flat, nested := reflect.TypeFor[benchFlat](), reflect.TypeFor[benchNested]()
 	cases := []struct {

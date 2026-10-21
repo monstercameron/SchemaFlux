@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
 )
 
 func clearLoggerEnvironment(t *testing.T) *[]config.EnvProblem {

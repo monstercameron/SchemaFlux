@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // This file closes coverage gaps in explain.go, enrich.go, and core.go

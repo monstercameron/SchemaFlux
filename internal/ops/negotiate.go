@@ -10,8 +10,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // NegotiateOptions configures the Negotiate operation
@@ -239,7 +239,7 @@ func Settle[T any](constraints any, opts ...NegotiateOptions) (NegotiateResult[T
 	// Convert constraints to JSON
 	constraintsJSON, err := promptJSON(constraints)
 	if err != nil {
-		log.Error("Negotiate operation failed: marshal error", "error", err)
+		log.Error("Negotiate operation failed: marshal error", "error", loggedError(err))
 		return NegotiateResult[T]{}, types.Newf(types.KindInvalidRequest, "negotiate", "the constraints could not be written as JSON")
 	}
 
@@ -315,7 +315,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Negotiate operation LLM call failed", "error", err)
+		log.Error("Negotiate operation LLM call failed", "error", loggedError(err))
 		return NegotiateResult[T]{}, fmt.Errorf("negotiation failed: %w", err)
 	}
 
@@ -324,7 +324,7 @@ Rules:
 		// The raw response is deliberately NOT logged. It can carry
 		// caller-derived content, and AGENTS.md forbids putting the caller's
 		// payload in a log line.
-		log.Error("Negotiate operation refused the answer", "error", err)
+		log.Error("Negotiate operation refused the answer", "error", loggedError(err))
 		return NegotiateResult[T]{}, err
 	}
 
@@ -712,7 +712,7 @@ func SettleAdversarial[T any](negotiation AdversarialContext[T], opts ...Adversa
 	// Convert the negotiation to JSON
 	negotiationJSON, err := promptJSON(negotiation)
 	if err != nil {
-		log.Error("Adversarial negotiation failed: marshal error", "error", err)
+		log.Error("Adversarial negotiation failed: marshal error", "error", loggedError(err))
 		return AdversarialResult[T]{}, types.Newf(types.KindInvalidRequest, "negotiate", "the negotiation could not be written as JSON")
 	}
 
@@ -776,14 +776,14 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Adversarial negotiation LLM call failed", "error", err)
+		log.Error("Adversarial negotiation LLM call failed", "error", loggedError(err))
 		return AdversarialResult[T]{}, fmt.Errorf("adversarial negotiation failed: %w", err)
 	}
 
 	result, err := readAdversarialAnswer[T](response)
 	if err != nil {
 		// See Settle: the response body stays out of the log.
-		log.Error("Adversarial negotiation refused the answer", "error", err)
+		log.Error("Adversarial negotiation refused the answer", "error", loggedError(err))
 		return AdversarialResult[T]{}, err
 	}
 

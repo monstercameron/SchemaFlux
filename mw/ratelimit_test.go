@@ -2,420 +2,219 @@ package mw
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
-// newTestBucket builds a tokenBucket wired to a fakeClock, so every test in
-// this file runs without waiting on real time.
-func newTestBucket(n int, interval time.Duration, capacity int, fc *fakeClock) *tokenBucket {
-	b := newTokenBucket(n, interval, capacity, fc.Now)
-	b.sleep = fc.sleep
-	return b
+// tick sends one request through p and reports how long it took on the fake
+// clock of the bubble.
+func tick(t *testing.T, p schemaflux.Provider) (time.Duration, error) {
+	t.Helper()
+	start := time.Now()
+	_, err := p.Complete(t.Context(), ask("q"))
+	return time.Since(start), err
 }
 
-func TestTokenBucketAllowsBurstUpToCapacity(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Second, 3, fc)
+func TestRateLimit(t *testing.T) {
+	t.Parallel()
 
-	for i := 0; i < 3; i++ {
-		if err := b.wait(context.Background(), false); err != nil {
-			t.Fatalf("request %d: unexpected error: %v", i, err)
-		}
-	}
-	if len(fc.waits()) != 0 {
-		t.Fatalf("burst within capacity should not have waited, slept %v", fc.waits())
-	}
-}
-
-func TestTokenBucketBlocksPastCapacity(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Second, 1, fc)
-
-	if err := b.wait(context.Background(), false); err != nil {
-		t.Fatalf("first request: unexpected error: %v", err)
-	}
-	// The bucket held one token; the second request must wait roughly one
-	// interval for the next token to refill.
-	if err := b.wait(context.Background(), false); err != nil {
-		t.Fatalf("second request: unexpected error: %v", err)
-	}
-	waits := fc.waits()
-	if len(waits) != 1 {
-		t.Fatalf("expected exactly one wait, got %v", waits)
-	}
-	if waits[0] < 900*time.Millisecond || waits[0] > 1100*time.Millisecond {
-		t.Fatalf("wait = %v, want ~1s", waits[0])
-	}
-}
-
-func TestTokenBucketRefillsOverTime(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(2, time.Second, 2, fc)
-
-	// Drain the bucket.
-	if err := b.wait(context.Background(), false); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.wait(context.Background(), false); err != nil {
-		t.Fatal(err)
-	}
-	// Advance the clock by a full second without going through wait/sleep
-	// (simulating time passing between requests, not a wait inside one).
-	fc.mu.Lock()
-	fc.now = fc.now.Add(time.Second)
-	fc.mu.Unlock()
-
-	ok, wait := b.tryAcquire()
-	if !ok {
-		t.Fatalf("expected a token to be available after a full refill interval, wait = %v", wait)
-	}
-}
-
-func TestTokenBucketRejectModeFailsWithoutWaiting(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Second, 1, fc)
-
-	if err := b.wait(context.Background(), true); err != nil {
-		t.Fatalf("first request should be admitted: %v", err)
-	}
-	err := b.wait(context.Background(), true)
-	if err == nil {
-		t.Fatal("second request should have been rejected")
-	}
-	if len(fc.waits()) != 0 {
-		t.Fatalf("reject mode must not sleep, slept %v", fc.waits())
-	}
-
-	var opErr *types.OperationError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("error is not a *types.OperationError: %v", err)
-	}
-	if opErr.Kind != types.KindRateLimited {
-		t.Fatalf("Kind = %v, want KindRateLimited", opErr.Kind)
-	}
-	if opErr.RetryAfter <= 0 {
-		t.Fatalf("RetryAfter = %v, want > 0", opErr.RetryAfter)
-	}
-}
-
-func TestTokenBucketRejectDoesNotConsumeAToken(t *testing.T) {
-	// A refused request must not have spent a slot: refuse, then wait out
-	// the refill, then confirm a full-capacity burst is still available.
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Second, 1, fc)
-
-	if err := b.wait(context.Background(), false); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.wait(context.Background(), true); err == nil {
-		t.Fatal("expected rejection while the bucket was empty")
-	}
-
-	fc.mu.Lock()
-	fc.now = fc.now.Add(time.Second)
-	fc.mu.Unlock()
-
-	if ok, _ := b.tryAcquire(); !ok {
-		t.Fatal("expected exactly one token to have refilled, not been eaten by the refusal")
-	}
-}
-
-func TestTokenBucketHonoursContextDeadline(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Hour, 1, fc) // refill so slow the wait will not finish
-
-	if err := b.wait(context.Background(), false); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := b.wait(ctx, false)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("wait() = %v, want context.Canceled", err)
-	}
-}
-
-func TestTokenBucketAlreadyCanceledContextFailsFast(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Second, 5, fc)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if err := b.wait(ctx, false); !errors.Is(err, context.Canceled) {
-		t.Fatalf("wait() = %v, want context.Canceled", err)
-	}
-	if len(fc.waits()) != 0 {
-		t.Fatal("an already-canceled context must not attempt to sleep")
-	}
-}
-
-func TestRateLimitZeroOrNegativeInputsDefaultSafely(t *testing.T) {
-	// n<=0 and interval<=0 must not panic (divide by zero) or produce a
-	// limiter that admits nothing.
-	mwFn := RateLimit(0, 0)
-	fake := &fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	wrapped := mwFn(fake)
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("unexpected error with defaulted RateLimit(0, 0): %v", err)
-	}
-}
-
-func TestRateLimitWithBurstAllowsLargerInitialAllowance(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTokenBucket(1, time.Second, 5, fc.Now) // rate 1/s, burst capacity 5
-	b.sleep = fc.sleep
-
-	for i := 0; i < 5; i++ {
-		if err := b.wait(context.Background(), true); err != nil {
-			t.Fatalf("request %d within burst capacity was rejected: %v", i, err)
-		}
-	}
-	if err := b.wait(context.Background(), true); err == nil {
-		t.Fatal("request beyond burst capacity should have been rejected")
-	}
-}
-
-func TestRateLimitMiddlewareDelegatesToNextOnSuccess(t *testing.T) {
-	fake := &fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "hello"}}}}
-	wrapped := RateLimit(10, time.Second)(fake)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{UserPrompt: "hi"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Content != "hello" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "hello")
-	}
-	if fake.calls != 1 {
-		t.Fatalf("calls = %d, want 1", fake.calls)
-	}
-}
-
-func TestRateLimitRejectErrorFlowsThroughClassify(t *testing.T) {
-	// A caller building recovery logic on llm.Classify must see the same
-	// kind for a client-side refusal as for a provider's own 429 -- that is
-	// the entire reason Reject() builds a *types.OperationError instead of
-	// a bespoke error type.
-	fc := newFakeClock(time.Unix(0, 0))
-	b := newTestBucket(1, time.Hour, 1, fc)
-	if err := b.wait(context.Background(), true); err != nil {
-		t.Fatal(err)
-	}
-	err := b.wait(context.Background(), true)
-	if err == nil {
-		t.Fatal("expected rejection")
-	}
-	got := llm.Classify(err)
-	if got != types.KindRateLimited {
-		t.Fatalf("llm.Classify(reject error) = %v, want KindRateLimited", got)
-	}
-	if !(&types.OperationError{Kind: got}).Retryable() {
-		t.Fatal("a client-side rate limit refusal should be classified retryable, same as a provider 429")
-	}
-}
-
-func TestWithBurstSetsACapacityDistinctFromTheRefillRate(t *testing.T) {
-	fc := newFakeClock(time.Unix(0, 0))
-	bucket := newTestBucket(1, time.Second, 5, fc) // burst overridden via WithBurst below is exercised through RateLimit
-
-	// newTestBucket bypasses WithBurst; exercise the option itself through
-	// the public constructor and confirm the resulting bucket allows a burst
-	// of 5 despite a refill rate of 1/sec.
-	_ = bucket
-	fake := &fakeProvider{name: "p", responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	limiter := RateLimit(1, time.Second, WithBurst(5))(fake)
-
-	for i := 0; i < 5; i++ {
-		if _, err := limiter.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-			t.Fatalf("call %d: burst of 5 should be immediate, got %v", i+1, err)
-		}
-	}
-}
-
-func TestWithBurstIgnoresANonPositiveValue(t *testing.T) {
-	fake := &fakeProvider{name: "p", responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	// A non-positive burst must not zero out the bucket's capacity -- it
-	// falls back to n, same as never having called WithBurst at all.
-	limiter := RateLimit(3, time.Second, WithBurst(0))(fake)
-	for i := 0; i < 3; i++ {
-		if _, err := limiter.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-			t.Fatalf("call %d: WithBurst(0) should not shrink capacity below n=3, got %v", i+1, err)
-		}
-	}
-}
-
-// Reject, wired through the public RateLimit constructor rather than
-// exercised only via the internal tokenBucket, fails a call immediately
-// once the burst is spent instead of blocking for a slot.
-func TestRejectOptionFailsImmediatelyThroughTheConstructor(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		fake := &fakeProvider{name: "p", responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-		limiter := RateLimit(1, time.Hour, Reject())(fake)
-
-		if _, err := limiter.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-			t.Fatalf("first call should consume the single burst slot without error: %v", err)
-		}
-
-		start := time.Now()
-		_, err := limiter.Complete(context.Background(), llm.CompletionRequest{})
-		if err == nil {
-			t.Fatal("second call within an hour-long interval should have been rejected, not served")
-		}
-		if elapsed := time.Since(start); elapsed != 0 {
-			t.Errorf("Reject took %v on the bubble's clock; it must fail immediately rather than waiting", elapsed)
-		}
-		if types.KindOf(err) != types.KindRateLimited {
-			t.Errorf("Kind = %v, want KindRateLimited", types.KindOf(err))
-		}
-	})
-}
-
-// End-to-end through the real constructor and the real sleep hook: a second
-// call issued faster than the refill rate blocks for the refill interval and
-// then proceeds, rather than being rejected or hanging. The wait is on the
-// timers of a synctest bubble, so it is exactly the interval.
-func TestRateLimitWithRealClockBlocksThenProceeds(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		fake := &fakeProvider{name: "p", responses: []fakeResponse{
-			{resp: llm.CompletionResponse{Content: "first"}},
-			{resp: llm.CompletionResponse{Content: "second"}},
-		}}
-		limiter := RateLimit(1, 30*time.Millisecond)(fake)
-
-		ctx := context.Background()
-		if _, err := limiter.Complete(ctx, llm.CompletionRequest{}); err != nil {
-			t.Fatalf("first call: %v", err)
-		}
-
-		start := time.Now()
-		resp, err := limiter.Complete(ctx, llm.CompletionRequest{})
-		if err != nil {
-			t.Fatalf("second call: %v", err)
-		}
-		if resp.Content != "second" {
-			t.Errorf("Content = %q, want %q", resp.Content, "second")
-		}
-		// One token every 30 ms and the first spent: the second call waits the
-		// 30 ms for the next one, on the bubble's clock.
-		if elapsed := time.Since(start); elapsed != 30*time.Millisecond {
-			t.Errorf("the second call waited %v, want 30ms for the bucket to refill", elapsed)
-		}
-	})
-}
-
-// An interval too long for its refill to be counted in a Duration used to give a
-// negative wait: a rejected caller was told to retry in the past, and a waiting
-// one did not sleep.
-func TestTokenBucketWaitIsBoundedForAHugeInterval(t *testing.T) {
-	cases := []struct {
-		name     string
-		n        int
-		interval time.Duration
-		want     time.Duration
-	}{
-		{"the longest interval a Duration holds", 1, time.Duration(1<<63 - 1), llm.MaxRetryAfter},
-		{"a day", 1, 24 * time.Hour, llm.MaxRetryAfter},
-		{"an hour", 1, time.Hour, llm.MaxRetryAfter},
-		{"a refill under the bound is the refill", 1, time.Minute, time.Minute},
-		{"a second", 1, time.Second, time.Second},
-		{"two a minute", 2, time.Minute, 30 * time.Second},
-		{"a hundred a second", 100, time.Second, 10 * time.Millisecond},
-		{"exactly the bound", 1, llm.MaxRetryAfter, llm.MaxRetryAfter},
-		{"a billion a second", 1_000_000_000, time.Second, time.Nanosecond},
-		{"a huge count over a huge interval", 1 << 40, time.Duration(1<<63 - 1), 8388608 * time.Nanosecond},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fc := newFakeClock(time.Unix(0, 0))
-			b := newTestBucket(tc.n, tc.interval, 1, fc)
-			if ok, _ := b.tryAcquire(); !ok {
-				t.Fatal("the first token is not there")
+	bubble(t, "the first n requests go at once", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(3, time.Second)(&p)
+		for i := range 3 {
+			if waited, err := tick(t, limited); err != nil || waited != 0 {
+				t.Fatalf("request %d: waited %v, err %v", i+1, waited, err)
 			}
-			ok, wait := b.tryAcquire()
-			if ok {
-				t.Fatal("a second token was there")
-			}
-			if wait <= 0 || wait > llm.MaxRetryAfter {
-				t.Errorf("wait = %v, want a positive wait of at most %v", wait, llm.MaxRetryAfter)
-			}
-			if wait != tc.want {
-				t.Errorf("wait = %v, want %v", wait, tc.want)
-			}
-		})
-	}
-
-	t.Run("a rejected caller is told a wait that is ahead", func(t *testing.T) {
-		fc := newFakeClock(time.Unix(0, 0))
-		b := newTestBucket(1, time.Duration(1<<63-1), 1, fc)
-		b.wait(context.Background(), true)
-		err := b.wait(context.Background(), true)
-		var refusal *types.OperationError
-		if !errors.As(err, &refusal) || refusal.RetryAfter <= 0 {
-			t.Errorf("err = %v, want a refusal that states a wait that is ahead", err)
+		}
+		if p.Calls() != 3 {
+			t.Errorf("the provider was asked %d times, want 3", p.Calls())
 		}
 	})
 
-	t.Run("a waiting caller sleeps and does not spin", func(t *testing.T) {
-		fc := newFakeClock(time.Unix(0, 0))
-		b := newTestBucket(1, time.Duration(1<<63-1), 1, fc)
-		b.wait(context.Background(), false)
-		ctx, cancel := context.WithCancel(context.Background())
-		sleeps := 0
-		b.sleep = func(ctx context.Context, d time.Duration) error {
-			if d <= 0 {
-				t.Errorf("asked to sleep %v", d)
-			}
-			if sleeps++; sleeps == 3 {
-				cancel()
-			}
-			return fc.sleep(ctx, d)
+	bubble(t, "a request over the limit waits for the slot that is due", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second)(&p)
+		if waited, _ := tick(t, limited); waited != 0 {
+			t.Fatalf("the first request waited %v", waited)
 		}
-		if err := b.wait(ctx, false); !errors.Is(err, context.Canceled) {
-			t.Errorf("err = %v, want the cancellation that ended the wait", err)
-		}
-		if sleeps != 3 {
-			t.Errorf("slept %d times before the cancellation, want 3", sleeps)
+		waited, err := tick(t, limited)
+		if err != nil || waited != time.Second {
+			t.Errorf("the second request waited %v, err %v, want 1s", waited, err)
 		}
 	})
-}
 
-// A wait longer than llm.MaxRetryAfter is served in sleeps of at most that, and
-// the caller gets its token when it is due and not before. It must not spin when
-// a sleep ends a nanosecond short of the refill.
-func TestRateLimitWaitsOutAnIntervalLongerThanTheBoundInBoundedSleeps(t *testing.T) {
-	for _, interval := range []time.Duration{time.Hour, 7*time.Minute + 13*time.Second + 7*time.Nanosecond, 3 * llm.MaxRetryAfter, llm.MaxRetryAfter + time.Nanosecond} {
-		t.Run(interval.String(), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				var calls int
-				provider := completeFunc(func(context.Context, llm.CompletionRequest) (llm.CompletionResponse, error) {
-					calls++
-					return llm.CompletionResponse{Content: "ok"}, nil
-				})
-				limited := RateLimit(1, interval)(provider)
-				if _, err := limited.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-					t.Fatal(err)
-				}
-				start := time.Now()
-				if _, err := limited.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-					t.Fatal(err)
-				}
-				if waited := time.Since(start); waited < interval || waited > interval+time.Microsecond {
-					t.Errorf("the second request waited %v, want the interval %v", waited, interval)
-				}
-				if calls != 2 {
-					t.Errorf("%d calls, want 2", calls)
-				}
-			})
-		})
-	}
+	bubble(t, "the rate is n per interval: two a second is a slot every half second", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(2, time.Second)(&p)
+		tick(t, limited)
+		tick(t, limited)
+		if waited, _ := tick(t, limited); waited != 500*time.Millisecond {
+			t.Errorf("the third request waited %v, want 500ms", waited)
+		}
+	})
+
+	bubble(t, "a burst larger than n allows a big first batch and refills at the rate", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second, RateLimitOptions{Burst: 3})(&p)
+		for i := range 3 {
+			if waited, _ := tick(t, limited); waited != 0 {
+				t.Fatalf("request %d waited %v", i+1, waited)
+			}
+		}
+		if waited, _ := tick(t, limited); waited != time.Second {
+			t.Errorf("the fourth request waited %v, want 1s", waited)
+		}
+	})
+
+	bubble(t, "an idle limiter refills to its burst and no further", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second, RateLimitOptions{Burst: 2})(&p)
+		tick(t, limited)
+		tick(t, limited)
+		time.Sleep(time.Hour)
+		for i := range 2 {
+			if waited, _ := tick(t, limited); waited != 0 {
+				t.Fatalf("request %d after the idle hour waited %v", i+1, waited)
+			}
+		}
+		if waited, _ := tick(t, limited); waited != time.Second {
+			t.Errorf("the third request waited %v, want 1s: the bucket holds two", waited)
+		}
+	})
+
+	bubble(t, "Reject fails a request over the limit at once with the wait that is due", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second, RateLimitOptions{Reject: true})(&p)
+		tick(t, limited)
+		waited, err := tick(t, limited)
+		e := wantKind(t, err, schemaflux.ErrRateLimited)
+		if waited != 0 {
+			t.Errorf("a rejected request waited %v", waited)
+		}
+		if e.RetryAfter != time.Second {
+			t.Errorf("RetryAfter = %v, want 1s", e.RetryAfter)
+		}
+		if p.Calls() != 1 {
+			t.Errorf("the provider was asked %d times, want 1", p.Calls())
+		}
+	})
+
+	bubble(t, "a refused request takes no slot, so the wait that was stated is enough", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second, RateLimitOptions{Reject: true})(&p)
+		tick(t, limited)
+		_, err := tick(t, limited)
+		e := wantKind(t, err, schemaflux.ErrRateLimited)
+		time.Sleep(e.RetryAfter)
+		if _, err := tick(t, limited); err != nil {
+			t.Errorf("the request after the stated wait failed: %v", err)
+		}
+	})
+
+	bubble(t, "Retry reads the refusal's RetryAfter as the wait, as it reads a provider's 429", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		chain := Chain(&p, Retry(), RateLimit(1, 2*time.Second, RateLimitOptions{Reject: true}))
+		tick(t, chain)
+		waited, err := tick(t, chain)
+		if err != nil || waited != 2*time.Second {
+			t.Errorf("the second request waited %v, err %v, want the refusal's 2s", waited, err)
+		}
+		if p.Calls() != 2 {
+			t.Errorf("the provider was asked %d times, want 2", p.Calls())
+		}
+	})
+
+	bubble(t, "a context that ends during the wait ends the request with the context's error", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Minute)(&p)
+		tick(t, limited)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		_, err := limited.Complete(ctx, ask("q"))
+		wantKind(t, err, schemaflux.ErrTimeout)
+		if p.Calls() != 1 {
+			t.Errorf("the provider was asked %d times, want 1", p.Calls())
+		}
+	})
+
+	bubble(t, "an interval of zero is a second", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		chain := RateLimit(1, 0)(&p)
+		tick(t, chain)
+		if waited, _ := tick(t, chain); waited != time.Second {
+			t.Errorf("the second request waited %v, want 1s", waited)
+		}
+	})
+
+	t.Run("an n below one and an interval below zero fail every request as a configuration error", func(t *testing.T) {
+		t.Parallel()
+		for name, limited := range map[string]Middleware{
+			"n of zero":          RateLimit(0, time.Second),
+			"a negative n":       RateLimit(-5, time.Second),
+			"a negative n alone": RateLimit(-1, 0),
+			"a negative per":     RateLimit(1, -time.Hour),
+			"the smallest per":   RateLimit(1, time.Duration(-1<<63)),
+		} {
+			var p schemafluxtest.Provider
+			_, err := limited(&p).Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrConfiguration)
+			if e.Op != "mw.ratelimit" || p.Calls() != 0 {
+				t.Errorf("%s: Op %q, %d requests", name, e.Op, p.Calls())
+			}
+		}
+	})
+
+	t.Run("a huge interval states a wait the library bounds and never one in the past", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Duration(1<<63-1), RateLimitOptions{Reject: true})(&p)
+		limited.Complete(t.Context(), ask("q"))
+		_, err := limited.Complete(t.Context(), ask("q"))
+		e := wantKind(t, err, schemaflux.ErrRateLimited)
+		if e.RetryAfter <= 0 || e.RetryAfter > 2*time.Minute {
+			t.Errorf("RetryAfter = %v, want a wait ahead of at most two minutes", e.RetryAfter)
+		}
+	})
+
+	bubble(t, "one middleware applied to two providers limits them together", func(t *testing.T) {
+		var a, b schemafluxtest.Provider
+		limit := RateLimit(1, time.Second)
+		tick(t, limit(&a))
+		if waited, _ := tick(t, limit(&b)); waited != time.Second {
+			t.Errorf("the second provider's request waited %v, want 1s", waited)
+		}
+	})
+
+	bubble(t, "a negative burst is a configuration error and nothing is sent", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		_, err := RateLimit(1, time.Second, RateLimitOptions{Burst: -1})(&p).Complete(t.Context(), ask("q"))
+		e := wantKind(t, err, schemaflux.ErrConfiguration)
+		if e.Op != "mw.ratelimit" || p.Calls() != 0 {
+			t.Errorf("Op %q, %d requests", e.Op, p.Calls())
+		}
+	})
+
+	bubble(t, "option values merge left to right with a later non-zero field winning", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second, RateLimitOptions{Burst: 5}, RateLimitOptions{Reject: true}, RateLimitOptions{Burst: 2})(&p)
+		tick(t, limited)
+		tick(t, limited)
+		_, err := tick(t, limited)
+		wantKind(t, err, schemaflux.ErrRateLimited)
+		if p.Calls() != 2 {
+			t.Errorf("the provider was asked %d times, want 2: a burst of 2 and Reject", p.Calls())
+		}
+	})
+
+	bubble(t, "a refusal carries no text of the request", func(t *testing.T) {
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Second, RateLimitOptions{Reject: true})(&p)
+		tick(t, limited)
+		_, err := limited.Complete(t.Context(), ask("the secret text "+testEmail))
+		wantKind(t, err, schemaflux.ErrRateLimited)
+		mustNotContain(t, "the error", err.Error(), "secret", testEmail)
+	})
 }

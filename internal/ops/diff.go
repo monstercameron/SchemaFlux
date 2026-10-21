@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // DiffResult contains the results of a difference analysis
@@ -126,7 +126,7 @@ func diffImpl[T any](oldData, newData T, opts DiffOptions) (DiffResult, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Diff operation validation failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Diff operation validation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return result, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -140,7 +140,7 @@ func diffImpl[T any](oldData, newData T, opts DiffOptions) (DiffResult, error) {
 	// Perform structural comparison
 	changes, err := compareData(oldData, newData, opts)
 	if err != nil {
-		log.Error("Diff operation comparison failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Diff operation comparison failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return result, fmt.Errorf("comparison failed: %w", err)
 	}
 
@@ -163,7 +163,7 @@ func diffImpl[T any](oldData, newData T, opts DiffOptions) (DiffResult, error) {
 			// computed; the summary is a garnish. Report its absence rather
 			// than failing the operation or inventing prose for it.
 			result.SummaryError = err
-			log.Warn("Diff operation summary generation failed", "requestID", opts.RequestID, "error", err)
+			log.Warn("Diff operation summary generation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		} else {
 			result.Summary = summary
 		}

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // modelCall is what a stubbed model was asked: the two prompts and the options
@@ -1259,6 +1259,7 @@ func TestAnswerShapeOfTypes(t *testing.T) {
 }
 
 func TestAnswerShapeIsReadWithoutAllocating(t *testing.T) {
+	typePlanFreshCache(t)
 	target := reflect.TypeFor[*answerTestAnswer]()
 	typePlanFor(target).answerShape()
 	if allocations := testing.AllocsPerRun(100, func() { typePlanFor(target).answerShape() }); allocations != 0 {
@@ -1267,6 +1268,7 @@ func TestAnswerShapeIsReadWithoutAllocating(t *testing.T) {
 }
 
 func TestDecodeAnswerOnTheFirstUseOfATypeFromManyGoroutines(t *testing.T) {
+	typePlanFreshCache(t)
 	type entry struct {
 		Tag string `json:"tag"`
 	}

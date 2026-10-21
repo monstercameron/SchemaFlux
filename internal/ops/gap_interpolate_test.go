@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The early returns of Interpolate, its marshal-error path, a happy path and

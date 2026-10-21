@@ -1,7 +1,7 @@
 package ops
 
 import (
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The text operations shipped as twins: Summarize returning a bare string and

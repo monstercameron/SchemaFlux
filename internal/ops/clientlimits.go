@@ -8,9 +8,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LX-126. Two things a client can be given, and that its calls were never held

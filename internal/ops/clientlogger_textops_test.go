@@ -3,15 +3,43 @@ package ops
 import (
 	"context"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
+
+func TestPlanningAndStreamingPriceWarningsUseTheClientLogger(t *testing.T) {
+	// Logger state and the warning-once registry are process-wide.
+	previous := logger.GetLogger()
+	process := logger.ConfigureLogger(logger.LoggerConfig{
+		Level: logger.DebugLevel, Format: "text", DisableStderr: true, Capture: true, BufferSize: 100,
+	})
+	t.Cleanup(func() { logger.SetLogger(previous) })
+	client := clientCaptureLogger()
+	ctx := WithExecConfig(context.Background(), &ExecConfig{Logger: client})
+	unique := strconv.FormatInt(time.Now().UnixNano(), 10)
+
+	planChunks(ctx, nil, types.PlanRequest{}, types.CapabilitySnapshot{Model: "client-warning-plan-chunks-" + unique}, 0)
+	costFromTokens(ctx, "client-warning-plan-cost-"+unique, 1000, 1000)
+	streamCallRecord(ctx, requesttracking.Metadata{}, loggingProbeProvider{}, "client-warning-stream-"+unique, "text",
+		types.OpOptions{}, llm.CompletionResponse{Usage: types.TokenUsage{PromptTokens: 10}}, time.Now(), "complete")
+
+	const warning = "No pricing information available"
+	if got := strings.Count(strings.Join(loggedMessagesOf(client), "\n"), warning); got != 3 {
+		t.Errorf("client received %d unpriced warnings, want three", got)
+	}
+	if got := strings.Join(loggedMessagesOf(process), "\n"); strings.Contains(got, warning) {
+		t.Errorf("the process logger received a client call's pricing warning: %s", got)
+	}
+}
 
 // loggingProbeProvider answers every request with text that is not JSON, so an
 // operation that reads JSON refuses it and one that reads text takes it. It is

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CF-006. Approval is one use of a more general terminal outcome: automated

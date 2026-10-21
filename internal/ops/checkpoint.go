@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CF-005. Resuming a multi-step run from failure is deterministic machinery

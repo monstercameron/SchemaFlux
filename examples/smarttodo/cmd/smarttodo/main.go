@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -10,11 +11,11 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/localization"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/tui"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/localization"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/tui"
 )
 
 func main() {
@@ -28,8 +29,7 @@ func main() {
 	}
 	if apiKey == "" {
 		needsAPIKey = true
-		schemaflux.Init("")
-	} else if err := schemaflux.InitWithEnv(); err != nil {
+	} else if err := appclient.UseEnvironment(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		fmt.Println("Please ensure your .env file contains:")
 		fmt.Println("  OPENAI_API_KEY=your-api-key")
@@ -50,7 +50,7 @@ func main() {
 	if dbPath == "" {
 		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {
-			schemaflux.GetLogger().Error("Failed to get home directory", "error", homeErr)
+			slog.Error("Failed to get home directory", "error", homeErr)
 			os.Exit(1)
 		}
 		dbPath = filepath.Join(home, ".smarttodo.db")
@@ -58,7 +58,7 @@ func main() {
 
 	db, err := database.NewDatabase(dbPath)
 	if err != nil {
-		schemaflux.GetLogger().Error("Failed to initialize database", "error", err)
+		slog.Error("Failed to initialize database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
@@ -77,7 +77,7 @@ func main() {
 
 	go func() {
 		sig := <-sigChan
-		schemaflux.GetLogger().Info("Received signal, initiating graceful shutdown", "signal", sig)
+		slog.Info("Received signal, initiating graceful shutdown", "signal", sig)
 		p.Send(models.StartClosingMsg{})
 		go func() {
 			time.Sleep(3 * time.Second)
@@ -86,14 +86,14 @@ func main() {
 	}()
 
 	if _, err := p.Run(); err != nil {
-		schemaflux.GetLogger().Error("Error running program", "error", err)
+		slog.Error("Error running program", "error", err)
 		if db != nil {
 			db.Close()
 		}
 		os.Exit(1)
 	}
 
-	schemaflux.GetLogger().Info("SchemaFlux CommandDeck closed successfully")
+	slog.Info("SchemaFlux CommandDeck closed successfully")
 }
 
 func loadNearestEnv() {

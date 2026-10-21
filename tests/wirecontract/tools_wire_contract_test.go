@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
 )
 
 // The wire shapes of a tool loop: a tool declared, the model's call written back

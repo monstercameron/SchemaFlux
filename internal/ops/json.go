@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ParseJSON parses a JSON string into a target struct, handling common LLM output issues

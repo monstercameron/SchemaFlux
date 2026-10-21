@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Redact and RedactWithResult refuse options they cannot use, and a nil input,
@@ -55,7 +55,7 @@ func TestRedactRefusesBeforeTheWorkWithAKind(t *testing.T) {
 		{
 			name: "a strategy it does not know",
 			run:  redact(func(o *RedactOptions) { o.Strategy = "smudge" }),
-			text: "invalid options: redact: configuration: invalid strategy: smudge",
+			text: "invalid options: redact: configuration: strategy must be nil, mask, remove, jumble, or scramble",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
@@ -97,7 +97,7 @@ func TestRedactRefusesBeforeTheWorkWithAKind(t *testing.T) {
 		{
 			name: "the result form refuses a strategy it does not know",
 			run:  redactWithResult(func(o *RedactOptions) { o.Strategy = "smudge" }),
-			text: "invalid options: redact: configuration: invalid strategy: smudge",
+			text: "invalid options: redact: configuration: strategy must be nil, mask, remove, jumble, or scramble",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

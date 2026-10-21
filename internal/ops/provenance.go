@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"runtime"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // internal/types/provenance.go defines the shape of a result's lineage; this is

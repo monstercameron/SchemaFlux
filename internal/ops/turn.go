@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Turn is what one request of a conversation says: the instructions the model is

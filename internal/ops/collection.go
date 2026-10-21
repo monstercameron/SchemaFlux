@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // OP-101: stable, invocation-local IDs instead of an echoed object or a bare

@@ -3,7 +3,8 @@ package desk
 import (
 	"context"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	flow "github.com/monstercameron/schemaflux/v2/flow"
 )
 
 // HandleAhead is HandleFast with the two waits taken out of it that the
@@ -106,7 +107,7 @@ func (d *Desk) finishAhead(message Message, look Look, details Details, matched 
 		passes := func(ctx context.Context) (bool, error) {
 			audit, err := d.audit(draft)(ctx)
 			found = audit
-			return audit.Summary.PassesAudit, err
+			return audit.Verdict == schemaflux.VerdictPass, err
 		}
 		again := func(ctx context.Context) (string, error) {
 			final, err := d.redraft(draft, found)(ctx)
@@ -115,7 +116,7 @@ func (d *Desk) finishAhead(message Message, look Look, details Details, matched 
 			}
 			return d.send(final, look.Screen)(ctx)
 		}
-		sent, err := schemaflux.BranchAhead(ctx, passes, d.send(draft, look.Screen), again)
+		sent, err := flow.BranchAhead(ctx, passes, d.send(draft, look.Screen), again)
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -133,7 +134,7 @@ func (d *Desk) finishAhead(message Message, look Look, details Details, matched 
 			MessageID: message.ID, Status: status,
 			Language: look.Language, Team: look.Team, Intent: look.Intent, Urgency: look.Urgency,
 			TicketID: ticket.ID, New: ticket.New,
-			Details: details, Reply: sent, Redrafted: !found.Summary.PassesAudit,
+			Details: details, Reply: sent, Redrafted: found.Verdict != schemaflux.VerdictPass,
 			Handoff: handoff, NextAction: look.Next, WillWriteAgain: look.Again,
 		}, nil
 	}

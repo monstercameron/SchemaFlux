@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // SynthesizeOptions configures the Synthesize operation
@@ -68,11 +68,11 @@ func (s SynthesizeOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"merge": true, "compare": true, "integrate": true, "reconcile": true}
 	if s.Strategy != "" && !validStrategies[s.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", s.Strategy)
+		return fmt.Errorf("synthesis strategy must be merge, compare, integrate, or reconcile")
 	}
 	validResolutions := map[string]bool{"latest-wins": true, "source-priority": true, "majority": true, "llm-decide": true}
 	if s.ConflictResolution != "" && !validResolutions[s.ConflictResolution] {
-		return fmt.Errorf("invalid conflict resolution: %s", s.ConflictResolution)
+		return fmt.Errorf("conflict resolution must be latest-wins, source-priority, majority, or llm-decide")
 	}
 	return nil
 }
@@ -250,7 +250,7 @@ func Synthesize[T any](sources []any, opts SynthesizeOptions) (SynthesizeResult[
 	for i, source := range sources {
 		sourceJSON, err := json.Marshal(source)
 		if err != nil {
-			log.Error("Synthesize operation failed: marshal error", "index", i, "error", err)
+			log.Error("Synthesize operation failed: marshal error", "index", i, "error", loggedError(err))
 			return SynthesizeResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal source %d: %w", i, err))
 		}
 		sourcesJSON[i] = fmt.Sprintf("[Source %d]\n%s", i, string(sourceJSON))
@@ -363,7 +363,7 @@ Rules for "synthesized":
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Synthesize operation LLM call failed", "error", err)
+		log.Error("Synthesize operation LLM call failed", "error", loggedError(err))
 		return SynthesizeResult[T]{}, fmt.Errorf("synthesis failed: %w", err)
 	}
 
@@ -380,7 +380,7 @@ Rules for "synthesized":
 	}
 
 	if err := decodeAnswer("synthesize", response, &parsed); err != nil {
-		log.Error("Synthesize operation failed: parse error", "error", err)
+		log.Error("Synthesize operation failed: parse error", "error", loggedError(err))
 		return SynthesizeResult[T]{}, fmt.Errorf("failed to parse synthesis result: %w", err)
 	}
 
@@ -394,12 +394,12 @@ Rules for "synthesized":
 
 	synthesized, err := decodeSynthesized[T](parsed.Synthesized)
 	if err != nil {
-		log.Error("Synthesize operation failed: synthesized payload", "error", err)
+		log.Error("Synthesize operation failed: synthesized payload", "error", loggedError(err))
 		return SynthesizeResult[T]{}, err
 	}
 
 	if err := checkSynthesisReferences(parsed.Facts, parsed.Insights, parsed.Conflicts, parsed.SourceCoverage, len(sources), opts.CiteSources); err != nil {
-		log.Error("Synthesize operation failed: the answer does not fit the sources", "error", err)
+		log.Error("Synthesize operation failed: the answer does not fit the sources", "error", loggedError(err))
 		return SynthesizeResult[T]{}, err
 	}
 

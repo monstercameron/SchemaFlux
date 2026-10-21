@@ -10,9 +10,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // streamEnded is what the end function of RecordedStream was told.

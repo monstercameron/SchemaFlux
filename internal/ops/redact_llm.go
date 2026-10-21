@@ -12,7 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // RedactSpan is one redacted range of the text.
@@ -252,7 +252,7 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		logger.Error("RedactLLM validation failed", "requestID", opts.RequestID, "error", err)
+		logger.Error("RedactLLM validation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return RedactLLMResult{}, &types.OperationError{
 			Kind: types.KindConfiguration, Op: "redact_llm", Message: "invalid options: " + err.Error(), Cause: err,
 		}
@@ -280,7 +280,7 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 	opOpts.SchemaName = "redaction_spans"
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		logger.Error("RedactLLM LLM call failed", "requestID", opts.RequestID, "error", err)
+		logger.Error("RedactLLM LLM call failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return RedactLLMResult{}, fmt.Errorf("LLM call failed: %w", err)
 	}
 
@@ -288,7 +288,7 @@ func RedactLLM(ctx context.Context, text string, opts RedactLLMOptions) (RedactL
 	detected := detectedRedactSpans(text, opts.Categories)
 	spans, leftAlone, err := locateRedactSpansWith(response, text, detected)
 	if err != nil {
-		logger.Error("RedactLLM parse failed", "requestID", opts.RequestID, "error", err)
+		logger.Error("RedactLLM parse failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return RedactLLMResult{}, err
 	}
 

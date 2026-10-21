@@ -3,7 +3,7 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // AttachedFloor returns the lowest contract level a policy attached to ctx with

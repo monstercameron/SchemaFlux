@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // setenvAndReload sets a variable for one test and makes the library read the

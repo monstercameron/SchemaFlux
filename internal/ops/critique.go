@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CritiqueOptions configures the Critique operation
@@ -76,7 +76,7 @@ func (c CritiqueOptions) Validate() error {
 	}
 	validStyles := map[string]bool{"constructive": true, "harsh": true, "balanced": true}
 	if c.Style != "" && !validStyles[c.Style] {
-		return fmt.Errorf("invalid style: %s", c.Style)
+		return fmt.Errorf("critique style must be constructive, harsh, or balanced")
 	}
 	return nil
 }
@@ -315,7 +315,7 @@ func critiqueCore[T any](input T, opts CritiqueOptions) (CritiqueResult, error) 
 	// Convert input to string
 	inputStr, err := NormalizeInput(input)
 	if err != nil {
-		log.Error("Critique operation failed: input normalization error", "error", err)
+		log.Error("Critique operation failed: input normalization error", "error", loggedError(err))
 		return CritiqueResult{}, fmt.Errorf("failed to normalize input: %w", err)
 	}
 
@@ -418,7 +418,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Critique operation LLM call failed", "error", err)
+		log.Error("Critique operation LLM call failed", "error", loggedError(err))
 		return CritiqueResult{}, fmt.Errorf("critique failed: %w", err)
 	}
 
@@ -437,7 +437,7 @@ Return a JSON object with:
 		TopPriorities     []string           `json:"top_priorities"`
 	}
 	if err := decodeAnswer("critique", response, &answer); err != nil {
-		log.Error("Critique operation failed: parse error", "error", err)
+		log.Error("Critique operation failed: parse error", "error", loggedError(err))
 		return CritiqueResult{}, err
 	}
 	// An empty list says nothing was found. A null is a list the decoder allows
@@ -492,7 +492,7 @@ Return a JSON object with:
 	// a UI, a report, a budget -- and silently getting more is the failure that
 	// cap was meant to prevent.
 	if err := AtMost(result.Issues, opts.MaxIssues); err != nil {
-		log.Error("Critique returned more issues than requested", "error", err)
+		log.Error("Critique returned more issues than requested", "error", loggedError(err))
 		return CritiqueResult{}, fmt.Errorf("critique: %w", err)
 	}
 

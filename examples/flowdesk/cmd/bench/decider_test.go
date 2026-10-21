@@ -12,9 +12,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
+	"github.com/monstercameron/schemaflux/v2/mw"
 )
 
 // The -decider and -floor flags. Nothing here reaches a model or the network:
@@ -165,7 +165,7 @@ func TestTheOfflineReportWithTheDecisionsOnTheDecider(t *testing.T) {
 func TestLiveModeWithADeciderAndNoKeyForItDoesNothing(t *testing.T) {
 	for name, variable := range deciderKeys {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("OPENAI_API_KEY", "sk-test-this-is-not-a-key")
+			t.Setenv("OPENAI_API_KEY", "sk-test-this-is-not-a-key") // secret-scan: allow
 			t.Setenv(variable, "")
 			out := filepath.Join(t.TempDir(), "runs.jsonl")
 			var stdout, stderr bytes.Buffer
@@ -189,7 +189,7 @@ func TestLiveModeWithADeciderAndNoKeyForItDoesNothing(t *testing.T) {
 // model would be: the header, the rows, the records and the summary are made
 // the way a live run with -decider makes them.
 func TestTheLiveReportWithADecider(t *testing.T) {
-	const key = "sk-test-this-is-not-a-key"
+	const key = "sk-test-this-is-not-a-key" // secret-scan: allow
 	cases := sim.Cases()[:3]
 	pair := func(floor float64) schemaflux.Provider {
 		return mw.Decisions(sim.New(50*time.Millisecond), sim.NewDecider(5*time.Millisecond), mw.DecisionOptions{Floor: floor})
@@ -251,14 +251,14 @@ func TestWhatAMeteredCallSaysOfADecision(t *testing.T) {
 	yes := schemaflux.DecisionAnswer{Kind: schemaflux.DecisionYesNo, Yes: true}
 	cases := []struct {
 		name      string
-		resp      schemaflux.CompletionResponse
+		resp      schemaflux.Response
 		decider   string
 		escalated string
 	}{
-		{"a generating provider's answer", schemaflux.CompletionResponse{Content: `{"q1":true}`, Provider: "openai"}, "", ""},
-		{"a typed answer", schemaflux.CompletionResponse{Provider: "jev", DecisionAnswers: []schemaflux.DecisionAnswer{yes}}, "jev", ""},
-		{"a typed answer from a provider that names nobody", schemaflux.CompletionResponse{DecisionAnswers: []schemaflux.DecisionAnswer{yes}}, "", ""},
-		{"nothing", schemaflux.CompletionResponse{}, "", ""},
+		{"a generating provider's answer", schemaflux.Response{Content: `{"q1":true}`, Provider: "openai"}, "", ""},
+		{"a typed answer", schemaflux.Response{Provider: "jev", Answers: []schemaflux.DecisionAnswer{yes}}, "jev", ""},
+		{"a typed answer from a provider that names nobody", schemaflux.Response{Answers: []schemaflux.DecisionAnswer{yes}}, "", ""},
+		{"nothing", schemaflux.Response{}, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,8 +277,8 @@ func TestWhatAMeteredCallSaysOfADecision(t *testing.T) {
 	low.ModelConfidence = 0.2
 	provider := measure(mw.Decisions(generator, low, mw.DecisionOptions{Floor: 0.5}))
 	labelled := sim.Cases()[1]
-	client := schemaflux.NewClient("").WithProviderInstance(provider)
-	if _, err := schemaflux.Is(client.Context(context.Background()), labelled.Message.Text(),
+	client := schemaflux.Client{Provider: provider}
+	if _, err := schemaflux.Is(schemaflux.WithClient(context.Background(), client), labelled.Message.Text(),
 		"Is this message spam, a marketing blast or an automated notification, and not a customer writing to a support desk?"); err != nil {
 		t.Fatalf("Is: %v", err)
 	}

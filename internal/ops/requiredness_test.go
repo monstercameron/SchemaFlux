@@ -418,6 +418,7 @@ func TestTheRequiredPlanListsTheFieldsTheCheckLooksAt(t *testing.T) {
 }
 
 func TestTheRequiredFieldCheckAllocationsStayWithinBudget(t *testing.T) {
+	typePlanFreshCache(t)
 	nested := benchNested{OrderID: "A", Customer: "c", Email: "e", Currency: "u", Status: "s", PlacedOn: "p", Total: 1,
 		Gift: true, Priority: 1,
 		ShipTo: benchAddress{Street: "s", City: "c", Region: "r", Postcode: "p", Country: "c"},
@@ -686,6 +687,9 @@ func TestTheRequiredPlanOfAStructWithEmbeddedStructsListsTheMembers(t *testing.T
 // name, so a value that passes costs nothing, as it does for a type with no
 // embedding.
 func TestTheRequiredFieldCheckOfPromotedMembersAllocatesNothingWhenItPasses(t *testing.T) {
+	previousPlans := typePlans
+	typePlans = newTypePlanCache(typePlanLimit)
+	t.Cleanup(func() { typePlans = previousPlans })
 	value := &promptEmbedsPointer{
 		Name: "n", Tail: "t", PromptBaseExported: &PromptBaseExported{ID: "i"},
 	}

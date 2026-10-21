@@ -2,350 +2,262 @@ package mw
 
 import (
 	"context"
-	"time"
+	"errors"
+	"slices"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/bind"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
+
+	impl "github.com/monstercameron/schemaflux/v2/internal/runtime/mw"
 )
 
-// FallbackCapabilities is the one capability dimension this package can
-// check against something concrete: whether a request asked for a strict,
-// natively-enforced JSON Schema (CompletionRequest.JSONSchema is set and
-// ResponseFormat is "json"). Everything else CP-001 will eventually cover
-// has no corresponding signal in a CompletionRequest to check it against
-// (see the doc comment on Fallback).
-type FallbackCapabilities struct {
-	// NativeJSONSchema reports whether this route enforces a JSON Schema
-	// server-side (like OpenAI's Responses API strict mode) rather than
-	// only accepting a "produce JSON" hint.
+// Capabilities is what a route is declared to deliver. It is the one dimension a
+// request carries a signal for, so it is the one dimension Fallback can check: a
+// declaration beyond it would be a guess.
+type Capabilities struct {
+	// NativeJSONSchema says that the route enforces the request's JSON Schema
+	// on its own side, as a provider with a strict structured-output mode does,
+	// and not only accepts a hint to write JSON. False is the route accepting
+	// the hint alone.
 	NativeJSONSchema bool
 }
 
-// FallbackDataPolicy is a caller-declared classification label. Two routes
-// are policy-compatible only when their Classification strings match; an
-// empty Classification on the primary route means no policy was declared,
-// and Fallback enforces nothing in that case -- it does not invent a
-// "public" or "unrestricted" default, because a silent default is exactly
-// the failure this exists to prevent. Declare it if it matters.
-type FallbackDataPolicy struct {
-	Classification string
-}
+// A Route is one provider that Fallback may send a request to, with what it is
+// declared to deliver.
+type Route struct {
+	// Provider answers requests sent by this route. A nil Provider is a
+	// mistake in the set-up, and every request fails with an error of kind
+	// schemaflux.ErrConfiguration before anything is sent.
+	Provider schemaflux.Provider
 
-// FallbackRoute is one candidate provider together with what it is declared
-// to deliver.
-type FallbackRoute struct {
-	Handler      Handler
-	Capabilities FallbackCapabilities
-	DataPolicy   FallbackDataPolicy
+	// Capabilities is what the route is declared to deliver. The zero value
+	// declares nothing, which is the lack of the capability.
+	Capabilities Capabilities
 
 	// Model is the model this route runs the request on, when that is not the
 	// model the request names. An alternate at another provider almost always
-	// has its own: a request for a gpt model cannot be served by a provider
-	// that has none. When it is set the request is sent to this route under
-	// this model, and the client's data policy is checked for this provider
-	// and this model. Left empty, the request's own model is used for both.
-	// The policy has to be checked against the route that will be used, and an
-	// alternate that rewrites the model is not the route the request names.
+	// has its own: a request for one vendor's model cannot be served by another
+	// vendor's provider. The request is sent to the route under this model, and
+	// the client's data policy is checked for this provider and this model.
+	// Empty sends the request's own model, and the policy is checked for that.
 	Model string
 }
 
-// FallbackOption configures the primary route's requirements and the
-// substitution policy.
-type FallbackOption func(*fallbackConfig)
+// FallbackOptions are the settings of Fallback. The zero value is the default:
+// any failure that is not the caller's or the policy's fails over, and a route
+// that cannot enforce a schema is not used for a request that needs it.
+type FallbackOptions struct {
+	// On lists the kinds of failure that send a request to the next route. An
+	// error triggers a fallover when its Kind is one of them, and then even
+	// when it is one that stops everything by default. Naming a kind sends
+	// requests where the default does not: ErrUnauthorized fails over a
+	// rejected key to a route with another, ErrPolicy sends content to another
+	// provider after one was refused it. The client's data policy is checked for
+	// every route whatever this says.
+	//
+	// Nil is every failure except those that are not about the route. These
+	// kinds stop the request and are returned as they are, because trying another
+	// route would spend where a budget said not to, send content where a policy
+	// said not to, carry on after the caller gave up, hide a defect, or get round
+	// a limit the program set:
+	//
+	//	ErrConfiguration    ErrInvalidRequest   ErrUnauthorized    ErrPolicy
+	//	ErrRefused          ErrBudgetExceeded   ErrBusy            ErrCanceled
+	//	ErrClosed           ErrReviewRequired   ErrInternal
+	//
+	// ErrBusy is the program's own limit (a full Bulkhead), and ErrInternal a
+	// defect, a panic in the chain, that is reported and not replaced by another
+	// route's answer. These kinds go on to the next route:
+	//
+	//	ErrUnsupported      ErrRateLimited      ErrUnavailable     ErrTimeout
+	//	ErrTooLarge         ErrTruncated        ErrInvalidAnswer
+	//
+	// that is: a capability the route lacks, which another route may have, an
+	// outage, a rate limit, a timeout, an input too large for the model, an answer
+	// cut off or one that failed its checks. So does a failure of the provider's own
+	// that no layer classified. A kind that is not one of the library's kinds is a
+	// configuration error. Naming kinds in On replaces this default.
+	//
+	// The kinds of every options value are joined: a later value adds to the
+	// list and never takes a kind from it.
+	On []schemaflux.Kind
 
-type fallbackConfig struct {
-	primaryCaps            FallbackCapabilities
-	primaryPolicy          FallbackDataPolicy
-	kinds                  map[types.ErrorKind]bool // nil means "any failure of the provider triggers fallover"
-	allowSchemaDegradation bool
+	// AllowSchemaDegradation lets a route that cannot enforce a schema serve a
+	// request that needs one, when the primary route is declared to. By
+	// default such a route is skipped. The answer then carries no mark that it
+	// was served without enforcement: the answer is checked against the schema
+	// by the library whichever route wrote it, and this only allows the
+	// route to be asked. A request needs one when it carries a schema and asks for
+	// Format "json"; a request with a schema and no Format is not held to it. It
+	// loosens a guard, so it can be set in the first options value only.
+	AllowSchemaDegradation bool
+
+	// Primary is what the wrapped provider, the route tried first, is declared
+	// to deliver. An alternate that lacks a capability declared here is not
+	// used, unless the lack has its own opt-in (AllowSchemaDegradation). The
+	// zero value declares nothing, and then every alternate is eligible.
+	Primary Capabilities
 }
 
-// WithPrimaryCapabilities declares what the wrapped (primary) route is
-// relied upon to deliver. An alternate lacking a capability declared here is
-// never used as a substitute, unless that specific gap has its own explicit
-// opt-in (see AllowSchemaDegradation).
-func WithPrimaryCapabilities(c FallbackCapabilities) FallbackOption {
-	return func(cfg *fallbackConfig) { cfg.primaryCaps = c }
-}
-
-// WithPrimaryDataPolicy declares what the wrapped (primary) route is
-// permitted to receive. An alternate whose declared classification does not
-// match is never used as a substitute -- a private-region primary route
-// does not fail over to a route declared "public".
-func WithPrimaryDataPolicy(p FallbackDataPolicy) FallbackOption {
-	return func(cfg *fallbackConfig) { cfg.primaryPolicy = p }
-}
-
-// WithFallbackKinds restricts which failure kinds trigger a fallover, using
-// the same taxonomy llm.Classify and every other consumer of it in this
-// module already agree on. Without this option, a failure of the route is
-// eligible to trigger a fallover to the next qualifying route -- the default a
-// caller wiring "provider failover" in the ordinary sense expects -- except a
-// failure that stops everything: one whose kind types.OperationError.Terminal
-// reports as terminal (a refused budget or data policy, a cancellation, a
-// shutdown, a configuration or authentication or permission error, a request
-// the provider rejected as invalid). Those are not about the route, and sending
-// the same request to another route would spend where a budget said not to,
-// send content where a policy said not to, or carry on after the caller gave up.
-// A refusal as an unsupported capability is about the route and is not among
-// them: a provider that cannot take a request's tools, messages or search
-// refuses it before sending anything, and the next route is tried.
-// A full bulkhead (types.KindAdmissionRejected) and a panic (an invariant
-// violation marked types.NarrowPanic) are not about the route either, and stop a
-// default Fallback: the first is a limit the program set, and the second a
-// defect, and neither is cured by asking another provider.
-// A caller who only wants to fail over on the route itself being unavailable,
-// not on the answer being unusable, narrows it here, and a kind named here
-// triggers a fallover even when it is terminal.
-func WithFallbackKinds(kinds ...types.ErrorKind) FallbackOption {
-	return func(cfg *fallbackConfig) {
-		cfg.kinds = make(map[types.ErrorKind]bool, len(kinds))
-		for _, k := range kinds {
-			cfg.kinds[k] = true
+// Fallback sends a request to the next of alternates when the wrapped provider,
+// the primary route, fails with an error that is about the route. The routes
+// are tried in order, each only if the failure so far is one On names (or one of
+// the default set), the route meets the declarations, and the client's data
+// policy allows it: a route the policy does not allow is passed over as one that
+// lacks a capability is, and the failure that sent the request looking is the one
+// reported. When every route fails, the error returned is the last one's, in the
+// sense that errors.Is and errors.As reach it: the failures of the routes before
+// it are not kept, and nothing in it says that more than one route was tried. A
+// failure that stops the request, and so is not tried again, is the one returned
+// by the same reading, and not the identical value.
+//
+// The primary route is always tried first and is never checked against the
+// declarations: they describe what a substitute must match, not a gate on the
+// route being replaced.
+//
+// A failover is a different provider answering, so it is not free substitution.
+// What this package checks is only what it is told: Capabilities are declared by
+// the caller and are enforced as declared and no further; a route's data policy
+// is the client's (Client.Policy), where it is checked against the provider
+// and model the route will send. The answer names the route that served it, in
+// Response.Provider and Response.Model, where the route does not say it is
+// filled in.
+//
+// The alternates' own chains are the program's to build: a Retry, a
+// CircuitBreaker and a RateLimit for each route go around that route's provider
+// before it is given here, and Fallback goes around the primary route's. The
+// package comment's order has Fallback outside the primary's Retry and
+// CircuitBreaker, so that a route that is down is left for the next at once.
+//
+// A Fallback's Unwrap is its primary route: the one that is warmed, and whose
+// retry settings, model table and decision limits are the chain's. An
+// alternate's connection is opened by its first use. Fallback does not forward
+// streaming: a wrapped provider cannot stream.
+func Fallback(alternates []Route, opts ...FallbackOptions) Middleware {
+	o, problem := mergeFallbackOptions(opts)
+	for _, kind := range o.On {
+		if kind < schemaflux.ErrConfiguration || kind > schemaflux.ErrInternal {
+			problem = "On names a kind that is not one of the library's kinds"
+			break
 		}
 	}
-}
-
-// AllowSchemaDegradation permits an alternate lacking NativeJSONSchema to
-// serve a request that asked for one, when the primary route declared it.
-// Off by default, per the Revised line: "a named degradation ... is allowed
-// only by explicit policy." See the package doc comment on Fallback for what
-// this option does NOT do (it does not record the degradation anywhere the
-// caller can observe after the fact).
-func AllowSchemaDegradation() FallbackOption {
-	return func(cfg *fallbackConfig) { cfg.allowSchemaDegradation = true }
-}
-
-// Fallback builds a Middleware that tries alternates, in order, when the
-// wrapped provider (or a prior alternate) fails with a fallover-eligible
-// error and the alternate qualifies under the declared requirements -- but
-// only to an alternate that was DECLARED, by the caller wiring this
-// middleware, to meet the primary route's minimum capability and
-// data-policy requirements. TODOS.md's Revised line on MW-008 is explicit
-// that failover is not free substitution: a private-region failure may not
-// fall back to a public provider, and a route that cannot deliver the
-// requested contract may not be substituted in silently. This is the
-// mechanism that refuses to do either.
-//
-// The wrapped provider (whatever Chain passes as `next`) is always the
-// primary route and is always tried first, regardless of any capability or
-// policy declared for it -- those declarations describe what a SUBSTITUTE
-// must match, not a gate on the route being replaced.
-//
-// # What is and is not enforced here, and why (read before wiring this up)
-//
-// CP-001 (machine-readable provider capabilities, negotiated automatically)
-// and CP-002 (a DataPolicy type with classification, region, and retention,
-// enforced at the client/tenant boundary) are both still open in TODOS.md.
-// Nothing in this codebase can currently introspect a provider and answer
-// "does this one support native JSON Schema" or "is this one licensed to
-// receive EU personal data" -- there is no capability struct, no policy
-// struct, and no field on llm.Provider that would let this middleware derive
-// either fact on its own. Building that here, one middleware deep, would be
-// exactly the fabrication AGENTS.md forbids: a number (or a boolean) that
-// looks measured and is actually guessed.
-//
-// So this package does the honest half instead: FallbackRoute carries
-// CALLER-DECLARED capability and data-policy labels, and Fallback refuses to
-// route to an alternate whose declared labels do not meet the primary
-// route's declared requirement. This is real enforcement -- an alternate
-// that does not qualify is never called, provably (see the fallback_test.go
-// cases that assert a disqualified alternate's Complete is never invoked) --
-// but it is only as good as what the caller declares. An undeclared
-// (zero-value) requirement enforces nothing, and this file does not pretend
-// otherwise anywhere in its docs.
-//
-// What is explicitly NOT done, because the plumbing to do it honestly does
-// not exist yet:
-//
-//   - Recording a schema degradation "as delivered" (the Revised line's
-//     second clause). A-006's Result/Meta envelope is where requested-versus-
-//     delivered contract level lives, and it is populated in internal/ops
-//     from a call record carried on context (internal/ops/callrecord.go) --
-//     a layer above the llm.Provider seam this middleware operates at.
-//     mw.Fallback has no handle on that envelope and cannot reach back into
-//     it without either internal/ops depending on mw (backwards from
-//     today's dependency direction, since mw is the generic, ops-agnostic
-//     layer) or mw depending on internal/ops (which would make a low-level
-//     transport middleware import the operation layer that sits on top of
-//     it). AllowSchemaDegradation still gates the substitution -- it cannot
-//     happen without the caller opting in -- but the resulting response
-//     carries no marker that a degradation occurred. Closing this needs a
-//     seam A-001/A-006 do not expose yet: a way for a Provider-level
-//     middleware to annotate the envelope the operation layer eventually
-//     builds.
-//   - Any capability or policy dimension beyond the two declared on
-//     FallbackCapabilities and FallbackDataPolicy, with one exception.
-//     CP-001 lists streaming, tool calling, multi-turn, prompt caching,
-//     idempotency keys, seed, and context/output ceilings; none of those
-//     have a corresponding signal anywhere in a CompletionRequest or on
-//     llm.Provider today, so there is nothing truthful to check them
-//     against. The exception is the provider, the regions and the retention
-//     of an alternate, which a client's data policy (Client.WithDataPolicy)
-//     is checked against before the alternate is used: see FallbackRoute.Model
-//     and ops.CheckRoutePolicy.
-//
-// A FallbackRoute with a nil Handler is left out when Fallback is built, the
-// way Chain leaves out a nil Middleware: there is nothing to call, and keeping
-// it would panic on the first failure of the primary, far from where the route
-// was written.
-func Fallback(alternates []FallbackRoute, opts ...FallbackOption) Middleware {
-	cfg := fallbackConfig{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
-	routes := make([]FallbackRoute, 0, len(alternates))
+	routes := make([]impl.FallbackRoute, 0, len(alternates))
 	for _, route := range alternates {
-		if route.Handler != nil {
-			routes = append(routes, route)
+		if route.Provider == nil {
+			problem = "a route has no Provider"
+			break
 		}
+		routes = append(routes, impl.FallbackRoute{
+			Handler:      internalOf(route.Provider),
+			Capabilities: impl.FallbackCapabilities{NativeJSONSchema: route.Capabilities.NativeJSONSchema},
+			Model:        route.Model,
+		})
 	}
 
-	return func(next Handler) Handler {
-		return &fallbackProvider{
-			primary: FallbackRoute{
-				Handler:      next,
-				Capabilities: cfg.primaryCaps,
-				DataPolicy:   cfg.primaryPolicy,
-			},
-			alternates: routes,
-			cfg:        cfg,
+	// With On set, a route's errors are given the one of two kinds the wrapped
+	// package tells apart for this purpose, as the caller's list says, and the
+	// original is given back as the request leaves: the wrapped package's own
+	// kind taxonomy cannot tell a model's refusal from the data policy's, or a
+	// panic from a bad answer, and the library's kinds can.
+	selecting := len(o.On) > 0
+	var on map[schemaflux.Kind]bool
+	var settings []impl.FallbackOption
+	if selecting {
+		on = make(map[schemaflux.Kind]bool, len(o.On))
+		for _, kind := range o.On {
+			on[kind] = true
 		}
+		settings = append(settings, impl.WithFallbackKinds(types.KindProviderUnavailable))
+		for i := range routes {
+			routes[i].Handler = &kindGate{stage: stage{next: routes[i].Handler}, on: on}
+		}
+	}
+	settings = append(settings, impl.WithPrimaryCapabilities(impl.FallbackCapabilities{NativeJSONSchema: o.Primary.NativeJSONSchema}))
+	if o.AllowSchemaDegradation {
+		settings = append(settings, impl.AllowSchemaDegradation())
+	}
+	build := impl.Fallback(routes, settings...)
+
+	return func(next schemaflux.Provider) schemaflux.Provider {
+		if !selecting {
+			return wrap("mw.fallback", next, problem, build)
+		}
+		return wrap("mw.fallback", next, problem, func(primary llm.Provider) llm.Provider {
+			return &peeling{stage{next: build(&kindGate{stage: stage{next: primary}, on: on})}}
+		})
 	}
 }
 
-type fallbackProvider struct {
-	primary    FallbackRoute
-	alternates []FallbackRoute
-	cfg        fallbackConfig
+// mergeFallbackOptions merges option values left to right. The kinds in On are
+// joined, an earlier kind kept, and the capabilities declared for the primary
+// route are joined, since a later value that declares one does not take back
+// what an earlier one declared. AllowSchemaDegradation loosens a guard, so only
+// the first value may set it: in a later one it is a problem, and the second
+// result says so, for the caller to make a configuration error of.
+func mergeFallbackOptions(opts []FallbackOptions) (FallbackOptions, string) {
+	var merged FallbackOptions
+	var problem string
+	for i, o := range opts {
+		for _, kind := range o.On {
+			if !slices.Contains(merged.On, kind) {
+				merged.On = append(merged.On, kind)
+			}
+		}
+		if o.AllowSchemaDegradation {
+			if i == 0 {
+				merged.AllowSchemaDegradation = true
+			} else if problem == "" {
+				problem = "AllowSchemaDegradation is set in a later options value, which would loosen a guard an earlier one set: set it in the first"
+			}
+		}
+		merged.Primary.NativeJSONSchema = merged.Primary.NativeJSONSchema || o.Primary.NativeJSONSchema
+	}
+	return merged, problem
 }
 
-func (p *fallbackProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	resp, err := p.primary.Handler.Complete(ctx, req)
+// routeOp marks an error that a kindGate gave a kind for the wrapped package's
+// choice of whether to fail over.
+const routeOp = "mw.fallback.route"
+
+// kindGate is the handler of a route when the caller named the kinds that fail
+// over. It returns the route's failure under one of two kinds that the wrapped
+// package reads as "fail over" and "stop", chosen by the library's Kind of the
+// failure, with the failure itself as the cause. A peeling stage gives it back as
+// it leaves the Fallback.
+type kindGate struct {
+	stage
+	on map[schemaflux.Kind]bool
+}
+
+// Complete calls the route and relabels its failure.
+func (g *kindGate) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	resp, err := g.next.Complete(ctx, req)
 	if err == nil {
 		return resp, nil
 	}
-
-	lastErr := err
-	for _, alt := range p.alternates {
-		if !p.triggers(lastErr) {
-			// This failure -- the primary's, or a prior alternate's -- is
-			// classified on its own terms and is not one this Fallback was
-			// configured to route around. Stop rather than keep trying:
-			// working through every remaining route on a kind of failure
-			// none of them can fix just delays returning the real error.
-			break
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return llm.CompletionResponse{}, ctxErr
-		}
-		if !p.eligible(req, alt) {
-			continue
-		}
-		// The client's data policy governs where its content may go, and an
-		// alternate is somewhere it may go. It is held to the policy by the same
-		// check the primary was, before it is sent anything. An alternate the
-		// policy does not allow is passed over like one that lacks a capability:
-		// it was never an option, so the failure that is reported is the one
-		// that sent this looking.
-		routed := req
-		if alt.Model != "" {
-			routed.Model = alt.Model
-		}
-
-		// The model checked is the one the alternate will send, which is not
-		// always the one the request names (llm.ModelSentBy).
-		sent := llm.ModelSentBy(alt.Handler, routed.Model)
-		if ops.CheckRoutePolicy(ctx, alt.Handler.Name(), sent) != nil {
-			continue
-		}
-
-		resp, err = alt.Handler.Complete(ctx, routed)
-		if err == nil {
-			// The answer says which route it came by. An alternate that does
-			// not say is spoken for here, since this is where it is known: the
-			// client's data policy checks the route an answer names, and an
-			// answer with no name on it is taken for the primary's.
-			if resp.Provider == "" {
-				resp.Provider = alt.Handler.Name()
-			}
-			if resp.Model == "" {
-				resp.Model = sent
-			}
-			return resp, nil
-		}
-		lastErr = err
+	label := types.KindShutdown
+	if converted, ok := bind.ConvertError("", err).(*schemaflux.Error); ok && g.on[converted.Kind] {
+		label = types.KindProviderUnavailable
 	}
-
-	return llm.CompletionResponse{}, lastErr
+	return llm.CompletionResponse{}, &types.OperationError{Kind: label, Op: routeOp, Cause: err}
 }
 
-// eligible reports whether alt meets the primary route's declared minimum
-// requirements for the given request. An alternate that fails this check is
-// never called -- that is the property the tests in fallback_test.go pin.
-func (p *fallbackProvider) eligible(req llm.CompletionRequest, alt FallbackRoute) bool {
-	// An alternate without native JSON Schema support serves a request that
-	// needs it only when AllowSchemaDegradation says so. The degradation is not
-	// recorded as delivered anywhere -- see the doc comment on Fallback.
-	wantsNativeSchema := len(req.JSONSchema) > 0 && req.ResponseFormat == "json"
-	if wantsNativeSchema && p.primary.Capabilities.NativeJSONSchema &&
-		!alt.Capabilities.NativeJSONSchema && !p.cfg.allowSchemaDegradation {
-		return false
-	}
+// peeling is the outermost handler of a Fallback with a list of kinds. It gives
+// back the failure a kindGate wrapped, so that nothing outside the Fallback sees
+// the label.
+type peeling struct{ stage }
 
-	if p.primary.DataPolicy.Classification != "" &&
-		alt.DataPolicy.Classification != p.primary.DataPolicy.Classification {
-		return false
-	}
-
-	return true
-}
-
-// triggers reports whether err should cause Complete to try the next route.
-// With kinds configured only those kinds do. Without, any failure does except
-// one that is terminal: a failure that stops everything is not the route's.
-//
-// An unsupported capability is terminal for everything else that reads the kind,
-// and is not terminal here. A provider refuses with it before it sends anything,
-// because of what the provider can do (tools, a message list, a search, an
-// effort) and not because of anything the request or the caller did wrong, so
-// another route may well take the same request. Treating it as the end sent a
-// request with tools to a primary that cannot take them and never asked the
-// alternate that can.
-func (p *fallbackProvider) triggers(err error) bool {
+// Complete calls the Fallback and unwraps a relabeled failure.
+func (p *peeling) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	resp, err := p.next.Complete(ctx, req)
 	if err == nil {
-		return false
+		return resp, nil
 	}
-	kind := llm.Classify(err)
-	if p.cfg.kinds != nil {
-		return p.cfg.kinds[kind]
+	var labeled *types.OperationError
+	if errors.As(err, &labeled) && labeled.Op == routeOp && labeled.Cause != nil {
+		return llm.CompletionResponse{}, labeled.Cause
 	}
-	if kind == types.KindUnsupportedCapability {
-		return true
-	}
-	// Two more are not about the route, though nothing calls them terminal. A
-	// full bulkhead (an admission refused) is the limit the program set on its own
-	// concurrency, and failing over from it sends the request to a route the limit
-	// was meant to keep it from. A panic is a defect in this process, and an
-	// alternate that quietly answers in its place hides it.
-	if kind == types.KindAdmissionRejected || (kind == types.KindInvariantViolation && types.NarrowingOf(err) == types.NarrowPanic) {
-		return false
-	}
-	return !kindIsTerminal(kind)
-}
-
-// Name, EstimateCost, and RetryPolicy describe the primary route, matching
-// every other middleware in this package: they answer "what is this,
-// nominally", not "whichever route happened to serve the last call".
-func (p *fallbackProvider) Name() string { return p.primary.Handler.Name() }
-
-func (p *fallbackProvider) EstimateCost(req llm.CompletionRequest) float64 {
-	return p.primary.Handler.EstimateCost(req)
-}
-
-func (p *fallbackProvider) RetryPolicy() (int, time.Duration) {
-	return p.primary.Handler.RetryPolicy()
+	return llm.CompletionResponse{}, err
 }

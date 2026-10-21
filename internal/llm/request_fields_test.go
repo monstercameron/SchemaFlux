@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Anthropic sends a system prompt, a user prompt and a few settings, and nothing

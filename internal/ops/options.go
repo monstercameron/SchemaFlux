@@ -8,8 +8,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // BaseOptions defines the common interface for all operation options
@@ -897,7 +897,7 @@ func (t TransformOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"replace": true, "merge": true, "append": true}
 	if t.MergeStrategy != "" && !validStrategies[t.MergeStrategy] {
-		return fmt.Errorf("invalid merge strategy: %s", t.MergeStrategy)
+		return fmt.Errorf("merge strategy must be replace, merge, or append")
 	}
 	return nil
 }
@@ -1105,7 +1105,7 @@ func (s SummarizeOptions) Validate() error {
 	}
 	validUnits := map[string]bool{"words": true, "sentences": true, "paragraphs": true}
 	if s.LengthUnit != "" && !validUnits[s.LengthUnit] {
-		return fmt.Errorf("invalid length unit: %s", s.LengthUnit)
+		return fmt.Errorf("length unit must be words, sentences, or paragraphs")
 	}
 	if s.MaxCompression < 0 || s.MaxCompression > 1 {
 		return fmt.Errorf("max compression must be between 0 and 1, got %f", s.MaxCompression)
@@ -1652,11 +1652,11 @@ func (c CompareOptions) Validate() error {
 	}
 	validFormats := map[string]bool{"table": true, "narrative": true, "bullet": true}
 	if c.OutputFormat != "" && !validFormats[c.OutputFormat] {
-		return fmt.Errorf("invalid output format: %s", c.OutputFormat)
+		return fmt.Errorf("comparison output format must be table, narrative, or bullet")
 	}
 	validFocus := map[string]bool{"differences": true, "similarities": true, "both": true}
 	if c.FocusOn != "" && !validFocus[c.FocusOn] {
-		return fmt.Errorf("invalid focus: %s", c.FocusOn)
+		return fmt.Errorf("comparison focus must be differences, similarities, or both")
 	}
 	if c.Depth < 1 || c.Depth > 10 {
 		return fmt.Errorf("depth must be between 1 and 10, got %d", c.Depth)
@@ -1754,7 +1754,7 @@ func (c ChooseOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"sequential": true, "tournament": true, "scoring": true}
 	if c.Strategy != "" && !validStrategies[c.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", c.Strategy)
+		return fmt.Errorf("choice strategy must be sequential, tournament, or scoring")
 	}
 	if err := checkLockedLimits(c); err != nil {
 		return err
@@ -2040,7 +2040,7 @@ func (s SortOptions) Validate() error {
 	}
 	validDirections := map[string]bool{"ascending": true, "descending": true}
 	if s.Direction != "" && !validDirections[s.Direction] {
-		return fmt.Errorf("invalid direction: %s", s.Direction)
+		return fmt.Errorf("sort direction must be ascending or descending")
 	}
 	return nil
 }
@@ -2157,11 +2157,11 @@ func (b BatchOptions) Validate() error {
 	}
 	validModes := map[string]bool{"parallel": true, "merged": true, "sequential": true}
 	if b.Mode != "" && !validModes[b.Mode] {
-		return fmt.Errorf("invalid batch mode: %s", b.Mode)
+		return fmt.Errorf("batch mode must be parallel, merged, or sequential")
 	}
 	validStrategies := map[string]bool{"fail-fast": true, "continue": true, "retry": true}
 	if b.ErrorStrategy != "" && !validStrategies[b.ErrorStrategy] {
-		return fmt.Errorf("invalid error strategy: %s", b.ErrorStrategy)
+		return fmt.Errorf("batch error strategy must be fail-fast, continue, or retry")
 	}
 	if b.Concurrency < 1 {
 		return fmt.Errorf("concurrency must be at least 1, got %d", b.Concurrency)

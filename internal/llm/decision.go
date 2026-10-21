@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A decision is a question whose answer is bounded: a yes or a no, one of a

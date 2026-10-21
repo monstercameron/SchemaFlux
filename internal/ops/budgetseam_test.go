@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // IN-004's seam, tested where it lives.

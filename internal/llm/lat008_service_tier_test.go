@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LAT-008. A provider's service tier trades price for speed, and is the

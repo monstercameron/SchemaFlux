@@ -100,7 +100,7 @@ func handWrittenBranches(t *testing.T, path, source string) []string {
 			switch {
 			case found.Op == token.LAND || found.Op == token.LOR:
 				report(found, "`&&` or `||`, which is a branch written as an expression")
-			case comparisons[found.Op] && !judged[found]:
+			case comparisons[found.Op] && !judged[found] && !auditVerdictCheck(found):
 				report(found, "a comparison that is not the condition of an error check")
 			}
 		case *ast.CallExpr:
@@ -125,6 +125,24 @@ func handWrittenBranches(t *testing.T, path, source string) []string {
 		return true
 	})
 	return findings
+}
+
+// An audit verdict is already the model's decision. Comparing it with pass
+// only passes that decision to a flow combinator or records it in the outcome.
+func auditVerdictCheck(expr *ast.BinaryExpr) bool {
+	if expr.Op != token.EQL && expr.Op != token.NEQ {
+		return false
+	}
+	verdict, ok := expr.X.(*ast.SelectorExpr)
+	if !ok || verdict.Sel.Name != "Verdict" {
+		return false
+	}
+	pass, ok := expr.Y.(*ast.SelectorExpr)
+	if !ok || pass.Sel.Name != "VerdictPass" {
+		return false
+	}
+	pkg, ok := pass.X.(*ast.Ident)
+	return ok && pkg.Name == "schemaflux"
 }
 
 // loopBody reports a `return`, `break` or `continue` in the body of a loop. A

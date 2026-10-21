@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // --- QuestionOptions fluent setters (extended.go, all 0.0%) ---

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LAT-006. The request for a decision is built from what the questions decide

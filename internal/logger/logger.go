@@ -1,7 +1,7 @@
 package logger
 
 import (
-	telemetry "github.com/monstercameron/schemaflux/internal/telemetry"
+	telemetry "github.com/monstercameron/schemaflux/v2/internal/telemetry"
 )
 
 // The logger types and levels are those of internal/telemetry, which this

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
 )
 
 // S-007. The reinforcement block is prepended to every request, JSON or not,

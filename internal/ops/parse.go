@@ -15,8 +15,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // parseOpName is the operation name carried by every error Parse returns.
@@ -162,7 +162,7 @@ func parseImpl[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Parse operation validation failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Parse operation validation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return result, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -194,7 +194,7 @@ func parseImpl[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 	// model cannot fix that, and falling back to it would pay for an answer to
 	// a question the caller asked wrongly.
 	if types.KindOf(err) == types.KindConfiguration {
-		log.Error("Parse operation configuration refused", "requestID", opts.RequestID, "error", err)
+		log.Error("Parse operation configuration refused", "requestID", opts.RequestID, "error", loggedError(err))
 		return result, err
 	}
 
@@ -213,7 +213,7 @@ func parseImpl[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 				return result, nil
 			}
 			if types.KindOf(delimErr) == types.KindConfiguration {
-				log.Error("Parse operation configuration refused", "requestID", opts.RequestID, "error", delimErr)
+				log.Error("Parse operation configuration refused", "requestID", opts.RequestID, "error", loggedError(delimErr))
 				return result, delimErr
 			}
 		}
@@ -223,7 +223,7 @@ func parseImpl[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 	if opts.AllowLLMFallback {
 		llmResult, llmErr := parseWithLLM[T](inputStr, format, opts)
 		if llmErr != nil {
-			log.Error("Parse operation LLM fallback failed", "requestID", opts.RequestID, "error", llmErr)
+			log.Error("Parse operation LLM fallback failed", "requestID", opts.RequestID, "error", loggedError(llmErr))
 			return result, llmErr
 		}
 		log.Debug("Parse operation succeeded with LLM", "requestID", opts.RequestID)
@@ -231,7 +231,7 @@ func parseImpl[T any](input any, opts ParseOptions) (ParseResult[T], error) {
 	}
 
 	// Return the algorithm error if no fallback
-	log.Error("Parse operation failed", "requestID", opts.RequestID, "error", err)
+	log.Error("Parse operation failed", "requestID", opts.RequestID, "error", loggedError(err))
 	return result, fmt.Errorf("parsing failed: %w (consider enabling AllowLLMFallback)", err)
 }
 

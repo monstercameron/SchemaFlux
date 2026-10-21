@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // batchOnTheDefaultProvider is a batch processor over the process's default

@@ -23,7 +23,9 @@
 //     `goto`, a labelled statement, a `defer`;
 //   - `&&` and `||`;
 //   - any comparison (==, !=, <, <=, >, >=) that is not the condition of such
-//     an `if`, so one passed as an argument or assigned is found;
+//     an `if` or a comparison of an audit Verdict with schemaflux.VerdictPass;
+//     the verdict comparison passes the model's decision to a flow combinator
+//     or records it in the outcome;
 //   - a call to the builtins min, max and recover, to anything in the packages
 //     cmp and slices, and to strings.Contains, ContainsAny, ContainsRune,
 //     ContainsFunc, HasPrefix, HasSuffix and EqualFold;
@@ -61,7 +63,7 @@ package desk
 import (
 	"context"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // Message is one incoming message.
@@ -185,7 +187,7 @@ type Desk struct {
 	// of details, the draft, the redraft, the hand-off note and the audit) take
 	// nothing from here: they run on the client's model and effort.
 	// The zero value leaves each to the library.
-	Options schemaflux.OpOptions
+	Options schemaflux.Options
 
 	// Judgment is laid over Options for the triage questions, in every flow:
 	// the team, the intent, the urgency, whether the message says enough to act
@@ -199,7 +201,7 @@ type Desk struct {
 	// applies to exactly them. HandleFast asks the screen, the triage and what
 	// follows the reply in one call, so it is applied to that whole call: it
 	// cannot be laid over some of the questions of one request.
-	Judgment schemaflux.OpOptions
+	Judgment schemaflux.Options
 }
 
 // New returns a desk with the policies every reply is held to.

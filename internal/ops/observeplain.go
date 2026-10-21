@@ -1,8 +1,8 @@
 package ops
 
 import (
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // observedPlain opens the operation scope of a call of the plain form of the

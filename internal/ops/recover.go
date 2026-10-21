@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The progressive recovery cascade.
@@ -304,7 +304,7 @@ func RunOpManyRecover[In, Out any](ctx context.Context, op Op[In, Out], items []
 	// request, since the route that answers may not be the one that was planned.
 	planned := plannedContractLevel(ctx, batchContractLevel(op), opt)
 	if floorErr := checkContractFloor(ctx, planned); floorErr != nil {
-		return types.BatchResult[Out]{}, floorErr
+		return types.BatchResult[Out]{Total: types.Meta{Operation: name, RequestedContract: planned}}, floorErr
 	}
 
 	var result types.BatchResult[Out]

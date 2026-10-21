@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // M12/SC-001..SC-006. MapReduce (CF-009) bounds concurrency for one chunked

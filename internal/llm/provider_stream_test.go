@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // sseFrame renders one SSE "data:" frame from a JSON-able value. Real SSE

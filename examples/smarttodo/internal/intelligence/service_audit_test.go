@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
 // What the board review says about risks is read from the audit's verdict and
@@ -16,12 +16,13 @@ import (
 // read from the list alone, a board that failed its audit on a finding under
 // the threshold was told "No critical structural issues detected."
 func TestAuditRisks(t *testing.T) {
-	finding := func(issue string) schemaflux.AuditFinding { return schemaflux.AuditFinding{Issue: issue} }
-	result := func(passes bool, below int, findings ...schemaflux.AuditFinding) schemaflux.AuditResult[BoardSnapshot] {
-		audit := schemaflux.AuditResult[BoardSnapshot]{Findings: findings}
-		audit.Summary.PassesAudit = passes
-		audit.Summary.BelowThreshold = below
-		audit.Summary.TotalFindings = len(findings)
+	finding := func(issue string) schemaflux.JudgmentIssue { return schemaflux.JudgmentIssue{Message: issue} }
+	result := func(passes bool, below int, findings ...schemaflux.JudgmentIssue) schemaflux.AuditResult[BoardSnapshot] {
+		audit := schemaflux.AuditResult[BoardSnapshot]{Judgment: schemaflux.Judgment[BoardSnapshot]{Issues: findings}, BelowThreshold: below}
+		audit.Verdict = schemaflux.VerdictFail
+		if passes {
+			audit.Verdict = schemaflux.VerdictPass
+		}
 		return audit
 	}
 	const clean = "No critical structural issues detected."
@@ -101,12 +102,13 @@ func TestBuildReviewSaysWhenTheAuditCouldNotBeRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := schemafluxtest.New().ReplyFunc(func(_ int, req schemaflux.CompletionRequest) (string, error) {
-				if tc.synthesis != "" && strings.Contains(req.SystemPrompt, synthesisMarker) {
-					return tc.synthesis, nil
+			provider := &schemafluxtest.Provider{}
+			provider.Respond(func(_ int, req schemaflux.Request) (schemaflux.Response, error) {
+				if tc.synthesis != "" && strings.Contains(req.System, synthesisMarker) {
+					return schemaflux.Response{Content: tc.synthesis}, nil
 				}
 				// The audit, and everything else the review asks for, fails.
-				return "", errors.New("the provider is down")
+				return schemaflux.Response{}, errors.New("the provider is down")
 			})
 			schemafluxtest.Install(t, provider)
 
@@ -120,17 +122,17 @@ func TestBuildReviewSaysWhenTheAuditCouldNotBeRun(t *testing.T) {
 
 			synthesisRequests := 0
 			for _, req := range provider.Requests() {
-				if !strings.Contains(req.SystemPrompt, synthesisMarker) {
+				if !strings.Contains(req.System, synthesisMarker) {
 					continue
 				}
 				synthesisRequests++
 				// What the synthesis is shown must not hold the empty audit
 				// result a failed audit leaves behind.
-				if strings.Contains(req.UserPrompt, "passes_audit") || strings.Contains(req.UserPrompt, "total_findings") {
-					t.Errorf("the synthesis was handed the result of an audit that did not run:\n%s", req.UserPrompt)
+				if strings.Contains(req.User, "passes_audit") || strings.Contains(req.User, "total_findings") {
+					t.Errorf("the synthesis was handed the result of an audit that did not run:\n%s", req.User)
 				}
-				if !strings.Contains(req.UserPrompt, auditUnavailableRisk) {
-					t.Errorf("the synthesis was not told the audit could not be run:\n%s", req.UserPrompt)
+				if !strings.Contains(req.User, auditUnavailableRisk) {
+					t.Errorf("the synthesis was not told the audit could not be run:\n%s", req.User)
 				}
 			}
 			// Without this the loop above would pass for a review that never
@@ -144,7 +146,7 @@ func TestBuildReviewSaysWhenTheAuditCouldNotBeRun(t *testing.T) {
 
 func TestAuditSourceForSynthesis(t *testing.T) {
 	passing := schemaflux.AuditResult[BoardSnapshot]{}
-	passing.Summary.PassesAudit = true
+	passing.Verdict = schemaflux.VerdictPass
 
 	cases := []struct {
 		name   string
@@ -158,9 +160,9 @@ func TestAuditSourceForSynthesis(t *testing.T) {
 		{"an audit that could not run and left a result", passing, errors.New("cancelled"), true},
 		{"an audit that timed out", schemaflux.AuditResult[BoardSnapshot]{}, errors.New("context deadline exceeded"), true},
 		{"an audit refused as malformed", schemaflux.AuditResult[BoardSnapshot]{}, errors.New("audit: malformed output"), true},
-		{"an audit with findings", schemaflux.AuditResult[BoardSnapshot]{Findings: []schemaflux.AuditFinding{{Issue: "x"}}}, nil, false},
-		{"an audit with other findings only", schemaflux.AuditResult[BoardSnapshot]{Other: []schemaflux.AuditFinding{{Issue: "x"}}}, nil, false},
-		{"a failed audit with findings in its result", schemaflux.AuditResult[BoardSnapshot]{Findings: []schemaflux.AuditFinding{{Issue: "x"}}}, errors.New("late"), true},
+		{"an audit with findings", schemaflux.AuditResult[BoardSnapshot]{Judgment: schemaflux.Judgment[BoardSnapshot]{Issues: []schemaflux.JudgmentIssue{{Message: "x"}}}}, nil, false},
+		{"an audit with other findings only", schemaflux.AuditResult[BoardSnapshot]{Other: []schemaflux.JudgmentIssue{{Message: "x"}}}, nil, false},
+		{"a failed audit with findings in its result", schemaflux.AuditResult[BoardSnapshot]{Judgment: schemaflux.Judgment[BoardSnapshot]{Issues: []schemaflux.JudgmentIssue{{Message: "x"}}}}, errors.New("late"), true},
 		{"a failed audit with a different error", schemaflux.AuditResult[BoardSnapshot]{}, errors.New("budget exhausted"), true},
 	}
 	for _, tc := range cases {
@@ -186,11 +188,13 @@ func TestAuditSourceForSynthesis(t *testing.T) {
 // extractAuditRisks reads an audit that ran, so it is tested on its own and not
 // only through auditRisks.
 func TestExtractAuditRisks(t *testing.T) {
-	finding := func(issue string) schemaflux.AuditFinding { return schemaflux.AuditFinding{Issue: issue} }
-	audit := func(passes bool, below int, findings ...schemaflux.AuditFinding) schemaflux.AuditResult[BoardSnapshot] {
-		result := schemaflux.AuditResult[BoardSnapshot]{Findings: findings}
-		result.Summary.PassesAudit = passes
-		result.Summary.BelowThreshold = below
+	finding := func(issue string) schemaflux.JudgmentIssue { return schemaflux.JudgmentIssue{Message: issue} }
+	audit := func(passes bool, below int, findings ...schemaflux.JudgmentIssue) schemaflux.AuditResult[BoardSnapshot] {
+		result := schemaflux.AuditResult[BoardSnapshot]{Judgment: schemaflux.Judgment[BoardSnapshot]{Issues: findings}, BelowThreshold: below}
+		result.Verdict = schemaflux.VerdictFail
+		if passes {
+			result.Verdict = schemaflux.VerdictPass
+		}
 		return result
 	}
 	const clean = "No critical structural issues detected."

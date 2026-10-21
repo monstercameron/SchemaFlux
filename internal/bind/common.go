@@ -1,8 +1,8 @@
 package bind
 
 import (
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Common is the seven settings every options type of version 2 carries, in the

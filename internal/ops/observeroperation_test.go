@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // OB-006. telemetry.Observer was defined, tested, and adapted to

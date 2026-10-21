@@ -1,0 +1,16 @@
+const Jumble Strategy
+const JumbleBasic JumbleMode
+type JumbleMode string
+const JumbleSmart JumbleMode
+const JumbleTypeAware JumbleMode
+const Mask Strategy
+const Nil Strategy
+const Remove Strategy
+const Scramble Strategy
+type Span struct{Start int; End int; Category string; Original string}
+type Strategy string
+func Text(ctx context.Context, text string, options ...TextOptions) (TextResult, error)
+type TextOptions struct{embedded schemaflux.Options; Categories []string; MaskChar rune; ShowFirst int; ShowLast int; MinMask int}
+type TextResult struct{Text string; Original string; Spans []Span; Categories map[string]int; DetectorSpans int; LeftInsideWords int}
+func Value[T any](input T, options ...ValueOptions) (T, error)
+type ValueOptions struct{Categories []string; Strategy Strategy; MaskText string; MaskChar rune; MaskLength int; JumbleSeed int64; JumbleMode JumbleMode; CustomPatterns []string}

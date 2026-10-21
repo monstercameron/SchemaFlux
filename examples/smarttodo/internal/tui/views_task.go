@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 func (m Model) taskViewRender() string {

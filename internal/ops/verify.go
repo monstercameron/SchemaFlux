@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // VerifyOptions configures the Verify operation
@@ -80,7 +80,7 @@ func (v VerifyOptions) Validate() error {
 	}
 	validStrictness := map[string]bool{"strict": true, "moderate": true, "lenient": true}
 	if v.Strictness != "" && !validStrictness[v.Strictness] {
-		return fmt.Errorf("invalid strictness: %s", v.Strictness)
+		return fmt.Errorf("verification strictness must be strict, moderate, or lenient")
 	}
 	// Written so that NaN is refused: every comparison with it is false.
 	if !(v.MinConfidence >= 0 && v.MinConfidence <= 1) {
@@ -864,7 +864,7 @@ func verifyCore(input any, opts VerifyOptions) (VerifyResult, error) {
 
 	inputStr, err := NormalizeInput(input)
 	if err != nil {
-		log.Error("Verify operation failed: input normalization error", "error", err)
+		log.Error("Verify operation failed: input normalization error", "error", loggedError(err))
 		return VerifyResult{}, fmt.Errorf("failed to normalize input: %w", err)
 	}
 
@@ -878,13 +878,13 @@ func verifyCore(input any, opts VerifyOptions) (VerifyResult, error) {
 
 	response, err := callLLM(ctx, verifySystemPrompt(opts), userPrompt, opt)
 	if err != nil {
-		log.Error("Verify operation LLM call failed", "error", err)
+		log.Error("Verify operation LLM call failed", "error", loggedError(err))
 		return VerifyResult{}, fmt.Errorf("verification failed: %w", err)
 	}
 
 	result, err := verifyFindings(response, opts)
 	if err != nil {
-		log.Error("Verify operation failed: the answer could not be used", "error", err)
+		log.Error("Verify operation failed: the answer could not be used", "error", loggedError(err))
 		return VerifyResult{}, err
 	}
 
@@ -1055,6 +1055,7 @@ func hasText(entries []string) bool {
 // the earliest claim. The evidence, sources and corrections are those of every
 // claim that gave the verdict, in claim order and without repeats; corrections
 // are joined by a newline.
+// Deprecated: use VerifyWithModel for a typed verification result.
 func VerifyClaim(claim string, opts VerifyOptions) (ClaimVerification, error) {
 	if !opts.CheckFacts {
 		return ClaimVerification{}, types.Newf(types.KindConfiguration, "verify",

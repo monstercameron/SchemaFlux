@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
 )
 
 func TestExecLoggerIsTheLoggerOfTheClientOfTheCall(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // NormalizeOptions configures the Normalize operation
@@ -80,7 +80,7 @@ func (n NormalizeOptions) Validate() error {
 	}
 	validCases := map[string]bool{"": true, "lower": true, "upper": true, "title": true, "sentence": true}
 	if !validCases[n.NormalizeCase] {
-		return fmt.Errorf("invalid normalize case: %s", n.NormalizeCase)
+		return fmt.Errorf("normalize case must be lower, upper, title, or sentence")
 	}
 	return nil
 }
@@ -278,7 +278,7 @@ func Normalize[T any](input T, opts NormalizeOptions) (NormalizeResult[T], error
 	// Marshal input
 	inputJSON, err := promptJSON(input)
 	if err != nil {
-		log.Error("Normalize operation failed: marshal error", "error", err)
+		log.Error("Normalize operation failed: marshal error", "error", loggedError(err))
 		return NormalizeResult[T]{}, types.Newf(types.KindInvalidRequest, "normalize", "the input could not be written as JSON")
 	}
 
@@ -381,13 +381,13 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Normalize operation LLM call failed", "error", err)
+		log.Error("Normalize operation LLM call failed", "error", loggedError(err))
 		return NormalizeResult[T]{}, fmt.Errorf("normalization failed: %w", err)
 	}
 
 	result, err := readNormalizeAnswer(input, opts, response)
 	if err != nil {
-		log.Error("Normalize operation refused the answer", "error", err)
+		log.Error("Normalize operation refused the answer", "error", loggedError(err))
 		return NormalizeResult[T]{}, err
 	}
 
@@ -507,7 +507,7 @@ func NormalizeBatch[T any](items []T, opts NormalizeOptions) ([]NormalizeResult[
 	if err != nil {
 		var failed ChunkError
 		if errors.As(err, &failed) {
-			log.Error("NormalizeBatch failed for item", "index", failed.Index, "error", failed.Err)
+			log.Error("NormalizeBatch failed for item", "index", failed.Index, "error", loggedError(failed.Err))
 			return nil, fmt.Errorf("failed to normalize item %d: %w", failed.Index, failed.Err)
 		}
 		return nil, fmt.Errorf("failed to normalize the batch: %w", err)

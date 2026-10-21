@@ -3,7 +3,7 @@ package ops
 import (
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // spend collects the envelope of every request a run of many calls makes, so

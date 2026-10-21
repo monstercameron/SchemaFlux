@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
 )
 
 // The readers of the client's settings on its snapshot. Each returns the

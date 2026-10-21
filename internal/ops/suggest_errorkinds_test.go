@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Suggest refuses options it cannot use, and input JSON cannot write, before it
@@ -40,13 +40,13 @@ func TestSuggestRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "a strategy that is not one of the four",
 			run:  suggest("state", func(o *SuggestOptions) { o.Strategy = "random" }),
-			text: "invalid options: invalid strategy: random",
+			text: "invalid options: suggestion strategy must be contextual, pattern, goal, or hybrid",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
 			name: "no strategy",
 			run:  suggest("state", func(o *SuggestOptions) { o.Strategy = "" }),
-			text: "invalid options: invalid strategy: ",
+			text: "invalid options: suggestion strategy must be contextual, pattern, goal, or hybrid",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

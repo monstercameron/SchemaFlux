@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A Sink is a recorder as this package sees one. A client holds one on its

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 func chunksStream(final llm.CompletionResponse, deltas ...string) *namedStreamProvider {

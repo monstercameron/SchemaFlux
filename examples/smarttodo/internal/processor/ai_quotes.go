@@ -1,10 +1,12 @@
 package processor
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 
-	"github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
 )
 
 // GenerateAIQuote generates a motivational quote using AI
@@ -66,10 +68,8 @@ The quote should be:
 Format: Just the quote text, no attribution or quotation marks.`, theme, figure)
 
 	quote, err := schemaflux.Generate[string](
-		prompt,
-		schemaflux.NewGenerateOptions().
-			WithIntelligence(schemaflux.Fast).
-			WithMode(schemaflux.Creative),
+		appclient.Context(context.Background()), prompt,
+		schemaflux.GenerateOptions{Options: schemaflux.Options{Tier: schemaflux.TierFast, Mode: schemaflux.ModeCreative}},
 	)
 
 	if err != nil {

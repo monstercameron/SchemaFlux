@@ -6,8 +6,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
 )
 
 func TestWithoutReferencesTakesTheReferenceOutOfEveryBody(t *testing.T) {

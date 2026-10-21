@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Decide. What the model is asked, and what is accepted from it.

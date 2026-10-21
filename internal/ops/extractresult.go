@@ -3,7 +3,7 @@ package ops
 import (
 	"reflect"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ExtractResult runs Extract and returns the record of how it ran alongside the

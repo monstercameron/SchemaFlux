@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // DeriveOptions configures the Derive operation.
@@ -202,7 +202,7 @@ func Derive[T any, U any](input T, opts ...DeriveOptions) (DeriveResult[U], erro
 	// Convert input to JSON
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Derive operation failed: marshal error", "error", err)
+		log.Error("Derive operation failed: marshal error", "error", loggedError(err))
 		return DeriveResult[U]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -289,7 +289,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Derive operation LLM call failed", "error", err)
+		log.Error("Derive operation LLM call failed", "error", loggedError(err))
 		return DeriveResult[U]{}, fmt.Errorf("derivation failed: %w", err)
 	}
 
@@ -306,7 +306,7 @@ Rules:
 	if err := decodeAnswer("derive", response, &parsed); err != nil {
 		// The response is the caller's record derived from; it does not belong
 		// in a log line.
-		log.Error("Derive operation failed: parse error", "error", err)
+		log.Error("Derive operation failed: parse error", "error", loggedError(err))
 		return DeriveResult[U]{}, fmt.Errorf("failed to parse derivation result: %w", err)
 	}
 
@@ -341,7 +341,7 @@ Rules:
 	// name order so that the one a refusal names is the same on every call.
 	for _, field := range sortedKeys(parsed.FieldConfidence) {
 		if err := AtLeastConfidence(parsed.FieldConfidence[field], opt.MinConfidence); err != nil {
-			log.Error("Derived field is below the configured confidence floor", "field", field, "error", err)
+			log.Error("Derived field is below the configured confidence floor", "field", field, "error", loggedError(err))
 			return DeriveResult[U]{}, fmt.Errorf("derivation rejected for field %q: %w", field, err)
 		}
 	}
@@ -360,14 +360,14 @@ Rules:
 		}
 	}
 	if err := AtLeastConfidence(parsed.ModelOverallConfidence, opt.MinConfidence); err != nil {
-		log.Error("Derivation is below the configured confidence floor", "error", err)
+		log.Error("Derivation is below the configured confidence floor", "error", loggedError(err))
 		return DeriveResult[U]{}, fmt.Errorf("derivation rejected: %w", err)
 	}
 
 	// Parse derived data
 	var derived U
 	if err := decodeCallerAnswer("derive", string(parsed.Derived), &derived); err != nil {
-		log.Error("Derive operation failed: derived data parse error", "error", err)
+		log.Error("Derive operation failed: derived data parse error", "error", loggedError(err))
 		return DeriveResult[U]{}, fmt.Errorf("failed to parse derived data: %w", err)
 	}
 

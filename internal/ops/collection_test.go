@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 func TestCollectionRefusalsBeforeACallHaveAKind(t *testing.T) {
@@ -44,7 +44,7 @@ func TestCollectionRefusalsBeforeACallHaveAKind(t *testing.T) {
 		{"Choose with TopN above one", chooseWith(func(o *ChooseOptions) { o.TopN = 3 }),
 			"invalid options: topN=3: Choose returns a single result; use Rank with WithTopK(3) for an ordered list", types.KindConfiguration},
 		{"Choose with a strategy nobody knows", chooseWith(func(o *ChooseOptions) { o.Strategy = "lottery" }),
-			"invalid options: invalid strategy: lottery", types.KindConfiguration},
+			"invalid options: choice strategy must be sequential, tournament, or scoring", types.KindConfiguration},
 		{"Choose with a threshold above one", chooseWith(func(o *ChooseOptions) { o.CommonOptions.Threshold = 2 }),
 			"invalid options: threshold must be between 0 and 1, got 2.000000", types.KindConfiguration},
 		{"Choose under a locked output ceiling", chooseWith(func(o *ChooseOptions) {
@@ -80,7 +80,7 @@ func TestCollectionRefusalsBeforeACallHaveAKind(t *testing.T) {
 		{"Sort with no criteria", sortWith(func(o *SortOptions) { o.Criteria = "" }),
 			"invalid options: sort criteria is required", types.KindConfiguration},
 		{"Sort with a direction nobody knows", sortWith(func(o *SortOptions) { o.Direction = "sideways" }),
-			"invalid options: invalid direction: sideways", types.KindConfiguration},
+			"invalid options: sort direction must be ascending or descending", types.KindConfiguration},
 		{"Sort with a threshold above one", sortWith(func(o *SortOptions) { o.CommonOptions.Threshold = 8 }),
 			"invalid options: threshold must be between 0 and 1, got 8.000000", types.KindConfiguration},
 		{"Sort with a bad option beside one item", func() error {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-002. StrictEvidence is the enforcement half; internal/types/evidence_test.go

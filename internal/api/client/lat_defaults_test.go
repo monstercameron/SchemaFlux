@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A client's model and effort reach the context its calls run under, and a

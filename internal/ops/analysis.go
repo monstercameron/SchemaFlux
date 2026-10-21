@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ClassifyResult contains the results of classification.
@@ -255,7 +255,7 @@ Return a JSON object with these fields:
 	}
 	response, err := callLLM(callCtx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Classify operation failed", "error", err)
+		log.Error("Classify operation failed", "error", loggedError(err))
 		return ClassifyResult[C]{}, types.ClassifyError{
 			InputShape: shape,
 			Categories: categories,
@@ -287,7 +287,7 @@ Return a JSON object with these fields:
 	if decodeErr != nil {
 		// No response body in the log. Every operator ships their logs
 		// somewhere, and the body is the caller's record classified -- X-03.
-		log.Error("Classify failed to parse response", "error", decodeErr)
+		log.Error("Classify failed to parse response", "error", loggedError(decodeErr))
 		kind, message := decodedRefusal(decodeErr)
 		return refuse(kind, 0, "%s", message)
 	}
@@ -343,7 +343,7 @@ Return a JSON object with these fields:
 	// number is still a model claim, and enforcing it does not make it a
 	// measurement; it makes the option mean what it says.
 	if err := AtLeastConfidence(confidence, opts.MinConfidence); err != nil {
-		log.Error("Classify result is below the configured confidence floor", "error", err)
+		log.Error("Classify result is below the configured confidence floor", "error", loggedError(err))
 		return refuse(types.KindInvariantViolation, confidence, "%s", err.Error())
 	}
 
@@ -654,7 +654,7 @@ Return a JSON object with these fields:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Score operation failed", "error", err)
+		log.Error("Score operation failed", "error", loggedError(err))
 		return ScoreResult{}, types.ScoreError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -688,7 +688,7 @@ Return a JSON object with these fields:
 	// object that was asked for is not an answer to what was asked: the fallback
 	// accepted "NaN", which no comparison refuses, and hexadecimal floats.
 	if err := decodeAnswer("score", response, &llmResult); err != nil {
-		log.Error("Score failed to parse response", "error", err)
+		log.Error("Score failed to parse response", "error", loggedError(err))
 		kind, message := decodedRefusal(err)
 		return refuse(kind, "%s", message)
 	}
@@ -879,7 +879,7 @@ Return a JSON object with these fields:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Compare operation failed", "error", err)
+		log.Error("Compare operation failed", "error", loggedError(err))
 		return CompareResult[T]{}, types.CompareError{
 			AShape: types.DescribeValue(itemA),
 			BShape: types.DescribeValue(itemB),
@@ -922,7 +922,7 @@ Return a JSON object with these fields:
 	}
 
 	if err := decodeAnswer("compare", response, &llmResult); err != nil {
-		log.Error("Compare failed to parse response", "error", err)
+		log.Error("Compare failed to parse response", "error", loggedError(err))
 		kind, message := decodedRefusal(err)
 		return refuse(kind, "%s", message)
 	}
@@ -1377,7 +1377,7 @@ func Similar[T any](itemA, itemB T, opts SimilarOptions) (SimilarResult, error) 
 	supplied := append([]string{itemAString, itemBString, opts.OpOptions.Steering}, opts.Aspects...)
 	response, err := callLLM(preferEffort(ctx, judgmentEffort(supplied...)), similarSystemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Similar operation failed", "error", err)
+		log.Error("Similar operation failed", "error", loggedError(err))
 		return SimilarResult{}, fmt.Errorf("similarity check failed: %w", err)
 	}
 
@@ -1404,7 +1404,7 @@ func Similar[T any](itemA, itemB T, opts SimilarOptions) (SimilarResult, error) 
 		// and it could exceed 1 or fall below 0 (LX-022). A response in that
 		// shape is now what it always was: not the answer that was asked for.
 		// The log line also used to carry the whole response.
-		log.Error("Similar failed to parse response", "error", err)
+		log.Error("Similar failed to parse response", "error", loggedError(err))
 		return SimilarResult{}, err
 	}
 

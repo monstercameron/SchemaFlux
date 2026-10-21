@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LAT-001. Where the time of one HTTP call to a provider went, from the

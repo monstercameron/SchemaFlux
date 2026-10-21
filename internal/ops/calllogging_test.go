@@ -8,11 +8,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Where the lines of the call path itself go: the request's start and finish,

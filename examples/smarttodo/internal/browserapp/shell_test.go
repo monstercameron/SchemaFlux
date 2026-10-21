@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 func TestShellSetContext(t *testing.T) {

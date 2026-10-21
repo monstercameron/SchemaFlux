@@ -1,7 +1,7 @@
 package sim
 
 import (
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
 )
 
 // Sensitive is one piece of personal data in a message: the value as it is

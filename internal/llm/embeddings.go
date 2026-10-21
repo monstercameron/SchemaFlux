@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // PS-006. Similar, CheckingSimilarity, Clustering, Deduplicate, and Matching

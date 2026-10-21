@@ -1,5 +1,5 @@
 # Numbered examples under SCHEMAFLUX_PROVIDER=local.
-# 44 of 45 pass. See scripts/examples_gate.py and TODOS.md CI-004.
+# 45 of 45 pass. See scripts/examples_gate.py and TODOS.md CI-004.
 # Update with: python scripts/examples_gate.py --update
 #
 # A FAIL line is a known gap, not permission to add another.
@@ -24,8 +24,7 @@ PASS 17-diff
 PASS 18-explain
 PASS 19-parse
 PASS 20-complete
-FAIL 21-redact
-#   the local provider answers with a placeholder string, and RedactLLM refuses a value that is not in the text (LX-020). It was recorded as PASS while every call in it failed, because the example exited 0 regardless.
+PASS 21-redact
 PASS 22-suggest
 PASS 23-annotate
 PASS 24-cluster

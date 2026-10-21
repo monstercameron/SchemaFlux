@@ -3,8 +3,8 @@ package logger
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	telemetry "github.com/monstercameron/schemaflux/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	telemetry "github.com/monstercameron/schemaflux/v2/internal/telemetry"
 )
 
 // withRestoredGlobalLogger snapshots the package-global logger telemetry

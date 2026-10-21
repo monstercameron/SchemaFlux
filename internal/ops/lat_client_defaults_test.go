@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A client can name the model and the reasoning effort its calls use, once.

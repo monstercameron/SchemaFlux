@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ProtocolConformanceChecks implements CP-003's wire-level checks against

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The OpenAI-compatible providers went through go-openai's chat completion

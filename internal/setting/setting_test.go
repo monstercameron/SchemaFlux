@@ -3,8 +3,8 @@ package setting_test
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/setting"
-	"github.com/monstercameron/schemaflux/internal/setting/settingtest"
+	"github.com/monstercameron/schemaflux/v2/internal/setting"
+	"github.com/monstercameron/schemaflux/v2/internal/setting/settingtest"
 )
 
 // held is a setting that is nothing but an int, so that the layers are tested

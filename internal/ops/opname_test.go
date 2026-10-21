@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
 )
 
 // A caller's name for a call applies to the internal operation it was given for

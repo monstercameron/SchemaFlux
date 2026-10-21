@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The verify line of a staged plan: "a two-stage extract-then-verify plan sends the

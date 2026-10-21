@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The client's settings on its snapshot reach the call: how many times a

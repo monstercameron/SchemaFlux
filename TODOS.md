@@ -7615,6 +7615,125 @@ session's working files and their findings are entered here as they are acted on
      call and its result back, and the refusal of a tool whose parameters are not strict on OpenAI's
      own endpoint, rest on knowledge of the vendor's API and no test here calls a vendor; then re-run
      the flowdesk benchmark on v2 for latency and accuracy.
+  **Progress, 2026-10-20 (still open).** `go test ./v2/exp ./tests/parity -count=1` passes.
+  `exp.Resolve` and `exp.Project` now return a zero result on error; Project's plain call
+  avoids the recorded-path allocations. The Project parity table covers its defaults,
+  operation options and common options. The Conform parity test now compares the same
+  preserve-unknown choice on both APIs; Decompose and Enrich parity fixtures supply the
+  estimates and confidence their option cases require. The guard's failure, floor,
+  contract-table and field-comment checks pass after correcting the final stream refusal
+  kind, adding the chat and runner contract rows, and documenting the public fields.
+  The guard's surface snapshots and counts now include the completed `exp.Pivot`
+  and `exp.Predict` wrappers; direct tests, runnable examples, and old-root request
+  parity cover both. The full `v2/internal/guard` suite passes after its timeout
+  assertions were aligned with streams' eventual records and `op.RunEach`'s
+  per-item errors. The old-root API snapshot records the documented surface
+  changes, and the log canary test now passes across its catalogue after error
+  text and schema field names were removed from operation log lines. The root
+  tests pass. The v2 Flowdesk production packages and copied tests have been
+  ported to the v2 API; its full offline bench, desk and simulator suites pass.
+  The v2 examples run reported passing packages, though Go exited while
+  removing a Windows temporary test executable. The nested v2 SmartTodo module
+  now builds, passes `go test ./...` and `go vet ./...` against Go 1.27 after
+  its calls were ported to the v2 context, options, and `exp` APIs. Its UI
+  reads measured request and cost totals from a Recorder instead of displaying
+  invented estimates. All thirteen previously missing `exp` example ports
+  (27, 28, 32, 33, 36–42, 44, 45) now have offline scripted-provider tests.
+  `go test -p 1 ./examples/v2/... -count=1` passes across the complete
+  root-module v2 example tree, including Flowdesk. The unrelated untracked
+  `internal/operations` file is untouched.
+  One full root-module package-list run excluding only that unrelated
+  `internal/operations` package passes with `go test -p 1 -count=1`; the same
+  package list passes with `-shuffle=on -count=1`. A third unshuffled run
+  also passes after the option-error privacy and exp allocation/floor/canary
+  changes. All three runs exclude only the unrelated untracked
+  `internal/operations` package.
+  `redact.Text` now names its observer scope `redact.text`, matching its
+  Record; its exact-scope test failed before the fix and passes after.
+  The planner's two unpriced cost paths and the stream record path now send
+  pricing warnings through the client's logger, covered by a test that
+  checks all three sites and the process logger. A System One HTTP timing
+  assertion was flaky on Windows because a valid call can take less than
+  the clock's resolution; it now checks that the timed call was counted,
+  and passed 20 consecutive runs.
+  The option-error privacy sweep removed rejected string values from the
+  internal validators used by both APIs. A table of 25 direct validator cases
+  checks that each error names its field without repeating a canary. Exported
+  `exp.Predict` and `exp.Pivot` tests first failed when their public error
+  text and JSON repeated the caller's option, then passed after the fixes.
+  The affected internal, v2 exp, old-root integration, and parity suites pass
+  with their exact-message expectations updated. Numeric range errors still
+  include the rejected number; `CompleteField` errors still name the field.
+  `exp.Pivot` and `exp.Predict` now have allocation comparisons against their
+  internal calls, repeated three times: Pivot adds one allocation with an
+  injected client and two on the default client; Predict adds two and three
+  respectively for its interval conversion and the client lookup. Focused
+  floor tests confirm Pivot refuses a schema-constrained minimum before a
+  request, while Predict with a schema-bearing output passes that minimum
+  and refuses an evidence-checked minimum. Invalid provider responses and
+  caller input canaries do not appear in either operation's public error or
+  Record JSON. All focused tests pass offline.
+  The root README now describes the staged v2 function API, client and
+  provider configuration, errors and records, package layout, offline tests,
+  and migration from the v1 builders. It names the staging location and the
+  intended `/v2` module path; its relative package and example links must be
+  updated when the release swap moves those directories. A stale
+  `SummarizeOptions.MaxWords` godoc example was corrected to the actual
+  `TargetLength` and `LengthUnit` fields. A compile-only check of the README's
+  client, operation, recorder, error, and test-provider examples passes;
+  `go test ./examples/v2/01-extract ./v2 -count=1` also passes offline.
+  The six v2 analysis wrappers named for weaker-model review (`Score`,
+  `Similar`, `Deduplicate`, `Compare`, `Diff`, `Cluster`) were checked against
+  their internal calls and tests. Each has direct cases, old-root request
+  parity, allocation comparisons, contract-floor refusals, payload canaries,
+  and a runnable example. Their focused v2 and parity test runs pass offline.
+  Score's public comment now describes its tested 1e-9 floating-point
+  tolerance at a scale endpoint instead of saying it never clamps.
+  `op.RunEach` gained a direct floor test that first failed: a refused run
+  recorded its Requested contract as prompt-only even though the descriptor
+  offered JSON well-formed. The atomic partial and recovering batch internals
+  now keep that requested level on a refusal before any request. Atomic and
+  batched exported-path tests pass and confirm zero provider calls. The README
+  port initially removed the redaction limits the existing disclosure test
+  requires; its v2 redaction section now carries those limits and the v1-to-v2
+  reporting change, and `TestREADMEDescribesRedaction` passes. The full
+  `internal/ops`, `v2/op`, and parity suites pass after these changes, as do
+  `go vet` on the affected packages, `gofmt`, and `git diff --check`.
+  `exp.Project` now has exported-path tests for its schema-contract floor
+  refusal before any provider call and for malformed-answer and provider-error
+  payload canaries in public errors, Records and logs. Its focused tests pass.
+  `exp.Settle`'s comment now matches its validator: negative satisfaction
+  disables that floor, while negative MaxAlternatives is rejected.
+  The experimental-operation provider-error tests no longer skip when they
+  encounter a raw cause kept for `Error.Detail`, or silently skip on a client
+  log canary. They now assert the public error, Record, and log separately;
+  all focused cases pass with no skips. `op`'s three foreign-provider error
+  log cases likewise assert instead of skip. The complete `v2/exp`, `v2/op`,
+  and parity suites pass after this review, as does vet on both v2 packages.
+  **Release swap in progress, 2026-10-20.** The v2 packages and examples now
+  live at the repository root under the `/v2` module path. The old public root,
+  old example copies, fluent builders and tools have been retired; the former
+  runtime implementations needed by the v2 wrappers live under
+  `internal/runtime`. The v1-only integration and parity harness was archived
+  outside the repository because it cannot compile against the v2 root; the
+  offline tool wire contract tests remain in `tests/wirecontract` and pass.
+  The guard now inventories the moved root and public subpackages, and its
+  full suite passes. `go mod tidy`, the nested SmartTodo tests, the secret
+  scan, deprecation policy, acceptance ledger and release ladder pass. A
+  scoped package suite passes across 82 packages after the move. Full
+  `go build ./...` encounters only the unrelated untracked
+  `incidentrepair.go` compile error when that file is present; it was
+  temporarily held outside the tree for the complete gate and restored.
+  Coverage measured 97.4% and that result is the new floor.
+  Example 29 was missing from staging and is now ported with offline tests;
+  all 45 numbered example suites pass. The complete `scripts/check.sh` gate
+  passed 16/16 on 2026-10-20, including shuffled tests and the examples gate;
+  `govulncheck` reported advisory findings. Two guarded live tool-wire tests
+  compile and skip by default. The offline Flowdesk benchmark passed 3/3
+  messages in each flow. The live tool-wire check and live Flowdesk benchmark
+  remain before release. This Windows
+  host has cgo disabled, so its race gate is reported as unavailable and must
+  run in CI.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a

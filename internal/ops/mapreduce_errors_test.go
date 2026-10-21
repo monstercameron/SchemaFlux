@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every failure of MapReduce's own has a kind; a chunk's operation that panics

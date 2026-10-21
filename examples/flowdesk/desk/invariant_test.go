@@ -10,9 +10,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // request is one request a recorder saw: what it was, what it carried, the
@@ -36,10 +36,10 @@ type recorder struct {
 	requests []*request
 }
 
-func (r *recorder) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (r *recorder) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	r.mu.Lock()
 	r.clock++
-	seen := &request{operation: sim.Operation(req), model: req.Model, prompt: req.UserPrompt, started: r.clock}
+	seen := &request{operation: sim.Operation(req), model: req.Model, prompt: req.User, started: r.clock}
 	r.requests = append(r.requests, seen)
 	r.mu.Unlock()
 
@@ -67,7 +67,7 @@ func (r *recorder) seen() []request {
 func runRecorded(t *testing.T, with flow, labelled sim.Case) []request {
 	t.Helper()
 	recording := &recorder{Provider: sim.New(time.Millisecond)}
-	ctx := schemaflux.NewClient("").WithProviderInstance(recording).Context(context.Background())
+	ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: recording})
 	if _, err := with.handle(desk.New(sim.OpenTickets()), ctx, labelled.Message); err != nil {
 		t.Fatalf("%s, %s flow: %v", labelled.Message.ID, with.name, err)
 	}
@@ -306,7 +306,7 @@ func TestJudgmentIsLaidOverTheTriageQuestionsInEveryFlow(t *testing.T) {
 	for _, with := range allFlows {
 		t.Run(with.name, func(t *testing.T) {
 			recording := &recorder{Provider: sim.New(time.Millisecond)}
-			ctx := schemaflux.NewClient("").WithProviderInstance(recording).Context(context.Background())
+			ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: recording})
 			support := desk.New(sim.OpenTickets())
 			support.Options.Model = "options-model"
 			support.Judgment.Model = "judgment-model"
@@ -322,7 +322,7 @@ func TestJudgmentIsLaidOverTheTriageQuestionsInEveryFlow(t *testing.T) {
 					}
 					continue
 				}
-				answers, err := sim.Answers(schemaflux.CompletionRequest{UserPrompt: one.prompt}, "{}")
+				answers, err := sim.Answers(schemaflux.Request{User: one.prompt}, "{}")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -360,14 +360,14 @@ func TestJudgmentIsLaidOverTheTriageQuestionsInEveryFlow(t *testing.T) {
 type substituting struct {
 	schemaflux.Provider
 	operation string
-	reply     func(schemaflux.CompletionRequest) string
+	reply     func(schemaflux.Request) string
 }
 
-func (s substituting) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (s substituting) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if sim.Operation(req) != s.operation {
 		return s.Provider.Complete(ctx, req)
 	}
-	return schemaflux.CompletionResponse{Content: s.reply(req), Provider: "local", FinishReason: "stop"}, nil
+	return schemaflux.Response{Content: s.reply(req), Provider: "local", FinishReason: "stop"}, nil
 }
 
 // What the check would see if a step's work were thrown away. A flow that kept
@@ -391,7 +391,7 @@ func TestTheRequestsShowAStepThatDidNothing(t *testing.T) {
 	recordedWith := func(t *testing.T, with flow, labelled sim.Case, provider func(schemaflux.Provider) schemaflux.Provider) []request {
 		t.Helper()
 		recording := &recorder{Provider: provider(sim.New(time.Millisecond))}
-		ctx := schemaflux.NewClient("").WithProviderInstance(recording).Context(context.Background())
+		ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: recording})
 		if _, err := with.handle(desk.New(sim.OpenTickets()), ctx, labelled.Message); err != nil {
 			t.Fatalf("%s, %s flow: %v", labelled.Message.ID, with.name, err)
 		}
@@ -403,7 +403,7 @@ func TestTheRequestsShowAStepThatDidNothing(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				labelled := byID["M-04"]
 				requests := recordedWith(t, with, labelled, func(inner schemaflux.Provider) schemaflux.Provider {
-					return substituting{Provider: inner, operation: sim.OpRedact, reply: func(schemaflux.CompletionRequest) string { return `{"spans":[]}` }}
+					return substituting{Provider: inner, operation: sim.OpRedact, reply: func(schemaflux.Request) string { return `{"spans":[]}` }}
 				})
 				var personal []string
 				for _, sensitive := range labelled.Personal {
@@ -431,11 +431,11 @@ func TestTheRequestsShowAStepThatDidNothing(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				labelled := byID["M-13"]
 				requests := recordedWith(t, with, labelled, func(inner schemaflux.Provider) schemaflux.Provider {
-					return substituting{Provider: inner, operation: sim.OpTranslate, reply: func(req schemaflux.CompletionRequest) string {
+					return substituting{Provider: inner, operation: sim.OpTranslate, reply: func(req schemaflux.Request) string {
 						// Only the translation into English is made to fail: the
 						// reply back is answered as the simulator answers it.
-						_, text, _ := strings.Cut(req.UserPrompt, "Translate this text:\n")
-						if strings.Contains(req.UserPrompt, "Translate to English") {
+						_, text, _ := strings.Cut(req.User, "Translate this text:\n")
+						if strings.Contains(req.User, "Translate to English") {
 							return text
 						}
 						return labelled.Sent
@@ -463,17 +463,17 @@ type repeating struct {
 	strings []string
 }
 
-func (r repeating) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (r repeating) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if sim.Operation(req) != sim.OpExtract {
 		return r.Provider.Complete(ctx, req)
 	}
 	for _, one := range r.strings {
-		if strings.Contains(req.UserPrompt, one) {
+		if strings.Contains(req.User, one) {
 			answer, err := json.Marshal(desk.Details{OrderID: one})
 			if err != nil {
-				return schemaflux.CompletionResponse{}, err
+				return schemaflux.Response{}, err
 			}
-			return schemaflux.CompletionResponse{Content: string(answer), Provider: "local", FinishReason: "stop"}, nil
+			return schemaflux.Response{Content: string(answer), Provider: "local", FinishReason: "stop"}, nil
 		}
 	}
 	return r.Provider.Complete(ctx, req)
@@ -504,7 +504,7 @@ func TestWhatIsReadFromTheTextBeforeItIsRedactedDoesNotGoOn(t *testing.T) {
 	for _, with := range allFlows {
 		t.Run(with.name, func(t *testing.T) {
 			recording := &recorder{Provider: repeating{Provider: sim.New(time.Millisecond), strings: personal}}
-			ctx := schemaflux.NewClient("").WithProviderInstance(recording).Context(context.Background())
+			ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: recording})
 			outcome, err := with.handle(desk.New(sim.OpenTickets()), ctx, labelled.Message)
 			if err != nil {
 				t.Fatal(err)

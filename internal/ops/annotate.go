@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // AnnotateOptions configures the Annotate operation
@@ -64,7 +64,7 @@ func (a AnnotateOptions) Validate() error {
 	}
 	validFormats := map[string]bool{"inline": true, "standoff": true, "structured": true}
 	if a.Format != "" && !validFormats[a.Format] {
-		return fmt.Errorf("invalid format: %s", a.Format)
+		return fmt.Errorf("annotation format must be inline, standoff, or structured")
 	}
 	return nil
 }
@@ -224,7 +224,7 @@ func Annotate[T any](input T, opts AnnotateOptions) (AnnotateResult, error) {
 	// Convert input to string
 	inputStr, err := NormalizeInput(input)
 	if err != nil {
-		log.Error("Annotate operation failed: input normalization error", "error", err)
+		log.Error("Annotate operation failed: input normalization error", "error", loggedError(err))
 		return AnnotateResult{}, types.Newf(types.KindInvalidRequest, "annotate", "the input could not be turned into text")
 	}
 
@@ -340,7 +340,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Annotate operation LLM call failed", "error", err)
+		log.Error("Annotate operation LLM call failed", "error", loggedError(err))
 		return AnnotateResult{}, fmt.Errorf("annotation failed: %w", err)
 	}
 
@@ -358,7 +358,7 @@ Return a JSON object with:
 	}
 
 	if err := decodeAnswer("annotate", response, &parsed); err != nil {
-		log.Error("Annotate operation failed: parse error", "error", err)
+		log.Error("Annotate operation failed: parse error", "error", loggedError(err))
 		return AnnotateResult{}, err
 	}
 	// A null list reads as a nil slice and an empty one as a slice that is not.

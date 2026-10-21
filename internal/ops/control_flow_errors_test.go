@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // An answer to a condition that is neither true nor false is an answer that

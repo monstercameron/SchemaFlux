@@ -1,8 +1,8 @@
 package ops
 
 import (
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // loggedError is err reduced to what a log line may say of a failure: the kind

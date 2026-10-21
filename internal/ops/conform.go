@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ConformOptions configures the Conform operation.
@@ -187,7 +187,7 @@ func Conform[T any](input T, standard string, opts ...ConformOptions) (ConformRe
 	// Convert input to JSON
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Conform operation failed: marshal error", "error", err)
+		log.Error("Conform operation failed: marshal error", "error", loggedError(err))
 		return ConformResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -283,7 +283,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Conform operation LLM call failed", "error", err)
+		log.Error("Conform operation LLM call failed", "error", loggedError(err))
 		return ConformResult[T]{}, fmt.Errorf("conformance failed: %w", err)
 	}
 
@@ -301,7 +301,7 @@ Rules:
 	// The log line carries the error, which describes the shape of the answer,
 	// and not the answer.
 	if err := decodeAnswer("conform", response, &parsed); err != nil {
-		log.Error("Conform operation failed: parse error", "error", err)
+		log.Error("Conform operation failed: parse error", "error", loggedError(err))
 		return ConformResult[T]{}, fmt.Errorf("failed to parse conformance result: %w", err)
 	}
 
@@ -329,7 +329,7 @@ Rules:
 
 	var conformed T
 	if err := decodeCallerAnswer("conform", string(parsed.Conformed), &conformed); err != nil {
-		log.Error("Conform operation failed: conformed data parse error", "error", err)
+		log.Error("Conform operation failed: conformed data parse error", "error", loggedError(err))
 		return ConformResult[T]{}, fmt.Errorf("failed to parse conformed data: %w", err)
 	}
 

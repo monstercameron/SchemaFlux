@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // GetTemperature's default branch: an unrecognised or unset Mode gets the

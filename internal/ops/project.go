@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ProjectOptions configures the Project operation
@@ -236,7 +236,7 @@ func Project[T any, U any](input T, opts ...ProjectOptions) (ProjectResult[U], e
 	// not to look at it.
 	inputJSON, excludedValues, err := marshalWithoutExcluded(input, opt.Exclude)
 	if err != nil {
-		log.Error("Project operation failed: marshal error", "error", err)
+		log.Error("Project operation failed: marshal error", "error", loggedError(err))
 		return ProjectResult[U]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -345,7 +345,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Project operation LLM call failed", "error", err)
+		log.Error("Project operation LLM call failed", "error", loggedError(err))
 		return ProjectResult[U]{}, fmt.Errorf("projection failed: %w", err)
 	}
 
@@ -363,7 +363,7 @@ Rules:
 	if err := decodeAnswer("project", response, &parsed); err != nil {
 		// The response is the caller's record projected; it does not belong in
 		// a log line.
-		log.Error("Project operation failed: parse error", "error", err)
+		log.Error("Project operation failed: parse error", "error", loggedError(err))
 		return ProjectResult[U]{}, fmt.Errorf("failed to parse projection result: %w", err)
 	}
 
@@ -382,7 +382,7 @@ Rules:
 	// passed: json.Unmarshal fills what it can before it reports an error.
 	var projected U
 	if err := decodeCallerAnswer("project", string(parsed.Projected), &projected); err != nil {
-		log.Error("Project operation failed: projected data parse error", "error", err)
+		log.Error("Project operation failed: projected data parse error", "error", loggedError(err))
 		return ProjectResult[U]{}, fmt.Errorf("failed to parse projected data: %w", err)
 	}
 

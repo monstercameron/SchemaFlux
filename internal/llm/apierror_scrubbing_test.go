@@ -36,8 +36,8 @@ func TestNewAPIErrorRemovesTheSecretsItIsGiven(t *testing.T) {
 		{"in the type", []string{"gw-secret-777"}, `{"error":{"message":"m","type":"gw-secret-777"}}`, []string{"gw-secret-777"}, "m"},
 		{"in the code", []string{"gw-secret-888"}, `{"error":{"message":"m","code":"gw-secret-888"}}`, []string{"gw-secret-888"}, "m"},
 		{"in the param", []string{"gw-secret-999"}, `{"error":{"message":"m","param":"gw-secret-999"}}`, []string{"gw-secret-999"}, "m"},
-		{"a key of a shape RedactCredentials knows", []string{"sk-proj-abcdefghijklmnopqrstuvwxyz0123"}, `{"error":{"message":"bad sk-proj-abcdefghijklmnopqrstuvwxyz0123 given"}}`, []string{"sk-proj-abcdefghij"}, "bad"},
-		{"a credential of a known shape that is not the configured key", nil, `{"error":{"message":"bad sk-proj-abcdefghijklmnopqrstuvwxyz0123 given"}}`, []string{"sk-proj-abcdefghij"}, "bad"},
+		{"a key of a shape RedactCredentials knows", []string{"sk-proj-abcdefghijklmnopqrstuvwxyz0123"}, `{"error":{"message":"bad sk-proj-abcdefghijklmnopqrstuvwxyz0123 given"}}`, []string{"sk-proj-abcdefghij"}, "bad"}, // secret-scan: allow
+		{"a credential of a known shape that is not the configured key", nil, `{"error":{"message":"bad sk-proj-abcdefghijklmnopqrstuvwxyz0123 given"}}`, []string{"sk-proj-abcdefghij"}, "bad"},                            // secret-scan: allow
 		{"the body is not JSON", []string{"gw-secret-000"}, `<html>gw-secret-000</html>`, []string{"gw-secret-000"}, ""},
 	}
 	for _, tc := range cases {

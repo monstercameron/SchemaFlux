@@ -11,12 +11,12 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	redaction "github.com/monstercameron/schemaflux/v2/redact"
 )
 
 func TestMain(m *testing.M) {
-	schemaflux.ConfigureLogging(schemaflux.LoggerConfig{Level: schemaflux.LogError, DisableStderr: true})
 	os.Exit(m.Run())
 }
 
@@ -45,29 +45,29 @@ func askOf[T any](t *testing.T, field string) string {
 // through returns a simulator and a context whose calls reach it.
 func through(delay time.Duration) (*Simulator, context.Context) {
 	provider := New(delay)
-	client := schemaflux.NewClient("").WithProviderInstance(provider)
-	return provider, client.Context(context.Background())
+	client := schemaflux.Client{Provider: provider}
+	return provider, schemaflux.WithClient(context.Background(), client)
 }
 
 func TestOperationIsReadFromTheRequest(t *testing.T) {
 	cases := []struct {
 		name string
-		req  schemaflux.CompletionRequest
+		req  schemaflux.Request
 		want string
 	}{
-		{"an assessment, by the name of its answer", schemaflux.CompletionRequest{SchemaName: "assessment"}, OpAssess},
-		{"an audit, by the name of its answer", schemaflux.CompletionRequest{SchemaName: "audit"}, OpAudit},
-		{"a redaction, by the name of its answer", schemaflux.CompletionRequest{SchemaName: "redaction_spans"}, OpRedact},
-		{"an extraction, by its instructions", schemaflux.CompletionRequest{SchemaName: "Details", SystemPrompt: "You are a data extraction expert. Extract structured data."}, OpExtract},
-		{"a generation, by its instructions", schemaflux.CompletionRequest{SchemaName: "Reply", SystemPrompt: "You are a data generation expert. Generate structured data."}, OpGenerate},
-		{"a translation", schemaflux.CompletionRequest{SystemPrompt: "You are a translation expert. Translate text accurately."}, OpTranslate},
-		{"a summary", schemaflux.CompletionRequest{SystemPrompt: "You are a text summarization expert. Create concise summaries."}, OpSummarize},
-		{"a rewrite", schemaflux.CompletionRequest{SystemPrompt: "You are a text rewriting expert. Modify text."}, OpRewrite},
-		{"instructions with the library's own rules in front", schemaflux.CompletionRequest{SystemPrompt: "Perform the semantic task faithfully.\n\nYou are a translation expert."}, OpTranslate},
-		{"the name of the answer wins over the instructions", schemaflux.CompletionRequest{SchemaName: "audit", SystemPrompt: "You are a translation expert."}, OpAudit},
-		{"an answer of the caller's own type and no known instructions", schemaflux.CompletionRequest{SchemaName: "Reply", SystemPrompt: "You are a poet."}, ""},
-		{"nothing at all", schemaflux.CompletionRequest{}, ""},
-		{"the instructions quoted in the message and not given", schemaflux.CompletionRequest{UserPrompt: "You are a translation expert."}, ""},
+		{"an assessment, by the name of its answer", schemaflux.Request{SchemaName: "assessment"}, OpAssess},
+		{"an audit, by the name of its answer", schemaflux.Request{SchemaName: "audit"}, OpAudit},
+		{"a redaction, by the name of its answer", schemaflux.Request{SchemaName: "redaction_spans"}, OpRedact},
+		{"an extraction, by its instructions", schemaflux.Request{SchemaName: "Details", System: "You are a data extraction expert. Extract structured data."}, OpExtract},
+		{"a generation, by its instructions", schemaflux.Request{SchemaName: "Reply", System: "You are a data generation expert. Generate structured data."}, OpGenerate},
+		{"a translation", schemaflux.Request{System: "You are a translation expert. Translate text accurately."}, OpTranslate},
+		{"a summary", schemaflux.Request{System: "You are a text summarization expert. Create concise summaries."}, OpSummarize},
+		{"a rewrite", schemaflux.Request{System: "You are a text rewriting expert. Modify text."}, OpRewrite},
+		{"instructions with the library's own rules in front", schemaflux.Request{System: "Perform the semantic task faithfully.\n\nYou are a translation expert."}, OpTranslate},
+		{"the name of the answer wins over the instructions", schemaflux.Request{SchemaName: "audit", System: "You are a translation expert."}, OpAudit},
+		{"an answer of the caller's own type and no known instructions", schemaflux.Request{SchemaName: "Reply", System: "You are a poet."}, ""},
+		{"nothing at all", schemaflux.Request{}, ""},
+		{"the instructions quoted in the message and not given", schemaflux.Request{User: "You are a translation expert."}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,45 +253,41 @@ func TestTheSimulatorAnswersEachOperationThroughTheLibrary(t *testing.T) {
 	})
 	t.Run("Audit, of a draft that breaks a policy", func(t *testing.T) {
 		_, ctx := through(0)
-		audit, err := schemaflux.Audit(desk.Reply{Body: redrafted.Draft}, schemaflux.AuditOptions{Policies: policies, Context: ctx})
+		audit, err := schemaflux.Audit(ctx, desk.Reply{Body: redrafted.Draft}, schemaflux.AuditOptions{Policies: policies})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if audit.Summary.PassesAudit || len(audit.Findings) != 1 || audit.Findings[0].Policy != policies[0] {
-			t.Errorf("audit passes: %t, findings: %+v; want one finding under the first policy", audit.Summary.PassesAudit, audit.Findings)
+		if audit.Verdict == schemaflux.VerdictPass || len(audit.Issues) != 1 || audit.Issues[0].Rule != policies[0] {
+			t.Errorf("audit verdict: %s, issues: %+v; want one issue under the first policy", audit.Verdict, audit.Issues)
 		}
-		if audit.Findings[0].Recommendation == "" {
+		if len(audit.Issues) > 0 && audit.Issues[0].Suggestion == "" {
 			t.Error("the finding says nothing about how to fix the draft, and the redraft is written from that")
 		}
 	})
 	t.Run("Audit, of the redraft", func(t *testing.T) {
 		_, ctx := through(0)
-		audit, err := schemaflux.Audit(desk.Reply{Body: redrafted.Redraft}, schemaflux.AuditOptions{Policies: policies, Context: ctx})
-		if err != nil || !audit.Summary.PassesAudit || len(audit.Findings) != 0 {
-			t.Errorf("audit passes: %t, findings: %+v, err: %v; want a pass", audit.Summary.PassesAudit, audit.Findings, err)
+		audit, err := schemaflux.Audit(ctx, desk.Reply{Body: redrafted.Redraft}, schemaflux.AuditOptions{Policies: policies})
+		if err != nil || audit.Verdict != schemaflux.VerdictPass || len(audit.Issues) != 0 {
+			t.Errorf("audit verdict: %s, issues: %+v, err: %v; want a pass", audit.Verdict, audit.Issues, err)
 		}
 	})
 	t.Run("Audit, of a draft that breaks nothing", func(t *testing.T) {
 		_, ctx := through(0)
-		audit, err := schemaflux.Audit(desk.Reply{Body: plain.Draft}, schemaflux.AuditOptions{Policies: policies, Context: ctx})
-		if err != nil || !audit.Summary.PassesAudit {
-			t.Errorf("audit passes: %t, err: %v; want a pass", audit.Summary.PassesAudit, err)
+		audit, err := schemaflux.Audit(ctx, desk.Reply{Body: plain.Draft}, schemaflux.AuditOptions{Policies: policies})
+		if err != nil || audit.Verdict != schemaflux.VerdictPass {
+			t.Errorf("audit verdict: %s, err: %v; want a pass", audit.Verdict, err)
 		}
 	})
 	t.Run("Translate, into English", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewTranslateOptions().WithTargetLanguage("English")
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		english, err := schemaflux.Translate(spanish.Message.Text(), opts)
+		english, err := schemaflux.Translate(ctx, spanish.Message.Text(), "English")
 		if err != nil || english != spanish.English {
 			t.Errorf("Translate = %q, %v", english, err)
 		}
 	})
 	t.Run("Translate, back into the customer's language", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewTranslateOptions().WithTargetLanguage("Spanish")
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		sent, err := schemaflux.Translate(spanish.Draft, opts)
+		sent, err := schemaflux.Translate(ctx, spanish.Draft, "Spanish")
 		if err != nil || sent != spanish.Sent {
 			t.Errorf("Translate = %q, %v", sent, err)
 		}
@@ -301,9 +297,7 @@ func TestTheSimulatorAnswersEachOperationThroughTheLibrary(t *testing.T) {
 	})
 	t.Run("RedactLLM", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewRedactLLMOptions()
-		opts.Context = ctx
-		redacted, err := schemaflux.RedactLLM(personal.Message.Body, opts)
+		redacted, err := redaction.Text(ctx, personal.Message.Body, redaction.TextOptions{Categories: []string{"credit_card", "password", "phone", "address", "ssn"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -321,45 +315,36 @@ func TestTheSimulatorAnswersEachOperationThroughTheLibrary(t *testing.T) {
 	})
 	t.Run("RedactLLM, with nothing to redact", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewRedactLLMOptions()
-		opts.Context = ctx
-		redacted, err := schemaflux.RedactLLM(plain.Message.Body, opts)
+		redacted, err := redaction.Text(ctx, plain.Message.Body, redaction.TextOptions{Categories: []string{"credit_card", "password", "phone", "address", "ssn"}})
 		if err != nil || redacted.Text != plain.Message.Body {
 			t.Errorf("RedactLLM changed a text with no personal data in it: %v", err)
 		}
 	})
 	t.Run("Extract", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewExtractOptions()
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		details, err := schemaflux.Extract[desk.Details](plain.Message.Body, opts)
+		details, err := schemaflux.Extract[desk.Details](ctx, plain.Message.Body)
 		if err != nil || details != plain.Details {
 			t.Errorf("Extract = %+v, %v; want %+v", details, err, plain.Details)
 		}
 	})
 	t.Run("Generate", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewGenerateOptions().WithSeedData(map[string]string{"message": plain.Message.Body})
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		reply, err := schemaflux.Generate[desk.Reply]("Write the support desk's reply to this customer message.", opts)
+		opts := schemaflux.GenerateOptions{SeedData: map[string]string{"message": plain.Message.Body}}
+		reply, err := schemaflux.Generate[desk.Reply](ctx, "Write the support desk's reply to this customer message.", opts)
 		if err != nil || reply.Body != plain.Draft {
 			t.Errorf("Generate = %q, %v", reply.Body, err)
 		}
 	})
 	t.Run("Summarize", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewSummarizeOptions()
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		handoff, err := schemaflux.Summarize(plain.Message.Body, opts)
+		handoff, err := schemaflux.Summarize(ctx, plain.Message.Body)
 		if err != nil || handoff != plain.Handoff {
 			t.Errorf("Summarize = %q, %v", handoff, err)
 		}
 	})
 	t.Run("Rewrite", func(t *testing.T) {
 		_, ctx := through(0)
-		opts := schemaflux.NewRewriteOptions()
-		opts.CommonOptions = opts.CommonOptions.WithContext(ctx)
-		redraft, err := schemaflux.Rewrite(redrafted.Draft, opts)
+		redraft, err := schemaflux.Rewrite(ctx, redrafted.Draft)
 		if err != nil || redraft != redrafted.Redraft {
 			t.Errorf("Rewrite = %q, %v", redraft, err)
 		}
@@ -370,16 +355,16 @@ func TestTheSimulatorAnswersEachOperationThroughTheLibrary(t *testing.T) {
 // not answer with a default: a default is a "no", a first option or an empty
 // text, and each of those reads as an answer.
 func TestTheSimulatorRefusesWhatItCannotAnswer(t *testing.T) {
-	assessment := func(question, subject string) schemaflux.CompletionRequest {
-		return schemaflux.CompletionRequest{SchemaName: "assessment", UserPrompt: "Questions:\n" + question + "\n\nSubject:\n" + subject}
+	assessment := func(question, subject string) schemaflux.Request {
+		return schemaflux.Request{SchemaName: "assessment", User: "Questions:\n" + question + "\n\nSubject:\n" + subject}
 	}
 	cases := []struct {
 		name string
-		req  schemaflux.CompletionRequest
+		req  schemaflux.Request
 		want string
 	}{
 		{"an operation the desk does not make",
-			schemaflux.CompletionRequest{SchemaName: "similarity", UserPrompt: "[ref M-02]"}, "no operation the desk makes"},
+			schemaflux.Request{SchemaName: "similarity", User: "[ref M-02]"}, "no operation the desk makes"},
 		{"a request with no reference in it",
 			assessment(`q1 (yes or no): "`+askOf[desk.After](t, "Again")+`"`, `"hello"`), "no message reference"},
 		{"a reference to a case that is not labelled",
@@ -393,29 +378,29 @@ func TestTheSimulatorRefusesWhatItCannotAnswer(t *testing.T) {
 		{"a rating on a scale the label is off",
 			assessment(`q1 (a rating from 6 to 9): "`+askOf[desk.Triage](t, "Urgency")+`"`, `"[ref M-02]"`), "off its scale"},
 		{"an answer asked for a message that does not say enough",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a data generation expert.", UserPrompt: "Write the reply. [ref M-06]"}, "wrong kind of reply"},
+			schemaflux.Request{System: "You are a data generation expert.", User: "Write the reply. [ref M-06]"}, "wrong kind of reply"},
 		{"a question back asked for a message that says enough",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a data generation expert.", UserPrompt: "ask, politely, for exactly what is missing. [ref M-02]"}, "wrong kind of reply"},
+			schemaflux.Request{System: "You are a data generation expert.", User: "ask, politely, for exactly what is missing. [ref M-02]"}, "wrong kind of reply"},
 		{"a translation that names no language",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a translation expert.", UserPrompt: "Translate this text:\n[ref M-03]"}, "names no language"},
+			schemaflux.Request{System: "You are a translation expert.", User: "Translate this text:\n[ref M-03]"}, "names no language"},
 		{"a translation into a language the label does not name",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a translation expert.", UserPrompt: "Translate to French\n\nTranslate this text:\n[ref M-03]"}, "does not name"},
+			schemaflux.Request{System: "You are a translation expert.", User: "Translate to French\n\nTranslate this text:\n[ref M-03]"}, "does not name"},
 		{"a translation of a message that is already in English",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a translation expert.", UserPrompt: "Translate to English\n\nTranslate this text:\n" + caseByID(t, "M-02").Message.Text()}, "no English text"},
+			schemaflux.Request{System: "You are a translation expert.", User: "Translate to English\n\nTranslate this text:\n" + caseByID(t, "M-02").Message.Text()}, "no English text"},
 		{"a translation into English of something that is not the message's text",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a translation expert.", UserPrompt: "Translate to English\n\nTranslate this text:\n" + caseByID(t, "M-03").Message.Body}, "not of the message's text"},
+			schemaflux.Request{System: "You are a translation expert.", User: "Translate to English\n\nTranslate this text:\n" + caseByID(t, "M-03").Message.Body}, "not of the message's text"},
 		{"a translation into the customer's language of something that is not the reply",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a translation expert.", UserPrompt: "Translate to Spanish\n\nTranslate this text:\nsomething else [ref M-03]"}, "not of its reply"},
+			schemaflux.Request{System: "You are a translation expert.", User: "Translate to Spanish\n\nTranslate this text:\nsomething else [ref M-03]"}, "not of its reply"},
 		{"a ticket match that does not carry the sender",
 			assessment("q1 (one of the options below): \""+matchQuestion+"\"\n  1: \"none of these\"", `{"text":"[ref M-05]"}`), "does not carry the sender"},
 		{"a rewrite of a draft that broke nothing",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a text rewriting expert.", UserPrompt: "Rewrite this text:\n[ref M-02]"}, "no redraft"},
+			schemaflux.Request{System: "You are a text rewriting expert.", User: "Rewrite this text:\n[ref M-02]"}, "no redraft"},
 		{"a summary of spam, which is never handed off",
-			schemaflux.CompletionRequest{SystemPrompt: "You are a text summarization expert.", UserPrompt: "Summarize this text:\n[ref M-01]"}, "no hand-off note"},
+			schemaflux.Request{System: "You are a text summarization expert.", User: "Summarize this text:\n[ref M-01]"}, "no hand-off note"},
 		{"an audit with no data",
-			schemaflux.CompletionRequest{SchemaName: "audit", UserPrompt: "Policies:\np1: \"no promises\"\n[ref M-08]"}, "no data"},
+			schemaflux.Request{SchemaName: "audit", User: "Policies:\np1: \"no promises\"\n[ref M-08]"}, "no data"},
 		{"an audit of a first draft without the policy it breaks",
-			schemaflux.CompletionRequest{SchemaName: "audit", UserPrompt: "Policies:\np1: \"be polite\"\n\nData:\n{\"body\":\"We are sorry order D-3310 is late. It will be delivered by Thursday. Your reference is [ref M-08].\"}"}, "was not given"},
+			schemaflux.Request{SchemaName: "audit", User: "Policies:\np1: \"be polite\"\n\nData:\n{\"body\":\"We are sorry order D-3310 is late. It will be delivered by Thursday. Your reference is [ref M-08].\"}"}, "was not given"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -438,7 +423,7 @@ func TestTheSimulatorRefusesWhatItCannotAnswer(t *testing.T) {
 }
 
 func TestTheSimulatorTakesItsDelayAndStopsWithItsContext(t *testing.T) {
-	request := schemaflux.CompletionRequest{SystemPrompt: "You are a text summarization expert.", UserPrompt: "Summarize this text:\n[ref M-02]"}
+	request := schemaflux.Request{System: "You are a text summarization expert.", User: "Summarize this text:\n[ref M-02]"}
 
 	// These two run on a synctest bubble's clock, so the time an answer takes
 	// and the time it takes to notice a context has ended are held exactly.

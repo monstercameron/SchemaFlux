@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CP-001. Today "supported provider" means an adapter compiles: mw.Fallback

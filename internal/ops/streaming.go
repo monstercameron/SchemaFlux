@@ -9,12 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Three streaming modes, kept apart.
@@ -584,7 +584,8 @@ func (s *TextStream) Ended() bool {
 // second implementation of "is this response usable" is exactly the second
 // opinion AGENTS.md forbids.
 func classifyFinalChunk(resp llm.CompletionResponse) error {
-	if kind := llm.ClassifyCompletion(resp); kind == types.KindOutputTruncated {
+	switch kind := llm.ClassifyCompletion(resp); kind {
+	case types.KindOutputTruncated:
 		provider := resp.Provider
 		model := resp.Model
 		return &types.OperationError{
@@ -592,6 +593,14 @@ func classifyFinalChunk(resp llm.CompletionResponse) error {
 			Provider: provider,
 			Model:    model,
 			Message:  fmt.Sprintf("response truncated before it could be decoded (finish_reason=%q)", resp.FinishReason),
+		}
+	case types.KindPolicyViolation:
+		// A final content-filter response is a refusal even when the provider
+		// sent some text first. Never deliver that partial text as an answer.
+		return &types.OperationError{
+			Kind: types.KindPolicyViolation, Narrow: types.NarrowRefusal,
+			Provider: resp.Provider, Model: resp.Model,
+			Message: "response withheld by provider content filter",
 		}
 	}
 	return validateLLMCompletion(resp)
@@ -1128,7 +1137,7 @@ func streamCallRecord(
 	var cost *types.CostInfo
 	if resp.Cached || reportsUsage(usage) {
 		tokens = &usage
-		cost = pricing.CalculateCost(&usage, actualModel, actualProvider)
+		cost = pricing.CalculateCostLogged(loggerFor(ctx), &usage, actualModel, actualProvider)
 	} else {
 		cost = &types.CostInfo{Quality: types.PricingUnknown}
 	}

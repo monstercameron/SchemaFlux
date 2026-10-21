@@ -3,7 +3,7 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Staged plans over one datum, with reuse.

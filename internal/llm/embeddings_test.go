@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // newEmbeddingTestServer returns an httptest.Server that decodes the

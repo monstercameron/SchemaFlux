@@ -3,8 +3,8 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The Result forms of RedactLLM, Generate and Audit.

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Decision represents a decision point with typed options
@@ -178,7 +178,7 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 	}
 	userPrompt, err := decideUserPrompt(shown, descriptions)
 	if err != nil {
-		log.Warn("Decide operation could not write its request", "error", err)
+		log.Warn("Decide operation could not write its request", "error", loggedError(err))
 		return zero, result, err
 	}
 	opt.ResponseFormat = "json"
@@ -187,13 +187,13 @@ func Decide[T any](ctx context.Context, situation any, decisions []Decision[T], 
 
 	response, err := callLLM(llmCtx, decideSystemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Warn("Decide operation LLM call failed", "error", err)
+		log.Warn("Decide operation LLM call failed", "error", loggedError(err))
 		return fallback(err)
 	}
 
 	answer, err := readDecideAnswer(response, len(decisions))
 	if err != nil {
-		log.Warn("Decide operation response was not usable", "error", err)
+		log.Warn("Decide operation response was not usable", "error", loggedError(err))
 		return fallback(err)
 	}
 
@@ -307,7 +307,7 @@ func GuardWithSuggestions[T any](ctx context.Context, state T, opts types.OpOpti
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opts)
 	if err != nil {
-		log.Warn("Guard suggestions unavailable; the verdict itself is unaffected", "error", err)
+		log.Warn("Guard suggestions unavailable; the verdict itself is unaffected", "error", loggedError(err))
 		return result
 	}
 

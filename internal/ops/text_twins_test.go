@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // T-01 / OP-401. Each `X` and `XWithMetadata` pair duplicated its option

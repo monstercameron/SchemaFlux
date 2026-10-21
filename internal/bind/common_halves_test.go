@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // filledHalves is the two halves of a flat options type of internal/ops as its

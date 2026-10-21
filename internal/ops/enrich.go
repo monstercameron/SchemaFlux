@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // EnrichOptions configures the Enrich operation
@@ -70,7 +70,7 @@ func (e EnrichOptions) Validate() error {
 	}
 	validDepths := map[string]bool{"shallow": true, "deep": true}
 	if e.Depth != "" && !validDepths[e.Depth] {
-		return fmt.Errorf("invalid depth: %s", e.Depth)
+		return fmt.Errorf("enrichment depth must be shallow or deep")
 	}
 	return nil
 }
@@ -221,7 +221,7 @@ func Enrich[T any, U any](input T, opts EnrichOptions) (EnrichResult[U], error) 
 	// Marshal input
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Enrich operation failed: marshal error", "error", err)
+		log.Error("Enrich operation failed: marshal error", "error", loggedError(err))
 		return EnrichResult[U]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -284,7 +284,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Enrich operation LLM call failed", "error", err)
+		log.Error("Enrich operation LLM call failed", "error", loggedError(err))
 		return EnrichResult[U]{}, fmt.Errorf("enrichment failed: %w", err)
 	}
 
@@ -305,7 +305,7 @@ Return a JSON object with:
 		Derivations     map[string]string  `json:"derivations"`
 	}
 	if err := decodeAnswer("enrich", response, &parsed); err != nil {
-		log.Error("Enrich operation failed: parse error", "error", err)
+		log.Error("Enrich operation failed: parse error", "error", loggedError(err))
 		return EnrichResult[U]{}, fmt.Errorf("failed to parse enriched result: %w", err)
 	}
 	// A RawMessage can hold a null, which the reader lets through.
@@ -316,7 +316,7 @@ Return a JSON object with:
 	}
 	var enriched U
 	if err := decodeCallerAnswer("enrich", string(parsed.Enriched), &enriched); err != nil {
-		log.Error("Enrich operation failed: enriched value parse error", "error", err)
+		log.Error("Enrich operation failed: enriched value parse error", "error", loggedError(err))
 		return EnrichResult[U]{}, fmt.Errorf("failed to parse enriched result: %w", err)
 	}
 
@@ -454,7 +454,7 @@ func EnrichInPlace[T any](input T, opts EnrichOptions) (T, error) {
 	// Marshal input
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("EnrichInPlace failed: marshal error", "error", err)
+		log.Error("EnrichInPlace failed: marshal error", "error", loggedError(err))
 		return none, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -482,7 +482,7 @@ Return ONLY the enriched data matching the schema (no wrapper object).`, typeSch
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("EnrichInPlace LLM call failed", "error", err)
+		log.Error("EnrichInPlace LLM call failed", "error", loggedError(err))
 		return none, fmt.Errorf("enrichment failed: %w", err)
 	}
 
@@ -490,7 +490,7 @@ Return ONLY the enriched data matching the schema (no wrapper object).`, typeSch
 	// in the result.
 	var enriched T
 	if err := decodeCallerAnswer("enrich", response, &enriched); err != nil {
-		log.Error("EnrichInPlace failed: parse error", "error", err)
+		log.Error("EnrichInPlace failed: parse error", "error", loggedError(err))
 		return none, fmt.Errorf("failed to parse enriched result: %w", err)
 	}
 

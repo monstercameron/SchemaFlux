@@ -1,36 +1,26 @@
-// 17-diff: Find semantic differences between two versions of data
-// Intelligence: Fast (Cerebras gpt-oss-120b)
-// Expectations:
-// - Customer: Detects name, email, status changes + phone added
-// - Product: Detects name, price, category, description, stock changes + tags added
-// - Config: Detects version, port, debug changes (ignoring LastUpdated)
-
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 func main() {
-
-	fmt.Println("?? Intelligent Difference Detection Example")
-	fmt.Println("=")
-
-	// Initialize SchemaFlux with Fast intelligence (Cerebras)
-	fmt.Println("?? Initializing SchemaFlux...")
-	if err := exampleutil.Bootstrap(); err != nil {
-		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
-		return
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "diff example: %v\n", err)
+		os.Exit(1)
 	}
-	fmt.Println("? SchemaFlux initialized successfully")
-	fmt.Println()
+}
 
-	// Example 1: Customer Record Changes
-	fmt.Println("?? Customer Record Changes")
-	fmt.Println("-")
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "Intelligent Difference Detection")
+	fmt.Fprintln(out, "================================")
+	fmt.Fprintln(out, "The comparison is made in Go; the model explains the changes.")
+	fmt.Fprintln(out)
 
 	type Customer struct {
 		ID     int    `json:"id"`
@@ -39,46 +29,12 @@ func main() {
 		Status string `json:"status"`
 		Phone  string `json:"phone"`
 	}
-
-	oldCustomer := Customer{
-		ID:     12345,
-		Name:   "John Smith",
-		Email:  "john@example.com",
-		Status: "active",
+	oldCustomer := Customer{ID: 12345, Name: "John Smith", Email: "john@example.com", Status: "active"}
+	newCustomer := Customer{ID: 12345, Name: "John A. Smith", Email: "john.smith@example.com", Status: "inactive", Phone: "+1-555-0123"}
+	fmt.Fprintln(out, "Customer Record Changes")
+	if err := showDiff(ctx, out, oldCustomer, newCustomer, schemaflux.DiffOptions{Background: "Customer management system"}); err != nil {
+		return fmt.Errorf("customer comparison failed; check provider configuration and retry: %w", err)
 	}
-
-	newCustomer := Customer{
-		ID:     12345,
-		Name:   "John A. Smith",
-		Email:  "john.smith@example.com",
-		Status: "inactive",
-		Phone:  "+1-555-0123",
-	}
-
-	fmt.Printf("?? Old Customer:\n  %+v\n\n", oldCustomer)
-	fmt.Printf("?? New Customer:\n  %+v\n\n", newCustomer)
-
-	fmt.Println("?? Analyzing differences...")
-	result, err := schemaflux.Diff(oldCustomer, newCustomer,
-		schemaflux.NewDiffOptions().WithBackground("Customer management system"))
-	if err != nil {
-		schemaflux.GetLogger().Error("Diff failed", "error", err)
-		return
-	}
-
-	fmt.Printf("?? Changes Detected:\n")
-	fmt.Printf("  Added: %v\n", result.Added)
-	fmt.Printf("  Removed: %v\n", result.Removed)
-	fmt.Printf("  Modified: %d fields\n", len(result.Modified))
-	for _, change := range result.Modified {
-		fmt.Printf("    - %s: %v ? %v\n", change.Field, change.OldValue, change.NewValue)
-	}
-	fmt.Printf("\n?? Summary: %s\n", result.Summary)
-	fmt.Println()
-
-	// Example 2: Product Catalog Changes
-	fmt.Println("?? Product Catalog Changes")
-	fmt.Println("-")
 
 	type Product struct {
 		ID          string   `json:"id"`
@@ -89,50 +45,12 @@ func main() {
 		InStock     bool     `json:"in_stock"`
 		Tags        []string `json:"tags"`
 	}
-
-	oldProduct := Product{
-		ID:          "PROD-001",
-		Name:        "Wireless Bluetooth Headphones",
-		Price:       79.99,
-		Category:    "Electronics",
-		Description: "High-quality wireless headphones",
-		InStock:     true,
+	oldProduct := Product{ID: "PROD-001", Name: "Wireless Bluetooth Headphones", Price: 79.99, Category: "Electronics", Description: "High-quality wireless headphones", InStock: true}
+	newProduct := Product{ID: "PROD-001", Name: "Premium Wireless Bluetooth Headphones (Black)", Price: 89.99, Category: "Electronics > Audio", Description: "Premium high-quality wireless headphones with noise cancellation", InStock: false, Tags: []string{"bestseller", "premium", "noise-cancelling"}}
+	fmt.Fprintln(out, "\nProduct Catalog Changes")
+	if err := showDiff(ctx, out, oldProduct, newProduct, schemaflux.DiffOptions{Background: "E-commerce product catalog"}); err != nil {
+		return fmt.Errorf("product comparison failed; check provider configuration and retry: %w", err)
 	}
-
-	newProduct := Product{
-		ID:          "PROD-001",
-		Name:        "Premium Wireless Bluetooth Headphones (Black)",
-		Price:       89.99,
-		Category:    "Electronics > Audio",
-		Description: "Premium high-quality wireless headphones with noise cancellation",
-		InStock:     false,
-		Tags:        []string{"bestseller", "premium", "noise-cancelling"},
-	}
-
-	fmt.Printf("?? Old Product:\n  %+v\n\n", oldProduct)
-	fmt.Printf("?? New Product:\n  %+v\n\n", newProduct)
-
-	fmt.Println("?? Analyzing differences...")
-	productResult, err := schemaflux.Diff(oldProduct, newProduct,
-		schemaflux.NewDiffOptions().WithBackground("E-commerce product catalog"))
-	if err != nil {
-		schemaflux.GetLogger().Error("Diff failed", "error", err)
-		return
-	}
-
-	fmt.Printf("?? Changes Detected:\n")
-	fmt.Printf("  Added: %v\n", productResult.Added)
-	fmt.Printf("  Removed: %v\n", productResult.Removed)
-	fmt.Printf("  Modified: %d fields\n", len(productResult.Modified))
-	for _, change := range productResult.Modified {
-		fmt.Printf("    - %s: %v ? %v\n", change.Field, change.OldValue, change.NewValue)
-	}
-	fmt.Printf("\n?? Summary: %s\n", productResult.Summary)
-	fmt.Println()
-
-	// Example 3: Configuration Changes with Ignored Fields
-	fmt.Println("??  Configuration Changes (with ignored fields)")
-	fmt.Println("-")
 
 	type Config struct {
 		ServiceName string `json:"service_name"`
@@ -141,45 +59,32 @@ func main() {
 		Debug       bool   `json:"debug"`
 		LastUpdated string `json:"last_updated"`
 	}
-
-	oldConfig := Config{
-		ServiceName: "api-gateway",
-		Version:     "1.2.3",
-		Port:        8080,
-		Debug:       false,
-		LastUpdated: "2023-01-01T10:00:00Z",
+	oldConfig := Config{ServiceName: "api-gateway", Version: "1.2.3", Port: 8080, Debug: false, LastUpdated: "2023-01-01T10:00:00Z"}
+	newConfig := Config{ServiceName: "api-gateway", Version: "1.3.0", Port: 9090, Debug: true, LastUpdated: "2023-01-02T15:30:00Z"}
+	fmt.Fprintln(out, "\nConfiguration Changes (ignoring timestamps)")
+	// IgnoreFields uses Go field names. LastUpdated is excluded from both the comparison and summary.
+	if err := showDiff(ctx, out, oldConfig, newConfig, schemaflux.DiffOptions{
+		Background:   "Service configuration management",
+		IgnoreFields: []string{"LastUpdated"},
+	}); err != nil {
+		return fmt.Errorf("configuration comparison failed; check provider configuration and retry: %w", err)
 	}
+	fmt.Fprintln(out, "\nDifference detection completed")
+	return nil
+}
 
-	newConfig := Config{
-		ServiceName: "api-gateway",
-		Version:     "1.3.0",
-		Port:        9090,
-		Debug:       true,
-		LastUpdated: "2023-01-02T15:30:00Z",
-	}
-
-	fmt.Printf("??  Old Config:\n  %+v\n\n", oldConfig)
-	fmt.Printf("??  New Config:\n  %+v\n\n", newConfig)
-
-	fmt.Println("?? Analyzing differences (ignoring timestamps)...")
-	configResult, err := schemaflux.Diff(oldConfig, newConfig,
-		schemaflux.NewDiffOptions().
-			WithBackground("Service configuration management").
-			WithIgnoreFields([]string{"LastUpdated"}))
+func showDiff[T any](ctx context.Context, out io.Writer, before, after T, options schemaflux.DiffOptions) error {
+	result, err := schemaflux.Diff(ctx, before, after, options)
 	if err != nil {
-		schemaflux.GetLogger().Error("Diff failed", "error", err)
-		return
+		return err
 	}
-
-	fmt.Printf("?? Changes Detected:\n")
-	fmt.Printf("  Added: %v\n", configResult.Added)
-	fmt.Printf("  Removed: %v\n", configResult.Removed)
-	fmt.Printf("  Modified: %d fields\n", len(configResult.Modified))
-	for _, change := range configResult.Modified {
-		fmt.Printf("    - %s: %v ? %v\n", change.Field, change.OldValue, change.NewValue)
+	if result.SummaryError != nil {
+		return result.SummaryError
 	}
-	fmt.Printf("\n?? Summary: %s\n", configResult.Summary)
-	fmt.Println()
-
-	fmt.Println("? Success! Intelligent difference detection completed")
+	fmt.Fprintf(out, "  Added: %v\n  Removed: %v\n  Modified: %d fields\n", result.Added, result.Removed, len(result.Modified))
+	for _, change := range result.Modified {
+		fmt.Fprintf(out, "    - %s: %v -> %v\n", change.Field, change.OldValue, change.NewValue)
+	}
+	fmt.Fprintf(out, "  Summary: %s\n", result.Summary)
+	return nil
 }

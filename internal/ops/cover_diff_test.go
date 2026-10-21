@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // cover_diff_test.go raises coverage of internal/ops/diff.go's under-tested

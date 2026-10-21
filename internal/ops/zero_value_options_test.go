@@ -3,8 +3,8 @@ package ops
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // F-01: Strict was Mode(0) and Smart was Speed(0), so every merge guard of the

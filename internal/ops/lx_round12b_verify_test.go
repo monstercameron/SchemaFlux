@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // scriptedVerifyClaim is one claim as the scripted model reports it. Corrections left

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every result reports the contract level its operation requested and the one

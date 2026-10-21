@@ -1,212 +1,99 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
-	"time"
 
-	"github.com/joho/godotenv"
-	"github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/exp"
 )
 
-func loadEnv() {
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
-			godotenv.Load(filepath.Join(dir, ".env"))
-			return
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
+type salaryTerms struct {
+	BaseSalary int `json:"base_salary"`
+	RemoteDays int `json:"remote_days"`
+	Bonus      int `json:"bonus"`
+}
+
+type contractTerms struct {
+	Price       float64 `json:"price_per_unit"`
+	Quantity    int     `json:"quantity"`
+	PaymentDays int     `json:"payment_days"`
+}
+
+type acquisitionTerms struct {
+	Valuation int `json:"valuation_millions"`
+	Earnout   int `json:"earnout_percent"`
+	Retention int `json:"retention_months"`
 }
 
 func main() {
-	loadEnv()
-	schemaflux.InitWithEnv()
-
-	fmt.Println("=== NegotiateAdversarial Example ===")
-	fmt.Println("Two-party adversarial negotiation: Ours vs Theirs with leverage")
-	fmt.Println()
-
-	runSalaryNegotiation()
-	time.Sleep(2 * time.Second)
-	runVendorContract()
-	time.Sleep(2 * time.Second)
-	runAcquisition()
-
-	fmt.Println("\n=== NegotiateAdversarial Example Complete ===")
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "Negotiate example: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-func runSalaryNegotiation() {
-	fmt.Println("--- Use Case 1: Salary Negotiation (Candidate vs Company) ---")
-
-	type SalaryTerms struct {
-		BaseSalary int `json:"base_salary"`
-		RemoteDays int `json:"remote_days"`
-		Bonus      int `json:"bonus"`
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "=== Adversarial Negotiation Example ===")
+	if err := runSalary(ctx, out); err != nil {
+		return err
 	}
+	if err := runVendor(ctx, out); err != nil {
+		return err
+	}
+	if err := runAcquisition(ctx, out); err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "=== Adversarial Negotiation Example Complete ===")
+	return nil
+}
 
-	ctx := schemaflux.AdversarialContext[SalaryTerms]{
-		Ours: schemaflux.AdversarialPosition[SalaryTerms]{
-			Position: SalaryTerms{BaseSalary: 160000, RemoteDays: 5, Bonus: 20000},
-		},
-		Theirs: schemaflux.AdversarialPosition[SalaryTerms]{
-			Position: SalaryTerms{BaseSalary: 130000, RemoteDays: 2, Bonus: 5000},
-		},
+func runSalary(ctx context.Context, out io.Writer) error {
+	positions := exp.AdversarialContext[salaryTerms]{
+		Ours:        exp.AdversarialPosition[salaryTerms]{Position: salaryTerms{BaseSalary: 160000, RemoteDays: 5, Bonus: 20000}},
+		Theirs:      exp.AdversarialPosition[salaryTerms]{Position: salaryTerms{BaseSalary: 130000, RemoteDays: 2, Bonus: 5000}},
 		OurLeverage: "strong",
 	}
-
-	fmt.Println("INPUT: AdversarialContext[SalaryTerms]{")
-	fmt.Printf("  Ours:   {Position: {Salary: $%d, Remote: %d, Bonus: $%d}},\n",
-		ctx.Ours.Position.BaseSalary, ctx.Ours.Position.RemoteDays, ctx.Ours.Position.Bonus)
-	fmt.Printf("  Theirs: {Position: {Salary: $%d, Remote: %d, Bonus: $%d}},\n",
-		ctx.Theirs.Position.BaseSalary, ctx.Theirs.Position.RemoteDays, ctx.Theirs.Position.Bonus)
-	fmt.Printf("  OurLeverage: %q,\n", ctx.OurLeverage)
-	fmt.Println("}")
-	fmt.Println("OPTIONS: Steering: \"They definitely don't want RTO but salary might be moveable\"")
-
-	result, err := schemaflux.SettleAdversarial[SalaryTerms](ctx, schemaflux.AdversarialOptions{
-		Intelligence: types.Smart,
-		Steering:     "They definitely don't want RTO so hold firm on remote days. Salary is more flexible for them.",
-	})
+	result, err := exp.SettleAdversarial(ctx, positions, exp.SettleAdversarialOptions{Options: schemaflux.Options{
+		Tier: schemaflux.TierSmart, Steering: "Keep remote days firm; salary is more flexible.",
+	}})
 	if err != nil {
-		fmt.Printf("Error: %v\n\n", err)
-		return
+		return fmt.Errorf("salary negotiation: %w", err)
 	}
-
-	fmt.Println("OUTPUT: AdversarialResult[SalaryTerms]{")
-	fmt.Printf("  Deal: {Salary: $%d, Remote: %d, Bonus: $%d},\n",
-		result.Deal.BaseSalary, result.Deal.RemoteDays, result.Deal.Bonus)
-	fmt.Printf("  DealReached: %v,\n", result.DealReached)
-	fmt.Printf("  WhoConcededMore: %q,\n", result.WhoConcededMore)
-	if len(result.TermMovements) > 0 {
-		fmt.Println("  TermMovements: []TermMovement{")
-		for _, tm := range result.TermMovements {
-			fmt.Printf("    {Term: %q, OurAsk: %v, TheirOffer: %v, Final: %v, Movement: %q},\n",
-				tm.Term, tm.OurAsk, tm.TheirOffer, tm.FinalValue, tm.Movement)
-		}
-		fmt.Println("  },")
-	}
-	fmt.Printf("  OurSatisfaction: %.2f, TheirSatisfaction: %.2f,\n",
-		result.OurSatisfaction, result.TheirSatisfaction)
-	fmt.Println("}")
-	fmt.Println()
+	fmt.Fprintf(out, "Salary deal reached: %t; base $%d; remote days %d\n", result.DealReached, result.Deal.BaseSalary, result.Deal.RemoteDays)
+	return nil
 }
 
-func runVendorContract() {
-	fmt.Println("--- Use Case 2: Vendor Contract (Buyer vs Seller) ---")
-
-	type ContractTerms struct {
-		Price    float64 `json:"price_per_unit"`
-		Quantity int     `json:"quantity"`
-		Terms    int     `json:"payment_days"`
-	}
-
-	ctx := schemaflux.AdversarialContext[ContractTerms]{
-		Ours: schemaflux.AdversarialPosition[ContractTerms]{
-			Position: ContractTerms{Price: 45, Quantity: 500, Terms: 60},
-		},
-		Theirs: schemaflux.AdversarialPosition[ContractTerms]{
-			Position: ContractTerms{Price: 65, Quantity: 1000, Terms: 30},
-		},
+func runVendor(ctx context.Context, out io.Writer) error {
+	positions := exp.AdversarialContext[contractTerms]{
+		Ours:        exp.AdversarialPosition[contractTerms]{Position: contractTerms{Price: 45, Quantity: 500, PaymentDays: 60}},
+		Theirs:      exp.AdversarialPosition[contractTerms]{Position: contractTerms{Price: 65, Quantity: 1000, PaymentDays: 30}},
 		OurLeverage: "strong",
 	}
-
-	fmt.Println("INPUT: AdversarialContext[ContractTerms]{")
-	fmt.Printf("  Ours:   {Position: {Price: $%.0f, Qty: %d, Terms: %d days}},\n",
-		ctx.Ours.Position.Price, ctx.Ours.Position.Quantity, ctx.Ours.Position.Terms)
-	fmt.Printf("  Theirs: {Position: {Price: $%.0f, Qty: %d, Terms: %d days}},\n",
-		ctx.Theirs.Position.Price, ctx.Theirs.Position.Quantity, ctx.Theirs.Position.Terms)
-	fmt.Printf("  OurLeverage: %q,\n", ctx.OurLeverage)
-	fmt.Println("}")
-	fmt.Println("OPTIONS: Steering: \"Seller is desperate to close Q4, price is negotiable\"")
-
-	result, err := schemaflux.SettleAdversarial[ContractTerms](ctx, schemaflux.AdversarialOptions{
-		Intelligence: types.Smart,
-		Steering:     "Seller is desperate to close before Q4 ends. Price is very negotiable. Quantity less so.",
-	})
+	result, err := exp.SettleAdversarial(ctx, positions, exp.SettleAdversarialOptions{Options: schemaflux.Options{
+		Tier: schemaflux.TierSmart, Steering: "The seller wants to close this quarter; price is negotiable.",
+	}})
 	if err != nil {
-		fmt.Printf("Error: %v\n\n", err)
-		return
+		return fmt.Errorf("vendor negotiation: %w", err)
 	}
-
-	fmt.Println("OUTPUT: AdversarialResult[ContractTerms]{")
-	fmt.Printf("  Deal: {Price: $%.2f, Qty: %d, Terms: %d days},\n",
-		result.Deal.Price, result.Deal.Quantity, result.Deal.Terms)
-	fmt.Printf("  DealReached: %v,\n", result.DealReached)
-	fmt.Printf("  WhoConcededMore: %q,\n", result.WhoConcededMore)
-	if len(result.TermMovements) > 0 {
-		fmt.Println("  TermMovements: []TermMovement{")
-		for _, tm := range result.TermMovements {
-			fmt.Printf("    {Term: %q, OurAsk: %v, TheirOffer: %v, Final: %v, Movement: %q},\n",
-				tm.Term, tm.OurAsk, tm.TheirOffer, tm.FinalValue, tm.Movement)
-		}
-		fmt.Println("  },")
-	}
-	fmt.Printf("  OurSatisfaction: %.2f, TheirSatisfaction: %.2f,\n",
-		result.OurSatisfaction, result.TheirSatisfaction)
-	fmt.Println("}")
-	fmt.Println()
+	fmt.Fprintf(out, "Vendor deal reached: %t; unit price $%.2f; quantity %d\n", result.DealReached, result.Deal.Price, result.Deal.Quantity)
+	return nil
 }
 
-func runAcquisition() {
-	fmt.Println("--- Use Case 3: M&A Acquisition (Acquirer vs Target) ---")
-
-	type AcquisitionTerms struct {
-		Valuation int `json:"valuation_millions"`
-		Earnout   int `json:"earnout_percent"`
-		Retention int `json:"retention_months"`
+func runAcquisition(ctx context.Context, out io.Writer) error {
+	positions := exp.AdversarialContext[acquisitionTerms]{
+		Ours:        exp.AdversarialPosition[acquisitionTerms]{Position: acquisitionTerms{Valuation: 80, Earnout: 30, Retention: 24}},
+		Theirs:      exp.AdversarialPosition[acquisitionTerms]{Position: acquisitionTerms{Valuation: 120, Earnout: 10, Retention: 6}},
+		OurLeverage: "weak", Relationship: "competitive",
 	}
-
-	// Note: Target has leverage due to competing bidders
-	ctx := schemaflux.AdversarialContext[AcquisitionTerms]{
-		Ours: schemaflux.AdversarialPosition[AcquisitionTerms]{
-			Position: AcquisitionTerms{Valuation: 80, Earnout: 30, Retention: 24},
-		},
-		Theirs: schemaflux.AdversarialPosition[AcquisitionTerms]{
-			Position: AcquisitionTerms{Valuation: 120, Earnout: 10, Retention: 6},
-		},
-		OurLeverage:  "weak",
-		Relationship: "competitive",
-	}
-
-	fmt.Println("INPUT: AdversarialContext[AcquisitionTerms]{")
-	fmt.Printf("  Ours:   {Position: {Val: $%dM, Earnout: %d%%, Retention: %d mo}},\n",
-		ctx.Ours.Position.Valuation, ctx.Ours.Position.Earnout, ctx.Ours.Position.Retention)
-	fmt.Printf("  Theirs: {Position: {Val: $%dM, Earnout: %d%%, Retention: %d mo}},\n",
-		ctx.Theirs.Position.Valuation, ctx.Theirs.Position.Earnout, ctx.Theirs.Position.Retention)
-	fmt.Printf("  OurLeverage: %q, Relationship: %q,\n", ctx.OurLeverage, ctx.Relationship)
-	fmt.Println("}")
-
-	result, err := schemaflux.SettleAdversarial[AcquisitionTerms](ctx, schemaflux.AdversarialOptions{
-		Intelligence: types.Smart,
-		Steering:     "Target has 3 competing bidders, so they have the power.",
-	})
+	result, err := exp.SettleAdversarial(ctx, positions, exp.SettleAdversarialOptions{Options: schemaflux.Options{
+		Tier: schemaflux.TierSmart, Steering: "The target has competing bidders.",
+	}})
 	if err != nil {
-		fmt.Printf("Error: %v\n\n", err)
-		return
+		return fmt.Errorf("acquisition negotiation: %w", err)
 	}
-
-	fmt.Println("OUTPUT: AdversarialResult[AcquisitionTerms]{")
-	fmt.Printf("  Deal: {Val: $%dM, Earnout: %d%%, Retention: %d months},\n",
-		result.Deal.Valuation, result.Deal.Earnout, result.Deal.Retention)
-	fmt.Printf("  DealReached: %v,\n", result.DealReached)
-	fmt.Printf("  WhoConcededMore: %q,\n", result.WhoConcededMore)
-	if len(result.TermMovements) > 0 {
-		fmt.Println("  TermMovements: []TermMovement{")
-		for _, tm := range result.TermMovements {
-			fmt.Printf("    {Term: %q, OurAsk: %v, TheirOffer: %v, Final: %v, Movement: %q},\n",
-				tm.Term, tm.OurAsk, tm.TheirOffer, tm.FinalValue, tm.Movement)
-		}
-		fmt.Println("  },")
-	}
-	fmt.Printf("  OurSatisfaction: %.2f, TheirSatisfaction: %.2f,\n",
-		result.OurSatisfaction, result.TheirSatisfaction)
-	fmt.Println("}")
+	fmt.Fprintf(out, "Acquisition deal reached: %t; valuation $%dM; retention %d months\n", result.DealReached, result.Deal.Valuation, result.Deal.Retention)
+	return nil
 }

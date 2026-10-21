@@ -3,7 +3,7 @@ package llm
 import (
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LAT-008, round 13. A service tier is OpenAI's: the Responses API takes it, and

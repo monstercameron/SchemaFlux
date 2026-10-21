@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every text operation refuses its options before it asks a model. The refusal
@@ -51,7 +51,7 @@ func TestTextOperationsRefuseBadOptionsWithAKind(t *testing.T) {
 				_, err := Summarize("text", summarize(func(o *SummarizeOptions) { o.LengthUnit = "furlongs" }))
 				return err
 			},
-			text: "invalid options: invalid length unit: furlongs",
+			text: "invalid options: length unit must be words, sentences, or paragraphs",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

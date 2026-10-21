@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // P-011. These pin what the live API was measured to accept, per model ID. The

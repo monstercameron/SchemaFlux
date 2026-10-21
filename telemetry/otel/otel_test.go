@@ -3,8 +3,6 @@ package otel
 import (
 	"context"
 	"fmt"
-	"go/parser"
-	"go/token"
 	"slices"
 	"strings"
 	"sync"
@@ -21,14 +19,16 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	wrapped "github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
+	"github.com/monstercameron/schemaflux/v2/telemetry"
 )
 
-// These tests drive the Observer with events directly and read what reaches
-// the SDK's in-memory exporter. The tests that run real operations of the
-// library are in operations_test.go.
+// These tests drive the Observer with events directly and read what reaches the
+// SDK's in-memory exporter. The ones that go through Install and the library's
+// own emission functions are in install_test.go.
 
 // recording returns a provider that samples every span into an in-memory
 // exporter.
@@ -40,7 +40,7 @@ func recording(t *testing.T) (*sdktrace.TracerProvider, *tracetest.InMemoryExpor
 	return provider, exporter
 }
 
-// observerOn returns an Observer on a recording provider, installed nowhere.
+// observerOn returns an Observer on a recording provider, registered nowhere.
 func observerOn(t *testing.T) (*Observer, *tracetest.InMemoryExporter) {
 	t.Helper()
 	provider, exporter := recording(t)
@@ -73,7 +73,24 @@ func spanNamed(t *testing.T, spans tracetest.SpanStubs, name string) tracetest.S
 	return tracetest.SpanStub{}
 }
 
+type contextKey struct{}
+
+// noObserver fails a test that begins with an observer some earlier test left
+// registered, and one that ends with its own still registered.
+func noObserver(t *testing.T) {
+	t.Helper()
+	if wrapped.HasObserver() {
+		t.Fatal("an observer is registered before the test began")
+	}
+	t.Cleanup(func() {
+		if wrapped.HasObserver() {
+			t.Error("the test left an observer registered")
+		}
+	})
+}
+
 func TestInstallingTouchesNeitherTheGlobalProviderNorTheGlobalPropagator(t *testing.T) {
+	noObserver(t)
 	providerBefore := otel.GetTracerProvider()
 	hostPropagator := propagation.NewCompositeTextMapPropagator(propagation.Baggage{})
 	previousPropagator := otel.GetTextMapPropagator()
@@ -103,6 +120,7 @@ func TestInstallingTouchesNeitherTheGlobalProviderNorTheGlobalPropagator(t *test
 }
 
 func TestANilProviderIsRefusedRatherThanFallingBackToTheGlobal(t *testing.T) {
+	noObserver(t)
 	observer, err := New(nil)
 	if err == nil || observer != nil {
 		t.Fatalf("New(nil) = %v, %v; want a refusal", observer, err)
@@ -111,31 +129,33 @@ func TestANilProviderIsRefusedRatherThanFallingBackToTheGlobal(t *testing.T) {
 	if err == nil || restore != nil {
 		t.Fatal("Install(nil) did not refuse")
 	}
-	if telemetry.HasObserver() {
-		t.Error("a refused Install left an observer installed")
+	if wrapped.HasObserver() {
+		t.Error("a refused Install left an observer registered")
+	}
+	if strings.Contains(err.Error(), "MARK") || !strings.HasPrefix(err.Error(), "otel: ") {
+		t.Errorf("the refusal reads %q, want a message that starts with the package's name", err)
 	}
 }
 
 // Every attribute a request span can carry, with its type. This is the
-// checklist of the package comment: a key that changes name or type fails
-// here.
+// checklist of the package comment: a key that changes name or type fails here.
 func TestARequestSpanCarriesTheConventionsKeysWithTheirTypes(t *testing.T) {
 	observer, exporter := observerOn(t)
 
-	ctx := observer.OperationStarted(context.Background(), telemetry.OperationEvent{
+	ctx := observer.Started(context.Background(), telemetry.Event{
 		Operation:      "extract",
 		Provider:       "openai",
 		Model:          "gpt-5.6-luna",
 		RequestID:      "req_1",
 		CorrelationID:  "corr_1",
-		Mode:           "strict",
-		Intelligence:   "smart",
+		Mode:           schemaflux.ModeStrict,
+		Tier:           schemaflux.TierSmart,
 		SchemaName:     "invoice",
 		ResponseFormat: "json",
 		Repair:         true,
 		Stream:         true,
 	})
-	observer.OperationFinished(ctx, telemetry.OperationResult{
+	observer.Finished(ctx, telemetry.Result{
 		Operation:        "extract",
 		Duration:         80 * time.Millisecond,
 		ProviderDuration: 60 * time.Millisecond,
@@ -143,11 +163,8 @@ func TestARequestSpanCarriesTheConventionsKeysWithTheirTypes(t *testing.T) {
 		Provider:         "openai",
 		Model:            "gpt-5.6-luna-2026-08-01",
 		FinishReason:     "stop",
-		Usage: types.TokenUsage{
-			PromptTokens: 100, CompletionTokens: 30, TotalTokens: 130,
-			CachedTokens: 40, ReasoningTokens: 7, CacheWriteTokens: 12,
-		},
-		Cost: types.CostInfo{TotalCost: 0.0042, Currency: "USD", Priced: true, Quality: types.PricingExact},
+		Usage:            schemaflux.Usage{Input: 100, Output: 30, Total: 130, Cached: 40, Reasoning: 7, CacheWrite: 12},
+		Cost:             schemaflux.Cost{Total: 0.0042, Currency: "USD", Priced: true},
 	})
 
 	spans := exporter.GetSpans()
@@ -183,7 +200,6 @@ func TestARequestSpanCarriesTheConventionsKeysWithTheirTypes(t *testing.T) {
 		"schemaflux.cost.currency STRING USD",
 		"schemaflux.cost.priced BOOL true",
 		"schemaflux.cost.total FLOAT64 0.0042",
-		"schemaflux.intelligence STRING smart",
 		"schemaflux.mode STRING strict",
 		"schemaflux.operation STRING extract",
 		"schemaflux.provider_duration_ms INT64 60",
@@ -192,6 +208,7 @@ func TestARequestSpanCarriesTheConventionsKeysWithTheirTypes(t *testing.T) {
 		"schemaflux.response.provider STRING openai",
 		"schemaflux.schema.name STRING invoice",
 		"schemaflux.stream BOOL true",
+		"schemaflux.tier STRING smart",
 	}
 	got := typed(span.Attributes)
 	got = append(got, "error.type absent")
@@ -205,44 +222,109 @@ func TestARequestSpanCarriesTheConventionsKeysWithTheirTypes(t *testing.T) {
 			t.Errorf("attribute %q is outside the convention's namespace and the library's own", key)
 		}
 	}
-	if scope := span.InstrumentationScope; scope.Name != instrumentationName || scope.Version != types.Version || scope.SchemaURL == "" {
+	if scope := span.InstrumentationScope; scope.Name != instrumentationName || scope.Version != schemaflux.Version || scope.SchemaURL == "" {
 		t.Errorf("instrumentation scope = %+v, want the library's name, its version and the convention's schema URL", scope)
+	}
+}
+
+// The keys for what a middleware did, and for what became of a run's items, with
+// their types: a request that was escalated, one a cache answered, a hedged one,
+// an operation that ran over many items.
+func TestTheKeysOfEscalationCacheHedgeAndRunsCarryTheirTypes(t *testing.T) {
+	observer, exporter := observerOn(t)
+
+	escalated := observer.Started(context.Background(), telemetry.Event{Operation: "is", Provider: "openai", Model: "gpt-5.6-luna"})
+	observer.Finished(escalated, telemetry.Result{
+		Attempts: 2, Provider: "openai", Model: "gpt-5.6-luna", FinishReason: "stop",
+		Usage:      schemaflux.Usage{Input: 700, Output: 60, Total: 760},
+		AskedFirst: "jev", AskedFirstModel: "jev-1.13.0", Escalated: "below the floor",
+	})
+	cached := observer.Started(context.Background(), telemetry.Event{Operation: "extract", Provider: "openai", Model: "gpt-5.6-luna"})
+	observer.Finished(cached, telemetry.Result{Cached: true, FinishReason: "stop"})
+	hedged := observer.Started(context.Background(), telemetry.Event{Operation: "extract", Provider: "openai", Model: "gpt-5.6-luna"})
+	observer.Noted(hedged, telemetry.Note{Name: telemetry.NoteHedge, Attempt: 2})
+	observer.Finished(hedged, telemetry.Result{Attempts: 1, Provider: "openai", Model: "gpt-5.6-luna"})
+	run := observer.Started(context.Background(), telemetry.Event{Scope: telemetry.ScopeOperation, Operation: "extract"})
+	observer.Finished(run, telemetry.Result{Scope: telemetry.ScopeOperation, Operation: "extract", Requests: 9, Items: 6, Succeeded: 3, Failed: 2, Cancelled: 1})
+
+	spans := exporter.GetSpans()
+	if len(spans) != 4 {
+		t.Fatalf("%d spans exported, want 4", len(spans))
+	}
+	wants := []struct {
+		name    string
+		span    tracetest.SpanStub
+		present []string
+		absent  []string
+	}{
+		{"an escalated request", spans[0], []string{
+			"gen_ai.usage.input_tokens INT64 700", "gen_ai.usage.output_tokens INT64 60", "schemaflux.attempts INT64 2",
+			"schemaflux.escalation.model STRING jev-1.13.0", "schemaflux.escalation.provider STRING jev",
+			"schemaflux.escalation.reason STRING below the floor", "schemaflux.response.provider STRING openai",
+		}, []string{"schemaflux.cache.hit", "schemaflux.hedged"}},
+		{"a request a cache answered", spans[1], []string{
+			"gen_ai.usage.input_tokens INT64 0", "gen_ai.usage.output_tokens INT64 0", "schemaflux.attempts INT64 0",
+			"schemaflux.cache.hit BOOL true",
+		}, []string{"schemaflux.response.provider", "gen_ai.response.model", "schemaflux.cost.priced", "schemaflux.escalation.provider", "schemaflux.hedged"}},
+		{"a hedged request", spans[2], []string{"schemaflux.hedged BOOL true", "schemaflux.attempts INT64 1"}, []string{"schemaflux.cache.hit", "schemaflux.escalation.provider"}},
+		{"a run over many items", spans[3], []string{
+			"schemaflux.items.cancelled INT64 1", "schemaflux.items.failed INT64 2", "schemaflux.items.succeeded INT64 3",
+			"schemaflux.items.total INT64 6", "schemaflux.operation STRING extract", "schemaflux.requests INT64 9",
+		}, []string{"schemaflux.attempts", "error.type"}},
+	}
+	for _, want := range wants {
+		got := typed(want.span.Attributes)
+		for _, line := range want.present {
+			if !slices.Contains(got, line) {
+				t.Errorf("%s: %q is missing from %v", want.name, line, got)
+			}
+		}
+		for _, key := range want.absent {
+			for _, line := range got {
+				if strings.HasPrefix(line, key+" ") {
+					t.Errorf("%s carries %q", want.name, line)
+				}
+			}
+		}
+	}
+	if len(spans[2].Events) != 1 || spans[2].Events[0].Name != "hedge" {
+		t.Errorf("the hedged request's events = %v, want its one hedge", spans[2].Events)
 	}
 }
 
 // What an attribute is absent for: a fact nobody established. Each case names
 // keys that must not appear and the ones that must.
 func TestAttributesAreSetOnlyForWhatIsKnown(t *testing.T) {
-	answered := telemetry.OperationResult{Attempts: 1, Provider: "openai", Model: "m", FinishReason: "stop",
-		Usage: types.TokenUsage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8}}
+	answered := telemetry.Result{Attempts: 1, Provider: "openai", Model: "m", FinishReason: "stop",
+		Usage: schemaflux.Usage{Input: 5, Output: 3, Total: 8}}
 
 	cases := []struct {
 		name    string
-		event   telemetry.OperationEvent
-		result  telemetry.OperationResult
+		event   telemetry.Event
+		result  telemetry.Result
 		present []string
 		absent  []string
 	}{
 		{
 			name:    "an unnamed operation",
-			event:   telemetry.OperationEvent{Provider: "openai", Model: "m"},
+			event:   telemetry.Event{Provider: "openai", Model: "m"},
 			result:  answered,
 			present: []string{"gen_ai.operation.name", "gen_ai.provider.name", "gen_ai.request.model"},
-			absent:  []string{"schemaflux.operation", "schemaflux.schema.name", "gen_ai.output.type", "schemaflux.repair", "schemaflux.stream", "schemaflux.request_id", "schemaflux.correlation_id", "schemaflux.mode", "schemaflux.intelligence"},
+			absent:  []string{"schemaflux.operation", "schemaflux.schema.name", "gen_ai.output.type", "schemaflux.repair", "schemaflux.stream", "schemaflux.request_id", "schemaflux.correlation_id", "schemaflux.mode", "schemaflux.tier"},
 		},
 		{
 			name:    "a request that failed before any answer",
-			event:   telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
-			result:  telemetry.OperationResult{Attempts: 2, ErrorKind: "rate limited"},
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
+			result:  telemetry.Result{Attempts: 2, Kind: schemaflux.ErrRateLimited},
 			present: []string{"schemaflux.attempts", "error.type"},
 			absent:  []string{"gen_ai.response.model", "schemaflux.response.provider", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "schemaflux.cost.priced", "schemaflux.cost.total", "gen_ai.response.finish_reasons", "gen_ai.usage.cache_read.input_tokens"},
 		},
 		{
 			name:  "an unpriced answer",
-			event: telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
-			result: func() telemetry.OperationResult {
+			event: telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
+			result: func() telemetry.Result {
 				result := answered
-				result.Cost = types.CostInfo{Quality: types.PricingUnknown}
+				result.Cost = schemaflux.Cost{Currency: "USD"}
 				return result
 			}(),
 			present: []string{"schemaflux.cost.priced", "gen_ai.usage.input_tokens"},
@@ -250,67 +332,73 @@ func TestAttributesAreSetOnlyForWhatIsKnown(t *testing.T) {
 		},
 		{
 			name:    "an answer whose cost was never worked out",
-			event:   telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
 			result:  answered,
 			present: []string{"gen_ai.response.model", "gen_ai.usage.output_tokens"},
 			absent:  []string{"schemaflux.cost.priced", "schemaflux.cost.total", "schemaflux.cost.currency"},
 		},
 		{
 			name:  "an answer that reported no usage",
-			event: telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
-			result: telemetry.OperationResult{Attempts: 1, Provider: "openai", Model: "m", FinishReason: "stop",
-				Cost: types.CostInfo{Quality: types.PricingUnknown}},
+			event: telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
+			result: telemetry.Result{Attempts: 1, Provider: "openai", Model: "m", FinishReason: "stop",
+				Cost: schemaflux.Cost{Currency: "USD"}},
 			present: []string{"gen_ai.response.model", "schemaflux.response.provider"},
 			absent:  []string{"gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.cache_creation.input_tokens"},
 		},
 		{
-			name:  "usage reported only under the input and output names",
-			event: telemetry.OperationEvent{Operation: "extract", Provider: "codex", Model: "m"},
-			result: telemetry.OperationResult{Attempts: 1, Provider: "codex", Model: "m",
-				Usage: types.TokenUsage{InputTokens: 9, OutputTokens: 4}},
-			present: []string{"gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"},
-			absent:  []string{"gen_ai.usage.cache_read.input_tokens"},
-		},
-		{
 			name:    "no cached, written or reasoning tokens",
-			event:   telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
 			result:  answered,
 			present: []string{"gen_ai.usage.input_tokens"},
 			absent:  []string{"gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.reasoning.output_tokens"},
 		},
 		{
 			name:    "a truncated answer that was refused",
-			event:   telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
-			result:  telemetry.OperationResult{Attempts: 1, Provider: "openai", Model: "m", FinishReason: "length", ErrorKind: "output truncated", Usage: types.TokenUsage{PromptTokens: 5, CompletionTokens: 3}},
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
+			result:  telemetry.Result{Attempts: 1, Provider: "openai", Model: "m", FinishReason: "length", Kind: schemaflux.ErrTruncated, Usage: schemaflux.Usage{Input: 5, Output: 3}},
 			present: []string{"gen_ai.response.finish_reasons", "error.type", "gen_ai.usage.output_tokens", "gen_ai.response.model"},
 			absent:  []string{"schemaflux.cost.priced", "schemaflux.cost.total"},
 		},
 		{
 			name:    "a text request with no provider time measured",
-			event:   telemetry.OperationEvent{Operation: "summarize", Provider: "openai", Model: "m", ResponseFormat: "text"},
+			event:   telemetry.Event{Operation: "summarize", Provider: "openai", Model: "m", ResponseFormat: "text"},
 			result:  answered,
 			present: []string{"gen_ai.output.type"},
 			absent:  []string{"schemaflux.provider_duration_ms", "schemaflux.schema.name"},
 		},
 		{
 			name:    "a response format the convention has no value for",
-			event:   telemetry.OperationEvent{Operation: "summarize", Provider: "openai", Model: "m", ResponseFormat: "markdown"},
+			event:   telemetry.Event{Operation: "summarize", Provider: "openai", Model: "m", ResponseFormat: "markdown"},
 			result:  answered,
 			present: []string{"gen_ai.request.model"},
 			absent:  []string{"gen_ai.output.type"},
 		},
 		{
 			name:    "a priced answer with no currency named",
-			event:   telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"},
-			result:  telemetry.OperationResult{Attempts: 1, Provider: "openai", Model: "m", Cost: types.CostInfo{Priced: true, TotalCost: 0.5}},
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
+			result:  telemetry.Result{Attempts: 1, Provider: "openai", Model: "m", Cost: schemaflux.Cost{Priced: true, Total: 0.5}},
 			present: []string{"schemaflux.cost.priced", "schemaflux.cost.total"},
 			absent:  []string{"schemaflux.cost.currency"},
+		},
+		{
+			name:    "a mode and a tier the library does not have",
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m", Mode: schemaflux.Mode(42), Tier: schemaflux.Tier(42)},
+			result:  answered,
+			present: []string{"gen_ai.request.model"},
+			absent:  []string{"schemaflux.mode", "schemaflux.tier"},
+		},
+		{
+			name:    "a request that answered with no model or provider named",
+			event:   telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"},
+			result:  telemetry.Result{Attempts: 1, Usage: schemaflux.Usage{Input: 5, Output: 3}, Cost: schemaflux.Cost{Priced: true, Total: 1}},
+			present: []string{"schemaflux.attempts"},
+			absent:  []string{"gen_ai.usage.input_tokens", "schemaflux.cost.priced", "gen_ai.response.model"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			observer, exporter := observerOn(t)
-			observer.OperationFinished(observer.OperationStarted(context.Background(), tc.event), tc.result)
+			observer.Finished(observer.Started(context.Background(), tc.event), tc.result)
 
 			spans := exporter.GetSpans()
 			if len(spans) != 1 {
@@ -340,31 +428,32 @@ func TestAttributesAreSetOnlyForWhatIsKnown(t *testing.T) {
 func TestAnOperationSpanIsInternalAndNamedForTheOperation(t *testing.T) {
 	cases := []struct {
 		operation string
-		errorKind string
+		kind      schemaflux.Kind
 		wantName  string
 	}{
-		{"extract", "", "schemaflux.extract"},
-		{"sort", "", "schemaflux.sort"},
-		{"summarize", "", "schemaflux.summarize"},
-		{"redact_llm", "", "schemaflux.redact_llm"},
-		{"extract", "repair exhausted", "schemaflux.extract"},
-		{"extract", "schema violation", "schemaflux.extract"},
-		{"is", "canceled", "schemaflux.is"},
-		{"is", "timeout", "schemaflux.is"},
-		{"classify", "internal", "schemaflux.classify"},
-		{"", "", "schemaflux.operation"},
+		{"extract", 0, "schemaflux.extract"},
+		{"sort", 0, "schemaflux.sort"},
+		{"summarize", 0, "schemaflux.summarize"},
+		{"redact_llm", 0, "schemaflux.redact_llm"},
+		{"extract", schemaflux.ErrInvalidAnswer, "schemaflux.extract"},
+		{"extract", schemaflux.ErrInvalidRequest, "schemaflux.extract"},
+		{"is", schemaflux.ErrCanceled, "schemaflux.is"},
+		{"is", schemaflux.ErrTimeout, "schemaflux.is"},
+		{"classify", schemaflux.ErrInternal, "schemaflux.classify"},
+		{"", 0, "schemaflux.operation"},
+		{"", schemaflux.ErrConfiguration, "schemaflux.operation"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.wantName+" "+tc.errorKind, func(t *testing.T) {
+		t.Run(tc.wantName+" "+tc.kind.Error(), func(t *testing.T) {
 			observer, exporter := observerOn(t)
-			ctx := observer.OperationStarted(context.Background(), telemetry.OperationEvent{
+			ctx := observer.Started(context.Background(), telemetry.Event{
 				Scope: telemetry.ScopeOperation, Operation: tc.operation,
 			})
-			observer.OperationFinished(ctx, telemetry.OperationResult{
-				Scope: telemetry.ScopeOperation, Operation: tc.operation, ErrorKind: tc.errorKind,
+			observer.Finished(ctx, telemetry.Result{
+				Scope: telemetry.ScopeOperation, Operation: tc.operation, Kind: tc.kind,
 				// An operation's result carries none of these; set here to show
 				// they would not reach its span if it did.
-				Attempts: 3, Provider: "openai", Model: "m", Usage: types.TokenUsage{PromptTokens: 9, CompletionTokens: 9},
+				Attempts: 3, Provider: "openai", Model: "m", Usage: schemaflux.Usage{Input: 9, Output: 9},
 			})
 
 			spans := exporter.GetSpans()
@@ -377,16 +466,16 @@ func TestAnOperationSpanIsInternalAndNamedForTheOperation(t *testing.T) {
 			}
 			// An operation that made no request says so.
 			want := []string{"schemaflux.operation STRING " + tc.operation, "schemaflux.requests INT64 0"}
-			wantStatus := codes.Unset
-			if tc.errorKind != "" {
-				want = []string{"error.type STRING " + tc.errorKind, "schemaflux.operation STRING " + tc.operation, "schemaflux.requests INT64 0"}
-				wantStatus = codes.Error
+			wantStatus, wantDescription := codes.Unset, ""
+			if tc.kind != 0 {
+				want = []string{"error.type STRING " + tc.kind.Error(), "schemaflux.operation STRING " + tc.operation, "schemaflux.requests INT64 0"}
+				wantStatus, wantDescription = codes.Error, tc.kind.Error()
 			}
 			if got := typed(span.Attributes); !slices.Equal(got, want) {
 				t.Errorf("attributes = %v, want %v", got, want)
 			}
-			if span.Status.Code != wantStatus || span.Status.Description != tc.errorKind {
-				t.Errorf("status = %v %q, want %v %q", span.Status.Code, span.Status.Description, wantStatus, tc.errorKind)
+			if span.Status.Code != wantStatus || span.Status.Description != wantDescription {
+				t.Errorf("status = %v %q, want %v %q", span.Status.Code, span.Status.Description, wantStatus, wantDescription)
 			}
 		})
 	}
@@ -394,49 +483,59 @@ func TestAnOperationSpanIsInternalAndNamedForTheOperation(t *testing.T) {
 
 // A failure is its kind and nothing else: Error status, the kind as the
 // description and as error.type, and no event, since RecordError would put the
-// error's text in one.
+// error's text in one. Every kind the library has is tried, at both scopes.
 func TestAFailureIsItsKindAndNothingElse(t *testing.T) {
-	kinds := []string{
-		"rate limited", "provider unavailable", "authentication", "timeout", "canceled",
-		"schema violation", "malformed output", "repair exhausted", "output truncated", "internal", "unknown",
-	}
-	for _, kind := range kinds {
-		t.Run(kind, func(t *testing.T) {
-			observer, exporter := observerOn(t)
-			ctx := observer.OperationStarted(context.Background(), telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"})
-			observer.OperationFinished(ctx, telemetry.OperationResult{Operation: "extract", Attempts: 1, ErrorKind: kind})
+	for _, scope := range []telemetry.Scope{telemetry.ScopeRequest, telemetry.ScopeOperation} {
+		for kind := schemaflux.ErrConfiguration; kind.Error() != "unknown"; kind++ {
+			t.Run(scope.String()+" "+kind.Error(), func(t *testing.T) {
+				observer, exporter := observerOn(t)
+				ctx := observer.Started(context.Background(), telemetry.Event{Scope: scope, Operation: "extract", Provider: "openai", Model: "m"})
+				observer.Finished(ctx, telemetry.Result{Scope: scope, Operation: "extract", Attempts: 1, Kind: kind})
 
-			span := exporter.GetSpans()[0]
-			if span.Status.Code != codes.Error || span.Status.Description != kind {
-				t.Errorf("status = %v %q, want Error %q", span.Status.Code, span.Status.Description, kind)
-			}
-			found := false
-			for _, kv := range span.Attributes {
-				if kv.Key == "error.type" {
-					found = kv.Value.Type() == attribute.STRING && kv.Value.AsString() == kind
+				span := exporter.GetSpans()[0]
+				if span.Status.Code != codes.Error || span.Status.Description != kind.Error() {
+					t.Errorf("status = %v %q, want Error %q", span.Status.Code, span.Status.Description, kind.Error())
 				}
-			}
-			if !found {
-				t.Errorf("error.type is not the string %q", kind)
-			}
-			if len(span.Events) != 0 {
-				t.Errorf("%d events on a failed span; an exception event would carry the error's text", len(span.Events))
-			}
-		})
+				found := false
+				for _, kv := range span.Attributes {
+					if kv.Key == "error.type" {
+						found = kv.Value.Type() == attribute.STRING && kv.Value.AsString() == kind.Error()
+					}
+				}
+				if !found {
+					t.Errorf("error.type is not the string %q", kind.Error())
+				}
+				if len(span.Events) != 0 {
+					t.Errorf("%d events on a failed span; an exception event would carry the error's text", len(span.Events))
+				}
+			})
+		}
+	}
+}
+
+func TestASpanThatSucceededIsLeftUnset(t *testing.T) {
+	for _, scope := range []telemetry.Scope{telemetry.ScopeRequest, telemetry.ScopeOperation} {
+		observer, exporter := observerOn(t)
+		ctx := observer.Started(context.Background(), telemetry.Event{Scope: scope, Operation: "sort", Provider: "openai", Model: "m"})
+		observer.Finished(ctx, telemetry.Result{Scope: scope, Operation: "sort", Attempts: 1, Provider: "openai", Model: "m",
+			Usage: schemaflux.Usage{Input: 1, Output: 1}})
+		if span := exporter.GetSpans()[0]; span.Status.Code != codes.Unset || span.Status.Description != "" {
+			t.Errorf("%s span status = %v %q, want Unset: Ok is the application's to set", scope, span.Status.Code, span.Status.Description)
+		}
 	}
 }
 
 func TestNotesBecomeSpanEventsOnTheRequestSpan(t *testing.T) {
 	observer, exporter := observerOn(t)
-	operation := observer.OperationStarted(context.Background(), telemetry.OperationEvent{Scope: telemetry.ScopeOperation, Operation: "extract"})
-	observer.OperationNoted(operation, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 9})
+	operation := observer.Started(context.Background(), telemetry.Event{Scope: telemetry.ScopeOperation, Operation: "extract"})
+	observer.Noted(operation, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 9})
 
-	request := observer.OperationStarted(operation, telemetry.OperationEvent{Operation: "extract", Provider: "openai", Model: "m"})
-	observer.OperationNoted(request, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1, ErrorKind: "rate limited", Wait: 20 * time.Millisecond})
-	observer.OperationNoted(context.WithValue(request, contextKey{}, "deeper"), telemetry.Note{Name: telemetry.NoteHedge, Attempt: 2})
-	observer.OperationFinished(request, telemetry.OperationResult{Attempts: 2})
-	observer.OperationNoted(request, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 2, ErrorKind: "timeout"})
-	observer.OperationFinished(operation, telemetry.OperationResult{Scope: telemetry.ScopeOperation})
+	request := observer.Started(operation, telemetry.Event{Operation: "extract", Provider: "openai", Model: "m"})
+	observer.Noted(request, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1, Kind: schemaflux.ErrRateLimited, Wait: 20 * time.Millisecond})
+	observer.Noted(context.WithValue(request, contextKey{}, "deeper"), telemetry.Note{Name: telemetry.NoteHedge, Attempt: 2})
+	observer.Finished(request, telemetry.Result{Attempts: 2})
+	observer.Noted(request, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 2, Kind: schemaflux.ErrTimeout})
+	observer.Finished(operation, telemetry.Result{Scope: telemetry.ScopeOperation})
 
 	spans := exporter.GetSpans()
 	requestSpan, operationSpan := spanNamed(t, spans, "chat m"), spanNamed(t, spans, "schemaflux.extract")
@@ -456,11 +555,12 @@ func TestNotesBecomeSpanEventsOnTheRequestSpan(t *testing.T) {
 	}
 }
 
-// tallyingProvider wraps a provider and counts what is done to the spans
-// started on it.
+// tallyingProvider wraps a provider and counts what is done to the spans started
+// on it.
 type tallyingProvider struct {
 	oteltrace.TracerProvider
 	started, ended, writes, writesWhenNotRecording atomic.Int64
+	endedTwice                                     atomic.Int64
 }
 
 type tallyingTracer struct {
@@ -471,6 +571,7 @@ type tallyingTracer struct {
 type tallyingSpan struct {
 	oteltrace.Span
 	tally *tallyingProvider
+	ends  atomic.Int64
 }
 
 func (p *tallyingProvider) Tracer(name string, opts ...oteltrace.TracerOption) oteltrace.Tracer {
@@ -480,12 +581,16 @@ func (p *tallyingProvider) Tracer(name string, opts ...oteltrace.TracerOption) o
 func (t *tallyingTracer) Start(ctx context.Context, name string, opts ...oteltrace.SpanStartOption) (context.Context, oteltrace.Span) {
 	ctx, span := t.Tracer.Start(ctx, name, opts...)
 	t.tally.started.Add(1)
-	wrapped := &tallyingSpan{Span: span, tally: t.tally}
-	return oteltrace.ContextWithSpan(ctx, wrapped), wrapped
+	wrappedSpan := &tallyingSpan{Span: span, tally: t.tally}
+	return oteltrace.ContextWithSpan(ctx, wrappedSpan), wrappedSpan
 }
 
 func (s *tallyingSpan) End(opts ...oteltrace.SpanEndOption) {
-	s.tally.ended.Add(1)
+	if s.ends.Add(1) == 1 {
+		s.tally.ended.Add(1)
+	} else {
+		s.tally.endedTwice.Add(1)
+	}
 	s.Span.End(opts...)
 }
 
@@ -511,25 +616,26 @@ func (s *tallyingSpan) SetStatus(code codes.Code, description string) {
 	s.Span.SetStatus(code, description)
 }
 
-// fullEvent and fullResult have every field set, so every attribute the
-// Observer can compute would be computed for them.
+// fullEvent and fullResult have every field set, so every attribute the Observer
+// can compute would be computed for them.
 var (
-	fullEvent = telemetry.OperationEvent{
+	fullEvent = telemetry.Event{
 		Operation: "extract", Provider: "openai", Model: "gpt-5.6-luna", RequestID: "req_1", CorrelationID: "corr_1",
-		Mode: "strict", Intelligence: "smart", SchemaName: "invoice", ResponseFormat: "json", Repair: true, Stream: true,
+		Mode: schemaflux.ModeStrict, Tier: schemaflux.TierSmart, SchemaName: "invoice", ResponseFormat: "json", Repair: true, Stream: true,
 	}
-	fullResult = telemetry.OperationResult{
+	fullResult = telemetry.Result{
 		Operation: "extract", Duration: time.Second, ProviderDuration: time.Second, Attempts: 2,
-		Provider: "openai", Model: "gpt-5.6-luna", FinishReason: "stop", ErrorKind: "rate limited",
-		Usage: types.TokenUsage{PromptTokens: 100, CompletionTokens: 30, CachedTokens: 4, ReasoningTokens: 2, CacheWriteTokens: 1},
-		Cost:  types.CostInfo{TotalCost: 0.01, Currency: "USD", Priced: true, Quality: types.PricingExact},
-		// What a decision pair that escalated reports.
+		Provider: "openai", Model: "gpt-5.6-luna", FinishReason: "stop", Kind: schemaflux.ErrRateLimited,
+		Usage: schemaflux.Usage{Input: 100, Output: 30, Total: 130, Cached: 4, Reasoning: 2, CacheWrite: 1},
+		Cost:  schemaflux.Cost{Total: 0.01, Currency: "USD", Priced: true},
+		// What a decision pair that escalated reports, and what a run reports.
 		AskedFirst: "jev", AskedFirstModel: "jev-1", Escalated: "below the floor",
+		Requests: 3, Items: 4, Succeeded: 2, Failed: 1, Cancelled: 1,
 	}
 )
 
-// A span a sampler dropped has nothing written to it, at start, at a note or
-// at finish, and is ended once all the same.
+// A span a sampler dropped has nothing written to it, at start, at a note or at
+// finish, and is ended once all the same.
 func TestASpanThatIsNotRecordingIsWrittenNothingAndStillEnded(t *testing.T) {
 	samplers := map[string]sdktrace.Sampler{
 		"never sample":             sdktrace.NeverSample(),
@@ -549,10 +655,10 @@ func TestASpanThatIsNotRecordingIsWrittenNothingAndStillEnded(t *testing.T) {
 				event.Scope, result.Scope = scope, scope
 
 				for range 10 {
-					ctx := observer.OperationStarted(context.Background(), event)
-					observer.OperationNoted(ctx, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1, ErrorKind: "timeout"})
-					observer.OperationFinished(ctx, result)
-					observer.OperationFinished(ctx, result)
+					ctx := observer.Started(context.Background(), event)
+					observer.Noted(ctx, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1, Kind: schemaflux.ErrTimeout})
+					observer.Finished(ctx, result)
+					observer.Finished(ctx, result)
 				}
 
 				if started, ended := tally.started.Load(), tally.ended.Load(); started != 10 || ended != 10 {
@@ -579,11 +685,11 @@ func TestNothingIsComputedForASpanThatIsNotRecording(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	measure := func(event telemetry.OperationEvent, result telemetry.OperationResult) float64 {
+	measure := func(event telemetry.Event, result telemetry.Result) float64 {
 		return testing.AllocsPerRun(200, func() {
-			started := observer.OperationStarted(ctx, event)
-			observer.OperationNoted(started, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1, ErrorKind: "timeout", Wait: time.Second})
-			observer.OperationFinished(started, result)
+			started := observer.Started(ctx, event)
+			observer.Noted(started, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1, Kind: schemaflux.ErrTimeout, Wait: time.Second})
+			observer.Finished(started, result)
 		})
 	}
 
@@ -591,7 +697,7 @@ func TestNothingIsComputedForASpanThatIsNotRecording(t *testing.T) {
 	model := fullEvent.Model
 	spanAlone := testing.AllocsPerRun(200, func() {
 		started, span := tracer.Start(ctx, "chat "+model, oteltrace.WithSpanKind(oteltrace.SpanKindClient),
-			oteltrace.WithAttributes(creationAttributes(telemetry.OperationEvent{Provider: fullEvent.Provider, Model: model, Operation: fullEvent.Operation})...))
+			oteltrace.WithAttributes(creationAttributes(telemetry.Event{Provider: fullEvent.Provider, Model: model, Operation: fullEvent.Operation})...))
 		started = context.WithValue(started, openedSpanKey{}, &openedSpan{span: span})
 		_ = started
 		span.End()
@@ -601,7 +707,7 @@ func TestNothingIsComputedForASpanThatIsNotRecording(t *testing.T) {
 	if full != spanAlone {
 		t.Errorf("a dropped span costs %.0f allocations with every field set, and the span alone costs %.0f: something is computed for it", full, spanAlone)
 	}
-	if bare := measure(telemetry.OperationEvent{Model: model}, telemetry.OperationResult{}); bare != full {
+	if bare := measure(telemetry.Event{Model: model}, telemetry.Result{}); bare != full {
 		t.Errorf("a dropped span costs %.0f allocations with no field set and %.0f with every one", bare, full)
 	}
 
@@ -626,26 +732,27 @@ func TestASpanIsEndedOnceHoweverOftenItsFinishArrives(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ctx := observer.OperationStarted(context.Background(), fullEvent)
+			ctx := observer.Started(context.Background(), fullEvent)
 			var finishers sync.WaitGroup
 			for range 8 {
-				finishers.Add(1)
-				go func() {
-					defer finishers.Done()
-					observer.OperationFinished(context.WithValue(ctx, contextKey{}, "derived"), fullResult)
-				}()
+				finishers.Go(func() {
+					observer.Finished(context.WithValue(ctx, contextKey{}, "derived"), fullResult)
+				})
 			}
 			finishers.Wait()
 
 			if ended := tally.ended.Load(); ended != 1 {
 				t.Errorf("the span was ended %d times, want once", ended)
 			}
+			if twice := tally.endedTwice.Load(); twice != 0 {
+				t.Errorf("the span's End was called %d more times", twice)
+			}
 		})
 	}
 }
 
-// The host's own span is on the context the library's finish is given. Neither
-// a finish with no start, nor one from another Observer, nor a nil or zero
+// The host's own span is on the context the library's finish is given. Neither a
+// finish with no start, nor one from another Observer, nor a nil or zero
 // Observer may end it or write to it.
 func TestAFinishNeverTouchesASpanTheObserverDidNotOpen(t *testing.T) {
 	cases := []struct {
@@ -653,60 +760,60 @@ func TestAFinishNeverTouchesASpanTheObserverDidNotOpen(t *testing.T) {
 		finish func(t *testing.T, observer *Observer, hostCtx context.Context)
 	}{
 		{"a finish with no start", func(_ *testing.T, observer *Observer, hostCtx context.Context) {
-			observer.OperationFinished(hostCtx, fullResult)
+			observer.Finished(hostCtx, fullResult)
 		}},
 		{"a finish of the other scope", func(_ *testing.T, observer *Observer, hostCtx context.Context) {
-			ctx := observer.OperationStarted(hostCtx, fullEvent)
+			ctx := observer.Started(hostCtx, fullEvent)
 			wrong := fullResult
 			wrong.Scope = telemetry.ScopeOperation
-			observer.OperationFinished(ctx, wrong)
-			observer.OperationFinished(ctx, fullResult)
+			observer.Finished(ctx, wrong)
+			observer.Finished(ctx, fullResult)
 		}},
 		{"a note with no start", func(_ *testing.T, observer *Observer, hostCtx context.Context) {
-			observer.OperationNoted(hostCtx, telemetry.Note{Name: telemetry.NoteRetry})
+			observer.Noted(hostCtx, telemetry.Note{Name: telemetry.NoteRetry})
 		}},
 		{"a second finish", func(_ *testing.T, observer *Observer, hostCtx context.Context) {
-			ctx := observer.OperationStarted(hostCtx, fullEvent)
-			observer.OperationFinished(ctx, fullResult)
-			observer.OperationFinished(ctx, fullResult)
+			ctx := observer.Started(hostCtx, fullEvent)
+			observer.Finished(ctx, fullResult)
+			observer.Finished(ctx, fullResult)
 		}},
 		{"a finish by another Observer", func(t *testing.T, observer *Observer, hostCtx context.Context) {
 			other, _ := observerOn(t)
-			ctx := observer.OperationStarted(hostCtx, fullEvent)
-			other.OperationFinished(ctx, fullResult)
-			other.OperationNoted(ctx, telemetry.Note{Name: telemetry.NoteRetry})
-			observer.OperationFinished(ctx, fullResult)
+			ctx := observer.Started(hostCtx, fullEvent)
+			other.Finished(ctx, fullResult)
+			other.Noted(ctx, telemetry.Note{Name: telemetry.NoteRetry})
+			observer.Finished(ctx, fullResult)
 		}},
 		{"a nil Observer", func(_ *testing.T, _ *Observer, hostCtx context.Context) {
 			var none *Observer
-			if got := none.OperationStarted(hostCtx, fullEvent); got != hostCtx {
+			if got := none.Started(hostCtx, fullEvent); got != hostCtx {
 				t.Error("a nil Observer changed the context")
 			}
-			none.OperationFinished(hostCtx, fullResult)
-			none.OperationNoted(hostCtx, telemetry.Note{Name: telemetry.NoteRetry})
+			none.Finished(hostCtx, fullResult)
+			none.Noted(hostCtx, telemetry.Note{Name: telemetry.NoteRetry})
 		}},
-		{"a zero Observer", func(t *testing.T, _ *Observer, hostCtx context.Context) {
+		{"a zero Observer", func(_ *testing.T, _ *Observer, hostCtx context.Context) {
 			zero := &Observer{}
-			if got := zero.OperationStarted(hostCtx, fullEvent); got != hostCtx {
+			if got := zero.Started(hostCtx, fullEvent); got != hostCtx {
 				t.Error("a zero Observer changed the context")
 			}
-			zero.OperationFinished(hostCtx, fullResult)
-			zero.OperationNoted(hostCtx, telemetry.Note{Name: telemetry.NoteRetry})
+			zero.Finished(hostCtx, fullResult)
+			zero.Noted(hostCtx, telemetry.Note{Name: telemetry.NoteRetry})
 		}},
 		{"a finish on a nil context", func(_ *testing.T, observer *Observer, _ context.Context) {
 			//lint:ignore SA1012 a nil context is what a careless emitter passes
-			observer.OperationFinished(nil, fullResult)
+			observer.Finished(nil, fullResult)
 			//lint:ignore SA1012 as above
-			observer.OperationNoted(nil, telemetry.Note{Name: telemetry.NoteRetry})
+			observer.Noted(nil, telemetry.Note{Name: telemetry.NoteRetry})
 		}},
 		{"a start on a nil context", func(_ *testing.T, observer *Observer, _ context.Context) {
 			//lint:ignore SA1012 as above
-			ctx := observer.OperationStarted(nil, fullEvent)
-			observer.OperationFinished(ctx, fullResult)
+			ctx := observer.Started(nil, fullEvent)
+			observer.Finished(ctx, fullResult)
 		}},
 		{"a finish on a context derived from the start's", func(_ *testing.T, observer *Observer, hostCtx context.Context) {
-			ctx := observer.OperationStarted(hostCtx, fullEvent)
-			observer.OperationFinished(context.WithValue(ctx, contextKey{}, "derived"), fullResult)
+			ctx := observer.Started(hostCtx, fullEvent)
+			observer.Finished(context.WithValue(ctx, contextKey{}, "derived"), fullResult)
 		}},
 	}
 	for _, tc := range cases {
@@ -746,12 +853,12 @@ func TestALibrarySpanIsAChildOfTheSpanOnTheCallersContext(t *testing.T) {
 	}
 
 	hostCtx, host := provider.Tracer("host").Start(context.Background(), "pipeline stage")
-	operation := observer.OperationStarted(hostCtx, telemetry.OperationEvent{Scope: telemetry.ScopeOperation, Operation: "extract"})
-	first := observer.OperationStarted(operation, telemetry.OperationEvent{Operation: "extract", Model: "first"})
-	observer.OperationFinished(first, telemetry.OperationResult{Attempts: 1})
-	second := observer.OperationStarted(operation, telemetry.OperationEvent{Operation: "extract", Model: "second", Repair: true})
-	observer.OperationFinished(second, telemetry.OperationResult{Attempts: 1})
-	observer.OperationFinished(operation, telemetry.OperationResult{Scope: telemetry.ScopeOperation})
+	operation := observer.Started(hostCtx, telemetry.Event{Scope: telemetry.ScopeOperation, Operation: "extract"})
+	first := observer.Started(operation, telemetry.Event{Operation: "extract", Model: "first"})
+	observer.Finished(first, telemetry.Result{Attempts: 1})
+	second := observer.Started(operation, telemetry.Event{Operation: "extract", Model: "second", Repair: true})
+	observer.Finished(second, telemetry.Result{Attempts: 1})
+	observer.Finished(operation, telemetry.Result{Scope: telemetry.ScopeOperation})
 	host.End()
 
 	spans := exporter.GetSpans()
@@ -771,59 +878,14 @@ func TestALibrarySpanIsAChildOfTheSpanOnTheCallersContext(t *testing.T) {
 
 	// With no span on the context the library's span is a root.
 	exporter.Reset()
-	observer.OperationFinished(observer.OperationStarted(context.Background(), telemetry.OperationEvent{Model: "m"}), telemetry.OperationResult{})
+	observer.Finished(observer.Started(context.Background(), telemetry.Event{Model: "m"}), telemetry.Result{})
 	if root := exporter.GetSpans()[0]; root.Parent.IsValid() {
 		t.Error("with no span on the context the library's span has a parent")
 	}
 }
 
-// Two Observers on two providers, both installed. Each provider's spans form
-// their own tree under the caller's span: neither takes the other's span, on a
-// provider its backend never hears from, as a parent.
-func TestTwoObserversEachKeepTheirOwnTree(t *testing.T) {
-	firstProvider, firstExporter := recording(t)
-	secondProvider, secondExporter := recording(t)
-	restoreFirst, err := Install(firstProvider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restoreFirst()
-	restoreSecond, err := Install(secondProvider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restoreSecond()
-
-	hostCtx, host := firstProvider.Tracer("host").Start(context.Background(), "host")
-	operation := telemetry.ObserveOperationStart(hostCtx, telemetry.OperationEvent{Scope: telemetry.ScopeOperation, Operation: "extract"})
-	request := telemetry.ObserveOperationStart(operation, telemetry.OperationEvent{Operation: "extract", Model: "m"})
-	telemetry.ObserveOperationNote(request, telemetry.Note{Name: telemetry.NoteRetry, Attempt: 1})
-	telemetry.ObserveOperationEnd(request, telemetry.OperationResult{Attempts: 2})
-	telemetry.ObserveOperationEnd(operation, telemetry.OperationResult{Scope: telemetry.ScopeOperation})
-	host.End()
-
-	for name, exporter := range map[string]*tracetest.InMemoryExporter{"first": firstExporter, "second": secondExporter} {
-		spans := exporter.GetSpans()
-		operationSpan, requestSpan := spanNamed(t, spans, "schemaflux.extract"), spanNamed(t, spans, "chat m")
-		if operationSpan.Parent.SpanID() != host.SpanContext().SpanID() {
-			t.Errorf("%s provider: the operation span's parent is %s, want the host's span", name, operationSpan.Parent.SpanID())
-		}
-		if requestSpan.Parent.SpanID() != operationSpan.SpanContext.SpanID() {
-			t.Errorf("%s provider: the request span's parent is %s, want this provider's operation span %s",
-				name, requestSpan.Parent.SpanID(), operationSpan.SpanContext.SpanID())
-		}
-		if len(requestSpan.Events) != 1 {
-			t.Errorf("%s provider: the request span has %d events, want the retry", name, len(requestSpan.Events))
-		}
-	}
-}
-
-// Install sets tracing up whole: the Observer and the ID sources. Its restore
-// takes both out, and nothing of an earlier install with them.
 func TestInstallAddsTheObserverAndTheIDSourcesAndItsRestoreRemovesBoth(t *testing.T) {
-	if telemetry.HasObserver() {
-		t.Fatal("an observer is installed before the test began")
-	}
+	noObserver(t)
 	provider, exporter := recording(t)
 	ctx, span := provider.Tracer("host").Start(context.Background(), "host")
 	defer span.End()
@@ -836,46 +898,46 @@ func TestInstallAddsTheObserverAndTheIDSourcesAndItsRestoreRemovesBoth(t *testin
 	t.Cleanup(func() { requesttracking.Configure(requesttracking.DefaultConfig()) })
 	traced := func() bool { return requesttracking.Resolve(ctx, "", "").RequestID == wantTrace }
 
-	if telemetry.GetTraceID(ctx) != "" || traced() {
-		t.Fatal("an ID source is installed before Install was called")
+	if telemetry.TraceID(ctx) != "" || traced() {
+		t.Fatal("an id reader is installed before Install was called")
 	}
 
 	restore, err := Install(provider)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !telemetry.HasObserver() {
-		t.Error("Install added no observer")
+	if !wrapped.HasObserver() {
+		t.Error("Install registered no observer")
 	}
-	if got := telemetry.GetTraceID(ctx); got != wantTrace {
-		t.Errorf("GetTraceID = %q after Install, want the span's trace ID", got)
+	if got := telemetry.TraceID(ctx); got != wantTrace {
+		t.Errorf("TraceID = %q after Install, want the span's trace id", got)
 	}
-	if got := telemetry.GetSpanID(ctx); got != wantSpan {
-		t.Errorf("GetSpanID = %q after Install, want the span's ID", got)
+	if got := telemetry.SpanID(ctx); got != wantSpan {
+		t.Errorf("SpanID = %q after Install, want the span's id", got)
 	}
 	if !traced() {
-		t.Error("the request tracker cannot read the trace ID after Install")
+		t.Error("the request tracker cannot read the trace id after Install")
 	}
-	telemetry.ObserveOperationEnd(telemetry.ObserveOperationStart(ctx, telemetry.OperationEvent{Model: "m"}), telemetry.OperationResult{})
+	wrapped.ObserveOperationEnd(wrapped.ObserveOperationStart(ctx, wrapped.OperationEvent{Model: "m"}), wrapped.OperationResult{})
 	if len(exporter.GetSpans()) != 1 {
 		t.Error("an event after Install produced no span")
 	}
 
 	restore()
 	restore()
-	if telemetry.HasObserver() {
-		t.Error("the restore left the observer installed")
+	if wrapped.HasObserver() {
+		t.Error("the restore left the observer registered")
 	}
-	if telemetry.GetTraceID(ctx) != "" || telemetry.GetSpanID(ctx) != "" || traced() {
-		t.Error("the restore left an ID source installed: the check is made on a context that carries a span")
+	if telemetry.TraceID(ctx) != "" || telemetry.SpanID(ctx) != "" || traced() {
+		t.Error("the restore left an id reader installed: the check is made on a context that carries a span")
 	}
 }
 
-// The ID sources of several installs come out in whatever order their restores
+// The id readers of several installs come out in whatever order their restores
 // run, and a restore run a second time brings nothing back. Both halves are
-// checked on a context that carries a span, since on any other context a
-// source that is still installed answers "" and looks removed.
-func TestIDSourceRestoresComposeInAnyOrder(t *testing.T) {
+// checked on a context that carries a span, since on any other context a reader
+// that is still installed answers "" and looks removed.
+func TestIDReaderRestoresComposeInAnyOrder(t *testing.T) {
 	provider, _ := recording(t)
 	ctx, span := provider.Tracer("host").Start(context.Background(), "host")
 	defer span.End()
@@ -890,7 +952,7 @@ func TestIDSourceRestoresComposeInAnyOrder(t *testing.T) {
 	cases := []struct {
 		name      string
 		order     []int // restores run, by install position; a position may repeat
-		installed bool  // whether a source is still in effect afterwards
+		installed bool  // whether a reader is still in effect afterwards
 	}{
 		{"none", nil, true},
 		{"first only", []int{0}, true},
@@ -915,13 +977,13 @@ func TestIDSourceRestoresComposeInAnyOrder(t *testing.T) {
 				restores[index]()
 			}
 
-			telemetryHalf := telemetry.GetTraceID(ctx) == trace && telemetry.GetSpanID(ctx) != ""
+			telemetryHalf := telemetry.TraceID(ctx) == trace && telemetry.SpanID(ctx) != ""
 			trackingHalf := requesttracking.Resolve(ctx, "", "").RequestID == trace
 			if telemetryHalf != tc.installed {
 				t.Errorf("telemetry's readers installed = %v, want %v", telemetryHalf, tc.installed)
 			}
 			if trackingHalf != tc.installed {
-				t.Errorf("the request tracker's source installed = %v, want %v", trackingHalf, tc.installed)
+				t.Errorf("the request tracker's reader installed = %v, want %v", trackingHalf, tc.installed)
 			}
 		})
 	}
@@ -949,24 +1011,24 @@ func TestTraceAndSpanIDFromContext(t *testing.T) {
 		{"a no-op span", oteltrace.ContextWithSpan(context.Background(), noopSpan), "", ""},
 		{"a remote span context", remote, span.SpanContext().TraceID().String(), span.SpanContext().SpanID().String()},
 		{"an invalid span context", oteltrace.ContextWithSpanContext(context.Background(), oteltrace.SpanContext{}), "", ""},
-		{"a trace ID with no span ID", oteltrace.ContextWithSpanContext(context.Background(),
+		{"a trace id with no span id", oteltrace.ContextWithSpanContext(context.Background(),
 			oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: span.SpanContext().TraceID()})), "", ""},
-		{"a span ID with no trace ID", oteltrace.ContextWithSpanContext(context.Background(),
+		{"a span id with no trace id", oteltrace.ContextWithSpanContext(context.Background(),
 			oteltrace.NewSpanContext(oteltrace.SpanContextConfig{SpanID: span.SpanContext().SpanID()})), "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := traceIDFromContext(tc.ctx); got != tc.wantTrace {
-				t.Errorf("trace ID = %q, want %q", got, tc.wantTrace)
+				t.Errorf("trace id = %q, want %q", got, tc.wantTrace)
 			}
 			if got := spanIDFromContext(tc.ctx); got != tc.wantSpan {
-				t.Errorf("span ID = %q, want %q", got, tc.wantSpan)
+				t.Errorf("span id = %q, want %q", got, tc.wantSpan)
 			}
 		})
 	}
 }
 
-// / Everything that reaches a span from a caller or a provider goes through one
+// Everything that reaches a span from a caller or a provider goes through one
 // helper, with one limit for each kind of value.
 func TestBounded(t *testing.T) {
 	long := strings.Repeat("x", 20000)
@@ -1020,8 +1082,8 @@ func TestBounded(t *testing.T) {
 }
 
 // The limits are separate constants because the values differ in kind; this
-// keeps each within what an identifier needs and a backend tolerates, so one
-// cannot be set to nothing or to everything by accident.
+// keeps each within what an id needs and a backend tolerates, so one cannot be
+// set to nothing or to everything by accident.
 func TestEachKindOfValueHasItsOwnNamedLimit(t *testing.T) {
 	limits := map[string]int{
 		"id":            maxIDLength,
@@ -1033,36 +1095,38 @@ func TestEachKindOfValueHasItsOwnNamedLimit(t *testing.T) {
 	}
 	for kind, limit := range limits {
 		if limit < 16 || limit > 256 {
-			t.Errorf("the limit for a %s is %d, outside what an identifier needs and a backend tolerates", kind, limit)
+			t.Errorf("the limit for a %s is %d, outside what an id needs and a backend tolerates", kind, limit)
 		}
 	}
 }
 
 // A model a caller pinned and the model and provider a provider answers with
 // are strings nobody here chose. They reach the span's name and three of its
-// attributes, so they are bounded and printable like the ids.
+// attributes, so they are bounded and printable like the ids, even when the
+// event reaches the Observer by hand and not through the package that already
+// cut it.
 func TestWhatACallerOrAProviderSuppliesReachesTheSpanBoundedAndPrintable(t *testing.T) {
 	hostile := "h\n" + strings.Repeat("x", 5000) + "\x00" + strings.Repeat("y", 300)
 
 	observer, exporter := observerOn(t)
-	ctx := observer.OperationStarted(context.Background(), telemetry.OperationEvent{
+	ctx := observer.Started(context.Background(), telemetry.Event{
 		Operation:     hostile,
 		Provider:      hostile,
 		Model:         hostile,
 		SchemaName:    hostile,
 		RequestID:     hostile,
 		CorrelationID: hostile,
-		Mode:          "strict",
+		Mode:          schemaflux.ModeStrict,
 	})
-	observer.OperationFinished(ctx, telemetry.OperationResult{
+	observer.Finished(ctx, telemetry.Result{
 		Attempts:     1,
 		Provider:     hostile,
 		Model:        hostile,
 		FinishReason: hostile,
-		Usage:        types.TokenUsage{PromptTokens: 1, CompletionTokens: 1},
+		Usage:        schemaflux.Usage{Input: 1, Output: 1},
 	})
-	operation := observer.OperationStarted(context.Background(), telemetry.OperationEvent{Scope: telemetry.ScopeOperation, Operation: hostile})
-	observer.OperationFinished(operation, telemetry.OperationResult{Scope: telemetry.ScopeOperation, Operation: hostile, ErrorKind: "internal"})
+	operation := observer.Started(context.Background(), telemetry.Event{Scope: telemetry.ScopeOperation, Operation: hostile})
+	observer.Finished(operation, telemetry.Result{Scope: telemetry.ScopeOperation, Operation: hostile, Kind: schemaflux.ErrInternal})
 
 	limits := map[string]int{
 		"gen_ai.request.model":           maxModelLength,
@@ -1123,12 +1187,12 @@ func TestWhatACallerOrAProviderSuppliesReachesTheSpanBoundedAndPrintable(t *test
 
 func TestACallersIDsReachTheSpanBoundedAndPrintable(t *testing.T) {
 	observer, exporter := observerOn(t)
-	ctx := observer.OperationStarted(context.Background(), telemetry.OperationEvent{
+	ctx := observer.Started(context.Background(), telemetry.Event{
 		Model:         "m",
 		RequestID:     "user@example.com " + strings.Repeat("x", 20000),
 		CorrelationID: "corr\n\x00 second line",
 	})
-	observer.OperationFinished(ctx, telemetry.OperationResult{})
+	observer.Finished(ctx, telemetry.Result{})
 
 	for _, kv := range exporter.GetSpans()[0].Attributes {
 		switch kv.Key {
@@ -1144,86 +1208,23 @@ func TestACallersIDsReachTheSpanBoundedAndPrintable(t *testing.T) {
 	}
 }
 
-type contextKey struct{}
-
-// packageDoc returns the text of this package's documentation comment.
-func packageDoc(t *testing.T) string {
-	t.Helper()
-	parsed, err := parser.ParseFile(token.NewFileSet(), "otel.go", nil, parser.ParseComments|parser.PackageClauseOnly)
-	if err != nil {
-		t.Fatalf("parsing otel.go: %v", err)
+func TestTheNamesOfAModeAndATierAreTheLibrarysOwn(t *testing.T) {
+	modes := map[schemaflux.Mode]string{
+		schemaflux.ModeStrict: types.Strict.String(), schemaflux.ModeTransform: types.TransformMode.String(), schemaflux.ModeCreative: types.Creative.String(),
+		0: "", schemaflux.Mode(9): "", schemaflux.Mode(-1): "",
 	}
-	if parsed.Doc == nil {
-		t.Fatal("otel.go has no package comment")
-	}
-	return parsed.Doc.Text()
-}
-
-// errorTypeValues is every value error.type can take, generated from the
-// library's error kinds: each kind's name, the kind of a call that ended in a
-// panic, and the name of an error that carries no kind. A kind added to the
-// library appears here without anyone remembering to add it.
-func errorTypeValues() []string {
-	values := []string{telemetry.ErrorKindInternal, telemetry.ErrorKindRefused, types.KindUnknown.String()}
-	for kind := types.ErrorKind(1); kind.String() != types.KindUnknown.String(); kind++ {
-		values = append(values, kind.String())
-	}
-	slices.Sort(values)
-	return slices.Compact(values)
-}
-
-// The package comment is where an engineer learns what error.type can be, so it
-// lists every value, and it cannot go stale: this fails with the block to paste
-// when a kind is added, renamed or removed.
-func TestThePackageCommentListsEveryErrorTypeTheLibraryCanReport(t *testing.T) {
-	doc := packageDoc(t)
-
-	_, afterIntro, found := strings.Cut(doc, "The complete list of values, on a span\nand on a retry event, is:\n")
-	if !found {
-		t.Fatal("the package comment no longer introduces the list of error.type values")
-	}
-	var listed []string
-	for _, line := range strings.Split(afterIntro, "\n") {
-		if !strings.HasPrefix(line, "\t") {
-			if len(listed) > 0 {
-				break
-			}
-			continue
+	for mode, want := range modes {
+		if got := modeName(mode); got != want {
+			t.Errorf("modeName(%d) = %q, want %q", mode, got, want)
 		}
-		listed = append(listed, strings.TrimSpace(line))
 	}
-
-	want := errorTypeValues()
-	if !slices.Equal(listed, want) {
-		block := "//\t" + strings.Join(want, "\n//\t")
-		t.Errorf("the error.type values in the package comment are\n  %s\nwant, from the library's kinds,\n  %s\nreplace the list with:\n%s",
-			strings.Join(listed, "\n  "), strings.Join(want, "\n  "), block)
+	tiers := map[schemaflux.Tier]string{
+		schemaflux.TierSmart: types.Smart.String(), schemaflux.TierFast: types.Fast.String(), schemaflux.TierQuick: types.Quick.String(),
+		0: "", schemaflux.Tier(9): "", schemaflux.Tier(-1): "",
 	}
-	if len(want) < 20 {
-		t.Errorf("only %d error.type values were generated; the enumeration of the kinds stopped early", len(want))
-	}
-}
-
-// What an engineer needs in order to filter, shut down and choose an ID
-// strategy is in the comment, with the values the code uses.
-func TestThePackageCommentSaysWhatAnEngineerSettingUpNeeds(t *testing.T) {
-	doc := packageDoc(t)
-	for _, tc := range []struct{ name, want string }{
-		{"the instrumentation scope's name", instrumentationName},
-		{"the shutdown order, restore first", "Shut down in the reverse order"},
-		{"the provider's shutdown last", "then shut the provider down"},
-		{"the request ID strategy that reads the trace", "SCHEMAFLUX_REQUEST_ID_STRATEGY=trace"},
-		{"the version of the convention", "v1.41.0"},
-		{"that the keys are in development upstream", "in development"},
-		{"the model bound", "128 characters for an ID, a model"},
-		{"what is never recorded", "What is never recorded"},
-		{"the retry event", "schemaflux.backoff_ms"},
-		{"the name of Install", "otel.Install(provider)"},
-		{"a stream abandoned at its timeout", "ends at the stream's timeout"},
-		{"the operation spans of Extract", "Extract in both its forms"},
-	} {
-		if !strings.Contains(strings.Join(strings.Fields(doc), " "), strings.Join(strings.Fields(tc.want), " ")) {
-			t.Errorf("the package comment does not mention %s (%q)", tc.name, tc.want)
+	for tier, want := range tiers {
+		if got := tierName(tier); got != want {
+			t.Errorf("tierName(%d) = %q, want %q", tier, got, want)
 		}
 	}
 }

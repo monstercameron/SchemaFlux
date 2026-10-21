@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Environment is what the library takes from the environment, read once.

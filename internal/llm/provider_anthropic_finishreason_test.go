@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ST-003 / I-09. Anthropic's Messages API reports truncation as

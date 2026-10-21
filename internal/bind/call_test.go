@@ -11,13 +11,13 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	itelemetry "github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/mw"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/mw"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	itelemetry "github.com/monstercameron/schemaflux/v2/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The tests of a call share process state the call path reads: the default

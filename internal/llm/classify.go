@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Classify maps a provider failure onto the shared taxonomy.

@@ -3,7 +3,7 @@ package desk
 import (
 	"context"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // HandleOneAtATime makes the decisions Handle makes, each as a call of its own
@@ -100,7 +100,7 @@ func (d *Desk) workOneAtATime(message Message) schemaflux.Step[Outcome] {
 		if err != nil {
 			return Outcome{}, err
 		}
-		final, err := schemaflux.Branch(ctx, audit.Summary.PassesAudit, keep(draft), d.redraft(draft, audit))
+		final, err := schemaflux.Branch(ctx, audit.Verdict == schemaflux.VerdictPass, keep(draft), d.redraft(draft, audit))
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -135,7 +135,7 @@ func (d *Desk) workOneAtATime(message Message) schemaflux.Step[Outcome] {
 			MessageID: message.ID, Status: status,
 			Language: screen.Language, Team: triage.Team, Intent: triage.Intent, Urgency: triage.Urgency,
 			TicketID: ticket.ID, New: ticket.New,
-			Details: details, Reply: sent, Redrafted: !audit.Summary.PassesAudit,
+			Details: details, Reply: sent, Redrafted: audit.Verdict != schemaflux.VerdictPass,
 			Handoff: handoff, NextAction: next, WillWriteAgain: again,
 		}, nil
 	}

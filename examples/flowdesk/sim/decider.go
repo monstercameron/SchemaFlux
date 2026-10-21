@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // Decider is a stand-in for a decision model: a provider that answers the
@@ -47,7 +47,7 @@ func NewDecider(delay time.Duration) *Decider {
 func (d *Decider) Name() string { return "sim-decider" }
 
 // EstimateCost is zero: nothing is spent.
-func (d *Decider) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
+func (d *Decider) EstimateCost(schemaflux.Request) float64 { return 0 }
 
 // RetryPolicy asks for no retries. A request the decider refuses would be
 // refused the same way again.
@@ -64,9 +64,9 @@ func (d *Decider) Count() int { return d.log.Count() }
 
 // Complete answers the questions of the request's decision after the decider's
 // delay, or returns the context's error if it ends first.
-func (d *Decider) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (d *Decider) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if err := d.DecisionLimits().Check(d.Name(), d.Name(), req.Decision); err != nil {
-		return schemaflux.CompletionResponse{}, err
+		return schemaflux.Response{}, err
 	}
 	end := d.log.Begin(OpAssess)
 	defer end()
@@ -75,21 +75,21 @@ func (d *Decider) Complete(ctx context.Context, req schemaflux.CompletionRequest
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return schemaflux.CompletionResponse{}, ctx.Err()
+		return schemaflux.Response{}, ctx.Err()
 	case <-timer.C:
 	}
 
 	answers, err := d.decide(*req.Decision)
 	if err != nil {
-		return schemaflux.CompletionResponse{}, err
+		return schemaflux.Response{}, err
 	}
 	// No usage is reported, as the simulator reports none.
-	return schemaflux.CompletionResponse{Provider: d.Name(), Model: d.Name(), DecisionAnswers: answers}, nil
+	return schemaflux.Response{Provider: d.Name(), Model: d.Name(), Answers: answers}, nil
 }
 
 // decide answers a typed decision from the labels of the case its state is
 // about.
-func (d *Decider) decide(decision schemaflux.TypedDecision) ([]schemaflux.DecisionAnswer, error) {
+func (d *Decider) decide(decision schemaflux.Decision) ([]schemaflux.DecisionAnswer, error) {
 	about, err := d.caseIn(decision.State)
 	if err != nil {
 		return nil, err
@@ -149,12 +149,12 @@ func (d *Decider) caseIn(state string) (Case, error) {
 // content, or, for a decision provider's typed answers, the same answers
 // written the way a generating model writes them, {"q1":true,"q2":3}. It is for
 // showing a run and is not what the library reads.
-func Reply(req schemaflux.CompletionRequest, resp schemaflux.CompletionResponse) string {
-	if resp.Content != "" || req.Decision == nil || len(resp.DecisionAnswers) != len(req.Decision.Questions) {
+func Reply(req schemaflux.Request, resp schemaflux.Response) string {
+	if resp.Content != "" || req.Decision == nil || len(resp.Answers) != len(req.Decision.Questions) {
 		return resp.Content
 	}
-	reply := make(map[string]any, len(resp.DecisionAnswers))
-	for i, answer := range resp.DecisionAnswers {
+	reply := make(map[string]any, len(resp.Answers))
+	for i, answer := range resp.Answers {
 		key := "q" + strconv.Itoa(i+1)
 		switch answer.Kind {
 		case schemaflux.DecisionChoice:

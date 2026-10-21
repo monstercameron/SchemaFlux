@@ -3,7 +3,7 @@ package desk
 import (
 	"context"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // After is what follows the reply: what the desk does next, and whether the
@@ -144,7 +144,7 @@ func (d *Desk) finish(message Message, screen Screen, first reading) schemaflux.
 		if err != nil {
 			return Outcome{}, err
 		}
-		final, err := schemaflux.Branch(ctx, audit.Summary.PassesAudit, keep(draft), d.redraft(draft, audit))
+		final, err := schemaflux.Branch(ctx, audit.Verdict == schemaflux.VerdictPass, keep(draft), d.redraft(draft, audit))
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -166,7 +166,7 @@ func (d *Desk) finish(message Message, screen Screen, first reading) schemaflux.
 			MessageID: message.ID, Status: status,
 			Language: screen.Language, Team: read.Triage.Team, Intent: read.Triage.Intent, Urgency: read.Triage.Urgency,
 			TicketID: ticket.ID, New: ticket.New,
-			Details: read.Details, Reply: sent, Redrafted: !audit.Summary.PassesAudit,
+			Details: read.Details, Reply: sent, Redrafted: audit.Verdict != schemaflux.VerdictPass,
 			Handoff: handoff, NextAction: read.After.Next, WillWriteAgain: read.After.Again,
 		}, nil
 	}

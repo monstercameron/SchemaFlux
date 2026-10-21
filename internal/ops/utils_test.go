@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // An extracted value that is not usable is the model's answer being refused, so

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The beginning of the shared invariant library A-009 describes. Each one is a

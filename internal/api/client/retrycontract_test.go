@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
 )
 
 // PS-012. The retry contract an embedding application codes against, pinned at

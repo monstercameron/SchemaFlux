@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The settings of WithTimeout, WithRetries, WithRetryBackoff and WithDebug were

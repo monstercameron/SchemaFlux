@@ -1,8 +1,8 @@
 package ops
 
 import (
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every collection operation marshals the whole slice into one prompt with no

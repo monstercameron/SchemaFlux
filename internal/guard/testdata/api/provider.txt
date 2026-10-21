@@ -1,0 +1,15 @@
+type Config struct{APIKey string; BaseURL string; OrgID string; Timeout time.Duration; Retries int; RetryBackoff time.Duration; Headers map[string]string; Store bool; ServiceTier string; OmitTemperature bool; HTTPClient *http.Client; Endpoint *EndpointPolicy; Models Models}
+type Decider interface{DecisionLimits() schemaflux.DecisionLimits}
+func DeclareRoute(provider string, model string, regions []string, retentionDays int)
+type EndpointPolicy struct{Schemes []string; Hosts []string; AllowPrivate bool}
+type Factory func(cfg Config) (schemaflux.Provider, error)
+type Models struct{Smart string; Fast string; Quick string}
+func Names() []string
+func New(name string, cfg Config) (schemaflux.Provider, error)
+func OpenAICompatible(name string, baseURL string, cfg Config) (schemaflux.Provider, error)
+func Register(name string, f Factory) error
+func RegisterKeyless(name string, f Factory) error
+type Retrier interface{RetryPolicy() (retries int, backoff time.Duration)}
+type Streamer interface{Stream(ctx context.Context, req schemaflux.Request) iter.Seq2[schemaflux.Chunk, error]}
+type Unwrapper interface{Unwrap() schemaflux.Provider}
+type Warmer interface{Warm(ctx context.Context) error}

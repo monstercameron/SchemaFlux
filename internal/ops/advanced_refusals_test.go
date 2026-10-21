@@ -8,14 +8,13 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A refusal is an error an operation returns before it asks a model anything:
-// the caller's arguments or options cannot be used. Each carries a kind, and
-// the text and the chain of an error that had none before it was given one are
-// what they were: a caller may already match on the text, and errors.As on the
-// error underneath still finds it.
+// the caller's arguments or options cannot be used. Each carries a kind and
+// a descriptive message that does not repeat a rejected option value. The
+// chain still lets errors.As find the underlying error.
 type refusal struct {
 	name string
 	call func() error
@@ -259,7 +258,7 @@ func TestPivotRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"an aggregate nobody knows", func() error {
 			_, err := Pivot[flatRecord, flatRecord](flatRecords[0], PivotOptions{Aggregate: "median"})
 			return err
-		}, `pivot: configuration: Aggregate "median" is not one of first, last, sum, avg, list, concat`, cfg, types.ErrConfiguration, nil},
+		}, `pivot: configuration: Aggregate must be one of first, last, sum, avg, list, concat`, cfg, types.ErrConfiguration, nil},
 		{"a blank PivotOn entry", func() error {
 			_, err := Pivot[flatRecord, flatRecord](flatRecords[0], PivotOptions{PivotOn: []string{" "}})
 			return err
@@ -385,11 +384,11 @@ func TestSynthesizeRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"a strategy nobody knows", func() error {
 			_, err := Synthesize[flatRecord]([]any{"a"}, with(func(o *SynthesizeOptions) { o.Strategy = "bogus" }))
 			return err
-		}, "invalid options: invalid strategy: bogus", cfg, types.ErrConfiguration, nil},
+		}, "invalid options: synthesis strategy must be merge, compare, integrate, or reconcile", cfg, types.ErrConfiguration, nil},
 		{"a conflict resolution nobody knows", func() error {
 			_, err := Synthesize[flatRecord]([]any{"a"}, with(func(o *SynthesizeOptions) { o.ConflictResolution = "bogus" }))
 			return err
-		}, "invalid options: invalid conflict resolution: bogus", cfg, types.ErrConfiguration, nil},
+		}, "invalid options: conflict resolution must be latest-wins, source-priority, majority, or llm-decide", cfg, types.ErrConfiguration, nil},
 		{"source priority with no priorities", func() error {
 			_, err := Synthesize[flatRecord]([]any{"a"}, with(func(o *SynthesizeOptions) { o.ConflictResolution = "source-priority" }))
 			return err
@@ -425,7 +424,7 @@ func TestPredictRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"an interval with no confidence level", predict(with(func(o *PredictOptions) { o.ConfidenceLevel = 0 })),
 			"invalid options: an interval needs a confidence level above 0", cfg, types.ErrConfiguration, nil},
 		{"a method nobody knows", predict(with(func(o *PredictOptions) { o.Method = "tea-leaves" })),
-			"invalid options: invalid method: tea-leaves", cfg, types.ErrConfiguration, nil},
+			"invalid options: prediction method must be trend, pattern, regression, or auto", cfg, types.ErrConfiguration, nil},
 		{"no scenarios", predict(with(func(o *PredictOptions) { o.NumScenarios = 0 })),
 			"invalid options: num scenarios must be at least 1, got 0", cfg, types.ErrConfiguration, nil},
 		{"history that cannot be written as JSON", func() error {
@@ -446,7 +445,7 @@ func TestEnrichRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"Enrich with a depth nobody knows", func() error {
 			_, err := Enrich[flatRecord, flatRecord](flatRecords[0], deep("bottomless"))
 			return err
-		}, "invalid options: invalid depth: bottomless", cfg, types.ErrConfiguration, nil},
+		}, "invalid options: enrichment depth must be shallow or deep", cfg, types.ErrConfiguration, nil},
 		{"Enrich with an input that cannot be written as JSON", func() error {
 			_, err := Enrich[chan int, flatRecord](refuseChan(), NewEnrichOptions())
 			return err
@@ -458,7 +457,7 @@ func TestEnrichRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"EnrichInPlace with a depth nobody knows", func() error {
 			_, err := EnrichInPlace(flatRecords[0], deep("bottomless"))
 			return err
-		}, "invalid options: invalid depth: bottomless", cfg, types.ErrConfiguration, nil},
+		}, "invalid options: enrichment depth must be shallow or deep", cfg, types.ErrConfiguration, nil},
 		{"EnrichInPlace asked for confidence", func() error {
 			_, err := EnrichInPlace(flatRecords[0], NewEnrichOptions().WithIncludeConfidence(true))
 			return err
@@ -484,7 +483,7 @@ func TestDecomposeRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"Decompose with a strategy nobody knows", func() error {
 			_, err := Decompose(flatRecords[0], strategy)
 			return err
-		}, "invalid options: invalid strategy: shred", cfg, types.ErrConfiguration, nil},
+		}, "invalid options: decomposition strategy must be hierarchical, sequential, parallel, or functional", cfg, types.ErrConfiguration, nil},
 		{"Decompose with no depth", func() error { _, err := Decompose(flatRecords[0], depth); return err },
 			"invalid options: max depth must be at least 1, got 0", cfg, types.ErrConfiguration, nil},
 		{"Decompose with a negative number of parts", func() error { _, err := Decompose(flatRecords[0], parts); return err },
@@ -496,7 +495,7 @@ func TestDecomposeRefusalsHaveAKindAndKeepTheirText(t *testing.T) {
 		{"DecomposeToSlice with a strategy nobody knows", func() error {
 			_, err := DecomposeToSlice[flatRecord, flatRecord](flatRecords[0], strategy)
 			return err
-		}, "invalid options: invalid strategy: shred", cfg, types.ErrConfiguration, nil},
+		}, "invalid options: decomposition strategy must be hierarchical, sequential, parallel, or functional", cfg, types.ErrConfiguration, nil},
 		{"DecomposeToSlice with no depth", func() error {
 			_, err := DecomposeToSlice[flatRecord, flatRecord](flatRecords[0], depth)
 			return err

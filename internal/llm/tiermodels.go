@@ -1,8 +1,8 @@
 package llm
 
 import (
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TierModels is implemented by a provider that knows which model a tier means

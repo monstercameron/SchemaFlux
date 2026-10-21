@@ -3,7 +3,7 @@ package ops
 import (
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // internal/types/evidence.go defines the shape of a

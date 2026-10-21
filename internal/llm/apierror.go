@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A non-200 was reported by embedding the raw response body into a

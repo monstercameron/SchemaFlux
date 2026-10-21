@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ErrNoModelMapping reports that a provider has no model for at least one tier

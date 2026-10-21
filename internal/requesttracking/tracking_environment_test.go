@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
 )
 
 func recordEnvProblems(t *testing.T) *[]config.EnvProblem {

@@ -3,7 +3,7 @@ package bind
 import (
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // SumInt returns a plus b, held at the largest int where the sum would pass it

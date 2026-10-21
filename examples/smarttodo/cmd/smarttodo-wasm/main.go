@@ -11,10 +11,10 @@ import (
 	"syscall/js"
 
 	tea "github.com/charmbracelet/bubbletea"
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/database"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/localization"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/tui"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/database"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/localization"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/tui"
 )
 
 var (

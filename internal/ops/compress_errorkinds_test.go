@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Compress refuses options it cannot use and an input that is nothing before it
@@ -51,19 +51,19 @@ func TestCompressRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "a strategy that is not one of the three",
 			run:  compress(func(o *CompressOptions) { o.Strategy = "crush" }),
-			text: "invalid options: invalid strategy: crush",
+			text: "invalid options: compression strategy must be lossy, lossless, or semantic",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
 			name: "a priority that is not one of the four",
 			run:  compress(func(o *CompressOptions) { o.Priority = "feelings" }),
-			text: "invalid options: invalid priority: feelings",
+			text: "invalid options: compression priority must be facts, actions, decisions, or all",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
 			name: "an output format that is not one of the four",
 			run:  compress(func(o *CompressOptions) { o.OutputFormat = "haiku" }),
-			text: "invalid options: invalid output format: haiku",
+			text: "invalid options: compression output format must be same, summary, key_points, or structured",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

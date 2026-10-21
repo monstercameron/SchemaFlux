@@ -12,7 +12,7 @@
 
 package ops
 
-import "github.com/monstercameron/schemaflux/internal/types"
+import "github.com/monstercameron/schemaflux/v2/internal/types"
 
 // NewNegotiateOptions creates NegotiateOptions with the defaults Negotiate
 // applies internally when the caller supplies none.

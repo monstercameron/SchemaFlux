@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	cfg "github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
+	cfg "github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Client is a configured schemaflux client.

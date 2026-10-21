@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // TC-004. Meta.RequestedContract/DeliveredContract (result.go) existed and

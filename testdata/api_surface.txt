@@ -60,13 +60,8 @@ const LogFatal
 const LogInfo
 const LogWarn
 const ModeAtomicFallback
+const ModeMDSP
 const ModeUnset
-const OutcomeCompliant
-const OutcomeDuplicateID
-const OutcomeMalformedProtocol
-const OutcomeOmission
-const OutcomeRepaired
-const OutcomeTruncated
 const PolicyCollectFailures
 const PolicyFailFast
 const PolicyRequireAll
@@ -225,7 +220,6 @@ func Negotiate
 func NegotiateAdversarial
 func Negotiating
 func NegotiatingAdversarially
-func NewAdaptiveChunkState
 func NewClient
 func NewIDBatchAlgebra
 func NewMemoryCheckpointStore
@@ -335,8 +329,6 @@ func WithDiagnosticSink
 func WithRequestID
 func WithRequestTrackingMetadata
 type APIError
-type AdaptiveChunkState
-type AdaptiveOutcome
 type Adjustment
 type AdversarialContext
 type AdversarialNegotiationRequest
@@ -621,6 +613,8 @@ type TermMovement
 type TextStream
 type Timing
 type TokenUsage
+type Tool
+type ToolCall
 type Tradeoff
 type TransformOptions
 type TransformRequest

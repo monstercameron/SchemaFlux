@@ -3,14 +3,17 @@
 package localization
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
 )
 
 // Localization handles dynamic translation of UI strings
@@ -33,7 +36,7 @@ func InitLocalization() {
 
 	// Log the detected locale
 	if locale != "en" && locale != "" {
-		schemaflux.GetLogger().Info("Detected system locale - UI will be translated", "locale", locale)
+		slog.Info("Detected system locale - UI will be translated", "locale", locale)
 	}
 }
 
@@ -122,12 +125,7 @@ Text to translate: "%s"`, l.getLanguageName(), text)
 		Translation string `json:"translation" jsonschema:"description=The translated text"`
 	}
 
-	result, err := schemaflux.Generate[TranslationResult](
-		prompt,
-		schemaflux.NewGenerateOptions().
-			WithIntelligence(schemaflux.Fast).
-			WithMode(schemaflux.TransformMode),
-	)
+	result, err := schemaflux.Generate[TranslationResult](appclient.Context(context.Background()), prompt)
 
 	if err != nil {
 		// Fall back to original text if translation fails
@@ -254,12 +252,7 @@ Texts to translate:
 		Translations []string `json:"translations" jsonschema:"description=List of translated texts in order"`
 	}
 
-	result, err := schemaflux.Generate[BatchTranslationResult](
-		prompt,
-		schemaflux.NewGenerateOptions().
-			WithIntelligence(schemaflux.Fast).
-			WithMode(schemaflux.TransformMode),
-	)
+	result, err := schemaflux.Generate[BatchTranslationResult](appclient.Context(context.Background()), prompt)
 
 	if err != nil {
 		// Return original texts if translation fails

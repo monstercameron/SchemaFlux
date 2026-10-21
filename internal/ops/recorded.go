@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Recorded runs one call of an operation under a call log and returns its value

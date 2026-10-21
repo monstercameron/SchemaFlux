@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Partial success and failure policies, as an item-level engine built on
@@ -205,7 +205,7 @@ func RunOpManyPartial[In, Out any](ctx context.Context, op Op[In, Out], items []
 	// report every item as failed beside a nil error.
 	planned := plannedContractLevel(ctx, declaredContractLevel(op.Contract), opt)
 	if floorErr := checkContractFloor(ctx, planned); floorErr != nil {
-		return types.BatchResult[Out]{}, floorErr
+		return types.BatchResult[Out]{Total: types.Meta{Operation: name, RequestedContract: planned}}, floorErr
 	}
 
 	var result types.BatchResult[Out]

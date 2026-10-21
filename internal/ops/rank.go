@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // RankOptions configures the Rank operation
@@ -273,7 +273,7 @@ func Rank[T any](items []T, opts RankOptions) (RankResult[T], error) {
 	for i, item := range items {
 		itemJSON, err := json.Marshal(item)
 		if err != nil {
-			log.Error("Rank operation failed: marshal error", "itemIndex", i, "error", err)
+			log.Error("Rank operation failed: marshal error", "itemIndex", i, "error", loggedError(err))
 			return RankResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal item %d: %w", i, err))
 		}
 		itemsJSON[i] = fmt.Sprintf("[%d] %s", i, string(itemJSON))
@@ -345,7 +345,7 @@ Order the rankings from highest to lowest score.`, parsePromptQuote(opts.Query),
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Rank operation LLM call failed", "error", err)
+		log.Error("Rank operation LLM call failed", "error", loggedError(err))
 		return RankResult[T]{}, fmt.Errorf("ranking failed: %w", err)
 	}
 
@@ -365,7 +365,7 @@ Order the rankings from highest to lowest score.`, parsePromptQuote(opts.Query),
 	}
 
 	if err := decodeAnswer("rank", response, &parsed); err != nil {
-		log.Error("Rank operation failed: parse error", "error", err)
+		log.Error("Rank operation failed: parse error", "error", loggedError(err))
 		return RankResult[T]{}, err
 	}
 	// A null list is an answer the decoder allows for a list. It is not a ranking,

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-const modulePath = "github.com/monstercameron/schemaflux"
+const modulePath = "github.com/monstercameron/schemaflux/v2"
 
 // TestBindImportsNothingPublicAndNothingUnderV2 holds the layer this package
 // is in: it is imported by the root and by every subpackage of v2, so it may

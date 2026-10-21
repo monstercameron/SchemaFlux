@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type refusalSource struct {
@@ -84,7 +84,7 @@ func TestCoreOperationsRefuseBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "transform with a merge strategy it does not know",
 			run:  transform(func(o *TransformOptions) { o.MergeStrategy = "sideways" }),
-			text: "invalid options: invalid merge strategy: sideways",
+			text: "invalid options: merge strategy must be replace, merge, or append",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

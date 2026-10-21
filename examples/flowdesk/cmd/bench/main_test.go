@@ -15,9 +15,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // Nothing here reaches a model or the network. The offline mode is the
@@ -25,7 +25,6 @@ import (
 // place.
 
 func TestMain(m *testing.M) {
-	schemaflux.ConfigureLogging(schemaflux.LoggerConfig{Level: schemaflux.LogError, DisableStderr: true})
 	// The command makes its context with signal.NotifyContext. The first use of
 	// the os/signal package starts a goroutine that waits in a system call for
 	// signals, and one started inside a synctest bubble is never idle, so the
@@ -320,9 +319,9 @@ type quoting struct {
 	key string
 }
 
-func (q quoting) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (q quoting) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if sim.Operation(req) == sim.OpSummarize {
-		return schemaflux.CompletionResponse{}, errors.New("incorrect API key provided: " + q.key)
+		return schemaflux.Response{}, errors.New("incorrect API key provided: " + q.key)
 	}
 	return q.Provider.Complete(ctx, req)
 }
@@ -331,7 +330,7 @@ func (q quoting) Complete(ctx context.Context, req schemaflux.CompletionRequest)
 // summary and the records are made the way a live run makes them, and nothing
 // is sent anywhere.
 func TestTheLiveReportThroughAProviderThatIsNotAModel(t *testing.T) {
-	const key = "sk-test-this-is-not-a-key"
+	const key = "sk-test-this-is-not-a-key" // secret-scan: allow
 	asked, err := parse([]string{"-mode", "live", "-n", "3"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
@@ -441,8 +440,8 @@ func TestTheLiveReportThroughAProviderThatIsNotAModel(t *testing.T) {
 			if strings.Contains(stdout.String()+sink.String(), key) {
 				t.Errorf("the key is in the report:\n%s", stdout.String())
 			}
-			if !strings.Contains(stdout.String(), "[key]") || !strings.Contains(sink.String(), "[key]") {
-				t.Errorf("the error was not reported:\n%s", stdout.String())
+			if !strings.Contains(stdout.String(), "unavailable") || !strings.Contains(sink.String(), "unavailable") {
+				t.Errorf("the sanitized error was not reported:\n%s", stdout.String())
 			}
 			// Spam is discarded before anything is summarised, so its two runs
 			// still succeed; the other four fail.
@@ -459,11 +458,12 @@ func TestTheLiveReportThroughAProviderThatIsNotAModel(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			priced := func(ceiling float64) (record, float64) {
 				provider := measure(reporting{sim.New(time.Millisecond)})
-				client := schemaflux.NewClient("").WithProviderInstance(provider).WithBudget(ceiling)
+				budget := &schemaflux.Budget{Limit: ceiling}
+				client := schemaflux.Client{Provider: provider, Budget: budget, Model: "gpt-6-luna"}
 				support := desk.New(sim.OpenTickets())
 				support.Options.Model = "gpt-6-luna"
 				_, made := handle(context.Background(), flows[1], cases[1], provider, client, support)
-				spent, _ := client.Spent()
+				spent, _ := budget.Spent()
 				return made, spent
 			}
 
@@ -485,8 +485,8 @@ func TestTheLiveReportThroughAProviderThatIsNotAModel(t *testing.T) {
 }
 
 func TestMeteredCountsWhatPassesThroughIt(t *testing.T) {
-	summary := schemaflux.CompletionRequest{SystemPrompt: "You are a text summarization expert.", UserPrompt: "Summarize this text:\n[ref M-02]"}
-	unknown := schemaflux.CompletionRequest{SystemPrompt: "You are a poet.", UserPrompt: "[ref M-02]"}
+	summary := schemaflux.Request{System: "You are a text summarization expert.", User: "Summarize this text:\n[ref M-02]"}
+	unknown := schemaflux.Request{System: "You are a poet.", User: "[ref M-02]"}
 
 	// On a synctest bubble's clock each call of 5 ms takes exactly that.
 	synctest.Test(t, func(t *testing.T) {
@@ -508,7 +508,7 @@ func TestMeteredCountsWhatPassesThroughIt(t *testing.T) {
 				t.Errorf("a call's answer was read while the run was going: %q", kept.Said)
 			}
 		}
-		if provider.calls[0].prompt != summary.UserPrompt || provider.calls[0].reply == "" || provider.calls[2].reply != "" {
+		if provider.calls[0].prompt != summary.User || provider.calls[0].reply == "" || provider.calls[2].reply != "" {
 			t.Errorf("what a call keeps: %+v", provider.calls)
 		}
 
@@ -525,7 +525,7 @@ func TestMeteredCountsWhatPassesThroughIt(t *testing.T) {
 		if calls[2].Operation != "other" || !calls[2].Failed || calls[2].InputTokens != 0 {
 			t.Errorf("failed call: %+v", calls[2])
 		}
-		if usage.PromptTokens != 200 || usage.CompletionTokens != 40 || usage.CachedTokens != 60 || usage.ReasoningTokens != 10 {
+		if usage.Input != 200 || usage.Output != 40 || usage.Cached != 60 || usage.Reasoning != 10 {
 			t.Errorf("usage: %+v", usage)
 		}
 		if provider.Busy() != 15*time.Millisecond {
@@ -556,10 +556,10 @@ func TestMeteredCountsWhatPassesThroughIt(t *testing.T) {
 // reporting adds token counts to a provider's answers, as a real one does.
 type reporting struct{ schemaflux.Provider }
 
-func (r reporting) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (r reporting) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	resp, err := r.Provider.Complete(ctx, req)
 	if err == nil {
-		resp.Usage = schemaflux.TokenUsage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CachedTokens: 30, ReasoningTokens: 5}
+		resp.Usage = schemaflux.Usage{Input: 100, Output: 20, Total: 120, Cached: 30, Reasoning: 5}
 	}
 	return resp, err
 }
@@ -810,7 +810,7 @@ func TestDollarsAreWrittenAsAFloorWhenTheyAreOne(t *testing.T) {
 }
 
 func TestANoteSaysWhyARowDidNotMatch(t *testing.T) {
-	const key = "sk-test-this-is-not-a-key"
+	const key = "sk-test-this-is-not-a-key" // secret-scan: allow
 	cases := []struct {
 		name string
 		made record
@@ -841,7 +841,7 @@ func TestANoteSaysWhyARowDidNotMatch(t *testing.T) {
 
 // What a provider's error can quote of a key, and what is taken out of it.
 func TestTheKeyIsTakenOutOfWhatIsPrintedHoweverItIsQuoted(t *testing.T) {
-	const key = "sk-proj-abcdefgh1234567890wxyz"
+	const key = "sk-proj-abcdefgh1234567890wxyz" // secret-scan: allow
 	cases := []struct {
 		name string
 		text string
@@ -862,11 +862,11 @@ func TestTheKeyIsTakenOutOfWhatIsPrintedHoweverItIsQuoted(t *testing.T) {
 		{"a masked key in JSON", `{"error":{"message":"Incorrect API key provided: sk-proj-********wxyz."}}`, key,
 			`{"error":{"message":"Incorrect API key provided: [key]"}}`},
 		{"a truncated key in JSON", `{"message":"bad key sk-proj-abcdefgh1234..."}`, key, `{"message":"bad key [key]"}`},
-		{"another key, which is not this one", "bad key sk-another-key-12345678", key, "bad key [key]"},
+		{"another key, which is not this one", "bad key sk-another-key-12345678", key, "bad key [key]"}, // secret-scan: allow
 		{"a key that is not one of the library's, masked", "bad key abcd1234****wxyz", "abcd1234efghwxyz", "bad key [key]"},
 		{"a key that is not one of the library's, whole", "bad key abcd1234efghwxyz", "abcd1234efghwxyz", "bad key [key]"},
 		{"no key to look for, and nothing that looks like one", "the model is unavailable", "", "the model is unavailable"},
-		{"no key to look for, and one that looks like one", "bad key sk-another-key-12345678", "", "bad key [key]"},
+		{"no key to look for, and one that looks like one", "bad key sk-another-key-12345678", "", "bad key [key]"}, // secret-scan: allow
 		{"too short to be a key", "the sk-abc was fine", key, "the sk-abc was fine"},
 		{"exactly eight characters after sk-", "key sk-12345678 ok", key, "key [key] ok"},
 		{"seven characters after sk-", "key sk-1234567 ok", key, "key sk-1234567 ok"},

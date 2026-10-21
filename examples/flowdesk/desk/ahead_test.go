@@ -9,9 +9,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // aheadCalls and aheadWaits are what HandleAhead should make of a case, counted
@@ -307,7 +307,7 @@ type lateProvider struct {
 	ignoresCancel bool
 }
 
-func (l lateProvider) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (l lateProvider) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if sim.Operation(req) != l.operation {
 		return l.Provider.Complete(ctx, req)
 	}
@@ -349,7 +349,7 @@ func TestTheAheadFlowCountsARedraftByWhetherTheCancelledTranslationHasReturned(t
 			t.Run(labelled.Message.ID+", "+tc.name, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					inner := sim.New(delay)
-					ctx := schemaflux.NewClient("").WithProviderInstance(tc.provider(inner)).Context(context.Background())
+					ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: tc.provider(inner)})
 					outcome, err := desk.New(sim.OpenTickets()).HandleAhead(ctx, labelled.Message)
 					if err != nil {
 						t.Fatal(err)
@@ -387,7 +387,7 @@ func TestTheAheadFlowFailsWhole(t *testing.T) {
 			simple = labelled
 		}
 	}
-	down := &schemaflux.APIError{Provider: "local", StatusCode: 500, Body: "down"}
+	down := &schemaflux.Error{Kind: schemaflux.ErrUnavailable, Provider: "local", Status: 500}
 	faults := []struct {
 		name  string
 		fault faulty
@@ -411,7 +411,7 @@ func TestTheAheadFlowFailsWhole(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				inner := sim.New(5 * time.Millisecond)
 				fault.fault.Provider = inner
-				ctx := schemaflux.NewClient("").WithProviderInstance(fault.fault).Context(context.Background())
+				ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: fault.fault})
 				outcome, err := desk.New(sim.OpenTickets()).HandleAhead(ctx, fault.with.Message)
 				if err == nil {
 					t.Fatalf("no error; outcome %+v", outcome)
@@ -433,8 +433,8 @@ func TestTheAheadFlowFailsWhole(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			const delay = 100 * time.Millisecond
 			provider := sim.New(delay)
-			client := schemaflux.NewClient("").WithProviderInstance(provider)
-			ctx, cancel := context.WithTimeout(client.Context(context.Background()), delay*3/2)
+			client := schemaflux.Client{Provider: provider}
+			ctx, cancel := context.WithTimeout(schemaflux.WithClient(context.Background(), client), delay*3/2)
 			defer cancel()
 			deadline, _ := ctx.Deadline()
 			started := time.Now()

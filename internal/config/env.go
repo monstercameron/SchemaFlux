@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // This file is the one place the library parses an environment variable's

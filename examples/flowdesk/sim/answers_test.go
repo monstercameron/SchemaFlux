@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
 )
 
 // An assessment's reply is {"q1":true,"q2":3}, which says nothing to a person
@@ -53,7 +53,7 @@ func TestAnswersAreReadBackBesideTheirQuestions(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Answers(schemaflux.CompletionRequest{UserPrompt: message}, tc.reply)
+			got, err := Answers(schemaflux.Request{User: message}, tc.reply)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -71,14 +71,14 @@ func TestAnswersAreReadBackBesideTheirQuestions(t *testing.T) {
 
 	t.Run("a reply that is not an object is an error", func(t *testing.T) {
 		for _, reply := range []string{"", "yes", `[true]`, `{"q1":`} {
-			if _, err := Answers(schemaflux.CompletionRequest{UserPrompt: message}, reply); err == nil {
+			if _, err := Answers(schemaflux.Request{User: message}, reply); err == nil {
 				t.Errorf("reply %q was read", reply)
 			}
 		}
 	})
 
 	t.Run("a request that is not an assessment is an error", func(t *testing.T) {
-		_, err := Answers(schemaflux.CompletionRequest{UserPrompt: "Translate this."}, `{"q1":true}`)
+		_, err := Answers(schemaflux.Request{User: "Translate this."}, `{"q1":true}`)
 		if err == nil || !strings.Contains(err.Error(), "no list of questions") {
 			t.Errorf("err = %v", err)
 		}
@@ -132,7 +132,7 @@ func TestAnswersAreReadBackBesideTheirQuestions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("case %s: %v", about.Message.ID, err)
 			}
-			got, err := Answers(schemaflux.CompletionRequest{UserPrompt: asking.String()}, reply)
+			got, err := Answers(schemaflux.Request{User: asking.String()}, reply)
 			if err != nil || len(got) != len(fields) {
 				t.Fatalf("case %s: %d answers, err %v", about.Message.ID, len(got), err)
 			}

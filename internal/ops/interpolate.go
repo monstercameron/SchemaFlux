@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // InterpolateOptions configures the Interpolate operation
@@ -226,7 +226,7 @@ func Interpolate[T any](items []T, opts ...InterpolateOptions) (InterpolateResul
 	// Convert items to JSON
 	itemsJSON, err := promptJSON(items)
 	if err != nil {
-		log.Error("Interpolate operation failed: marshal error", "error", err)
+		log.Error("Interpolate operation failed: marshal error", "error", loggedError(err))
 		return InterpolateResult[T]{}, types.Newf(types.KindInvalidRequest, "interpolate", "the items could not be written as JSON")
 	}
 
@@ -319,7 +319,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Interpolate operation LLM call failed", "error", err)
+		log.Error("Interpolate operation LLM call failed", "error", loggedError(err))
 		return InterpolateResult[T]{}, fmt.Errorf("interpolation failed: %w", err)
 	}
 
@@ -327,7 +327,7 @@ Rules:
 	if err != nil {
 		// The response body stays out of the log: it is built from the
 		// caller's items, and a refusal is not a licence to print them.
-		log.Error("Interpolate operation refused the answer", "error", err)
+		log.Error("Interpolate operation refused the answer", "error", loggedError(err))
 		return InterpolateResult[T]{}, err
 	}
 

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CA-006. A prompt cache that is doing nothing looks exactly like one that is

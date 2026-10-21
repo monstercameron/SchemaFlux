@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 const critiqueMockResponse = `{
@@ -407,7 +407,7 @@ func TestCritiqueRefusalsBeforeACallHaveAKind(t *testing.T) {
 		{"a severity filter nobody knows", refuse(func(o *CritiqueOptions) { o.SeverityFilter = "trivial" }),
 			"invalid options: invalid severity filter: want all, critical, major or minor", types.KindConfiguration},
 		{"a style nobody knows", refuse(func(o *CritiqueOptions) { o.Style = "gentle" }),
-			"invalid options: invalid style: gentle", types.KindConfiguration},
+			"invalid options: critique style must be constructive, harsh, or balanced", types.KindConfiguration},
 		{"a threshold above one on the common half", refuse(func(o *CritiqueOptions) { o.CommonOptions.Threshold = 4 }),
 			"invalid options: threshold must be between 0 and 1, got 4.000000", types.KindConfiguration},
 		{"a nil input", func() error {
@@ -421,7 +421,7 @@ func TestCritiqueRefusalsBeforeACallHaveAKind(t *testing.T) {
 		{"CritiqueWithModel with a style nobody knows", func() error {
 			_, err := CritiqueWithModel("an essay", NewCritiqueOptions().WithCriteria([]string{"c"}).WithStyle("gentle"))
 			return err
-		}, "invalid options: invalid style: gentle", types.KindConfiguration},
+		}, "invalid options: critique style must be constructive, harsh, or balanced", types.KindConfiguration},
 		{"CritiqueWithModel with a nil input", func() error {
 			_, err := CritiqueWithModel[any](nil, NewCritiqueOptions().WithCriteria([]string{"c"}))
 			return err

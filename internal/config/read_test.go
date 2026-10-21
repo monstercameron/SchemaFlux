@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // keptVariables is the table of core_5 2.1, written out by hand and not derived

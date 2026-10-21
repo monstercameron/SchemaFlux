@@ -66,11 +66,11 @@ var forbidden = []struct {
 func TestImportingTheLibraryDoesNotLinkATelemetryVendor(t *testing.T) {
 	// The packages a consumer actually imports.
 	for _, pkg := range []string{
-		"github.com/monstercameron/schemaflux",
-		"github.com/monstercameron/schemaflux/mw",
-		"github.com/monstercameron/schemaflux/schemafluxtest",
-		"github.com/monstercameron/schemaflux/pricing",
-		"github.com/monstercameron/schemaflux/telemetry",
+		"github.com/monstercameron/schemaflux/v2",
+		"github.com/monstercameron/schemaflux/v2/mw",
+		"github.com/monstercameron/schemaflux/v2/schemafluxtest",
+		"github.com/monstercameron/schemaflux/v2/pricing",
+		"github.com/monstercameron/schemaflux/v2/telemetry",
 	} {
 		t.Run(pkg, func(t *testing.T) {
 			linked := linkedPackages(t, pkg)
@@ -93,7 +93,7 @@ func TestImportingTheLibraryDoesNotLinkATelemetryVendor(t *testing.T) {
 // rule above would also be satisfied by dropping OpenTelemetry support
 // altogether, which is a different change wearing this one's name.
 func TestTheAdapterStillLinksTheVendorItAdapts(t *testing.T) {
-	linked := linkedPackages(t, "github.com/monstercameron/schemaflux/telemetry/otel")
+	linked := linkedPackages(t, "github.com/monstercameron/schemaflux/v2/telemetry/otel")
 
 	found := false
 	for _, dep := range linked {
@@ -147,8 +147,14 @@ var adapterForbidden = []struct {
 // exports or sends. The package that set tracing up for its host is gone, and
 // this is what stops it coming back as an import.
 func TestTheAdapterLinksTheTracingAPIAndNoSDKExporterOrTransport(t *testing.T) {
-	const adapter = "github.com/monstercameron/schemaflux/telemetry/otel"
+	const adapter = "github.com/monstercameron/schemaflux/v2/telemetry/otel"
 	linked := linkedPackages(t, adapter)
+	// The v2 root includes the HTTP provider transport. The adapter may inherit
+	// that dependency, but must not add another transport dependency of its own.
+	rootLinked := map[string]bool{}
+	for _, dep := range linkedPackages(t, "github.com/monstercameron/schemaflux/v2") {
+		rootLinked[dep] = true
+	}
 	if len(linked) < 10 {
 		t.Fatalf("only %d packages listed; go list is not seeing the tree", len(linked))
 	}
@@ -156,6 +162,9 @@ func TestTheAdapterLinksTheTracingAPIAndNoSDKExporterOrTransport(t *testing.T) {
 	for _, dep := range linked {
 		for _, rule := range adapterForbidden {
 			if strings.HasPrefix(dep, rule.prefix) {
+				if rule.prefix == "net/http" && rootLinked[dep] {
+					continue
+				}
 				t.Errorf("importing %s links %s\n  %s", adapter, dep, rule.reason)
 			}
 		}
@@ -173,7 +182,7 @@ func TestTheAdapterLinksTheTracingAPIAndNoSDKExporterOrTransport(t *testing.T) {
 // natively compiles against it for js/wasm.
 func TestTheAdapterHasTheSameFilesForEveryBuild(t *testing.T) {
 	out, err := exec.Command("go", "list", "-f", "{{.GoFiles}} ignored={{.IgnoredGoFiles}}",
-		"github.com/monstercameron/schemaflux/telemetry/otel").Output()
+		"github.com/monstercameron/schemaflux/v2/telemetry/otel").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}

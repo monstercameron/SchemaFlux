@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // snapshotCtx puts a snapshot on a fresh context.

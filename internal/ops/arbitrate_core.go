@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LX-024. What Arbitrate asks for, what it accepts, and how it picks a winner.
@@ -488,7 +488,7 @@ func arbitrateCore[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResul
 
 	userPrompt, err := arbitrateUserPrompt(options, opt.Rules, opt.Steering, opt.IncludeReasoning)
 	if err != nil {
-		log.Error("Arbitrate operation failed: the request could not be written", "error", err)
+		log.Error("Arbitrate operation failed: the request could not be written", "error", loggedError(err))
 		return ArbitrateResult[T]{}, err
 	}
 
@@ -507,7 +507,7 @@ func arbitrateCore[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResul
 		SchemaName:      "arbitration",
 	})
 	if err != nil {
-		log.Error("Arbitrate operation LLM call failed", "error", err)
+		log.Error("Arbitrate operation LLM call failed", "error", loggedError(err))
 		return ArbitrateResult[T]{}, err
 	}
 
@@ -515,7 +515,7 @@ func arbitrateCore[T any](options []T, opts ...ArbitrateOptions) (ArbitrateResul
 	if err != nil {
 		// In this library's words. The response is not logged: it quotes the
 		// caller's options.
-		log.Error("Arbitrate operation failed: the answer was refused", "error", err)
+		log.Error("Arbitrate operation failed: the answer was refused", "error", loggedError(err))
 		return ArbitrateResult[T]{}, err
 	}
 

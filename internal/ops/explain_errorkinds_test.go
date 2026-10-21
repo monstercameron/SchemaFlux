@@ -3,7 +3,7 @@ package ops
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Explain refuses options it cannot use and data it cannot show a model before
@@ -27,13 +27,13 @@ func TestExplainRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "an audience that is not one of the six",
 			run:  explain("data", func(o *ExplainOptions) { o.Audience = "alien" }),
-			text: "invalid options: invalid audience: alien",
+			text: "invalid options: audience must be technical, non-technical, children, executive, beginner, or expert",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
 			name: "no audience",
 			run:  explain("data", func(o *ExplainOptions) { o.Audience = "" }),
-			text: "invalid options: invalid audience: ",
+			text: "invalid options: audience must be technical, non-technical, children, executive, beginner, or expert",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
@@ -57,13 +57,13 @@ func TestExplainRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "a format that is not one of the five",
 			run:  explain("data", func(o *ExplainOptions) { o.Format = "haiku" }),
-			text: "invalid options: invalid format: haiku",
+			text: "invalid options: explanation format must be paragraph, bullet-points, step-by-step, qa, or structured",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
 			name: "a focus that is not one of the six",
 			run:  explain("data", func(o *ExplainOptions) { o.Focus = "gossip" }),
-			text: "invalid options: invalid focus: gossip",
+			text: "invalid options: explanation focus must be overview, usage, implementation, benefits, limitations, or examples",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
@@ -72,7 +72,7 @@ func TestExplainRefusesBeforeTheCallWithAKind(t *testing.T) {
 				o.Audience = "alien"
 				o.Depth = 0
 			}),
-			text: "invalid options: invalid audience: alien",
+			text: "invalid options: audience must be technical, non-technical, children, executive, beginner, or expert",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

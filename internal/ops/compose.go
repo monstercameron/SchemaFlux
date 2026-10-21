@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ComposeOptions configures the Compose operation.
@@ -205,7 +205,7 @@ func Assemble[T any](parts []any, opts ...ComposeOptions) (ComposeResult[T], err
 	for i, part := range parts {
 		data, err := json.Marshal(part)
 		if err != nil {
-			log.Error("Compose operation failed: marshal error for part", "index", i, "error", err)
+			log.Error("Compose operation failed: marshal error for part", "index", i, "error", loggedError(err))
 			return ComposeResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal part %d: %w", i, err))
 		}
 		partsJSON[i] = fmt.Sprintf(`{"index": %d, "data": %s}`, i, string(data))
@@ -288,7 +288,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Compose operation LLM call failed", "error", err)
+		log.Error("Compose operation LLM call failed", "error", loggedError(err))
 		return ComposeResult[T]{}, fmt.Errorf("composition failed: %w", err)
 	}
 
@@ -307,7 +307,7 @@ Rules:
 	// The log line carries the error, which describes the shape of the answer,
 	// and not the answer.
 	if err := decodeAnswer("compose", response, &parsed); err != nil {
-		log.Error("Compose operation failed: parse error", "error", err)
+		log.Error("Compose operation failed: parse error", "error", loggedError(err))
 		return ComposeResult[T]{}, fmt.Errorf("failed to parse composition result: %w", err)
 	}
 
@@ -320,7 +320,7 @@ Rules:
 	}
 	var composed T
 	if err := decodeCallerAnswer("compose", string(parsed.Composed), &composed); err != nil {
-		log.Error("Compose operation failed: composed object parse error", "error", err)
+		log.Error("Compose operation failed: composed object parse error", "error", loggedError(err))
 		return ComposeResult[T]{}, fmt.Errorf("failed to parse composed object: %w", err)
 	}
 

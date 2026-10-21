@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LAT-006. This library's own share of a decision.
@@ -148,7 +148,7 @@ func dec12BuildRequest(ctx context.Context, subject any, ask dec12Ask, confidenc
 	}
 	userPrompt, err := assessUserPrompt(ask.block, written, opt.Steering, confidence)
 	if err != nil {
-		loggerFor(ctx).Error("Assess operation failed: the request could not be written", "error", err)
+		loggerFor(ctx).Error("Assess operation failed: the request could not be written", "error", loggedError(err))
 		return dec12Request{}, err
 	}
 

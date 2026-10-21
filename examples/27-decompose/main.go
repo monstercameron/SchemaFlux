@@ -1,101 +1,64 @@
-// Example 27: Decompose Operation
-// Breaks down complex items into smaller, manageable parts using LLM
-
 package main
 
 import (
+	"context"
 	"fmt"
-	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"log"
+	"io"
+	"os"
+
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/exp"
 )
 
+type epic struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Team        string `json:"team"`
+}
+
 func main() {
-
-	// Initialize SchemaFlux
-	if err := exampleutil.Bootstrap(); err != nil {
-		log.Fatalf("Failed to initialize SchemaFlux: %v", err)
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "Decompose example: %v\n", err)
+		os.Exit(1)
 	}
+}
 
-	fmt.Println("=== Decompose Example ===")
-	fmt.Println("Breaks down complex items into smaller parts")
-	fmt.Println()
-
-	// Business Use Case: Sprint Planning - Break Epic into User Stories
-	fmt.Println("--- Business Use Case: Epic ? Sprint Backlog ---")
-
-	type Epic struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Team        string `json:"team"`
-	}
-
-	epic := Epic{
+// run shows the two useful shapes: a typed planning tree and a text runbook.
+func run(ctx context.Context, out io.Writer) error {
+	story := epic{
 		Title:       "Multi-Tenant Billing System",
-		Description: "Build billing for SaaS platform with usage tracking and invoicing",
+		Description: "Build usage tracking and invoicing for a SaaS platform",
 		Team:        "Platform Engineering",
 	}
-
-	fmt.Println("INPUT: Epic struct")
-	fmt.Printf("  Title:       %q\n", epic.Title)
-	fmt.Printf("  Description: %q\n", epic.Description)
-	fmt.Printf("  Team:        %q\n\n", epic.Team)
-
-	opts := ops.NewDecomposeOptions().
-		WithStrategy("sequential").
-		WithIncludeDependencies(true).
-		WithTargetParts(5).
-		WithIntelligence(types.Smart)
-
-	result, err := ops.Decompose(epic, opts)
+	fmt.Fprintln(out, "=== Decompose Example ===")
+	fmt.Fprintln(out, "--- Epic to sprint stories ---")
+	fmt.Fprintf(out, "Epic: %s\n", story.Title)
+	planned, err := exp.Decompose(ctx, story, exp.DecomposeOptions{
+		Strategy: "sequential", TargetParts: 5,
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+	})
 	if err != nil {
-		log.Fatalf("Decomposition failed: %v", err)
+		return fmt.Errorf("decompose epic: %w", err)
 	}
-
-	fmt.Println("OUTPUT: DecomposeResult[Epic] ? Sprint-Ready User Stories")
-	fmt.Printf("  Total Stories: %d\n", len(result.Parts))
-	fmt.Println("  +-------------------------------------------------------------")
-	for i, part := range result.Parts {
-		fmt.Printf("  Â¦ Story %d: %s\n", i+1, part.Name)
-		fmt.Printf("  Â¦   Description: %s\n", part.Description)
+	for _, part := range planned.Parts {
+		fmt.Fprintf(out, "Story: %s — %s\n", part.Name, part.Description)
 		if len(part.Dependencies) > 0 {
-			fmt.Printf("  Â¦   Blocked By: %v\n", part.Dependencies)
-		}
-		if i < len(result.Parts)-1 {
-			fmt.Println("  Â¦")
+			fmt.Fprintf(out, "  Blocked by: %v\n", part.Dependencies)
 		}
 	}
-	fmt.Println("  +-------------------------------------------------------------")
 
-	fmt.Println("\n--- Business Use Case: Incident ? Runbook Steps ---")
-
+	fmt.Fprintln(out, "--- Incident to runbook steps ---")
 	incident := "P1: Checkout failures during peak traffic"
-
-	fmt.Println("INPUT: string")
-	fmt.Printf("  Incident: %q\n\n", incident)
-
-	incidentOpts := ops.NewDecomposeOptions().
-		WithStrategy("sequential").
-		WithTargetParts(4).
-		WithIntelligence(types.Smart)
-
-	incidentResult, err := ops.Decompose(incident, incidentOpts)
+	steps, err := exp.Decompose(ctx, incident, exp.DecomposeOptions{
+		Strategy: "sequential", TargetParts: 4,
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+	})
 	if err != nil {
-		log.Fatalf("Incident decomposition failed: %v", err)
+		return fmt.Errorf("decompose incident: %w", err)
 	}
-
-	fmt.Println("OUTPUT: DecomposeResult[string] ? Troubleshooting Runbook")
-	fmt.Printf("  Total Steps: %d\n", len(incidentResult.Parts))
-	fmt.Println("  +-------------------------------------------------------------")
-	for i, part := range incidentResult.Parts {
-		fmt.Printf("  Â¦ Step %d: %s\n", i+1, part.Name)
-		fmt.Printf("  Â¦   Action: %s\n", part.Description)
-		if i < len(incidentResult.Parts)-1 {
-			fmt.Println("  Â¦")
-		}
+	for _, part := range steps.Parts {
+		fmt.Fprintf(out, "Step: %s — %s\n", part.Name, part.Description)
 	}
-	fmt.Println("  +-------------------------------------------------------------")
-
-	fmt.Println("\n=== Decompose Example Complete ===")
+	fmt.Fprintln(out, "=== Decompose Example Complete ===")
+	return nil
 }

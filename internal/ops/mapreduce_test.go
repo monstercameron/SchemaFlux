@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // There was no chunk → per-chunk operation → merge primitive, so a collection

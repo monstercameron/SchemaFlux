@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // sortedKeys returns a map's keys in a stable order. Go randomizes map

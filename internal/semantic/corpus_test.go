@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/testfixtures"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
-// The cases are driven with the shared scripted provider of
-// internal/testfixtures, scoped to one context with ops.WithProvider: that is what
+// The cases are driven with a scripted provider scoped to one context with
+// ops.WithProvider: that is what
 // lets each subtest below run independently with its own answer and no shared,
 // order-sensitive global state. It never touches a network, and it is named
 // "local", the provider name this library reserves for an in-process double --
@@ -24,15 +24,31 @@ import (
 func ctxWithReply(t *testing.T, reply string) context.Context {
 	t.Helper()
 	configtest.Setenv(t, "SCHEMAFLUX_LLM_MAX_RETRIES", "0")
-	return ops.WithProvider(context.Background(), testfixtures.NewScripted(reply))
+	return ops.WithProvider(context.Background(), corpusProvider{reply: reply})
 }
 
 // ctxWithFailure is a context whose provider fails every call with err.
 func ctxWithFailure(t *testing.T, err error) context.Context {
 	t.Helper()
 	configtest.Setenv(t, "SCHEMAFLUX_LLM_MAX_RETRIES", "0")
-	return ops.WithProvider(context.Background(), testfixtures.NewFailing(err))
+	return ops.WithProvider(context.Background(), corpusProvider{err: err})
 }
+
+type corpusProvider struct {
+	reply string
+	err   error
+}
+
+func (p corpusProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	if p.err != nil {
+		return llm.CompletionResponse{}, p.err
+	}
+	return llm.CompletionResponse{Content: p.reply, Provider: p.Name(), Model: req.Model, FinishReason: "stop"}, nil
+}
+
+func (corpusProvider) Name() string                               { return "local" }
+func (corpusProvider) EstimateCost(llm.CompletionRequest) float64 { return 0 }
+func (corpusProvider) RetryPolicy() (int, time.Duration)          { return 0, 0 }
 
 func ctxWithProviderError(t *testing.T) context.Context {
 	t.Helper()

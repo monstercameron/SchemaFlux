@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // unwritableCase is one operation called with an argument encoding/json cannot

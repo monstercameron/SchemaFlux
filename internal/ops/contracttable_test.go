@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -15,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // What the catalogue holds, read from the source of internal/api/client: that
@@ -85,6 +86,30 @@ func contractExportedFunctions(t *testing.T) map[string]bool {
 		for _, declaration := range file.Decls {
 			if function, ok := declaration.(*ast.FuncDecl); ok && function.Recv == nil && function.Name.IsExported() {
 				exported[function.Name.Name] = true
+			}
+		}
+	}
+	return exported
+}
+
+// contractExternalFunctions reads the v2 package named by a contract row.
+// Those rows cannot be imported here because they depend on internal/ops.
+func contractExternalFunctions(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	root := filepath.Join("..", "..", filepath.FromSlash(path))
+	packages, err := parser.ParseDir(token.NewFileSet(), root, func(info os.FileInfo) bool {
+		return !strings.HasSuffix(info.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	exported := map[string]bool{}
+	for _, pkg := range packages {
+		for _, file := range pkg.Files {
+			for _, declaration := range file.Decls {
+				if function, ok := declaration.(*ast.FuncDecl); ok && function.Name.IsExported() {
+					exported[function.Name.Name] = true
+				}
 			}
 		}
 	}
@@ -185,9 +210,13 @@ func TestEveryRowIsAnOperationThatExists(t *testing.T) {
 		if len(row.catalogue) == 0 && len(row.functions) == 0 {
 			t.Errorf("%s names no catalogue entry and no function, so nothing shows the operation exists", row.name)
 		}
+		rowExported := exported
+		if row.externalPkg != "" {
+			rowExported = contractExternalFunctions(t, row.externalPkg)
+		}
 		for _, function := range row.functions {
-			if !exported[function] {
-				t.Errorf("%s: %s is not an exported function of the package", row.name, function)
+			if !rowExported[function] {
+				t.Errorf("%s: %s is not an exported function of %s", row.name, function, row.externalPkg)
 			}
 		}
 		if row.computed && row.via == "" {
@@ -1939,6 +1968,8 @@ func contractProbeCases() []contractProbeCase {
 
 // contractUnprobed are the rows no scripted answer drives, and why.
 var contractUnprobed = map[string]string{
+	"chat.send":             "the v2/chat package depends on internal/ops; its request shape is checked in v2/chat/session_test.go",
+	"chat.sendresults":      "the v2/chat package depends on internal/ops; its request shape is checked in v2/chat/session_test.go",
 	"streamsummarize":       "a stream goes to the provider's stream method, which the scripted caller does not stand for",
 	"streamrewrite":         "a stream goes to the provider's stream method, which the scripted caller does not stand for",
 	"streamtranslate":       "a stream goes to the provider's stream method, which the scripted caller does not stand for",

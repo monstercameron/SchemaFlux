@@ -1,540 +1,729 @@
 package mw
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
+	"github.com/monstercameron/schemaflux/v2/internal/bind"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/provider"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
-// fakeProvider is a minimal llm.Provider whose behavior a test script
-// controls call-by-call, so a test can assert exactly what the middleware
-// under test did with a given sequence of successes and failures.
-type fakeProvider struct {
-	name      string
-	calls     int
-	callTimes []time.Time
-	// responses is consumed one per call; once exhausted the last entry
-	// repeats, so a test does not have to size the slice to the exact
-	// number of retries it expects.
-	responses []fakeResponse
-	now       func() time.Time
-
-	maxRetries int
-	backoff    time.Duration
-}
-
-type fakeResponse struct {
-	resp llm.CompletionResponse
-	err  error
-}
-
-func (f *fakeProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	if f.now != nil {
-		f.callTimes = append(f.callTimes, f.now())
-	}
-	idx := f.calls
-	if idx >= len(f.responses) {
-		idx = len(f.responses) - 1
-	}
-	f.calls++
-	if idx < 0 {
-		return llm.CompletionResponse{}, errors.New("fakeProvider: no responses configured")
-	}
-	return f.responses[idx].resp, f.responses[idx].err
-}
-
-func (f *fakeProvider) Name() string { return f.name }
-
-func (f *fakeProvider) EstimateCost(req llm.CompletionRequest) float64 { return 0.01 }
-
-func (f *fakeProvider) RetryPolicy() (int, time.Duration) { return f.maxRetries, f.backoff }
-
-func TestChainAppliesInListedOrder(t *testing.T) {
-	var order []string
-
-	tag := func(name string) Middleware {
-		return func(next Handler) Handler {
-			return completeFunc(func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-				order = append(order, name+":before")
-				resp, err := next.Complete(ctx, req)
-				order = append(order, name+":after")
-				return resp, err
+// every is each middleware of the package, in a form that wraps a provider and
+// changes nothing it does: no limit is reached and nothing waits.
+func every() map[string]Middleware {
+	altRoute, _ := route("every-alt", "alternate")
+	return map[string]Middleware{
+		"Retry":          Retry(),
+		"RateLimit":      RateLimit(1000, time.Second),
+		"Bulkhead":       Bulkhead(100),
+		"CircuitBreaker": CircuitBreaker(),
+		"Budget":         Budget(1e9, BudgetOptions{Cost: priced(0)}),
+		"Cache":          Cache(),
+		"Fallback":       Fallback([]Route{altRoute}),
+		"FallbackOn":     Fallback([]Route{altRoute}, FallbackOptions{On: []schemaflux.Kind{schemaflux.ErrRateLimited}}),
+		"Hedge":          Hedge(time.Hour),
+		"Redact":         Redact(),
+		"Wrap": func(next schemaflux.Provider) schemaflux.Provider {
+			return Wrap(next, func(ctx context.Context, req schemaflux.Request, next schemaflux.Provider) (schemaflux.Response, error) {
+				return next.Complete(ctx, req)
 			})
-		}
-	}
-
-	base := &fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	wrapped := Chain(base, tag("outer"), tag("inner"))
-
-	if _, err := wrapped.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-
-	want := []string{"outer:before", "inner:before", "inner:after", "outer:after"}
-	if len(order) != len(want) {
-		t.Fatalf("call order = %v, want %v", order, want)
-	}
-	for i := range want {
-		if order[i] != want[i] {
-			t.Fatalf("call order = %v, want %v", order, want)
-		}
-	}
-}
-
-func TestChainWithNoMiddlewareReturnsBase(t *testing.T) {
-	base := &fakeProvider{name: "base"}
-	got := Chain(base)
-	if got != Handler(base) {
-		t.Fatalf("Chain with no middleware did not return base unchanged")
-	}
-}
-
-func TestChainSkipsNilMiddleware(t *testing.T) {
-	base := &fakeProvider{name: "base", responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}
-	// A nil in the slice (e.g. from a conditionally-omitted option) must not
-	// panic Chain -- a caller building the list with an `if` per middleware
-	// should not have to filter nils out themselves.
-	got := Chain(base, nil, nil)
-	if _, err := got.Complete(context.Background(), llm.CompletionRequest{}); err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-}
-
-func TestChainDelegatesNameCostAndRetryPolicy(t *testing.T) {
-	base := &fakeProvider{name: "openai-fake", maxRetries: 4, backoff: 2 * time.Second}
-	identity := func(next Handler) Handler { return next }
-	wrapped := Chain(base, identity)
-
-	if wrapped.Name() != "openai-fake" {
-		t.Fatalf("Name() = %q, want %q", wrapped.Name(), "openai-fake")
-	}
-	if got := wrapped.EstimateCost(llm.CompletionRequest{}); got != 0.01 {
-		t.Fatalf("EstimateCost() = %v, want 0.01", got)
-	}
-	retries, backoff := wrapped.RetryPolicy()
-	if retries != 4 || backoff != 2*time.Second {
-		t.Fatalf("RetryPolicy() = (%d, %v), want (4, 2s)", retries, backoff)
-	}
-}
-
-// senderProvider is a fakeProvider that sends another model than the one a
-// request names.
-type senderProvider struct{ fakeProvider }
-
-func (p *senderProvider) ModelSentFor(requested string) string { return "sent-" + requested }
-
-// Every handler this package builds answers Name, EstimateCost and RetryPolicy
-// as the provider it wraps does, forwards llm.ModelSender to it, and says which
-// provider it wraps.
-func TestEveryMiddlewareDelegatesToTheProviderItWraps(t *testing.T) {
-	constructors := []struct {
-		name string
-		wrap func(Handler) Handler
-		// retries is the retry count the chain reports: the wrapped provider's
-		// own, 4, unless the chain holds a Retry, which makes the repeats itself
-		// and says that whatever calls the chain is to make none.
-		retries int
-	}{
-		{"Budget", Budget(10), 4},
-		{"Bulkhead", Bulkhead(2), 4},
-		{"Cache", Cache(), 4},
-		{"CircuitBreaker", CircuitBreaker(ops.CircuitBreakerConfig{}), 4},
-		{"Fallback", Fallback([]FallbackRoute{{Handler: &fakeProvider{name: "alternate"}}}), 4},
-		{"Hedge", Hedge(time.Second), 4},
-		{"RateLimit", RateLimit(10, time.Second), 4},
-		{"RedactEgress", RedactEgress(), 4},
-		{"Retry", Retry(), 0},
-		{"Retry with attempts of its own", Retry(WithMaxAttempts(9)), 0},
-		{"Chain of all of them", func(base Handler) Handler {
-			return Chain(base, Cache(), Retry(), RateLimit(10, time.Second), Budget(10), Bulkhead(2), RedactEgress(), Hedge(time.Second))
-		}, 0},
-		{"Chain of all of them but Retry", func(base Handler) Handler {
-			return Chain(base, Cache(), RateLimit(10, time.Second), Budget(10), Bulkhead(2), RedactEgress(), Hedge(time.Second))
-		}, 4},
-		{"Retry inside a Fallback", func(base Handler) Handler {
-			return Chain(base, Fallback(nil), Retry())
-		}, 0},
-		{"Retry around a Fallback", func(base Handler) Handler {
-			return Chain(base, Retry(), Fallback(nil))
-		}, 0},
-		{"Retry in a pair's generating provider", func(base Handler) Handler {
-			return Decisions(Chain(base, Retry()), &fakeProvider{name: "decider"}, DecisionOptions{})
-		}, 0},
-		{"Chain with nothing", func(base Handler) Handler { return Chain(base) }, 4},
-	}
-	for _, tc := range constructors {
-		t.Run(tc.name, func(t *testing.T) {
-			base := &senderProvider{fakeProvider{name: "openai-fake", maxRetries: 4, backoff: 2 * time.Second}}
-			wrapped := tc.wrap(base)
-
-			if wrapped.Name() != "openai-fake" {
-				t.Errorf("Name() = %q, want %q", wrapped.Name(), "openai-fake")
-			}
-			if got := wrapped.EstimateCost(llm.CompletionRequest{}); got != 0.01 {
-				t.Errorf("EstimateCost() = %v, want 0.01", got)
-			}
-			retries, backoff := wrapped.RetryPolicy()
-			if retries != tc.retries || backoff != 2*time.Second {
-				t.Errorf("RetryPolicy() = (%d, %v), want (%d, 2s)", retries, backoff, tc.retries)
-			}
-			if got := llm.ModelSentBy(wrapped, "m"); got != "sent-m" {
-				t.Errorf("the model sent for %q is %q, want the wrapped provider's %q", "m", got, "sent-m")
-			}
-		})
-	}
-
-	t.Run("a wrapped provider that sends the model it was asked for", func(t *testing.T) {
-		wrapped := Cache()(&fakeProvider{name: "plain"})
-		if got := llm.ModelSentBy(wrapped, "m"); got != "m" {
-			t.Errorf("the model sent is %q, want the requested %q", got, "m")
-		}
-	})
-}
-
-// completeFunc adapts a plain function to Handler for tests that only care
-// about wrapping Complete, without writing out Name/EstimateCost/RetryPolicy
-// stubs at every call site.
-type completeFunc func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error)
-
-func (f completeFunc) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	return f(ctx, req)
-}
-func (f completeFunc) Name() string                                   { return "completeFunc" }
-func (f completeFunc) EstimateCost(req llm.CompletionRequest) float64 { return 0 }
-func (f completeFunc) RetryPolicy() (int, time.Duration)              { return 0, 0 }
-
-// TestRateLimitAndRetryCompose is the integration case: a provider that
-// fails once with a rate-limited error, wrapped by both RateLimit and Retry
-// through the same Chain a caller would use at client construction. It
-// exercises the seam MW-001 exists for -- that the pieces work together
-// through Chain, not just in isolation -- and that RateLimit's own refusal
-// (when in Reject mode) is something Retry can retry, because both speak the
-// same classification.
-func TestRateLimitAndRetryCompose(t *testing.T) {
-	fake := &fakeProvider{
-		responses: []fakeResponse{
-			{err: llm.NewAPIError("fake", "m", 429, "")},
-			{resp: llm.CompletionResponse{Content: "ok"}},
 		},
 	}
-
-	fc := newFakeClock(time.Unix(0, 0))
-	limiter := RateLimit(100, time.Second) // effectively unlimited; not the thing under test here
-	retrier := Retry(WithMaxAttempts(3), WithBaseDelay(time.Millisecond))
-
-	// Build the chain by hand rather than through Chain() so the retry
-	// stage's sleep can be swapped for the fake clock before any call is
-	// made -- the same composition Chain(fake, limiter, retrier) produces,
-	// just with a seam to patch through.
-	retried := retrier(fake)
-	rp, ok := retried.(*retryProvider)
-	if !ok {
-		t.Fatalf("Retry did not return a *retryProvider")
-	}
-	rp.sleep = fc.sleep
-	rp.randFloat = func() float64 { return 0 }
-	wrapped := limiter(retried)
-
-	resp, err := wrapped.Complete(context.Background(), llm.CompletionRequest{})
-	if err != nil {
-		t.Fatalf("Complete returned an error: %v", err)
-	}
-	if resp.Content != "ok" {
-		t.Fatalf("Content = %q, want %q", resp.Content, "ok")
-	}
-	if fake.calls != 2 {
-		t.Fatalf("calls = %d, want 2 (one failure, one retry)", fake.calls)
-	}
 }
 
-// The one test in this package that does not substitute the sleep hook: every
-// other rate-limit test replaces bucket.sleep, which means realSleep -- the
-// production implementation every timing-based middleware in this package
-// actually ships with -- was never run by any of them. It runs here as it
-// ships, on timers, inside a synctest bubble, so the timers read a fake clock
-// that advances when every goroutine is blocked: the wait is exactly as long as
-// it was asked to be, and its context-cancellation path ends exactly when the
-// context does, whatever else the machine is doing.
-func TestRealSleepActuallyWaitsAndHonoursContext(t *testing.T) {
-	t.Run("waits out the duration", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			start := time.Now()
-			err := realSleep(context.Background(), 20*time.Millisecond)
-			if err != nil {
-				t.Fatalf("realSleep: %v", err)
+func TestChain(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the first middleware listed is the outermost", func(t *testing.T) {
+		t.Parallel()
+		var order []string
+		named := func(name string) Middleware {
+			return func(next schemaflux.Provider) schemaflux.Provider {
+				return Func(next.Name(), func(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
+					order = append(order, name+" in")
+					resp, err := next.Complete(ctx, req)
+					order = append(order, name+" out")
+					return resp, err
+				})
 			}
-			if elapsed := time.Since(start); elapsed != 20*time.Millisecond {
-				t.Errorf("realSleep returned after %v, want 20ms", elapsed)
+		}
+		var base schemafluxtest.Provider
+		if _, err := Chain(&base, named("a"), named("b"), named("c")).Complete(t.Context(), ask("q")); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"a in", "b in", "c in", "c out", "b out", "a out"}
+		if !reflect.DeepEqual(order, want) {
+			t.Errorf("order = %v, want %v", order, want)
+		}
+	})
+
+	t.Run("with no middleware it is the base itself", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		if got := Chain(&base); got != schemaflux.Provider(&base) {
+			t.Errorf("Chain with none returned %v", got)
+		}
+	})
+
+	t.Run("a nil middleware is skipped", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		var seen []string
+		got := Chain(&base, nil, recorder(&seen), nil)
+		if _, err := got.Complete(t.Context(), ask("q")); err != nil || !reflect.DeepEqual(seen, []string{"q"}) {
+			t.Errorf("seen %v, err %v", seen, err)
+		}
+	})
+
+	t.Run("middleware of the package and of the program's own compose", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		var seen []string
+		chain := Chain(&base, Redact(), recorder(&seen), Cache())
+		if _, err := chain.Complete(t.Context(), ask("mail "+testEmail)); err != nil {
+			t.Fatal(err)
+		}
+		if len(seen) != 1 || strings.Contains(seen[0], "@") {
+			t.Errorf("the program's own middleware saw %q: the redactor is outside it", seen)
+		}
+	})
+
+	t.Run("a chain of every middleware answers as the provider does", func(t *testing.T) {
+		t.Parallel()
+		p, calls := answering("answer")
+		var all []Middleware
+		for _, name := range []string{"Redact", "Cache", "Budget", "Fallback", "Retry", "Hedge", "RateLimit", "Bulkhead", "CircuitBreaker"} {
+			all = append(all, every()[name])
+		}
+		resp, err := Chain(p, all...).Complete(t.Context(), ask("q"))
+		if err != nil || resp.Content != "answer" || calls.Load() != 1 {
+			t.Errorf("%q, %v, %d provider calls", resp.Content, err, calls.Load())
+		}
+	})
+}
+
+func TestFunc(t *testing.T) {
+	t.Parallel()
+
+	t.Run("it is a provider with the name and the behaviour it was given", func(t *testing.T) {
+		t.Parallel()
+		p := Func("mine", func(_ context.Context, req schemaflux.Request) (schemaflux.Response, error) {
+			return schemaflux.Response{Content: "echo " + req.User}, nil
+		})
+		resp, err := p.Complete(t.Context(), ask("hi"))
+		if err != nil || resp.Content != "echo hi" || p.Name() != "mine" {
+			t.Errorf("%q, %v, name %q", resp.Content, err, p.Name())
+		}
+	})
+
+	t.Run("its error is returned as it is", func(t *testing.T) {
+		t.Parallel()
+		want := unavailable()
+		p := Func("mine", func(context.Context, schemaflux.Request) (schemaflux.Response, error) {
+			return schemaflux.Response{}, want
+		})
+		if _, err := p.Complete(t.Context(), ask("q")); err != want {
+			t.Errorf("err = %v, want the function's own", err)
+		}
+	})
+
+	t.Run("a nil function is a configuration error", func(t *testing.T) {
+		t.Parallel()
+		_, err := Func("mine", nil).Complete(t.Context(), ask("q"))
+		wantKind(t, err, schemaflux.ErrConfiguration)
+	})
+
+	t.Run("it can be wrapped by every middleware", func(t *testing.T) {
+		t.Parallel()
+		for name, middleware := range every() {
+			p := Func("mine", func(context.Context, schemaflux.Request) (schemaflux.Response, error) {
+				return schemaflux.Response{Content: "ok"}, nil
+			})
+			if resp, err := middleware(p).Complete(t.Context(), ask("q")); err != nil || resp.Content != "ok" {
+				t.Errorf("%s: %q, %v", name, resp.Content, err)
+			}
+		}
+	})
+}
+
+// warming is a provider that can be warmed.
+type warming struct {
+	*schemafluxtest.Provider
+	warmed atomic.Int32
+}
+
+func (w *warming) Warm(context.Context) error { w.warmed.Add(1); return nil }
+
+func TestEveryMiddlewareKeepsWhatItWraps(t *testing.T) {
+	t.Parallel()
+
+	for name, middleware := range every() {
+		t.Run(name+" is named for the provider it wraps and unwraps to it", func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			base.SetName("the-wrapped")
+			wrapped := middleware(&base)
+			if wrapped.Name() != "the-wrapped" {
+				t.Errorf("Name = %q", wrapped.Name())
+			}
+			if got := wrapped.(provider.Unwrapper).Unwrap(); got != schemaflux.Provider(&base) {
+				t.Errorf("Unwrap = %v", got)
 			}
 		})
-	})
 
-	t.Run("returns immediately for a non-positive duration", func(t *testing.T) {
-		if err := realSleep(context.Background(), 0); err != nil {
-			t.Errorf("realSleep(0) = %v, want nil", err)
-		}
-		if err := realSleep(context.Background(), -time.Second); err != nil {
-			t.Errorf("realSleep(negative) = %v, want nil", err)
-		}
-	})
+		t.Run(name+" lets the provider underneath be warmed", func(t *testing.T) {
+			t.Parallel()
+			w := &warming{Provider: new(schemafluxtest.Provider)}
+			wrapped := middleware(w)
+			warmer, ok := bind.Optional[provider.Warmer](wrapped)
+			if !ok {
+				t.Fatal("no Warmer was found through the wrapper")
+			}
+			if err := warmer.Warm(t.Context()); err != nil || w.warmed.Load() != 1 {
+				t.Errorf("Warm: %v, warmed %d times", err, w.warmed.Load())
+			}
+		})
 
-	t.Run("reports an already-cancelled context before waiting", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		if err := realSleep(ctx, time.Hour); err == nil {
-			t.Error("realSleep against an already-cancelled context must fail immediately")
-		}
-	})
+		t.Run(name+" lets the model of a tier be found underneath", func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			tiered, ok := bind.Optional[interface {
+				ModelFor(schemaflux.Tier) string
+			}](middleware(&base))
+			if !ok || tiered.ModelFor(schemaflux.TierFast) != "test-model" {
+				t.Errorf("found %v, ok %v", tiered, ok)
+			}
+		})
 
-	t.Run("is cancellable mid-wait", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-			defer cancel()
-			start := time.Now()
-			err := realSleep(ctx, time.Hour)
+		t.Run(name+" reports the limits of a decision provider underneath", func(t *testing.T) {
+			t.Parallel()
+			decider := schemafluxtest.NewDecider()
+			limits := schemaflux.DecisionLimits{MaxQuestions: 3, MaxOptions: 7, MaxLevels: 9, MaxStateTokens: 1234}
+			decider.SetLimits(limits)
+			found, ok := bind.Optional[provider.Decider](middleware(decider))
+			if !ok || found.DecisionLimits() != limits {
+				t.Errorf("limits = %+v, ok %v, want %+v", found, ok, limits)
+			}
+		})
+
+		t.Run(name+" reports no limits for a provider that generates text", func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			if _, ok := bind.Optional[provider.Decider](middleware(&base)); ok {
+				t.Error("a Decider was found over a provider that is not one")
+			}
+		})
+
+		t.Run(name+" reports the retry settings of the provider underneath", func(t *testing.T) {
+			t.Parallel()
+			inner := new(schemafluxtest.Provider)
+			wrapped := middleware(retrier{Provider: inner, retries: 6, backoff: 3 * time.Second})
+			retries, backoff := wrapped.(provider.Retrier).RetryPolicy()
+			// A chain that holds a Retry makes the repeats itself and tells whatever
+			// calls it to make none: the number of requests is the middleware's alone.
+			wantRetries := 6
+			if name == "Retry" {
+				wantRetries = -1
+			}
+			if retries != wantRetries || backoff != 3*time.Second {
+				t.Errorf("RetryPolicy = %d, %v, want %d, 3s", retries, backoff, wantRetries)
+			}
+			never := middleware(inner)
+			if retries, _ := never.(provider.Retrier).RetryPolicy(); retries >= 0 {
+				t.Errorf("a provider that retries nothing reports %d, want a negative number", retries)
+			}
+		})
+
+		t.Run(name+" does not stream, and says so, and the stream does not go round it", func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			base.Reply("a streamed answer")
+			streamer, ok := bind.Optional[provider.Streamer](middleware(&base))
+			if !ok {
+				t.Fatal("no Streamer was found")
+			}
+			var got error
+			for _, err := range streamer.Stream(t.Context(), ask("q")) {
+				got = err
+			}
+			wantKind(t, got, schemaflux.ErrUnsupported)
+			if base.Calls() != 0 {
+				t.Errorf("the provider underneath was streamed from %d times: the stream went round the wrapper", base.Calls())
+			}
+			count := 0
+			for _, err := range provider.Streamer(&base).Stream(t.Context(), ask("q")) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				count++
+			}
+			if count == 0 {
+				t.Error("the provider itself did not stream")
+			}
+		})
+
+		t.Run(name+" is given nothing to wrap and fails every request as a configuration error", func(t *testing.T) {
+			t.Parallel()
+			wrapped := middleware(nil)
+			_, err := wrapped.Complete(t.Context(), ask("q"))
+			wantKind(t, err, schemaflux.ErrConfiguration)
+			_ = wrapped.Name()
+		})
+
+		t.Run(name+" passes the request on as it is and the answer back as it is", func(t *testing.T) {
+			t.Parallel()
+			want := schemaflux.Response{
+				Content: "the answer", Model: "the-model", Provider: "the-provider", Upstream: "the-upstream",
+				FinishReason: "stop", ServiceTier: "flex",
+				Usage:  schemaflux.Usage{Input: 11, Output: 22, Total: 33, Cached: 4, CacheWrite: 5, Reasoning: 6},
+				Timing: schemaflux.Timing{Calls: 1},
+			}
+			var got schemaflux.Request
+			var base schemafluxtest.Provider
+			base.Respond(func(_ int, req schemaflux.Request) (schemaflux.Response, error) {
+				got = req
+				return want, nil
+			})
+			req := schemaflux.Request{
+				Model: "m", System: "sys", User: "usr", Temperature: 0.25, MaxTokens: 77, Format: "json",
+				Schema: map[string]any{"type": "object"}, SchemaName: "named", Effort: "low", EffortPreferred: true,
+				CacheKey: "key", WebSearch: true,
+				Decision: yesNo(`"state"`, "is it?"),
+			}
+			resp, err := middleware(&base).Complete(t.Context(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, req) {
+				t.Errorf("the provider was sent %+v, want %+v", got, req)
+			}
+			if !reflect.DeepEqual(resp, want) {
+				t.Errorf("the answer is %+v, want %+v", resp, want)
+			}
+		})
+
+		t.Run(name+" passes the values of the context on", func(t *testing.T) {
+			t.Parallel()
+			type key struct{}
+			var seen atomic.Value
+			wrapped := middleware(Func("probe", func(ctx context.Context, _ schemaflux.Request) (schemaflux.Response, error) {
+				seen.Store(ctx.Value(key{}))
+				return schemaflux.Response{Content: "ok"}, nil
+			}))
+			ctx := context.WithValue(t.Context(), key{}, "carried")
+			if _, err := wrapped.Complete(ctx, ask("q")); err != nil || seen.Load() != "carried" {
+				t.Errorf("err %v, the provider saw %v", err, seen.Load())
+			}
+		})
+
+		t.Run(name+" passes a provider's error on with its kind and the fields it set", func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			base.Fail(&schemaflux.Error{Kind: schemaflux.ErrUnauthorized, Message: "the key was refused", Code: "invalid_key", Status: 401})
+			_, err := middleware(&base).Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrUnauthorized)
+			if e.Message != "the key was refused" || e.Code != "invalid_key" || e.Status != 401 {
+				t.Errorf("the error is %+v", e)
+			}
+		})
+
+		t.Run(name+" never prints a provider's own words or a key", func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			vendor := errors.New("vendor said: your key " + testKey + " for " + testEmail + " is invalid")
+			base.Fail(&schemaflux.Error{Kind: schemaflux.ErrUnauthorized, Err: vendor})
+			_, err := middleware(&base).Complete(t.Context(), ask("q"))
 			if err == nil {
-				t.Fatal("realSleep against a 10ms-deadline context waiting an hour must fail")
+				t.Fatal("no error")
 			}
-			if elapsed := time.Since(start); elapsed != 10*time.Millisecond {
-				t.Errorf("realSleep returned after %v, want it to end with the context's 10ms; the wait is not actually cancellable", elapsed)
+			mustNotContain(t, "the error", err.Error(), testKey, testEmail, "vendor said")
+			if e, ok := err.(*schemaflux.Error); ok {
+				mustNotContain(t, "the error's detail-free form", e.Error(), testKey, "vendor said")
 			}
+			if !errors.Is(err, vendor) {
+				t.Error("the provider's own error is no longer in the chain")
+			}
+		})
+	}
+}
+
+func TestEveryMiddlewareIsSafeForConcurrentUse(t *testing.T) {
+	t.Parallel()
+
+	for name, middleware := range every() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			p, _ := answering("answer")
+			wrapped := middleware(p)
+			var wg sync.WaitGroup
+			for i := range 40 {
+				wg.Go(func() {
+					req := ask("request")
+					if i%2 == 0 {
+						req = ask("another")
+					}
+					if resp, err := wrapped.Complete(t.Context(), req); err != nil || resp.Content != "answer" {
+						t.Errorf("%q, %v", resp.Content, err)
+					}
+				})
+			}
+			wg.Wait()
+		})
+	}
+}
+
+// TestATypedDecisionAndItsAnswersPassUnchangedThroughEveryWrapper holds the
+// wrappers to what a decision provider needs of them: the decision arrives, and
+// the typed answers, their probabilities and any escalation come back as they
+// were written.
+func TestATypedDecisionAndItsAnswersPassUnchangedThroughEveryWrapper(t *testing.T) {
+	t.Parallel()
+
+	decision := &schemaflux.Decision{
+		State:    `{"ticket":"printer on fire"}`,
+		Guidance: "judge as the on-call engineer",
+		Questions: []schemaflux.DecisionQuestion{
+			{Kind: schemaflux.DecisionYesNo, Ask: "is it urgent?"},
+			{Kind: schemaflux.DecisionChoice, Ask: "which team?", Options: []string{"hardware", "software", "facilities"}, Criteria: []string{"machines", "code", ""}},
+			{Kind: schemaflux.DecisionScale, Ask: "how bad?", Low: 1, High: 5},
+		},
+	}
+	wantAnswers := []schemaflux.DecisionAnswer{
+		{Kind: schemaflux.DecisionYesNo, Yes: true, ModelConfidence: 0.91, ConfidenceReported: true},
+		{Kind: schemaflux.DecisionChoice, Label: "facilities", ModelConfidence: 0.77, ConfidenceReported: true},
+		{Kind: schemaflux.DecisionScale, Level: 4},
+	}
+	wantEscalation := &schemaflux.DecisionEscalation{Provider: "first", Model: "m", Reason: "below the floor", ModelConfidence: 0.3, ConfidenceReported: true}
+
+	run := func(t *testing.T, wrap func(schemaflux.Provider) schemaflux.Provider) {
+		var got schemaflux.Request
+		var base schemafluxtest.Provider
+		base.Respond(func(_ int, req schemaflux.Request) (schemaflux.Response, error) {
+			got = req
+			return schemaflux.Response{Answers: wantAnswers, Escalation: wantEscalation, Model: "m", Provider: "p"}, nil
+		})
+		resp, err := wrap(&base).Complete(t.Context(), schemaflux.Request{System: "sys", User: "usr", Decision: decision})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Decision, decision) {
+			t.Errorf("the decision arrived as %+v", got.Decision)
+		}
+		if !reflect.DeepEqual(resp.Answers, wantAnswers) {
+			t.Errorf("the answers came back as %+v, want %+v", resp.Answers, wantAnswers)
+		}
+		if !reflect.DeepEqual(resp.Escalation, wantEscalation) {
+			t.Errorf("the escalation came back as %+v, want %+v", resp.Escalation, wantEscalation)
+		}
+	}
+
+	for name, middleware := range every() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			run(t, middleware)
+		})
+	}
+	t.Run("Decisions as the generator", func(t *testing.T) {
+		t.Parallel()
+		run(t, func(p schemaflux.Provider) schemaflux.Provider {
+			// A decider that takes one question and is sent three refuses nothing
+			// and is not asked: the decision goes to the generator.
+			decider := schemafluxtest.NewDecider()
+			decider.SetLimits(schemaflux.DecisionLimits{MaxQuestions: 1})
+			return Decisions(p, decider, DecisionOptions{})
+		})
+	})
+	t.Run("a chain of everything", func(t *testing.T) {
+		t.Parallel()
+		run(t, func(p schemaflux.Provider) schemaflux.Provider {
+			return Chain(p, Redact(), Cache(), Budget(1e9, BudgetOptions{Cost: priced(0)}), Fallback(nil), Retry(), Hedge(time.Hour), RateLimit(1000, time.Second), Bulkhead(9), CircuitBreaker())
 		})
 	})
 }
 
-func TestKindIsTerminalAndRetryableAgreeWithOperationError(t *testing.T) {
-	retryable := map[types.ErrorKind]bool{
-		types.KindRateLimited: true, types.KindProviderUnavailable: true,
-		types.KindTimeout: true, types.KindCircuitOpen: true,
-	}
-	terminal := map[types.ErrorKind]bool{
-		types.KindConfiguration: true, types.KindAuthentication: true, types.KindPermission: true,
-		types.KindInvalidRequest: true, types.KindPolicyViolation: true, types.KindBudgetExceeded: true,
-		types.KindUnsupportedCapability: true, types.KindCanceled: true, types.KindShutdown: true,
-		types.KindRepairExhausted: true, types.KindReviewRequired: true,
-	}
-	for kind := types.KindUnknown; kind <= types.KindReviewRequired; kind++ {
-		t.Run(kind.String(), func(t *testing.T) {
-			if got := kindIsRetryable(kind); got != retryable[kind] {
-				t.Errorf("kindIsRetryable = %v, want %v", got, retryable[kind])
-			}
-			if got := kindIsTerminal(kind); got != terminal[kind] {
-				t.Errorf("kindIsTerminal = %v, want %v", got, terminal[kind])
-			}
-		})
-	}
-}
+func TestADecisionProviderAnswersThroughEveryWrapperItIsWrappedIn(t *testing.T) {
+	t.Parallel()
 
-// toolRequestProbe is a provider that keeps every request it is asked to complete
-// and answers with a fixed reply, after the failures it is told to return, so a
-// test can compare what a middleware handed on with what it was given.
-type toolRequestProbe struct {
-	name     string
-	reply    llm.CompletionResponse
-	failures []error
-
-	mu    sync.Mutex
-	seen  []llm.CompletionRequest
-	calls int
-}
-
-func (p *toolRequestProbe) Complete(_ context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	p.mu.Lock()
-	n := p.calls
-	p.calls++
-	p.seen = append(p.seen, req)
-	p.mu.Unlock()
-	if n < len(p.failures) && p.failures[n] != nil {
-		return llm.CompletionResponse{}, p.failures[n]
-	}
-	return p.reply, nil
-}
-
-func (p *toolRequestProbe) Name() string                                   { return p.name }
-func (p *toolRequestProbe) EstimateCost(req llm.CompletionRequest) float64 { return 0.001 }
-func (p *toolRequestProbe) RetryPolicy() (int, time.Duration)              { return 0, 0 }
-
-func (p *toolRequestProbe) requests() []llm.CompletionRequest {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return append([]llm.CompletionRequest(nil), p.seen...)
-}
-
-// A request's tools, tool choice and messages, and a response's tool calls, go
-// through every middleware as they came: the same request to the provider on
-// every attempt, and the same calls back, with no content beside them.
-func TestMiddlewaresPassToolsMessagesAndToolCallsThrough(t *testing.T) {
-	down := llm.NewAPIError("primary", "m", 503, "")
-	noSleep := func(context.Context, time.Duration) error { return nil }
-
-	cases := []struct {
-		name     string
-		failures []error // the primary probe's, before it answers
-		build    func(primary, alternate *toolRequestProbe) Handler
-		attempts int // requests the primary probe is expected to see
-		failover int // requests the alternate is expected to see
-	}{
-		{"retry, one attempt", nil, func(p, _ *toolRequestProbe) Handler {
-			return Retry(WithMaxAttempts(3), WithBaseDelay(time.Millisecond))(p)
-		}, 1, 0},
-		{"retry, after two failures", []error{down, down}, func(p, _ *toolRequestProbe) Handler {
-			retried := Retry(WithMaxAttempts(3), WithBaseDelay(time.Millisecond))(p)
-			retried.(*retryProvider).sleep = noSleep
-			return retried
-		}, 3, 0},
-		{"rate limit", nil, func(p, _ *toolRequestProbe) Handler { return RateLimit(10, time.Second)(p) }, 1, 0},
-		{"rate limit that rejects", nil, func(p, _ *toolRequestProbe) Handler { return RateLimit(10, time.Second, Reject())(p) }, 1, 0},
-		{"bulkhead", nil, func(p, _ *toolRequestProbe) Handler { return Bulkhead(2)(p) }, 1, 0},
-		{"bulkhead that rejects when full", nil, func(p, _ *toolRequestProbe) Handler { return Bulkhead(2, RejectWhenFull())(p) }, 1, 0},
-		{"circuit breaker", nil, func(p, _ *toolRequestProbe) Handler {
-			return CircuitBreaker(ops.CircuitBreakerConfig{FailureThreshold: 5})(p)
-		}, 1, 0},
-		{"circuit breaker keyed by model", nil, func(p, _ *toolRequestProbe) Handler {
-			return CircuitBreaker(ops.CircuitBreakerConfig{FailureThreshold: 5}, KeyByModel())(p)
-		}, 1, 0},
-		{"budget", nil, func(p, _ *toolRequestProbe) Handler { return Budget(1)(p) }, 1, 0},
-		{"budget with no cost function", nil, func(p, _ *toolRequestProbe) Handler { return Budget(1, WithBudgetCostFunc(nil))(p) }, 1, 0},
-		{"fallback, the primary answers", nil, func(p, alt *toolRequestProbe) Handler {
-			return Fallback([]FallbackRoute{{Handler: alt}})(p)
-		}, 1, 0},
-		{"fallback, the primary fails", []error{down}, func(p, alt *toolRequestProbe) Handler {
-			return Fallback([]FallbackRoute{{Handler: alt}})(p)
-		}, 1, 1},
-		{"fallback, the primary cannot take tools", []error{unsupportedErr("primary")}, func(p, alt *toolRequestProbe) Handler {
-			return Fallback([]FallbackRoute{{Handler: alt}})(p)
-		}, 1, 1},
-		{"hedge that does not need its second copy", nil, func(p, _ *toolRequestProbe) Handler { return Hedge(time.Hour)(p) }, 1, 0},
-		{"hedge with the delay off", nil, func(p, _ *toolRequestProbe) Handler { return Hedge(0)(p) }, 1, 0},
-		{"cache, a miss", nil, func(p, _ *toolRequestProbe) Handler { return Cache()(p) }, 1, 0},
-		{"redaction with nothing to redact", nil, func(p, _ *toolRequestProbe) Handler { return RedactEgress()(p) }, 1, 0},
-		{"the pair, the request goes to the generator", nil, func(p, _ *toolRequestProbe) Handler {
-			return Decisions(p, &decisionProbe{name: "jev", reply: probeReply()}, DecisionOptions{})
-		}, 1, 0},
-		{"a chain of all of them", nil, func(p, _ *toolRequestProbe) Handler {
-			return Chain(p, RedactEgress(), Cache(), Retry(WithMaxAttempts(2)), Budget(1), RateLimit(10, time.Second), Bulkhead(2),
-				CircuitBreaker(ops.CircuitBreakerConfig{FailureThreshold: 5}), Hedge(time.Hour))
-		}, 1, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			reply := llm.CompletionResponse{
-				Provider: "primary", Model: "m", FinishReason: "tool_calls",
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "get_weather", Arguments: []byte(`{"city":"Oslo"}`)},
-					{ID: "call_3", Name: "get_time", Arguments: []byte(`{}`)},
-				},
-				Usage: types.TokenUsage{PromptTokens: 30, CompletionTokens: 4, TotalTokens: 34},
-			}
-			primary := &toolRequestProbe{name: "primary", failures: tc.failures, reply: reply}
-			alternate := &toolRequestProbe{name: "alt", reply: reply}
-			req := toolsRequest()
-			req.ToolChoice = "auto"
-			want := toolsRequest()
-			want.ToolChoice = "auto"
-
-			resp, err := tc.build(primary, alternate).Complete(context.Background(), req)
+	for name, middleware := range every() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			decider := schemafluxtest.NewDecider(schemafluxtest.Yes(0.8), schemafluxtest.Chose("b", 0.6))
+			decision := &schemaflux.Decision{State: `"s"`, Questions: []schemaflux.DecisionQuestion{
+				{Kind: schemaflux.DecisionYesNo, Ask: "ok?"},
+				{Kind: schemaflux.DecisionChoice, Ask: "which?", Options: []string{"a", "b"}},
+			}}
+			resp, err := middleware(decider).Complete(t.Context(), schemaflux.Request{Decision: decision})
 			if err != nil {
-				t.Fatalf("Complete: %v", err)
+				t.Fatal(err)
 			}
-			if resp.Content != "" || resp.FinishReason != "tool_calls" || !reflect.DeepEqual(resp.ToolCalls, reply.ToolCalls) {
-				t.Errorf("the reply came back changed: %+v", resp)
+			want := []schemaflux.DecisionAnswer{
+				{Kind: schemaflux.DecisionYesNo, Yes: true, ModelConfidence: 0.8, ConfidenceReported: true},
+				{Kind: schemaflux.DecisionChoice, Label: "b", ModelConfidence: 0.6, ConfidenceReported: true},
 			}
-			for name, probe := range map[string]*toolRequestProbe{"primary": primary, "alternate": alternate} {
-				expected := tc.attempts
-				if probe == alternate {
-					expected = tc.failover
-				}
-				seen := probe.requests()
-				if len(seen) != expected {
-					t.Fatalf("the %s saw %d requests, want %d", name, len(seen), expected)
-				}
-				for i, got := range seen {
-					if !reflect.DeepEqual(got.Tools, want.Tools) || !reflect.DeepEqual(got.Messages, want.Messages) || got.ToolChoice != want.ToolChoice {
-						t.Errorf("the %s was sent something else on attempt %d:\n got tools %+v messages %+v choice %q\nwant tools %+v messages %+v choice %q",
-							name, i+1, got.Tools, got.Messages, got.ToolChoice, want.Tools, want.Messages, want.ToolChoice)
-					}
-				}
-			}
-			if !reflect.DeepEqual(req, want) {
-				t.Errorf("the caller's request was changed: %+v", req)
+			if !reflect.DeepEqual(resp.Answers, want) {
+				t.Errorf("answers = %+v, want %+v", resp.Answers, want)
 			}
 		})
 	}
 }
 
-// A panic recovered in code of the caller's (a cost function, a store, a callback,
-// a redaction function) is written to the logger of the client the call was made
-// with and not to the process's, and the line holds the type of what was thrown
-// and not its value, which can hold the text the code was handed.
-func TestARecoveredPanicIsLoggedToTheClientsLoggerWithItsTypeOnly(t *testing.T) {
-	const secret = "the text the code was handed"
-	thrower := func() { panic(secret) }
-	cases := []struct {
-		name string
-		run  func(ctx context.Context)
-		line string
-	}{
-		{"a cost function", func(ctx context.Context) {
-			Budget(10, WithBudgetCostFunc(func(*types.TokenUsage, string, string) *types.CostInfo { thrower(); return nil }))(
-				&budgetFakeProvider{resp: llm.CompletionResponse{Content: "ok", Usage: types.TokenUsage{PromptTokens: 1}}}).Complete(ctx, llm.CompletionRequest{})
-		}, "A budget cost function panicked"},
-		{"a cost function asked for the estimate", func(ctx context.Context) {
-			Budget(10, WithBudgetRequestEstimate(), WithBudgetCostFunc(func(*types.TokenUsage, string, string) *types.CostInfo { thrower(); return nil }))(
-				&budgetFakeProvider{resp: llm.CompletionResponse{Content: "ok"}}).Complete(ctx, llm.CompletionRequest{})
-		}, "A budget cost function panicked"},
-		{"a store that panics reading", func(ctx context.Context) {
-			Cache(WithCacheStore(&panickingStore{onGet: true}))(&fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}).Complete(ctx, llm.CompletionRequest{Model: "m"})
-		}, "A cache store panicked reading"},
-		{"a store that panics writing", func(ctx context.Context) {
-			Cache(WithCacheStore(&panickingStore{onSet: true}))(&fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}).Complete(ctx, llm.CompletionRequest{Model: "m"})
-		}, "A cache store panicked writing"},
-		{"a cache callback", func(ctx context.Context) {
-			Cache(WithCacheStats(func(CacheEvent) { thrower() }))(&fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}).Complete(ctx, llm.CompletionRequest{Model: "m"})
-		}, "A cache stats callback panicked"},
-		{"a redaction function", func(ctx context.Context) {
-			RedactEgress(WithFunc(func(string) string { thrower(); return "" }))(&fakeProvider{}).Complete(ctx, llm.CompletionRequest{UserPrompt: "x"})
-		}, "A redaction function panicked"},
-		{"a hedged request", func(ctx context.Context) {
-			Hedge(time.Hour)(completeFunc(func(context.Context, llm.CompletionRequest) (llm.CompletionResponse, error) {
-				thrower()
-				return llm.CompletionResponse{}, nil
-			})).Complete(ctx, llm.CompletionRequest{})
-		}, "A hedged request panicked"},
-		{"a hedge observer", func(ctx context.Context) {
-			Hedge(time.Hour, WithHedgeObserver(func(HedgeEvent) { thrower() }))(&fakeProvider{responses: []fakeResponse{{resp: llm.CompletionResponse{Content: "ok"}}}}).Complete(ctx, llm.CompletionRequest{})
-		}, "A hedge observer panicked"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var process, client bytes.Buffer
-			previous := logger.GetLogger()
-			logger.SetLogger(telemetry.FromSlog(slog.New(slog.NewTextHandler(&process, nil))))
-			t.Cleanup(func() { logger.SetLogger(previous) })
-			clients := telemetry.FromSlog(slog.New(slog.NewTextHandler(&client, nil)))
-			tc.run(ops.WithExecConfig(context.Background(), &ops.ExecConfig{Logger: clients}))
+// A middleware written with Wrap keeps what the library looks for on the provider
+// underneath, as every layer of the package does. One written with Func hid it:
+// a client with no model of its own could not name the provider's default.
+func TestAMiddlewareWrittenWithWrapKeepsWhatTheProviderUnderneathCanDo(t *testing.T) {
+	t.Parallel()
 
-			if !strings.Contains(client.String(), tc.line) || !strings.Contains(client.String(), "thrown=string") {
-				t.Errorf("the client's logger holds %q, want %q and the type", client.String(), tc.line)
+	identity := func(next schemaflux.Provider) schemaflux.Provider {
+		return Wrap(next, func(ctx context.Context, req schemaflux.Request, next schemaflux.Provider) (schemaflux.Response, error) {
+			return next.Complete(ctx, req)
+		})
+	}
+	hidden := func(next schemaflux.Provider) schemaflux.Provider {
+		return Func(next.Name(), func(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
+			return next.Complete(ctx, req)
+		})
+	}
+
+	t.Run("a client that names no model reaches the model of the provider through it", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		base.Reply("A summary.")
+		for name, chain := range map[string]schemaflux.Provider{
+			"the provider itself":         &base,
+			"a layer of this package":     Chain(&base, Retry()),
+			"a layer written with Wrap":   Chain(&base, identity),
+			"Wrap around a Retry":         Chain(&base, identity, Retry()),
+			"a Retry around Wrap":         Chain(&base, Retry(), identity),
+			"Wrap around Wrap around two": Chain(&base, identity, identity, Cache(), Redact()),
+		} {
+			ctx := schemaflux.WithClient(t.Context(), schemaflux.Client{Provider: chain})
+			if got, err := schemaflux.Summarize(ctx, "some text"); err != nil || got != "A summary." {
+				t.Errorf("%s: %q, %v", name, got, err)
 			}
-			if process.Len() != 0 {
-				t.Errorf("the process logger was written to: %q", process.String())
+		}
+	})
+
+	t.Run("a layer written with Func hides it, which is what the doc says", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		base.Reply("A summary.")
+		ctx := schemaflux.WithClient(t.Context(), schemaflux.Client{Provider: Chain(&base, hidden)})
+		_, err := schemaflux.Summarize(ctx, "some text")
+		wantKind(t, err, schemaflux.ErrConfiguration)
+	})
+
+	t.Run("it is named for what it wraps and unwraps to it", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		base.SetName("the-wrapped")
+		wrapped := identity(&base)
+		if wrapped.Name() != "the-wrapped" {
+			t.Errorf("Name = %q", wrapped.Name())
+		}
+		if got := wrapped.(provider.Unwrapper).Unwrap(); got != schemaflux.Provider(&base) {
+			t.Errorf("Unwrap = %v", got)
+		}
+	})
+
+	t.Run("it is given the provider it wraps and the request as it came", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		base.Reply("answer")
+		var gotNext schemaflux.Provider
+		var gotReq schemaflux.Request
+		wrapped := Wrap(&base, func(ctx context.Context, req schemaflux.Request, next schemaflux.Provider) (schemaflux.Response, error) {
+			gotNext, gotReq = next, req
+			return next.Complete(ctx, req)
+		})
+		req := schemaflux.Request{Model: "m", User: "u", MaxTokens: 3}
+		if _, err := wrapped.Complete(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		if gotNext != schemaflux.Provider(&base) || !reflect.DeepEqual(gotReq, req) {
+			t.Errorf("the function was given %v and %+v", gotNext, gotReq)
+		}
+	})
+
+	t.Run("a nil provider or a nil function fails every request as a configuration error", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		noop := func(ctx context.Context, req schemaflux.Request, next schemaflux.Provider) (schemaflux.Response, error) {
+			return next.Complete(ctx, req)
+		}
+		for name, p := range map[string]schemaflux.Provider{
+			"no provider": Wrap(nil, noop),
+			"no function": Wrap(&base, nil),
+			"neither":     Wrap(nil, nil),
+		} {
+			_, err := p.Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrConfiguration)
+			if e.Op != "mw.wrap" {
+				t.Errorf("%s: Op %q", name, e.Op)
 			}
-			if strings.Contains(client.String(), secret) || strings.Contains(client.String(), "goroutine") {
-				t.Errorf("the line holds more than the type: %q", client.String())
+			_ = p.Name()
+		}
+		if base.Calls() != 0 {
+			t.Errorf("the provider was asked %d times", base.Calls())
+		}
+	})
+
+	t.Run("it does not stream, and the stream does not go round it", func(t *testing.T) {
+		t.Parallel()
+		var base schemafluxtest.Provider
+		base.Reply("a streamed answer")
+		streamer, ok := bind.Optional[provider.Streamer](identity(&base))
+		if !ok {
+			t.Fatal("no Streamer was found")
+		}
+		var got error
+		for _, err := range streamer.Stream(t.Context(), ask("q")) {
+			got = err
+		}
+		wantKind(t, got, schemaflux.ErrUnsupported)
+		if base.Calls() != 0 {
+			t.Errorf("the provider underneath was streamed from %d times", base.Calls())
+		}
+	})
+
+	t.Run("it reports the retry settings of the provider underneath", func(t *testing.T) {
+		t.Parallel()
+		wrapped := identity(retrier{Provider: new(schemafluxtest.Provider), retries: 6, backoff: 3 * time.Second})
+		retries, backoff := wrapped.(provider.Retrier).RetryPolicy()
+		if retries != 6 || backoff != 3*time.Second {
+			t.Errorf("RetryPolicy = %d, %v, want 6, 3s", retries, backoff)
+		}
+	})
+}
+
+// A stream that is refused says which layers would have been skipped, and what to
+// do, so that a user is not told to drop a layer without knowing which.
+func TestTheRefusalOfAStreamNamesTheLayersAndSaysWhatToDo(t *testing.T) {
+	t.Parallel()
+	var base schemafluxtest.Provider
+	chain := Chain(&base, Redact(), Cache(), Budget(5, BudgetOptions{Cost: priced(1)}), Retry(), Bulkhead(2))
+	streamer, ok := bind.Optional[provider.Streamer](chain)
+	if !ok {
+		t.Fatal("no Streamer was found")
+	}
+	var got error
+	for _, err := range streamer.Stream(t.Context(), ask("q")) {
+		got = err
+	}
+	e := wantKind(t, got, schemaflux.ErrUnsupported)
+	for _, layer := range []string{"redact", "cache", "budget", "retry", "bulkhead"} {
+		if !strings.Contains(e.Message, layer) {
+			t.Errorf("the message %q does not name the layer %s", e.Message, layer)
+		}
+	}
+	if !strings.Contains(e.Message, "give the client the provider without them") {
+		t.Errorf("the message %q does not say what to do", e.Message)
+	}
+	mustNotContain(t, "the message", e.Message, "stream through the provider itself")
+}
+
+// A call that is over is not started, whichever layer is outermost: a context that
+// is nil is an invalid request, and one that has ended fails with its error before
+// any layer or the provider is asked.
+func TestAnEndedOrNilContextIsRefusedBeforeAnythingIsAsked(t *testing.T) {
+	t.Parallel()
+	for name, middleware := range every() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var base schemafluxtest.Provider
+			base.Reply("answer")
+			wrapped := middleware(&base)
+
+			//lint:ignore SA1012 a nil context is the case under test
+			_, err := wrapped.Complete(nil, ask("q"))
+			wantKind(t, err, schemaflux.ErrInvalidRequest)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			_, err = wrapped.Complete(ctx, ask("q"))
+			wantKind(t, err, schemaflux.ErrCanceled)
+
+			expired, stop := context.WithDeadline(t.Context(), time.Unix(0, 0))
+			defer stop()
+			_, err = wrapped.Complete(expired, ask("q"))
+			wantKind(t, err, schemaflux.ErrTimeout)
+
+			if base.Calls() != 0 {
+				t.Errorf("the provider was asked %d times for calls that were over", base.Calls())
 			}
 		})
 	}
+}
+
+// What a layer of this package refuses carries the layer's name as its Op, so that
+// the failure says which wrapper made it. A provider's own failure is not
+// renamed.
+func TestARefusalNamesTheLayerThatMadeIt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a full bulkhead", func(t *testing.T) {
+		t.Parallel()
+		bubble(t, "", func(t *testing.T) {
+			h := newHeld()
+			wall := Bulkhead(1, BulkheadOptions{Reject: true})(h)
+			first := started(t.Context(), wall)
+			synctest.Wait()
+			_, err := wall.Complete(t.Context(), ask("q"))
+			e := wantKind(t, err, schemaflux.ErrBusy)
+			if e.Op != "mw.bulkhead" {
+				t.Errorf("Op = %q", e.Op)
+			}
+			h.let()
+			<-first
+		})
+	})
+
+	t.Run("a rate limit that rejects", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		limited := RateLimit(1, time.Hour, RateLimitOptions{Reject: true})(&p)
+		limited.Complete(t.Context(), ask("q"))
+		_, err := limited.Complete(t.Context(), ask("q"))
+		if e := wantKind(t, err, schemaflux.ErrRateLimited); e.Op != "mw.ratelimit" {
+			t.Errorf("Op = %q", e.Op)
+		}
+	})
+
+	t.Run("an open circuit", func(t *testing.T) {
+		t.Parallel()
+		breaker := CircuitBreaker(BreakerOptions{Failures: 1})(failingProvider("p", unavailable()))
+		breaker.Complete(t.Context(), ask("q"))
+		_, err := breaker.Complete(t.Context(), ask("q"))
+		if e := wantKind(t, err, schemaflux.ErrUnavailable); e.Op != "mw.breaker" {
+			t.Errorf("Op = %q", e.Op)
+		}
+	})
+
+	t.Run("a budget that is spent", func(t *testing.T) {
+		t.Parallel()
+		var p schemafluxtest.Provider
+		_, err := Budget(0.5, BudgetOptions{Cost: priced(1)})(&p).Complete(t.Context(), ask("q"))
+		if e := wantKind(t, err, schemaflux.ErrBudgetExceeded); e.Op != "mw.budget" {
+			t.Errorf("Op = %q", e.Op)
+		}
+	})
+
+	t.Run("a failure of the provider's own keeps its Op through every layer", func(t *testing.T) {
+		t.Parallel()
+		for name, middleware := range every() {
+			p := failingProvider("p", &schemaflux.Error{Kind: schemaflux.ErrUnauthorized, Message: "the key was refused"})
+			_, err := middleware(p).Complete(t.Context(), ask("q"))
+			if e := wantKind(t, err, schemaflux.ErrUnauthorized); e.Op != "" {
+				t.Errorf("%s: Op = %q, want the provider's own, which is none", name, e.Op)
+			}
+		}
+	})
 }

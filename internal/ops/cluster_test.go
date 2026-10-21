@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 func TestClusterOptions(t *testing.T) {
@@ -156,7 +156,7 @@ func TestClusterRefusalsBeforeACallHaveAKind(t *testing.T) {
 		{"a negative similarity threshold", refuse(func(o *ClusterOptions) { o.SimilarityThreshold = -0.5 }),
 			"invalid options: similarity threshold must be between 0 and 1, got -0.500000", types.KindConfiguration},
 		{"a naming strategy nobody knows", refuse(func(o *ClusterOptions) { o.NamingStrategy = "poetic" }),
-			"invalid options: invalid naming strategy: poetic", types.KindConfiguration},
+			"invalid options: naming strategy must be auto, descriptive, or numbered", types.KindConfiguration},
 		{"a threshold above one on the common half", refuse(func(o *ClusterOptions) { o.CommonOptions.Threshold = 3 }),
 			"invalid options: threshold must be between 0 and 1, got 3.000000", types.KindConfiguration},
 		{"a bad option beside one item", func() error {
@@ -170,7 +170,7 @@ func TestClusterRefusalsBeforeACallHaveAKind(t *testing.T) {
 			options.NamingStrategy = "x"
 			_, err := Cluster([]string(nil), options)
 			return err
-		}, "invalid options: invalid naming strategy: x", types.KindConfiguration},
+		}, "invalid options: naming strategy must be auto, descriptive, or numbered", types.KindConfiguration},
 		{"a bad option beside a typed slice of structs", func() error {
 			options := NewClusterOptions()
 			options.MinClusterSize = 0

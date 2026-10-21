@@ -53,7 +53,7 @@ CHECKS=(
   "acceptance ledger|python scripts/acceptance_checklist.py --check"
   "release ladder|python scripts/release_gate.py --check"
   "traceability|python .audit/traceability.py"
-  "api surface|go test ./tests/ -run TestPublicAPISurface -count=1"
+  "api surface|go test ./internal/guard -run 'TestSurfaceMatchesTheSnapshots|TestSurfaceCountsMatchTheAmendedA4' -count=1"
   "tests|go test ./... -count=1"
   "smarttodo module|cd examples/smarttodo && go test ./..."
   "coverage floor|python scripts/coverage_floor.py"
@@ -79,6 +79,8 @@ fi
 PLATFORM="$(go env GOOS)/$(go env GOARCH)"
 if [ "$PLATFORM" = "windows/arm64" ]; then
   RACE_NOTE="SKIPPED on $PLATFORM (the race detector does not run here; CI covers it)"
+elif [ "$(go env CGO_ENABLED)" != "1" ]; then
+  RACE_NOTE="SKIPPED on $PLATFORM (the race detector requires cgo; CI covers it)"
 else
   CHECKS+=("race|go test -race ./... -count=1")
   RACE_NOTE=""

@@ -57,10 +57,11 @@ import (
 	"sync"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
+	"github.com/monstercameron/schemaflux/v2/mw"
+	"github.com/monstercameron/schemaflux/v2/provider"
 )
 
 // A flow is one of the three ways the desk handles a message.
@@ -129,10 +130,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-
-	// The library logs every operation to standard error, which would be a
-	// few thousand lines between the rows of the report.
-	schemaflux.ConfigureLogging(schemaflux.LoggerConfig{Level: schemaflux.LogError, DisableStderr: !asked.logs})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -386,10 +383,10 @@ func milliseconds(d time.Duration) float64 {
 // that same instant: the run's wall time is counted from it too, so a call
 // that began at the very start of the run begins at zero and none can end after
 // the run does.
-func handle(ctx context.Context, with flow, labelled sim.Case, provider *metered, client *schemaflux.Client, support *desk.Desk) (desk.Outcome, record) {
+func handle(ctx context.Context, with flow, labelled sim.Case, provider *metered, client schemaflux.Client, support *desk.Desk) (desk.Outcome, record) {
 	started := time.Now()
 	provider.start(started)
-	outcome, err := with.handle(support, client.Context(ctx), labelled.Message)
+	outcome, err := with.handle(support, schemaflux.WithClient(ctx, client), labelled.Message)
 	wall := time.Since(started)
 	busy := provider.Busy()
 
@@ -435,7 +432,7 @@ func offline(ctx context.Context, asked settings, cases []sim.Case, stdout, sink
 		for _, labelled := range cases {
 			for _, with := range asked.flows {
 				provider := measure(simulated(asked))
-				client := schemaflux.NewClient("").WithProviderInstance(provider)
+				client := schemaflux.Client{Provider: provider}
 				outcome, made := handle(ctx, with, labelled, provider, client, desk.New(sim.OpenTickets()))
 				made.Mode, made.Rep = asked.mode, rep
 				made.DelayMS = milliseconds(asked.delay)
@@ -703,14 +700,15 @@ func decisionDifferences(got, want desk.Outcome) []string {
 // after the run.
 type metered struct {
 	schemaflux.Provider
-	log sim.Log
+	log    sim.Log
+	hedges *hedging
 	// began is when the run this provider measures began: each call's start
 	// is counted from it. It is set before the run, by start.
 	began time.Time
 
 	mu    sync.Mutex
 	calls []call
-	usage schemaflux.TokenUsage
+	usage schemaflux.Usage
 }
 
 // measure returns a provider with a count kept of its calls, for a run that
@@ -723,7 +721,7 @@ func measure(provider schemaflux.Provider) *metered {
 // calls the flow makes count their starts from it.
 func (m *metered) start(at time.Time) { m.began = at }
 
-func (m *metered) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (m *metered) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	operation := sim.Operation(req)
 	if operation == "" {
 		operation = "other"
@@ -733,32 +731,36 @@ func (m *metered) Complete(ctx context.Context, req schemaflux.CompletionRequest
 	resp, err := m.Provider.Complete(ctx, req)
 	took := time.Since(started)
 	end()
+	if m.hedges != nil {
+		m.hedges.saw(resp.Hedged)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, call{
 		Operation: operation, StartMS: milliseconds(started.Sub(m.began)), MS: milliseconds(took),
-		prompt: req.UserPrompt, reply: sim.Reply(req, resp),
+		prompt: req.User, reply: sim.Reply(req, resp),
 		Decider: answeredTyped(resp), Escalated: escalated(resp),
-		InputTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.CompletionTokens,
-		ReasoningTokens: resp.Usage.ReasoningTokens,
+		InputTokens: resp.Usage.Input, OutputTokens: resp.Usage.Output,
+		ReasoningTokens: resp.Usage.Reasoning,
 		Failed:          err != nil,
 		Reused:          resp.Timing.Reused,
 		SetupMS:         milliseconds(resp.Timing.Setup()),
 		WaitMS:          milliseconds(resp.Timing.Wait),
 		ReadMS:          milliseconds(resp.Timing.Read),
 	})
-	m.usage.PromptTokens += resp.Usage.PromptTokens
-	m.usage.CompletionTokens += resp.Usage.CompletionTokens
-	m.usage.CachedTokens += resp.Usage.CachedTokens
-	m.usage.ReasoningTokens += resp.Usage.ReasoningTokens
+	m.usage.Input += resp.Usage.Input
+	m.usage.Output += resp.Usage.Output
+	m.usage.Cached += resp.Usage.Cached
+	m.usage.Reasoning += resp.Usage.Reasoning
+	m.usage.Total += resp.Usage.Total
 	return resp, err
 }
 
 // answeredTyped names the decision provider that answered a call typed, or is
 // empty for an answer a generating provider wrote.
-func answeredTyped(resp schemaflux.CompletionResponse) string {
-	if len(resp.DecisionAnswers) == 0 {
+func answeredTyped(resp schemaflux.Response) string {
+	if len(resp.Answers) == 0 {
 		return ""
 	}
 	return resp.Provider
@@ -766,24 +768,24 @@ func answeredTyped(resp schemaflux.CompletionResponse) string {
 
 // escalated is why a decision provider that was asked first was passed over,
 // or is empty when none was.
-func escalated(resp schemaflux.CompletionResponse) string {
-	if resp.DecisionEscalation == nil {
+func escalated(resp schemaflux.Response) string {
+	if resp.Escalation == nil {
 		return ""
 	}
-	return resp.DecisionEscalation.Reason
+	return resp.Escalation.Reason
 }
 
 // made returns the calls so far, each with what it said, and the tokens they
 // reported between them. It reads every request and reply, so it is for after
 // a run.
-func (m *metered) made() ([]call, schemaflux.TokenUsage) {
+func (m *metered) made() ([]call, schemaflux.Usage) {
 	m.mu.Lock()
 	calls := append([]call(nil), m.calls...)
 	usage := m.usage
 	m.mu.Unlock()
 
 	for i := range calls {
-		calls[i].Said = said(calls[i].Operation, schemaflux.CompletionRequest{UserPrompt: calls[i].prompt}, calls[i].reply)
+		calls[i].Said = said(calls[i].Operation, schemaflux.Request{User: calls[i].prompt}, calls[i].reply)
 	}
 	return calls, usage
 }
@@ -797,8 +799,8 @@ func (m *metered) CriticalPath() time.Duration { return m.log.CriticalPath() }
 // live runs the messages against a real model, through the library's OpenAI
 // provider.
 func live(ctx context.Context, asked settings, cases []sim.Case, key string, stdout, sink io.Writer) (failed bool, err error) {
-	openai, err := schemaflux.NewOpenAIProvider(schemaflux.ProviderConfig{
-		APIKey: key, Timeout: asked.timeout, MaxRetries: 2, RetryBackoff: time.Second,
+	openai, err := provider.New("openai", provider.Config{
+		APIKey: key, Timeout: asked.timeout, Retries: 2, RetryBackoff: time.Second,
 		ServiceTier: asked.tier,
 	})
 	if err != nil {
@@ -807,7 +809,7 @@ func live(ctx context.Context, asked settings, cases []sim.Case, key string, std
 	// The connection is opened before the first message, so that the first
 	// message's first call does not pay for it and the figures for every
 	// message are of the same kind.
-	if _, err := schemaflux.NewClient("").WithProviderInstance(openai).Warm(ctx); err != nil {
+	if err := (schemaflux.Client{Provider: openai, Model: asked.model}).Warm(ctx); err != nil {
 		return false, err
 	}
 	var hedges hedging
@@ -815,11 +817,11 @@ func live(ctx context.Context, asked settings, cases []sim.Case, key string, std
 	if asked.decider != "" {
 		// The decision provider, by name. The decisions go to it and everything
 		// else to the model above; a hedge is the generating provider's alone.
-		decider, err := schemaflux.CreateProvider(asked.decider, schemaflux.ProviderConfig{APIKey: asked.deciderKey, Timeout: asked.timeout})
+		decider, err := provider.New(asked.decider, provider.Config{APIKey: asked.deciderKey, Timeout: asked.timeout})
 		if err != nil {
 			return false, err
 		}
-		if _, err := schemaflux.NewClient("").WithProviderInstance(decider).Warm(ctx); err != nil {
+		if err := (schemaflux.Client{Provider: decider}).Warm(ctx); err != nil {
 			return false, err
 		}
 		model = mw.Decisions(model, decider, mw.DecisionOptions{Floor: asked.floor})
@@ -866,6 +868,7 @@ func liveThrough(ctx context.Context, asked settings, cases []sim.Case, model sc
 		for _, labelled := range cases {
 			for _, with := range asked.flows {
 				provider := measure(model)
+				provider.hedges = hedges
 				// A client of its own for each run, so that its ledger is the
 				// cost of that run and its ceiling stops that run alone.
 				//
@@ -873,8 +876,9 @@ func liveThrough(ctx context.Context, asked settings, cases []sim.Case, model sc
 				// calls through a dozen operations whose options it builds in
 				// as many ways, and the client is the one place that reaches
 				// them all.
-				client := schemaflux.NewClient("").WithProviderInstance(provider).WithBudget(asked.ceiling).
-					WithModel(asked.model).WithEffort(schemaflux.Effort(asked.effort))
+				budget := &schemaflux.Budget{Limit: asked.ceiling}
+				client := schemaflux.Client{Provider: provider, Budget: budget, Model: asked.model,
+					Effort: schemaflux.Effort(asked.effort), Timeout: asked.timeout}
 				support := desk.New(sim.OpenTickets())
 				support.Judgment.Effort = schemaflux.Effort(asked.triage)
 
@@ -886,9 +890,9 @@ func liveThrough(ctx context.Context, asked settings, cases []sim.Case, model sc
 				calls, usage := provider.made()
 				made.Operations = calls
 				made.decided(asked)
-				made.InputTokens, made.OutputTokens = usage.PromptTokens, usage.CompletionTokens
-				made.CachedTokens, made.ReasoningTokens = usage.CachedTokens, usage.ReasoningTokens
-				spent, complete := client.Spent()
+				made.InputTokens, made.OutputTokens = usage.Input, usage.Output
+				made.CachedTokens, made.ReasoningTokens = usage.Cached, usage.Reasoning
+				spent, complete := budget.Spent()
 				// A second copy of a call that a hedge sent is a request the
 				// provider bills and the client's ledger does not see: the cost
 				// of a run that had one is a floor.

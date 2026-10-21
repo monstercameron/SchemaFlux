@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // --- Fixtures shared across this file's tests.
@@ -508,8 +508,8 @@ func TestPlanChunksBoundEachCallByTheRequestsBudget(t *testing.T) {
 		sizes[i] = itemSize{tokens: 1000}
 	}
 	capability := types.CapabilitySnapshot{Model: "gpt-4", MaxOutputTokens: 1 << 30, ContextTokens: 1 << 30}
-	free, _ := planChunks(sizes, types.PlanRequest{MaxItemsPerCall: 100}, capability, 0)
-	bounded, _ := planChunks(sizes, types.PlanRequest{MaxItemsPerCall: 100, Budget: 0.5}, capability, 0)
+	free, _ := planChunks(context.Background(), sizes, types.PlanRequest{MaxItemsPerCall: 100}, capability, 0)
+	bounded, _ := planChunks(context.Background(), sizes, types.PlanRequest{MaxItemsPerCall: 100, Budget: 0.5}, capability, 0)
 	if len(bounded) <= len(free) {
 		t.Errorf("a budget of 0.5 left %d chunks against %d without one: no single call may cost more than the whole request may", len(bounded), len(free))
 	}
@@ -597,7 +597,7 @@ func TestPackChunksOversizedItemNamesTheBound(t *testing.T) {
 // --- PL-004/PR-002: an unpriced model reports unpriced, never $0.00.
 
 func TestCostFromTokensUnpricedModelReportsUnpriced(t *testing.T) {
-	est := costFromTokens("definitely-not-a-real-model-xyz", 10_000, 5_000)
+	est := costFromTokens(context.Background(), "definitely-not-a-real-model-xyz", 10_000, 5_000)
 	if est.Priced {
 		t.Fatal("an unrecognised model reported Priced = true")
 	}
@@ -610,7 +610,7 @@ func TestCostFromTokensUnpricedModelReportsUnpriced(t *testing.T) {
 }
 
 func TestCostFromTokensPricedModelReportsRealCost(t *testing.T) {
-	est := costFromTokens("gpt-4", 1000, 1000)
+	est := costFromTokens(context.Background(), "gpt-4", 1000, 1000)
 	if !est.Priced {
 		t.Fatal("gpt-4 has a pricing entry and should report Priced = true")
 	}
@@ -997,7 +997,7 @@ func TestEstimateChunkedCostPricesTheRenderedPromptAndEveryAnswer(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := estimateChunkedCost(tc.prompt, tc.chunks, tc.oversized, capability)
+			got := estimateChunkedCost(context.Background(), tc.prompt, tc.chunks, tc.oversized, capability)
 			if got.EstimatedPromptTokens != tc.prompt {
 				t.Errorf("EstimatedPromptTokens = %d, want the %d it was given", got.EstimatedPromptTokens, tc.prompt)
 			}

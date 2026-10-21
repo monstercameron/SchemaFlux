@@ -3,8 +3,8 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // callerContext is the context a call's options carry: the one in CommonOptions,

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // M12/SC-002. Something Scheduler deliberately leaves out because it is not

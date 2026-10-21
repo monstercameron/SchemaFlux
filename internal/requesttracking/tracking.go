@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
 )
 
 // IDStrategy names how a request ID is made when the caller supplied none.

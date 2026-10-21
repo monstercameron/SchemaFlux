@@ -1,244 +1,227 @@
 package schemafluxtest_test
 
 import (
-	"fmt"
+	"context"
+	"os"
 	"strings"
 	"testing"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/schemafluxtest"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
+	"github.com/monstercameron/schemaflux/v2/schemafluxtest"
 )
 
-// installRecorder is the minimal TestingT double schemafluxtest.Install needs.
-// It never stops the goroutine the way *testing.T's Fatalf does, so a test can
-// observe that Fatalf was called instead of the process dying, and it keeps the
-// cleanups Install registers so a test can run them when it chooses.
-type installRecorder struct {
-	setenv   []struct{ key, value string }
-	fatal    string
-	cleanups []func()
+// None of these tests is parallel: Install changes the default client, which is
+// the process's, and each puts it back.
+
+// A call that names no client runs on the default. There is no v2 operation to
+// make it with yet, so the test calls an internal one, which reads the same
+// default.
+func callOnTheDefault(t *testing.T) (bool, error) {
+	t.Helper()
+	return ops.Is(context.Background(), "a subject", "Is this a question?", types.OpOptions{})
 }
 
-func (r *installRecorder) Helper()                {}
-func (r *installRecorder) Cleanup(cleanup func()) { r.cleanups = append(r.cleanups, cleanup) }
-func (r *installRecorder) Setenv(key, value string) {
-	r.setenv = append(r.setenv, struct{ key, value string }{key, value})
-}
-func (r *installRecorder) Fatalf(format string, args ...any) {
-	r.fatal = strings.TrimSpace(fmt.Sprintf(format, args...))
-}
+func TestInstallMakesTheFakeTheProviderOfTheDefaultClient(t *testing.T) {
+	var model schemafluxtest.Provider
+	model.Reply(`{"q1":true}`)
+	schemafluxtest.Install(t, &model)
 
-func (r *installRecorder) runCleanups() {
-	for i := len(r.cleanups) - 1; i >= 0; i-- {
-		r.cleanups[i]()
+	if got := schemaflux.Default().Provider; got != schemaflux.Provider(&model) {
+		t.Fatalf("the default's provider is %v, want the fake", got)
+	}
+	answer, err := callOnTheDefault(t)
+	if err != nil || !answer {
+		t.Fatalf("a call with no client = %v, %v", answer, err)
+	}
+	if model.Calls() != 1 {
+		t.Errorf("the fake received %d requests, want 1", model.Calls())
+	}
+	if got := model.Last().Model; got != "test-model" {
+		t.Errorf("the request asked for %q: the fake's model for a tier was not used", got)
 	}
 }
 
-// Install restores whatever was there before, so a test does not leak its
-// double into the next one.
-func TestInstallRestoresThePreviousClient(t *testing.T) {
-	before := schemaflux.GetDefaultClient()
+func TestInstallPutsTheDefaultBackWhenTheTestEnds(t *testing.T) {
+	kept := &schemaflux.Budget{Limit: 3}
+	previous := schemaflux.Default()
+	schemaflux.SetDefault(schemaflux.Client{Model: "kept-model", Budget: kept, Policy: &schemaflux.DataPolicy{Providers: []string{"x"}}})
+	t.Cleanup(func() { schemaflux.SetDefault(previous) })
 
-	func() {
-		provider := schemafluxtest.New()
-		restore := schemafluxtest.Install(t, provider)
-		defer restore()
-
-		if schemaflux.GetDefaultClient() == before {
-			t.Error("Install did not replace the client")
+	var model schemafluxtest.Provider
+	t.Run("a test that installs", func(t *testing.T) {
+		schemafluxtest.Install(t, &model)
+		inside := schemaflux.Default()
+		if inside.Model != "" || inside.Budget != nil || inside.Policy != nil {
+			t.Errorf("Install kept settings of the old default: %+v", inside)
 		}
-	}()
-
-	if schemaflux.GetDefaultClient() != before {
-		t.Error("the previous client was not restored")
+	})
+	after := schemaflux.Default()
+	if after.Model != "kept-model" || after.Budget != kept || after.Policy == nil || after.Policy.Providers[0] != "x" || after.Provider != nil {
+		t.Errorf("the default after the test is %+v, want what it was", after)
 	}
 }
 
-// Install refuses a nil provider rather than installing an unusable one and
-// leaving every subsequent call in the test to fail somewhere less obvious.
-func TestInstallRefusesANilProvider(t *testing.T) {
-	recorder := &installRecorder{}
-	restore := schemafluxtest.Install(recorder, nil)
-	defer restore()
-
-	if recorder.fatal == "" {
-		t.Fatal("Install(t, nil) did not call Fatalf")
-	}
-	if !strings.Contains(recorder.fatal, "New()") {
-		t.Errorf("the refusal does not point at the fix: %q", recorder.fatal)
-	}
-	if len(recorder.cleanups) != 0 {
-		t.Error("a refused Install registered a cleanup")
-	}
-}
-
-// Install sets the environment key through t.Setenv, which is what makes Go
-// refuse t.Parallel in the same test.
-func TestInstallSetsTheKeyThroughSetenv(t *testing.T) {
-	recorder := &installRecorder{}
-	defer schemafluxtest.Install(recorder, schemafluxtest.New())()
-
-	if len(recorder.setenv) != 1 || recorder.setenv[0].key != "SCHEMAFLUX_API_KEY" {
-		t.Errorf("Setenv calls = %+v, want one for SCHEMAFLUX_API_KEY", recorder.setenv)
-	}
-	if len(recorder.cleanups) != 1 {
-		t.Errorf("registered %d cleanups, want 1", len(recorder.cleanups))
-	}
-}
-
-// When there was no previous client, restoring sets the default back to nil
-// rather than to whatever Install last saw -- a test running first in a
-// process with no client configured must not leave one installed after it
-// ends.
-func TestInstallWithNoPreviousClientRestoresToNil(t *testing.T) {
-	before := schemaflux.GetDefaultClient()
-	schemaflux.SetDefaultClient(nil)
-	defer schemaflux.SetDefaultClient(before)
-
-	func() {
-		provider := schemafluxtest.New()
-		restore := schemafluxtest.Install(t, provider)
-		defer restore()
-
-		if schemaflux.GetDefaultClient() == nil {
-			t.Fatal("Install did not set a client")
+func TestInstallTwiceInOneTestLetsTheLastWinAndUndoesInOrder(t *testing.T) {
+	var first, second schemafluxtest.Provider
+	first.Reply(`{"q1":true}`)
+	second.Reply(`{"q1":false}`)
+	before := schemaflux.Default().Provider
+	t.Run("two installs", func(t *testing.T) {
+		schemafluxtest.Install(t, &first)
+		schemafluxtest.Install(t, &second)
+		if answer, err := callOnTheDefault(t); err != nil || answer {
+			t.Errorf("the call answered %v, %v, want the second fake's false", answer, err)
 		}
-	}()
-
-	if schemaflux.GetDefaultClient() != nil {
-		t.Error("restoring after a nil previous client should leave it nil")
+		if first.Calls() != 0 || second.Calls() != 1 {
+			t.Errorf("calls: first %d, second %d", first.Calls(), second.Calls())
+		}
+	})
+	if got := schemaflux.Default().Provider; got != before {
+		t.Errorf("the default's provider after both are undone is %v, want what it was", got)
 	}
 }
 
-// The operations read a provider that is separate from the default client, and
-// setting a client only repoints it when the client carries a provider. A
-// previous client with none left the double installed there after the restore,
-// so the next test talked to it.
-func TestInstallRestoreDoesNotLeaveTheDoubleAsTheProvider(t *testing.T) {
-	const good = `{"queue":"billing","priority":"low"}`
+func TestInstallSetsAVariableForTheLengthOfTheTestSoAParallelTestIsRefused(t *testing.T) {
+	const name = "SCHEMAFLUX_TEST_INSTALLED"
+	if os.Getenv(name) != "" {
+		t.Skip("the variable is set outside the test")
+	}
+	var model schemafluxtest.Provider
+	t.Run("inside", func(t *testing.T) {
+		schemafluxtest.Install(t, &model)
+		if os.Getenv(name) != "1" {
+			t.Errorf("%s is %q inside the test", name, os.Getenv(name))
+		}
+	})
+	if got := os.Getenv(name); got != "" {
+		t.Errorf("%s is still %q after the test", name, got)
+	}
+}
 
-	saved := schemaflux.GetDefaultClient()
+func TestInstallInAParallelTestPanicsAndChangesNothing(t *testing.T) {
+	var model schemafluxtest.Provider
+	before := schemaflux.Default()
+	// A parallel subtest runs once the body of this test has returned, and its
+	// result is checked when this test's cleanups run, which is after it.
 	t.Cleanup(func() {
-		ops.SetDefaultProvider(nil)
-		schemaflux.SetDefaultClient(saved)
-	})
-
-	type previousClient struct {
-		name string
-		// build installs the state that is current before Install runs and
-		// returns the provider that ought to answer afterwards, or nil when
-		// nothing should.
-		build func() *schemafluxtest.Provider
-	}
-	previousClients := []previousClient{
-		{"no default client", func() *schemafluxtest.Provider {
-			schemaflux.SetDefaultClient(nil)
-			return nil
-		}},
-		{"a client with no provider", func() *schemafluxtest.Provider {
-			schemaflux.SetDefaultClient(schemaflux.NewClient(""))
-			return nil
-		}},
-		{"a client holding its own provider", func() *schemafluxtest.Provider {
-			own := schemafluxtest.New().Reply(good)
-			schemaflux.SetDefaultClient(schemaflux.NewClient("").WithProviderInstance(own))
-			return own
-		}},
-	}
-
-	modes := []struct {
-		name string
-		run  func(restore func(), recorder *installRecorder)
-	}{
-		{"the returned function", func(restore func(), _ *installRecorder) { restore() }},
-		{"the registered cleanup", func(_ func(), recorder *installRecorder) { recorder.runCleanups() }},
-		{"both, one after the other", func(restore func(), recorder *installRecorder) {
-			restore()
-			recorder.runCleanups()
-		}},
-	}
-
-	for _, previous := range previousClients {
-		for _, mode := range modes {
-			t.Run(previous.name+" restored by "+mode.name, func(t *testing.T) {
-				ops.SetDefaultProvider(nil)
-				own := previous.build()
-
-				recorder := &installRecorder{}
-				double := schemafluxtest.New().Reply(good)
-				restore := schemafluxtest.Install(recorder, double)
-
-				if _, err := schemaflux.Extract[triage]("while installed", schemaflux.NewExtractOptions()); err != nil {
-					t.Fatalf("the installed double did not answer: %v", err)
-				}
-				if double.CallCount() != 1 {
-					t.Fatalf("double calls while installed = %d, want 1", double.CallCount())
-				}
-
-				mode.run(restore, recorder)
-
-				_, err := schemaflux.Extract[triage]("after the restore", schemaflux.NewExtractOptions())
-				if double.CallCount() != 1 {
-					t.Errorf("the double answered after it was restored away: %d calls", double.CallCount())
-				}
-				if own == nil {
-					if err == nil {
-						t.Error("an operation succeeded after the restore with no provider to answer it")
-					}
-					return
-				}
-				if err != nil {
-					t.Errorf("the previous client's provider did not answer: %v", err)
-				}
-				if own.CallCount() != 1 {
-					t.Errorf("previous provider calls = %d, want 1", own.CallCount())
-				}
-			})
-		}
-	}
-
-	t.Run("nested installs unwind in order", func(t *testing.T) {
-		ops.SetDefaultProvider(nil)
-		schemaflux.SetDefaultClient(schemaflux.NewClient(""))
-
-		outerRecorder, innerRecorder := &installRecorder{}, &installRecorder{}
-		outer := schemafluxtest.New().Reply(good)
-		inner := schemafluxtest.New().Reply(good)
-		restoreOuter := schemafluxtest.Install(outerRecorder, outer)
-		restoreInner := schemafluxtest.Install(innerRecorder, inner)
-
-		if _, err := schemaflux.Extract[triage]("x", schemaflux.NewExtractOptions()); err != nil || inner.CallCount() != 1 || outer.CallCount() != 0 {
-			t.Fatalf("the inner double should answer: err=%v inner=%d outer=%d", err, inner.CallCount(), outer.CallCount())
-		}
-		restoreInner()
-		if _, err := schemaflux.Extract[triage]("x", schemaflux.NewExtractOptions()); err != nil || outer.CallCount() != 1 {
-			t.Fatalf("the outer double should answer after the inner restore: err=%v outer=%d", err, outer.CallCount())
-		}
-		restoreOuter()
-		if _, err := schemaflux.Extract[triage]("x", schemaflux.NewExtractOptions()); err == nil {
-			t.Error("a double still answers after both restores")
-		}
-		if inner.CallCount() != 1 || outer.CallCount() != 1 {
-			t.Errorf("calls after both restores: inner=%d outer=%d, want 1 and 1", inner.CallCount(), outer.CallCount())
+		if after := schemaflux.Default(); after.Provider != before.Provider {
+			t.Errorf("a refused Install changed the default: %+v", after)
 		}
 	})
-
-	t.Run("installing again after a restore", func(t *testing.T) {
-		ops.SetDefaultProvider(nil)
-		schemaflux.SetDefaultClient(schemaflux.NewClient(""))
-
-		for round := 1; round <= 3; round++ {
-			recorder := &installRecorder{}
-			double := schemafluxtest.New().Reply(good)
-			restore := schemafluxtest.Install(recorder, double)
-			if _, err := schemaflux.Extract[triage]("x", schemaflux.NewExtractOptions()); err != nil {
-				t.Fatalf("round %d: %v", round, err)
+	t.Run("parallel", func(t *testing.T) {
+		t.Parallel()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Error("Install did not panic in a parallel test")
+				return
 			}
-			restore()
-			if _, err := schemaflux.Extract[triage]("x", schemaflux.NewExtractOptions()); err == nil {
-				t.Errorf("round %d: the double still answers after its restore", round)
+			if !strings.Contains(strings.ToLower(asText(r)), "parallel") {
+				t.Errorf("the panic does not say why: %v", r)
 			}
-		}
+		}()
+		schemafluxtest.Install(t, &model)
 	})
+}
+
+func asText(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case error:
+		return x.Error()
+	}
+	return ""
+}
+
+// failingTB is a testing.TB whose Fatal is recorded and does not stop the test:
+// the one thing the nil-provider test needs.
+type failingTB struct {
+	testing.TB
+	fatal   string
+	cleanup []func()
+	env     map[string]string
+}
+
+func (f *failingTB) Helper() {}
+func (f *failingTB) Fatal(args ...any) {
+	f.fatal = args[0].(string)
+	panic(f)
+}
+func (f *failingTB) Setenv(key, value string) { f.env = map[string]string{key: value} }
+func (f *failingTB) Cleanup(fn func())        { f.cleanup = append(f.cleanup, fn) }
+
+func TestInstallOfNilFailsTheTestAndInstallsNothing(t *testing.T) {
+	before := schemaflux.Default()
+	f := &failingTB{TB: t}
+	func() {
+		defer func() {
+			if r := recover(); r != f {
+				t.Fatalf("recovered %v", r)
+			}
+		}()
+		schemafluxtest.Install(f, nil)
+	}()
+	if !strings.Contains(f.fatal, "nil") {
+		t.Errorf("the test was failed with %q, want a message that says the provider is nil", f.fatal)
+	}
+	if len(f.cleanup) != 0 || len(f.env) != 0 {
+		t.Error("a refused Install registered a cleanup or set a variable")
+	}
+	if after := schemaflux.Default(); after.Provider != before.Provider {
+		t.Error("a refused Install changed the default")
+	}
+}
+
+func TestInstallRegistersOneCleanupAndSetsOneVariable(t *testing.T) {
+	before := schemaflux.Default()
+	f := &failingTB{TB: t}
+	var model schemafluxtest.Provider
+	schemafluxtest.Install(f, &model)
+	if len(f.cleanup) != 1 || len(f.env) != 1 {
+		t.Fatalf("cleanups %d, variables %d, want one of each", len(f.cleanup), len(f.env))
+	}
+	if schemaflux.Default().Provider != schemaflux.Provider(&model) {
+		t.Error("the fake is not installed")
+	}
+	f.cleanup[0]()
+	if after := schemaflux.Default(); after.Provider != before.Provider {
+		t.Error("the cleanup did not put the default back")
+	}
+}
+
+func TestInstallOfAProviderWrittenOutsideTheLibraryWorks(t *testing.T) {
+	own := &ownProvider{}
+	schemafluxtest.Install(t, own)
+	if _, err := ops.Is(context.Background(), "s", "q?", types.OpOptions{Model: "named"}); err != nil {
+		t.Fatal(err)
+	}
+	if own.requests != 1 {
+		t.Errorf("the provider received %d requests", own.requests)
+	}
+}
+
+// ownProvider is a Provider that is none of the library's.
+type ownProvider struct{ requests int }
+
+func (p *ownProvider) Name() string { return "own" }
+func (p *ownProvider) Complete(context.Context, schemaflux.Request) (schemaflux.Response, error) {
+	p.requests++
+	return schemaflux.Response{Content: `{"q1":true}`}, nil
+}
+
+func TestInstallLeavesTheDefaultUsableByCallsThatCarryAClient(t *testing.T) {
+	var installed, carried schemafluxtest.Provider
+	installed.Reply(`{"q1":true}`)
+	carried.Reply(`{"q1":true}`)
+	schemafluxtest.Install(t, &installed)
+	ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: &carried})
+	if _, err := ops.Is(ctx, "s", "q?", types.OpOptions{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if carried.Calls() != 1 || installed.Calls() != 0 {
+		t.Errorf("calls: carried %d, installed %d: a client on the context was not used", carried.Calls(), installed.Calls())
+	}
 }

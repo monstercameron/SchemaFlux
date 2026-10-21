@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // The operations the desk makes, as the simulator and the benchmark name them.
@@ -49,12 +49,12 @@ var operationByInstruction = []struct {
 
 // Operation reports which operation of the library made a request, or "" when
 // it is none the desk makes.
-func Operation(req schemaflux.CompletionRequest) string {
+func Operation(req schemaflux.Request) string {
 	if operation, named := operationBySchema[req.SchemaName]; named {
 		return operation
 	}
 	for _, known := range operationByInstruction {
-		if strings.Contains(req.SystemPrompt, known.opening) {
+		if strings.Contains(req.System, known.opening) {
 			return known.operation
 		}
 	}
@@ -74,8 +74,8 @@ type Answered struct {
 // answers out of its reply, in the order they were asked. It is how the
 // benchmark shows what a run decided: the request and the reply are all a
 // provider sees of a decision, and the reply alone is {"q1":true,"q2":3}.
-func Answers(req schemaflux.CompletionRequest, reply string) ([]Answered, error) {
-	asked, err := questions(req.UserPrompt)
+func Answers(req schemaflux.Request, reply string) ([]Answered, error) {
+	asked, err := questions(req.User)
 	if err != nil {
 		return nil, err
 	}

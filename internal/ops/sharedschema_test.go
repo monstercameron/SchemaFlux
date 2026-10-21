@@ -113,6 +113,7 @@ func TestASecondCallSeesTheSchemaTheFirstSaw(t *testing.T) {
 // 64, Normalize 79, Predict 143 and Validate 100, and Enrich 42 (it sends no
 // schema, since its envelope holds maps).
 func TestEnvelopeSchemaAllocationsStayWithinBudget(t *testing.T) {
+	typePlanFreshCache(t)
 	budgets := map[string]float64{
 		"Compress":                   61,
 		"Decompose":                  90,

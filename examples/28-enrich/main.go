@@ -1,138 +1,80 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"io"
 	"os"
-	"path/filepath"
 
-	"github.com/joho/godotenv"
-	"github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/exp"
 )
 
-func loadEnv() {
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".env")); err == nil {
-			godotenv.Load(filepath.Join(dir, ".env"))
-			return
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
+type product struct {
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Price       float64 `json:"price"`
+}
+
+type enrichedProduct struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Price        float64  `json:"price"`
+	Category     string   `json:"category"`
+	Keywords     []string `json:"keywords"`
+	TargetMarket string   `json:"target_market"`
+}
+
+type lead struct {
+	Email   string `json:"email"`
+	Company string `json:"company"`
+	Title   string `json:"title"`
+}
+
+type enrichedLead struct {
+	Email      string `json:"email"`
+	Company    string `json:"company"`
+	Title      string `json:"title"`
+	Department string `json:"department"`
+	Seniority  string `json:"seniority"`
+	Industry   string `json:"industry"`
 }
 
 func main() {
-	loadEnv()
-	schemaflux.InitWithEnv()
-
-	fmt.Println("=== Enrich Example ===")
-	fmt.Println("Adds derived fields to data using LLM inference")
-	fmt.Println()
-
-	// Business Use Case: Enrich product listings with marketing metadata
-	fmt.Println("--- Business Use Case: Product Catalog Enrichment ---")
-
-	type Product struct {
-		Name        string  `json:"name"`
-		Description string  `json:"description"`
-		Price       float64 `json:"price"`
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "Enrich example: %v\n", err)
+		os.Exit(1)
 	}
+}
 
-	type EnrichedProduct struct {
-		Name         string   `json:"name"`
-		Description  string   `json:"description"`
-		Price        float64  `json:"price"`
-		Category     string   `json:"category"`
-		Keywords     []string `json:"keywords"`
-		TargetMarket string   `json:"target_market"`
-	}
-
-	product := Product{
-		Name:        "Pro Gaming Keyboard RGB",
-		Description: "Mechanical keyboard with Cherry MX switches and RGB lighting",
-		Price:       149.99,
-	}
-
-	fmt.Println("INPUT: Product struct")
-	fmt.Printf("  Name:        %q\n", product.Name)
-	fmt.Printf("  Description: %q\n", product.Description)
-	fmt.Printf("  Price:       $%.2f\n\n", product.Price)
-
-	opts := ops.NewEnrichOptions().
-		WithDeriveFields([]string{"category", "keywords", "target_market"}).
-		WithDomain("e-commerce").
-		WithIntelligence(types.Smart)
-
-	result, err := ops.Enrich[Product, EnrichedProduct](product, opts)
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "=== Enrich Example ===")
+	fmt.Fprintln(out, "--- Product catalog enrichment ---")
+	p := product{Name: "Pro Gaming Keyboard RGB", Description: "Mechanical keyboard with Cherry MX switches and RGB lighting", Price: 149.99}
+	productResult, err := exp.Enrich[enrichedProduct](ctx, p, exp.EnrichOptions{
+		Fields: []string{"category", "keywords", "target_market"}, Domain: "e-commerce",
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+	})
 	if err != nil {
-		log.Fatalf("Enrichment failed: %v", err)
+		return fmt.Errorf("enrich product: %w", err)
 	}
+	fmt.Fprintf(out, "Product: %s\nCategory: %s\nKeywords: %v\nTarget market: %s\n",
+		productResult.Enriched.Name, productResult.Enriched.Category,
+		productResult.Enriched.Keywords, productResult.Enriched.TargetMarket)
 
-	fmt.Println("OUTPUT: EnrichedProduct struct")
-	fmt.Printf("  Name:        %q\n", result.Enriched.Name)
-	fmt.Printf("  Description: %q\n", result.Enriched.Description)
-	fmt.Printf("  Price:       $%.2f\n", result.Enriched.Price)
-	fmt.Println("  --- Derived Fields ---")
-	fmt.Printf("  Category:     %q\n", result.Enriched.Category)
-	fmt.Printf("  Keywords:     %v\n", result.Enriched.Keywords)
-	fmt.Printf("  TargetMarket: %q\n", result.Enriched.TargetMarket)
-	fmt.Println()
-
-	// Business Use Case: Enrich sales lead with firmographic data
-	fmt.Println("--- Business Use Case: Sales Lead Enrichment ---")
-
-	type Lead struct {
-		Email   string `json:"email"`
-		Company string `json:"company"`
-		Title   string `json:"title"`
-	}
-
-	type EnrichedLead struct {
-		Email      string `json:"email"`
-		Company    string `json:"company"`
-		Title      string `json:"title"`
-		Department string `json:"department"`
-		Seniority  string `json:"seniority"`
-		Industry   string `json:"industry"`
-	}
-
-	lead := Lead{
-		Email:   "john.smith@techcorp.io",
-		Company: "TechCorp Inc",
-		Title:   "VP of Engineering",
-	}
-
-	fmt.Println("INPUT: Lead struct")
-	fmt.Printf("  Email:   %q\n", lead.Email)
-	fmt.Printf("  Company: %q\n", lead.Company)
-	fmt.Printf("  Title:   %q\n\n", lead.Title)
-
-	leadOpts := ops.NewEnrichOptions().
-		WithDeriveFields([]string{"department", "seniority", "industry"}).
-		WithDerivationRules(map[string]string{
-			"seniority": "Infer from job title (executive, senior, mid, junior)",
-		}).
-		WithIntelligence(types.Smart)
-
-	leadResult, err := ops.Enrich[Lead, EnrichedLead](lead, leadOpts)
+	fmt.Fprintln(out, "--- Sales lead enrichment ---")
+	l := lead{Email: "john.smith@techcorp.io", Company: "TechCorp Inc", Title: "VP of Engineering"}
+	leadResult, err := exp.Enrich[enrichedLead](ctx, l, exp.EnrichOptions{
+		Fields:  []string{"department", "seniority", "industry"},
+		Rules:   map[string]string{"seniority": "Infer from the job title"},
+		Options: schemaflux.Options{Tier: schemaflux.TierSmart},
+	})
 	if err != nil {
-		log.Fatalf("Lead enrichment failed: %v", err)
+		return fmt.Errorf("enrich lead: %w", err)
 	}
-
-	fmt.Println("OUTPUT: EnrichedLead struct")
-	fmt.Printf("  Email:   %q\n", leadResult.Enriched.Email)
-	fmt.Printf("  Company: %q\n", leadResult.Enriched.Company)
-	fmt.Printf("  Title:   %q\n", leadResult.Enriched.Title)
-	fmt.Println("  --- Derived Fields ---")
-	fmt.Printf("  Department: %q\n", leadResult.Enriched.Department)
-	fmt.Printf("  Seniority:  %q\n", leadResult.Enriched.Seniority)
-	fmt.Printf("  Industry:   %q\n", leadResult.Enriched.Industry)
-
-	fmt.Println("\n=== Enrich Example Complete ===")
+	fmt.Fprintf(out, "Lead: %s\nDepartment: %s\nSeniority: %s\nIndustry: %s\n",
+		leadResult.Enriched.Title, leadResult.Enriched.Department,
+		leadResult.Enriched.Seniority, leadResult.Enriched.Industry)
+	fmt.Fprintln(out, "=== Enrich Example Complete ===")
+	return nil
 }

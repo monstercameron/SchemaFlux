@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ClusterOptions configures the Cluster operation
@@ -70,7 +70,7 @@ func (c ClusterOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"auto": true, "descriptive": true, "numbered": true}
 	if c.NamingStrategy != "" && !validStrategies[c.NamingStrategy] {
-		return fmt.Errorf("invalid naming strategy: %s", c.NamingStrategy)
+		return fmt.Errorf("naming strategy must be auto, descriptive, or numbered")
 	}
 	return nil
 }
@@ -273,7 +273,7 @@ func Cluster[T any](items []T, opts ClusterOptions) (ClusterResult[T], error) {
 
 	itemsJSON, err := json.Marshal(indexedItems)
 	if err != nil {
-		log.Error("Cluster operation failed: marshal error", "error", err)
+		log.Error("Cluster operation failed: marshal error", "error", loggedError(err))
 		return refuse(types.KindInvalidRequest, "the items could not be written as JSON")
 	}
 
@@ -338,7 +338,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Cluster operation LLM call failed", "error", err)
+		log.Error("Cluster operation LLM call failed", "error", loggedError(err))
 		return ClusterResult[T]{}, fmt.Errorf("clustering failed: %w", err)
 	}
 
@@ -358,7 +358,7 @@ Return a JSON object with:
 	}
 
 	if err := decodeAnswer("cluster", response, &parsed); err != nil {
-		log.Error("Cluster operation failed: parse error", "error", err)
+		log.Error("Cluster operation failed: parse error", "error", loggedError(err))
 		return ClusterResult[T]{}, err
 	}
 
@@ -385,7 +385,7 @@ Return a JSON object with:
 	groups = append(groups, parsed.OutlierIndices)
 
 	if err := CoversExactlyOnce(len(items), groups); err != nil {
-		log.Error("Cluster operation failed: the clusters do not partition the input", "error", err)
+		log.Error("Cluster operation failed: the clusters do not partition the input", "error", loggedError(err))
 		return refuse(types.KindInvariantViolation, "%s", err.Error())
 	}
 

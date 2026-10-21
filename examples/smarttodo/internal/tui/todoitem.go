@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 type todoItem struct {

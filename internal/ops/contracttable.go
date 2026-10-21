@@ -3,7 +3,7 @@ package ops
 import (
 	"sort"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The contract level of every operation.
@@ -188,6 +188,9 @@ type contractRow struct {
 	// is the level of, and functions the exported functions of this package.
 	catalogue []string
 	functions []string
+	// externalPkg is a v2 subpackage, relative to the repository root, whose
+	// exported function or method is named in functions instead of this package.
+	externalPkg string
 	// aliases are the names the call path puts on a context for the operation.
 	aliases []string
 }
@@ -554,6 +557,18 @@ var contractRows = []contractRow{
 		catalogue: []string{"DecomposeToSlice"}, functions: []string{"DecomposeToSlice"},
 	},
 
+	// A chat turn accepts the provider's text or tool calls without a schema.
+	{
+		name: "chat.send", level: promptOnly, externalPkg: "chat",
+		evidence:  "Session.Send accepts text or checked tool calls and declares no answer schema.",
+		functions: []string{"Send"},
+	},
+	{
+		name: "chat.sendresults", level: promptOnly, externalPkg: "chat",
+		evidence:  "Session.SendResults accepts text or checked tool calls and declares no answer schema.",
+		functions: []string{"SendResults"},
+	},
+
 	// Redaction and control flow.
 	{
 		name: "redact.text", level: invariantChecked, aliases: []string{"redact_llm"},
@@ -584,6 +599,18 @@ var contractRows = []contractRow{
 		via:       "batchContractLevel(op) before, then negotiatedContractLevel after (RunOpBatchResult)",
 		evidence:  "A batch with a merge written by hand is vouched for no further than that the provider answered; one built on the id protocol checks every id and each item.",
 		catalogue: nil, functions: []string{"RunOpBatch", "RunOpBatchResult"},
+	},
+	{
+		name: "op.runeach", level: wellFormed, computed: true, externalPkg: "op",
+		via:       "RunOpManyPartial or RunOpManyRecover for each item, according to PreflightFor",
+		evidence:  "RunEach delivers each item's descriptor contract, with well-formed JSON as the lowest supported level.",
+		functions: []string{"RunEach"},
+	},
+	{
+		name: "op.runstages", level: wellFormed, computed: true, externalPkg: "op",
+		via:       "RunStagedPlan from each stage's descriptor or deterministic check",
+		evidence:  "RunStages delivers each stage's descriptor contract or the level attested by its deterministic check.",
+		functions: []string{"RunStages"},
 	},
 	{
 		name: "op.runmany", level: promptOnly, computed: true,

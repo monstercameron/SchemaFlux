@@ -1,36 +1,33 @@
-// Example 24: Cluster Operation
-// Groups similar items semantically using LLM intelligence
-
 package main
 
 import (
+	"context"
 	"fmt"
-	"github.com/monstercameron/schemaflux/examples/internal/exampleutil"
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"log"
+	"io"
+	"os"
+
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 func main() {
-
-	// Initialize SchemaFlux
-	if err := exampleutil.Bootstrap(); err != nil {
-		log.Fatalf("Failed to initialize SchemaFlux: %v", err)
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "Cluster example failed. Check the provider configuration and try again:", err)
+		os.Exit(1)
 	}
+}
 
-	fmt.Println("=== Cluster Example ===")
-	fmt.Println("Groups similar items semantically using LLM")
-	fmt.Println()
+func run(ctx context.Context, out io.Writer) error {
+	fmt.Fprintln(out, "=== Cluster Example ===")
+	fmt.Fprintln(out, "Groups similar items semantically using an LLM")
+	fmt.Fprintln(out)
 
-	// Example 1: Cluster articles by topic
-	fmt.Println("--- Example 1: Article Clustering ---")
-
+	// Example 1: Cluster articles by topic.
+	fmt.Fprintln(out, "--- Example 1: Article Clustering ---")
 	type Article struct {
 		ID       int    `json:"id"`
 		Title    string `json:"title"`
 		Category string `json:"category"`
 	}
-
 	articles := []Article{
 		{ID: 1, Title: "Python is a versatile programming language for data science", Category: "tech"},
 		{ID: 2, Title: "Machine learning algorithms improve with more training data", Category: "ai"},
@@ -43,43 +40,40 @@ func main() {
 		{ID: 9, Title: "Angular is a comprehensive framework for enterprise apps", Category: "web"},
 		{ID: 10, Title: "Transformer models have revolutionized NLP tasks", Category: "ai"},
 	}
-
-	fmt.Println("Input Articles:")
+	fmt.Fprintln(out, "Input Articles:")
 	for _, a := range articles {
-		fmt.Printf("  {ID: %d, Title: %q, Category: %q}\n", a.ID, a.Title, a.Category)
+		fmt.Fprintf(out, "  {ID: %d, Title: %q, Category: %q}\n", a.ID, a.Title, a.Category)
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
-	opts := ops.NewClusterOptions().
-		WithNumClusters(3).
-		WithNamingStrategy("descriptive").
-		WithIncludeOutliers(true).
-		WithIntelligence(types.Smart)
-
-	result, err := ops.Cluster(articles, opts)
+	// NumClusters is a target; MaxClusterSize is enforced by Go.
+	result, err := schemaflux.Cluster(ctx, articles, schemaflux.ClusterOptions{
+		Options:        schemaflux.Options{Tier: schemaflux.TierSmart},
+		NumClusters:    3,
+		NamingStrategy: "descriptive",
+		MaxClusterSize: 10,
+	})
 	if err != nil {
-		log.Fatalf("Clustering failed: %v", err)
+		return fmt.Errorf("cluster articles: %w", err)
 	}
-
-	fmt.Printf("Output - Created %d clusters:\n", len(result.Clusters))
+	fmt.Fprintf(out, "Output - Created %d clusters:\n", len(result.Clusters))
 	for _, cluster := range result.Clusters {
-		fmt.Printf("\n  Cluster: %s\n", cluster.Name)
-		fmt.Printf("  Description: %s\n", cluster.Description)
-		fmt.Printf("  Items (%d):\n", cluster.Size)
+		fmt.Fprintf(out, "\n  Cluster: %s\n", cluster.Name)
+		fmt.Fprintf(out, "  Description: %s\n", cluster.Description)
+		fmt.Fprintf(out, "  Items (%d):\n", cluster.Size)
 		for _, item := range cluster.Items {
-			fmt.Printf("    ? Article{ID: %d, Title: %q}\n", item.ID, item.Title)
+			fmt.Fprintf(out, "    Article{ID: %d, Title: %q}\n", item.ID, item.Title)
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
-	// Example 2: Cluster support tickets
-	fmt.Println("--- Example 2: Support Ticket Clustering ---")
+	// Example 2: Cluster support tickets; NumClusters zero asks the model to choose.
+	fmt.Fprintln(out, "--- Example 2: Support Ticket Clustering ---")
 	type Ticket struct {
 		ID      int    `json:"id"`
 		Title   string `json:"title"`
 		Content string `json:"content"`
 	}
-
 	tickets := []Ticket{
 		{ID: 1, Title: "Login issue", Content: "Cannot log into my account, password reset not working"},
 		{ID: 2, Title: "Slow performance", Content: "The application is very slow when loading dashboard"},
@@ -90,44 +84,40 @@ func main() {
 		{ID: 7, Title: "Password recovery", Content: "The password reset email never arrives"},
 		{ID: 8, Title: "App crashes", Content: "Application crashes when generating large reports"},
 	}
-
-	fmt.Println("Input Tickets:")
+	fmt.Fprintln(out, "Input Tickets:")
 	for _, t := range tickets {
-		fmt.Printf("  {ID: %d, Title: %q, Content: %q}\n", t.ID, t.Title, t.Content)
+		fmt.Fprintf(out, "  {ID: %d, Title: %q, Content: %q}\n", t.ID, t.Title, t.Content)
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
-	ticketOpts := ops.NewClusterOptions().
-		WithNumClusters(0). // Auto-detect number of clusters
-		WithNamingStrategy("descriptive").
-		WithSimilarityThreshold(0.6).
-		WithIntelligence(types.Smart)
-
-	ticketResult, err := ops.Cluster(tickets, ticketOpts)
+	ticketResult, err := schemaflux.Cluster(ctx, tickets, schemaflux.ClusterOptions{
+		Options:             schemaflux.Options{Tier: schemaflux.TierSmart},
+		NamingStrategy:      "descriptive",
+		SimilarityThreshold: 0.6,
+	})
 	if err != nil {
-		log.Fatalf("Ticket clustering failed: %v", err)
+		return fmt.Errorf("cluster support tickets: %w", err)
 	}
-
-	fmt.Printf("Output - Auto-detected %d ticket clusters:\n", len(ticketResult.Clusters))
+	fmt.Fprintf(out, "Output - Auto-detected %d ticket clusters:\n", len(ticketResult.Clusters))
 	for _, cluster := range ticketResult.Clusters {
-		fmt.Printf("\n  Category: %s\n", cluster.Name)
-		fmt.Printf("  Keywords: %v\n", cluster.Keywords)
-		fmt.Printf("  Tickets (%d):\n", cluster.Size)
+		fmt.Fprintf(out, "\n  Category: %s\n", cluster.Name)
+		fmt.Fprintf(out, "  Keywords: %v\n", cluster.Keywords)
+		fmt.Fprintf(out, "  Tickets (%d):\n", cluster.Size)
 		for _, item := range cluster.Items {
-			fmt.Printf("    ? Ticket{ID: %d, Title: %q}\n", item.ID, item.Title)
+			fmt.Fprintf(out, "    Ticket{ID: %d, Title: %q}\n", item.ID, item.Title)
 		}
 	}
 
-	// Example 3: Outlier Detection
-	fmt.Println("\n--- Example 3: Outlier Detection ---")
+	// Example 3: Outliers are items returned outside the partition's clusters.
+	fmt.Fprintln(out, "\n--- Example 3: Outlier Detection ---")
 	if len(ticketResult.Outliers) > 0 {
-		fmt.Printf("Found %d outlier items that don't fit clusters:\n", len(ticketResult.Outliers))
+		fmt.Fprintf(out, "Found %d outlier items that don't fit clusters:\n", len(ticketResult.Outliers))
 		for _, outlier := range ticketResult.Outliers {
-			fmt.Printf("  ? Ticket{ID: %d, Title: %q}\n", outlier.ID, outlier.Title)
+			fmt.Fprintf(out, "  Ticket{ID: %d, Title: %q}\n", outlier.ID, outlier.Title)
 		}
 	} else {
-		fmt.Println("No outliers detected - all items fit into clusters")
+		fmt.Fprintln(out, "No outliers detected - all items fit into clusters")
 	}
-
-	fmt.Println("\n=== Cluster Example Complete ===")
+	fmt.Fprintln(out, "\n=== Cluster Example Complete ===")
+	return nil
 }

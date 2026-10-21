@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // One message handled from arrival to outcome. The provider is the simulator,
@@ -21,8 +21,8 @@ import (
 // waits a plain message takes.
 func ExampleDesk_Handle() {
 	provider := sim.New(40 * time.Millisecond)
-	client := schemaflux.NewClient("").WithProviderInstance(provider)
-	ctx := client.Context(context.Background())
+	client := schemaflux.Client{Provider: provider}
+	ctx := schemaflux.WithClient(context.Background(), client)
 
 	support := desk.New([]desk.Ticket{
 		{ID: "T-1001", Customer: "omar@example.com", Summary: "Charged twice for the March invoice on the Team plan"},

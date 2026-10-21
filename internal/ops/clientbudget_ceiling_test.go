@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ceilingProvider is a provider that only has a name: the budget check reads

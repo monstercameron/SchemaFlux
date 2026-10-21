@@ -15,10 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // With -trace a run is followed by its calls in the order they started, each
@@ -302,7 +301,7 @@ func TestFieldNamesAreTheAskTagsOfAStructAndOfWhatItEmbeds(t *testing.T) {
 func TestSaid(t *testing.T) {
 	spam, _ := reflect.TypeFor[desk.Screen]().FieldByName("Spam")
 	quoted, _ := json.Marshal(spam.Tag.Get("ask"))
-	asking := schemaflux.CompletionRequest{UserPrompt: "Questions:\n" +
+	asking := schemaflux.Request{User: "Questions:\n" +
 		"q1 (yes or no): " + string(quoted) + "\n" +
 		"q2 (one of the options below): \"Which colour is it?\"\n  1: \"red\"\n  2: \"blue\"\n" +
 		"\nSubject:\n\"x\"\n"}
@@ -310,7 +309,7 @@ func TestSaid(t *testing.T) {
 	cases := []struct {
 		name      string
 		operation string
-		req       schemaflux.CompletionRequest
+		req       schemaflux.Request
 		reply     string
 		want      string
 	}{
@@ -318,13 +317,13 @@ func TestSaid(t *testing.T) {
 		{"a question that went unanswered says so", sim.OpAssess, asking, `{"q1":true}`, "spam: yes · Which colour is it?: no answer"},
 		{"a whole number written with a point is an answer", sim.OpAssess, asking, `{"q1":false,"q2":2.0}`, "spam: no · Which colour is it?: blue"},
 		{"a decision whose reply cannot be read is shown as it came", sim.OpAssess, asking, `not json`, "not json"},
-		{"a decision whose request cannot be read is shown as it came", sim.OpAssess, schemaflux.CompletionRequest{UserPrompt: "?"}, `{"q1":true}`, `{"q1":true}`},
-		{"a draft is its text", sim.OpGenerate, schemaflux.CompletionRequest{}, "{\"body\":\"Hello,\\nthanks\"}", `{"body":"Hello,\nthanks"}`},
-		{"a text over several lines is put on one", sim.OpTranslate, schemaflux.CompletionRequest{}, "Hola,\n\n  gracias", "Hola, gracias"},
-		{"an empty answer is empty", sim.OpSummarize, schemaflux.CompletionRequest{}, "", ""},
-		{"an operation the desk does not make", "other", schemaflux.CompletionRequest{}, "text", "text"},
+		{"a decision whose request cannot be read is shown as it came", sim.OpAssess, schemaflux.Request{User: "?"}, `{"q1":true}`, `{"q1":true}`},
+		{"a draft is its text", sim.OpGenerate, schemaflux.Request{}, "{\"body\":\"Hello,\\nthanks\"}", `{"body":"Hello,\nthanks"}`},
+		{"a text over several lines is put on one", sim.OpTranslate, schemaflux.Request{}, "Hola,\n\n  gracias", "Hola, gracias"},
+		{"an empty answer is empty", sim.OpSummarize, schemaflux.Request{}, "", ""},
+		{"an operation the desk does not make", "other", schemaflux.Request{}, "text", "text"},
 		{"an assessment's JSON under another operation is not read as a decision", sim.OpExtract, asking, `{"q1":false,"q2":2}`, `{"q1":false,"q2":2}`},
-		{"a long answer is clipped", sim.OpRewrite, schemaflux.CompletionRequest{}, strings.Repeat("word ", 400), strings.TrimSpace(strings.Repeat("word ", 400)[:saidLimit-1]) + "…"},
+		{"a long answer is clipped", sim.OpRewrite, schemaflux.Request{}, strings.Repeat("word ", 400), strings.TrimSpace(strings.Repeat("word ", 400)[:saidLimit-1]) + "…"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -497,20 +496,20 @@ type stalls struct {
 	stalled map[string]bool
 }
 
-func (s *stalls) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (s *stalls) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if sim.Operation(req) == s.operation {
 		s.mu.Lock()
-		first := !s.stalled[req.UserPrompt]
+		first := !s.stalled[req.User]
 		if s.stalled == nil {
 			s.stalled = map[string]bool{}
 		}
-		s.stalled[req.UserPrompt] = true
+		s.stalled[req.User] = true
 		s.mu.Unlock()
 		if first {
 			select {
 			case <-time.After(s.slow):
 			case <-ctx.Done():
-				return schemaflux.CompletionResponse{}, ctx.Err()
+				return schemaflux.Response{}, ctx.Err()
 			}
 		}
 	}
@@ -549,13 +548,13 @@ func TestTheHedgeIsCountedAndReported(t *testing.T) {
 			}
 			// The three messages make 3, 6 and 11 calls in the fast flow, and the
 			// hand-off notes of the two that are not spam are the two that are
-			// sent twice, each answered first by its second copy.
-			sent, won, calls := hedges.sentTwice.Load(), hedges.secondWon.Load(), hedges.calls.Load()
-			if sent != 2 || won != 2 || calls != 20 {
-				t.Errorf("%d of %d calls were sent twice and the second copy won %d: want 2 of 20 and 2, the two hand-off notes that were stalled", sent, calls, won)
+			// sent twice. Version 2 reports that a second copy was sent on the response.
+			sent, calls := hedges.sentTwice.Load(), hedges.calls.Load()
+			if sent != 2 || calls != 20 {
+				t.Errorf("%d of %d calls were sent twice: want 2 of 20, the two hand-off notes that were stalled", sent, calls)
 			}
 			hedges.report(&stdout, asked.hedge)
-			want := fmt.Sprintf("hedge after 150ms: %d of %d calls were sent a second time, and the second copy answered first in %d.", sent, calls, won)
+			want := fmt.Sprintf("hedge after 150ms: %d of %d calls were sent a second time.", sent, calls)
 			if !strings.Contains(stdout.String(), want) {
 				t.Errorf("the report does not say %q:\n%s", want, stdout.String())
 			}
@@ -604,25 +603,25 @@ func TestTheHedgeIsCountedAndReported(t *testing.T) {
 		}
 	})
 
-	t.Run("what the observer is told is what is counted", func(t *testing.T) {
+	t.Run("what responses report is what is counted", func(t *testing.T) {
 		var hedges hedging
 		for range 3 {
-			hedges.saw(mw.HedgeEvent{})
+			hedges.saw(false)
 		}
-		hedges.saw(mw.HedgeEvent{Hedged: true})
-		hedges.saw(mw.HedgeEvent{Hedged: true, SecondWon: true})
-		if hedges.calls.Load() != 5 || hedges.sentTwice.Load() != 2 || hedges.secondWon.Load() != 1 {
-			t.Errorf("calls %d, sent twice %d, second won %d", hedges.calls.Load(), hedges.sentTwice.Load(), hedges.secondWon.Load())
+		hedges.saw(true)
+		hedges.saw(true)
+		if hedges.calls.Load() != 5 || hedges.sentTwice.Load() != 2 {
+			t.Errorf("calls %d, sent twice %d", hedges.calls.Load(), hedges.sentTwice.Load())
 		}
 	})
 
 	t.Run("a stall is chosen by the operation, and only the first request of a prompt is slow", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			stalling := &stalls{Provider: sim.New(time.Millisecond), operation: sim.OpSummarize, slow: 300 * time.Millisecond}
-			summary := schemaflux.CompletionRequest{SystemPrompt: "You are a text summarization expert.", UserPrompt: "Summarize this text:\n[ref M-02]"}
-			extract := schemaflux.CompletionRequest{SystemPrompt: "You are a data extraction expert.", UserPrompt: "Extract:\n[ref M-02]"}
+			summary := schemaflux.Request{System: "You are a text summarization expert.", User: "Summarize this text:\n[ref M-02]"}
+			extract := schemaflux.Request{System: "You are a data extraction expert.", User: "Extract:\n[ref M-02]"}
 
-			timed := func(req schemaflux.CompletionRequest) time.Duration {
+			timed := func(req schemaflux.Request) time.Duration {
 				started := time.Now()
 				if _, err := stalling.Complete(context.Background(), req); err != nil {
 					t.Fatal(err)

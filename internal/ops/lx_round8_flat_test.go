@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 type round8Record struct {

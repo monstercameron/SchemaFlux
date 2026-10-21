@@ -6,8 +6,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Summary contains the summary with metadata
@@ -151,7 +151,7 @@ func Summarize(input string, opts SummarizeOptions) (_ string, runErr error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Summarize operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Summarize operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -169,7 +169,7 @@ func Summarize(input string, opts SummarizeOptions) (_ string, runErr error) {
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Summarize operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Summarize operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.SummarizeError{
 			InputShape: types.DescribeValue(input),
 			Length:     len(input),
@@ -180,7 +180,7 @@ func Summarize(input string, opts SummarizeOptions) (_ string, runErr error) {
 
 	result, err := plainTextAnswer("summarize", response)
 	if err != nil {
-		log.Error("Summarize operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Summarize operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", err
 	}
 	log.Debug("Summarize operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
@@ -216,7 +216,7 @@ func SummarizeWithMetadata(input string, opts SummarizeOptions) (Summary, error)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("SummarizeWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("SummarizeWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Summary{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -246,7 +246,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("SummarizeWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("SummarizeWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Summary{}, types.SummarizeError{
 			InputShape: types.DescribeValue(input),
 			Length:     len(input),
@@ -267,13 +267,13 @@ Rules:
 	if err := decodeAnswer("summarize", response, &parsed); err != nil {
 		// An answer that does not parse is an error. It is never returned as the
 		// summary with a made-up confidence.
-		log.Error("SummarizeWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("SummarizeWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Summary{}, fmt.Errorf("summarize: could not parse the summary response: %w", err)
 	}
 
 	text, confidence, err := readTextAnswer("summarize", parsed.Text, parsed.ModelConfidence)
 	if err != nil {
-		log.Error("SummarizeWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("SummarizeWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Summary{}, err
 	}
 
@@ -284,7 +284,7 @@ Rules:
 	// call would be a worse answer than the one it gave.
 	if err := WithinLength(text, opts.TargetLength, LengthUnit(opts.LengthUnit), summaryLengthTolerance); err != nil {
 		log.Error("SummarizeWithMetadata result is longer than requested",
-			"requestID", opts.CommonOptions.RequestID, "error", err)
+			"requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Summary{}, types.Wrap(types.KindInvariantViolation, "summarize", err)
 	}
 
@@ -327,7 +327,7 @@ func Rewrite(input string, opts RewriteOptions) (_ string, runErr error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Rewrite operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Rewrite operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -345,7 +345,7 @@ func Rewrite(input string, opts RewriteOptions) (_ string, runErr error) {
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Rewrite operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Rewrite operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.RewriteError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -355,11 +355,11 @@ func Rewrite(input string, opts RewriteOptions) (_ string, runErr error) {
 
 	result, err := plainTextAnswer("rewrite", response)
 	if err != nil {
-		log.Error("Rewrite operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Rewrite operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", err
 	}
 	if err := checkRewriteWordConstraints(result, opts); err != nil {
-		log.Error("Rewrite operation failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Rewrite operation failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", err
 	}
 	log.Debug("Rewrite operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
@@ -383,7 +383,7 @@ func RewriteWithMetadata(input string, opts RewriteOptions) (Rewritten, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("RewriteWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("RewriteWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Rewritten{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -415,7 +415,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("RewriteWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("RewriteWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Rewritten{}, types.RewriteError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -432,13 +432,13 @@ Rules:
 		ModelConfidence float64  `json:"confidence"`
 	}
 	if err := decodeAnswer("rewrite", response, &parsed); err != nil {
-		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("RewriteWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Rewritten{}, fmt.Errorf("rewrite: could not parse the rewrite response: %w", err)
 	}
 
 	text, confidence, err := readTextAnswer("rewrite", parsed.Text, parsed.ModelConfidence)
 	if err != nil {
-		log.Error("RewriteWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("RewriteWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Rewritten{}, err
 	}
 
@@ -450,7 +450,7 @@ Rules:
 	}
 
 	if err := checkRewriteWordConstraints(result.Text, opts); err != nil {
-		log.Error("RewriteWithMetadata failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("RewriteWithMetadata failed a word constraint", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Rewritten{}, err
 	}
 
@@ -472,7 +472,7 @@ func Translate(input string, opts TranslateOptions) (_ string, runErr error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Translate operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Translate operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -490,7 +490,7 @@ func Translate(input string, opts TranslateOptions) (_ string, runErr error) {
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Translate operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Translate operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.TranslateError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -500,11 +500,11 @@ func Translate(input string, opts TranslateOptions) (_ string, runErr error) {
 
 	result, err := plainTextAnswer("translate", response)
 	if err != nil {
-		log.Error("Translate operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Translate operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", err
 	}
 	if err := checkGlossaryApplied(input, result, opts.Glossary); err != nil {
-		log.Error("Translate operation ignored the glossary", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Translate operation ignored the glossary", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", err
 	}
 	log.Debug("Translate operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
@@ -530,7 +530,7 @@ func TranslateWithMetadata(input string, opts TranslateOptions) (Translation, er
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("TranslateWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("TranslateWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Translation{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -564,7 +564,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("TranslateWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("TranslateWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Translation{}, types.TranslateError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -583,17 +583,17 @@ Rules:
 		Alternatives           []TranslationAlternative `json:"alternatives,omitempty"` // optional in the prompt
 	}
 	if err := decodeAnswer("translate", response, &parsed); err != nil {
-		log.Error("TranslateWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("TranslateWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Translation{}, fmt.Errorf("translate: could not parse the translation response: %w", err)
 	}
 
 	text, confidence, err := readTextAnswer("translate", parsed.Text, parsed.ModelConfidence)
 	if err != nil {
-		log.Error("TranslateWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("TranslateWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Translation{}, err
 	}
 	if err := checkGlossaryApplied(input, text, opts.Glossary); err != nil {
-		log.Error("TranslateWithMetadata ignored the glossary", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("TranslateWithMetadata ignored the glossary", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Translation{}, err
 	}
 
@@ -621,7 +621,7 @@ func Expand(input string, opts ExpandOptions) (_ string, runErr error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Expand operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Expand operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -639,7 +639,7 @@ func Expand(input string, opts ExpandOptions) (_ string, runErr error) {
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Expand operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Expand operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", types.ExpandError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -649,7 +649,7 @@ func Expand(input string, opts ExpandOptions) (_ string, runErr error) {
 
 	result, err := plainTextAnswer("expand", response)
 	if err != nil {
-		log.Error("Expand operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Expand operation returned no text", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return "", err
 	}
 	log.Debug("Expand operation succeeded", "requestID", opts.CommonOptions.RequestID, "outputLength", len(result))
@@ -678,7 +678,7 @@ func ExpandWithMetadata(input string, opts ExpandOptions) (Expansion, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("ExpandWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("ExpandWithMetadata operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Expansion{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -708,7 +708,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("ExpandWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("ExpandWithMetadata operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Expansion{}, types.ExpandError{
 			InputShape: types.DescribeValue(input),
 			Reason:     err.Error(),
@@ -724,13 +724,13 @@ Rules:
 		ModelConfidence float64  `json:"confidence"`
 	}
 	if err := decodeAnswer("expand", response, &parsed); err != nil {
-		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("ExpandWithMetadata failed: parse error", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Expansion{}, fmt.Errorf("expand: could not parse the expansion response: %w", err)
 	}
 
 	text, confidence, err := readTextAnswer("expand", parsed.Text, parsed.ModelConfidence)
 	if err != nil {
-		log.Error("ExpandWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("ExpandWithMetadata failed: the answer lacks what was asked for", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Expansion{}, err
 	}
 
@@ -746,7 +746,7 @@ Rules:
 	metadata, err := expansionFactorMetadata(opts, expansionRatio, inputRunes > 0)
 	if err != nil {
 		log.Error("ExpandWithMetadata result is shorter than the factor asked for",
-			"requestID", opts.CommonOptions.RequestID, "error", err)
+			"requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return Expansion{}, err
 	}
 

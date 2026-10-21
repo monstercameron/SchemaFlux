@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The same defect has now shipped twice, and this is the test that would have

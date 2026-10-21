@@ -1,34 +1,16 @@
-// Example: 09-score
-//
-// Operation: Score[T] - Rate items on a numeric scale with breakdown
-//
-// Input: 3 Go code snippets (same function, different quality)
-//   - Alice: Clean, readable code with range loop
-//   - Bob: Terse code, poor naming, index-based loop
-//   - Carol: Well-documented, handles edge cases, best practices
-//
-// Criteria: readability, maintainability, documentation, error handling, best practices
-// Scale: 1-10 (10 = excellent)
-//
-// Expected Output:
-//   - Carol: ~8-9/10 (best - documented, handles edge cases)
-//   - Alice: ~6-7/10 (good - clean but no docs/error handling)
-//   - Bob: ~4-5/10 (poor - cryptic names, no docs)
-//
-// Provider: Cerebras (gpt-oss-120b via Fast intelligence)
-// Expected Duration: ~1-2s per snippet
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
-	"os"
-	"strings"
+	"io"
+	"log"
+	"sort"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
-// CodeSnippet represents a code submission
+// CodeSnippet represents a code submission.
 type CodeSnippet struct {
 	ID       int
 	Author   string
@@ -36,78 +18,41 @@ type CodeSnippet struct {
 	Code     string
 }
 
-// loadEnv loads environment variables from a .env file
-func loadEnv(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			os.Setenv(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-		}
-	}
-	return scanner.Err()
+type scoredSnippet struct {
+	snippet CodeSnippet
+	result  schemaflux.ScoreResult
 }
 
 func main() {
-	// Load .env file from project root
-	if err := loadEnv("../../.env"); err != nil {
-		fmt.Printf("Warning: Could not load .env file: %v\n", err)
+	if err := run(context.Background(), io.Writer(log.Writer())); err != nil {
+		log.Printf("Score example failed: %v. Check your provider configuration and credentials, then retry.", err)
 	}
+}
 
-	// Initialize SchemaFlux
-	if err := schemaflux.InitWithEnv(); err != nil {
-		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
-		return
-	}
-
-	// Code snippets to evaluate
+func run(ctx context.Context, out io.Writer) error {
 	snippets := []CodeSnippet{
-		{
-			ID:       1,
-			Author:   "Alice",
-			Language: "Go",
-			Code: `func calculateTotal(prices []float64) float64 {
+		{ID: 1, Author: "Alice", Language: "Go", Code: `func calculateTotal(prices []float64) float64 {
     total := 0.0
     for _, price := range prices {
         total += price
     }
     return total
-}`,
-		},
-		{
-			ID:       2,
-			Author:   "Bob",
-			Language: "Go",
-			Code: `func calculateTotal(p []float64) float64 {
+}`},
+		{ID: 2, Author: "Bob", Language: "Go", Code: `func calculateTotal(p []float64) float64 {
     var t float64
     for i:=0;i<len(p);i++ {
         t=t+p[i]
     }
     return t
-}`,
-		},
-		{
-			ID:       3,
-			Author:   "Carol",
-			Language: "Go",
-			Code: `// CalculateTotal computes the sum of all prices in the slice.
+}`},
+		{ID: 3, Author: "Carol", Language: "Go", Code: `// CalculateTotal computes the sum of all prices in the slice.
 // It returns 0.0 for an empty slice.
 // Time complexity: O(n)
 func CalculateTotal(prices []float64) float64 {
     if len(prices) == 0 {
         return 0.0
     }
-    
+
     total := 0.0
     for _, price := range prices {
         if price < 0 {
@@ -116,125 +61,114 @@ func CalculateTotal(prices []float64) float64 {
         total += price
     }
     return total
-}`,
-		},
+}`},
+	}
+	criteria := []string{"readability", "maintainability", "documentation", "error handling", "best practices"}
+	if _, err := fmt.Fprintln(out, "Score Example - Code Quality Assessment"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "============================================================"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "Evaluation Criteria:", criteria); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "Scale: 1-10 (10 = excellent)"); err != nil {
+		return err
 	}
 
-	// Scoring criteria
-	criteria := []string{
-		"readability",
-		"maintainability",
-		"documentation",
-		"error handling",
-		"best practices",
-	}
-
-	fmt.Println("📊 Score Example - Code Quality Assessment")
-	fmt.Println("=" + string(make([]byte, 60)))
-	fmt.Println("🎯 Evaluation Criteria:", criteria)
-	fmt.Println("📏 Scale: 1-10 (10 = excellent)")
-
-	// Score each snippet with full results
-	type ScoredSnippet struct {
-		Snippet CodeSnippet
-		Result  schemaflux.ScoreResult
-	}
-	var scored []ScoredSnippet
-
+	options := schemaflux.ScoreOptions{Criteria: criteria, ScaleMin: 1, ScaleMax: 10}
+	scored := make([]scoredSnippet, 0, len(snippets))
 	for _, snippet := range snippets {
-		fmt.Printf("\n📝 Evaluating Submission #%d by %s\n", snippet.ID, snippet.Author)
-		fmt.Println("---")
-		fmt.Println(snippet.Code)
-		fmt.Println("---")
-
-		// Score the code using the new generic signature
-		scoreOpts := schemaflux.NewScoreOptions().
-			WithScaleMin(1).
-			WithScaleMax(10).
-			WithCriteria(criteria)
-		scoreOpts.OpOptions.Intelligence = schemaflux.Fast
-
-		result, err := schemaflux.Score[string](snippet.Code, scoreOpts)
-		if err != nil {
-			schemaflux.GetLogger().Error("Failed to score snippet", "snippetID", snippet.ID, "error", err)
-			continue
+		if _, err := fmt.Fprintf(out, "\nEvaluating Submission #%d by %s\n---\n%s\n---\n", snippet.ID, snippet.Author, snippet.Code); err != nil {
+			return err
 		}
+		// Score each snippet separately so the provider can return an assessment for each submission.
+		result, err := schemaflux.Score(ctx, snippet.Code, options)
+		if err != nil {
+			return fmt.Errorf("score submission #%d: %w", snippet.ID, err)
+		}
+		scored = append(scored, scoredSnippet{snippet: snippet, result: result})
 
-		scored = append(scored, ScoredSnippet{snippet, result})
-
-		// Display score with visualization
 		stars := int(result.Value)
-		starBar := ""
+		if stars < 0 {
+			stars = 0
+		} else if stars > 10 {
+			stars = 10
+		}
+		bar := ""
 		for i := 0; i < 10; i++ {
 			if i < stars {
-				starBar += "⭐"
+				bar += "*"
 			} else {
-				starBar += "☆"
+				bar += "-"
 			}
 		}
-
-		fmt.Printf("\n✅ Score: %.1f/10 %s (%.0f%% normalized)\n", result.Value, starBar, result.NormalizedValue*100)
-
-		// Show breakdown if available
+		if _, err := fmt.Fprintf(out, "Score: %.1f/10 %s (%.0f%% normalized)\n", result.Value, bar, result.NormalizedValue*100); err != nil {
+			return err
+		}
 		if len(result.Breakdown) > 0 {
-			fmt.Println("📋 Score Breakdown:")
-			for criterion, score := range result.Breakdown {
-				fmt.Printf("   - %s: %.1f\n", criterion, score)
+			if _, err := fmt.Fprintln(out, "Score Breakdown:"); err != nil {
+				return err
+			}
+			for _, criterion := range criteria {
+				if score, ok := result.Breakdown[criterion]; ok {
+					if _, err := fmt.Fprintf(out, "   - %s: %.1f\n", criterion, score); err != nil {
+						return err
+					}
+				}
 			}
 		}
-
-		// Show strengths and weaknesses
 		if len(result.Strengths) > 0 {
-			fmt.Println("💪 Strengths:")
-			for _, s := range result.Strengths {
-				fmt.Printf("   ✓ %s\n", s)
+			if _, err := fmt.Fprintln(out, "Strengths:"); err != nil {
+				return err
+			}
+			for _, strength := range result.Strengths {
+				if _, err := fmt.Fprintf(out, "   + %s\n", strength); err != nil {
+					return err
+				}
 			}
 		}
 		if len(result.Weaknesses) > 0 {
-			fmt.Println("⚠️  Areas for Improvement:")
-			for _, w := range result.Weaknesses {
-				fmt.Printf("   ✗ %s\n", w)
+			if _, err := fmt.Fprintln(out, "Areas for Improvement:"); err != nil {
+				return err
+			}
+			for _, weakness := range result.Weaknesses {
+				if _, err := fmt.Fprintf(out, "   - %s\n", weakness); err != nil {
+					return err
+				}
 			}
 		}
-
-		// Show reasoning if available
 		if result.Reasoning != "" {
-			fmt.Printf("📝 Reasoning: %s\n", result.Reasoning)
-		}
-
-		// Provide feedback based on score
-		if result.Value >= 8.5 {
-			fmt.Println("💎 Excellent! Production-ready code with best practices.")
-		} else if result.Value >= 7.0 {
-			fmt.Println("👍 Good code quality. Minor improvements possible.")
-		} else if result.Value >= 5.0 {
-			fmt.Println("⚠️  Acceptable but needs improvement.")
-		} else {
-			fmt.Println("❌ Needs significant refactoring.")
-		}
-	}
-
-	// Show ranking
-	fmt.Println("\n🏆 Final Rankings:")
-	fmt.Println("---")
-	// Sort by score descending
-	for i := len(scored) - 1; i >= 0; i-- {
-		for j := 0; j < len(scored)-i-1; j++ {
-			if scored[j].Result.Value < scored[j+1].Result.Value {
-				scored[j], scored[j+1] = scored[j+1], scored[j]
+			if _, err := fmt.Fprintf(out, "Reasoning: %s\n", result.Reasoning); err != nil {
+				return err
 			}
 		}
-	}
-
-	for i, s := range scored {
-		medal := "🥉"
-		if i == 0 {
-			medal = "🥇"
-		} else if i == 1 {
-			medal = "🥈"
+		switch {
+		case result.Value >= 8.5:
+			_, err = fmt.Fprintln(out, "Excellent! Production-ready code with best practices.")
+		case result.Value >= 7:
+			_, err = fmt.Fprintln(out, "Good code quality. Minor improvements possible.")
+		case result.Value >= 5:
+			_, err = fmt.Fprintln(out, "Acceptable but needs improvement.")
+		default:
+			_, err = fmt.Fprintln(out, "Needs significant refactoring.")
 		}
-		fmt.Printf("%s %d. %s - Score: %.1f/10\n", medal, i+1, s.Snippet.Author, s.Result.Value)
+		if err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("\n✨ Success! All code submissions evaluated with detailed breakdowns")
+	// Sort by score descending to show the final ranking.
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].result.Value > scored[j].result.Value })
+	if _, err := fmt.Fprintln(out, "\nFinal Rankings:\n---"); err != nil {
+		return err
+	}
+	for i, entry := range scored {
+		if _, err := fmt.Fprintf(out, "%d. %s - Score: %.1f/10\n", i+1, entry.snippet.Author, entry.result.Value); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintln(out, "\nSuccess! All code submissions evaluated with detailed breakdowns")
+	return err
 }

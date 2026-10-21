@@ -8,17 +8,17 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/mw"
 )
 
 // paired returns a simulator, a decider and a context whose calls reach the
 // two as a pair: decisions to the decider, everything else to the simulator.
 func paired(delay time.Duration, options mw.DecisionOptions) (*Simulator, *Decider, context.Context) {
 	generator, decider := New(delay), NewDecider(delay/10)
-	client := schemaflux.NewClient("").WithProviderInstance(mw.Decisions(generator, decider, options))
-	return generator, decider, client.Context(context.Background())
+	client := schemaflux.Client{Provider: mw.Decisions(generator, decider, options)}
+	return generator, decider, schemaflux.WithClient(context.Background(), client)
 }
 
 // Every flow, over every labelled message, with the decisions on the decider:
@@ -100,43 +100,43 @@ func TestTheDeciderAnswersTypedFromTheLabels(t *testing.T) {
 
 	cases := []struct {
 		name      string
-		decision  *schemaflux.TypedDecision
+		decision  *schemaflux.Decision
 		want      []schemaflux.DecisionAnswer
 		refused   string
 		unsupport bool
 	}{
-		{"a yes or no", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{spam}},
+		{"a yes or no", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{spam}},
 			[]schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionYesNo, Yes: plain.Screen.Spam}}, "", false},
-		{"a choice", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{team}},
+		{"a choice", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{team}},
 			[]schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionChoice, Label: plain.Triage.Team}}, "", false},
-		{"a level", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{urgency}},
+		{"a level", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{urgency}},
 			[]schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionScale, Level: plain.Triage.Urgency}}, "", false},
-		{"three at once, in order", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{urgency, spam, team}},
+		{"three at once, in order", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{urgency, spam, team}},
 			[]schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionScale, Level: plain.Triage.Urgency}, {Kind: schemaflux.DecisionYesNo, Yes: plain.Screen.Spam}, {Kind: schemaflux.DecisionChoice, Label: plain.Triage.Team}}, "", false},
-		{"a question the labels have no answer to", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{yesNo("Is the moon full?")}},
+		{"a question the labels have no answer to", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{yesNo("Is the moon full?")}},
 			nil, "no answer to question q1", false},
-		{"a label that is not among the options", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionChoice, Ask: team.Ask, Options: []string{"sales", "legal"}}}},
+		{"a label that is not among the options", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionChoice, Ask: team.Ask, Options: []string{"sales", "legal"}}}},
 			nil, "not one of its 2 options", false},
-		{"a level off the scale that was asked", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionScale, Ask: urgency.Ask, Low: 7, High: 9}}},
+		{"a level off the scale that was asked", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionScale, Ask: urgency.Ask, Low: 7, High: 9}}},
 			nil, "off its scale", false},
-		{"a state about no case", &schemaflux.TypedDecision{State: `"a message with no reference"`, Questions: []schemaflux.DecisionQuestion{spam}},
+		{"a state about no case", &schemaflux.Decision{State: `"a message with no reference"`, Questions: []schemaflux.DecisionQuestion{spam}},
 			nil, "carries no message reference", false},
-		{"a state about a case there is none of", &schemaflux.TypedDecision{State: `"[ref M-9999] hello"`, Questions: []schemaflux.DecisionQuestion{spam}},
+		{"a state about a case there is none of", &schemaflux.Decision{State: `"[ref M-9999] hello"`, Questions: []schemaflux.DecisionQuestion{spam}},
 			nil, "no labelled case M-9999", false},
-		{"a ticket match that does not name the sender", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionChoice, Ask: matchQuestion, Options: []string{noneOfThese, "x"}}}},
+		{"a ticket match that does not name the sender", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionChoice, Ask: matchQuestion, Options: []string{noneOfThese, "x"}}}},
 			nil, "does not carry the sender", false},
 		{"a request with no decision", nil, nil, "", true},
-		{"a decision with no question", &schemaflux.TypedDecision{State: state(plain)}, nil, "", true},
-		{"a scale wider than the model takes", &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionScale, Ask: urgency.Ask, Low: 1, High: 50}}},
+		{"a decision with no question", &schemaflux.Decision{State: state(plain)}, nil, "", true},
+		{"a scale wider than the model takes", &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{{Kind: schemaflux.DecisionScale, Ask: urgency.Ask, Low: 1, High: 50}}},
 			nil, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			decider := NewDecider(time.Millisecond)
-			resp, err := decider.Complete(context.Background(), schemaflux.CompletionRequest{Model: "local-mock", UserPrompt: "a prompt the decider must not read", Decision: tc.decision})
+			resp, err := decider.Complete(context.Background(), schemaflux.Request{Model: "local-mock", User: "a prompt the decider must not read", Decision: tc.decision})
 			switch {
 			case tc.unsupport:
-				if !errors.Is(err, schemaflux.ErrUnsupportedCapability) {
+				if !errors.Is(err, schemaflux.ErrUnsupported) {
 					t.Fatalf("error %v, want an unsupported capability", err)
 				}
 				if decider.Count() != 0 {
@@ -150,11 +150,11 @@ func TestTheDeciderAnswersTypedFromTheLabels(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Complete: %v", err)
 				}
-				if len(resp.DecisionAnswers) != len(tc.want) || resp.Content != "" {
-					t.Fatalf("answered %+v with content %q", resp.DecisionAnswers, resp.Content)
+				if len(resp.Answers) != len(tc.want) || resp.Content != "" {
+					t.Fatalf("answered %+v with content %q", resp.Answers, resp.Content)
 				}
 				for i, want := range tc.want {
-					got := resp.DecisionAnswers[i]
+					got := resp.Answers[i]
 					if got.Kind != want.Kind || got.Yes != want.Yes || got.Label != want.Label || got.Level != want.Level {
 						t.Errorf("answer %d = %+v, want %+v", i+1, got, want)
 					}
@@ -169,7 +169,7 @@ func TestTheDeciderAnswersTypedFromTheLabels(t *testing.T) {
 	t.Run("it waits its delay and stops with the context", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			decider := NewDecider(time.Second)
-			req := schemaflux.CompletionRequest{Decision: &schemaflux.TypedDecision{State: state(plain), Questions: []schemaflux.DecisionQuestion{spam}}}
+			req := schemaflux.Request{Decision: &schemaflux.Decision{State: state(plain), Questions: []schemaflux.DecisionQuestion{spam}}}
 			started := time.Now()
 			if _, err := decider.Complete(context.Background(), req); err != nil || time.Since(started) != time.Second {
 				t.Errorf("answered after %v with %v, want after its delay", time.Since(started), err)
@@ -183,7 +183,7 @@ func TestTheDeciderAnswersTypedFromTheLabels(t *testing.T) {
 	})
 	t.Run("it names itself and what it takes", func(t *testing.T) {
 		decider := NewDecider(time.Millisecond)
-		if decider.Name() != "sim-decider" || decider.EstimateCost(schemaflux.CompletionRequest{}) != 0 {
+		if decider.Name() != "sim-decider" || decider.EstimateCost(schemaflux.Request{}) != 0 {
 			t.Errorf("named %q", decider.Name())
 		}
 		if retries, _ := decider.RetryPolicy(); retries != 0 {
@@ -196,7 +196,7 @@ func TestTheDeciderAnswersTypedFromTheLabels(t *testing.T) {
 }
 
 func TestReplyIsWhatACallAnsweredAsATraceReadsIt(t *testing.T) {
-	decision := &schemaflux.TypedDecision{State: `"x"`, Questions: []schemaflux.DecisionQuestion{
+	decision := &schemaflux.Decision{State: `"x"`, Questions: []schemaflux.DecisionQuestion{
 		{Kind: schemaflux.DecisionYesNo, Ask: "Is it?"},
 		{Kind: schemaflux.DecisionChoice, Ask: "Which?", Options: []string{"billing", "technical"}},
 		{Kind: schemaflux.DecisionScale, Ask: "How?", Low: 1, High: 5},
@@ -208,23 +208,23 @@ func TestReplyIsWhatACallAnsweredAsATraceReadsIt(t *testing.T) {
 	}
 	cases := []struct {
 		name string
-		req  schemaflux.CompletionRequest
-		resp schemaflux.CompletionResponse
+		req  schemaflux.Request
+		resp schemaflux.Response
 		want string
 	}{
-		{"a generating model's answer is its content", schemaflux.CompletionRequest{Decision: decision}, schemaflux.CompletionResponse{Content: `{"q1":false}`}, `{"q1":false}`},
-		{"text is text", schemaflux.CompletionRequest{}, schemaflux.CompletionResponse{Content: "A summary."}, "A summary."},
-		{"typed answers are written as a model writes them", schemaflux.CompletionRequest{Decision: decision}, schemaflux.CompletionResponse{DecisionAnswers: typed}, `{"q1":true,"q2":2,"q3":4}`},
-		{"content wins over typed answers beside it", schemaflux.CompletionRequest{Decision: decision}, schemaflux.CompletionResponse{Content: "x", DecisionAnswers: typed}, "x"},
-		{"typed answers with no decision to read them by", schemaflux.CompletionRequest{}, schemaflux.CompletionResponse{DecisionAnswers: typed}, ""},
-		{"fewer answers than questions", schemaflux.CompletionRequest{Decision: decision}, schemaflux.CompletionResponse{DecisionAnswers: typed[:2]}, ""},
-		{"nothing at all", schemaflux.CompletionRequest{}, schemaflux.CompletionResponse{}, ""},
-		{"a label that was not offered is left out", schemaflux.CompletionRequest{Decision: decision},
-			schemaflux.CompletionResponse{DecisionAnswers: []schemaflux.DecisionAnswer{typed[0], {Kind: schemaflux.DecisionChoice, Label: "sales"}, typed[2]}}, `{"q1":true,"q3":4}`},
-		{"a no", schemaflux.CompletionRequest{Decision: &schemaflux.TypedDecision{Questions: decision.Questions[:1]}},
-			schemaflux.CompletionResponse{DecisionAnswers: []schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionYesNo}}}, `{"q1":false}`},
-		{"the first label", schemaflux.CompletionRequest{Decision: &schemaflux.TypedDecision{Questions: decision.Questions[1:2]}},
-			schemaflux.CompletionResponse{DecisionAnswers: []schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionChoice, Label: "billing"}}}, `{"q1":1}`},
+		{"a generating model's answer is its content", schemaflux.Request{Decision: decision}, schemaflux.Response{Content: `{"q1":false}`}, `{"q1":false}`},
+		{"text is text", schemaflux.Request{}, schemaflux.Response{Content: "A summary."}, "A summary."},
+		{"typed answers are written as a model writes them", schemaflux.Request{Decision: decision}, schemaflux.Response{Answers: typed}, `{"q1":true,"q2":2,"q3":4}`},
+		{"content wins over typed answers beside it", schemaflux.Request{Decision: decision}, schemaflux.Response{Content: "x", Answers: typed}, "x"},
+		{"typed answers with no decision to read them by", schemaflux.Request{}, schemaflux.Response{Answers: typed}, ""},
+		{"fewer answers than questions", schemaflux.Request{Decision: decision}, schemaflux.Response{Answers: typed[:2]}, ""},
+		{"nothing at all", schemaflux.Request{}, schemaflux.Response{}, ""},
+		{"a label that was not offered is left out", schemaflux.Request{Decision: decision},
+			schemaflux.Response{Answers: []schemaflux.DecisionAnswer{typed[0], {Kind: schemaflux.DecisionChoice, Label: "sales"}, typed[2]}}, `{"q1":true,"q3":4}`},
+		{"a no", schemaflux.Request{Decision: &schemaflux.Decision{Questions: decision.Questions[:1]}},
+			schemaflux.Response{Answers: []schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionYesNo}}}, `{"q1":false}`},
+		{"the first label", schemaflux.Request{Decision: &schemaflux.Decision{Questions: decision.Questions[1:2]}},
+			schemaflux.Response{Answers: []schemaflux.DecisionAnswer{{Kind: schemaflux.DecisionChoice, Label: "billing"}}}, `{"q1":1}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

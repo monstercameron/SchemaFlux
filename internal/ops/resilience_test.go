@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // breakerClock is a fake clock for CircuitBreaker, so "opens and closes on

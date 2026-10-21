@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Route selection. internal/llm/capabilities.go answers "what can this route

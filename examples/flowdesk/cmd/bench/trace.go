@@ -11,10 +11,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
-	"github.com/monstercameron/schemaflux/mw"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
+	"github.com/monstercameron/schemaflux/v2/mw"
 )
 
 // The play by play. A report of totals says how long a message took and not
@@ -76,7 +76,7 @@ func words(name string) string {
 // said is what one call's answer says, on one line. A decision is written as
 // its questions and their answers. Anything else, a draft or the details read
 // out of a message, is the answer's own text.
-func said(operation string, req schemaflux.CompletionRequest, reply string) string {
+func said(operation string, req schemaflux.Request, reply string) string {
 	if operation == sim.OpAssess {
 		if answers, err := sim.Answers(req, reply); err == nil {
 			parts := make([]string, len(answers))
@@ -201,16 +201,13 @@ func playByPlay(stdout io.Writer, labelled sim.Case, outcome desk.Outcome, made 
 
 // hedging counts what a hedge did over a run.
 type hedging struct {
-	calls, sentTwice, secondWon atomic.Int64
+	calls, sentTwice atomic.Int64
 }
 
-func (h *hedging) saw(event mw.HedgeEvent) {
+func (h *hedging) saw(sentTwice bool) {
 	h.calls.Add(1)
-	if event.Hedged {
+	if sentTwice {
 		h.sentTwice.Add(1)
-	}
-	if event.SecondWon {
-		h.secondWon.Add(1)
 	}
 }
 
@@ -220,7 +217,7 @@ func (h *hedging) through(provider schemaflux.Provider, after time.Duration) sch
 	if after <= 0 {
 		return provider
 	}
-	return mw.Chain(provider, mw.Hedge(after, mw.WithHedgeObserver(h.saw)))
+	return mw.Chain(provider, mw.Hedge(after))
 }
 
 // report says how often the second copy was sent and how often it won. The
@@ -230,7 +227,7 @@ func (h *hedging) report(stdout io.Writer, after time.Duration) {
 	if after <= 0 {
 		return
 	}
-	fmt.Fprintf(stdout, "\nhedge after %v: %d of %d calls were sent a second time, and the second copy answered first in %d. "+
+	fmt.Fprintf(stdout, "\nhedge after %v: %d of %d calls were sent a second time. "+
 		"The second copies are not in the cost above.\n",
-		after, h.sentTwice.Load(), h.calls.Load(), h.secondWon.Load())
+		after, h.sentTwice.Load(), h.calls.Load())
 }

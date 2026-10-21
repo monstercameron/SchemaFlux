@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config/configtest"
+	"github.com/monstercameron/schemaflux/v2/internal/config/configtest"
 )
 
 // These tests fill the coverage gaps left by logger_test.go and the

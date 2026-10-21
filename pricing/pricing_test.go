@@ -1,687 +1,389 @@
-package pricing
+package pricing_test
 
 import (
-	"encoding/csv"
-	"encoding/json"
-	"fmt"
-	"strconv"
+	"errors"
+	"math"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/pricing"
 )
 
-func resetPricingTestState(t *testing.T) {
-	t.Helper()
-	ResetCostTracking()
-	t.Cleanup(ResetCostTracking)
-}
+// near reports whether two dollar figures agree to a billionth of a dollar.
+func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
-func TestCalculateCost(t *testing.T) {
-	resetPricingTestState(t)
-
-	tests := []struct {
-		name             string
-		model            string
-		provider         string
-		promptTokens     int
-		completionTokens int
-		expectedMin      float64
-		expectedMax      float64
+func TestRegisterAddsAPriceTheTableDidNotHave(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		model func(name string) pricing.Model
+		usage schemaflux.Usage
+		want  float64
 	}{
-		{
-			name:             "GPT-5.4",
-			model:            "gpt-5.4",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0.008,
-			expectedMax:      0.011,
-		},
-		{
-			name:             "GPT-5",
-			model:            "gpt-5-2025-08-07",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0.006, // Minimum expected cost
-			expectedMax:      0.007, // Maximum expected cost
-		},
-		{
-			name:             "GPT-5 Nano",
-			model:            "gpt-5-nano-2025-08-07",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0.0002,
-			expectedMax:      0.0003,
-		},
-		{
-			name:             "GPT-5 Mini",
-			model:            "gpt-5-mini-2025-08-07",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0.0012,
-			expectedMax:      0.0013,
-		},
-		{
-			name:             "GPT-4 Turbo (legacy)",
-			model:            "gpt-4-turbo-preview",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0.01, // Minimum expected cost
-			expectedMax:      0.05, // Maximum expected cost
-		},
-		{
-			name:             "GPT-3.5 Turbo (legacy)",
-			model:            "gpt-3.5-turbo",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0.001,
-			expectedMax:      0.01,
-		},
-		{
-			name:             "Unknown model",
-			model:            "unknown-model",
-			provider:         "openai",
-			promptTokens:     1000,
-			completionTokens: 500,
-			expectedMin:      0,
-			expectedMax:      0,
-		},
+		{"input and output",
+			func(n string) pricing.Model { return pricing.Model{Provider: "acme", Name: n, Input: 2, Output: 8} },
+			schemaflux.Usage{Input: 1_000_000, Output: 1_000_000}, 10},
+		{"input only",
+			func(n string) pricing.Model { return pricing.Model{Provider: "acme", Name: n, Input: 2} },
+			schemaflux.Usage{Input: 500_000, Output: 1_000_000}, 1},
+		{"output only",
+			func(n string) pricing.Model { return pricing.Model{Provider: "acme", Name: n, Output: 8} },
+			schemaflux.Usage{Input: 1_000_000, Output: 250_000}, 2},
+		{"a cached rate prices the cached tokens apart",
+			func(n string) pricing.Model {
+				return pricing.Model{Provider: "acme", Name: n, Input: 2, Output: 8, Cached: 0.5}
+			},
+			schemaflux.Usage{Input: 1_000_000, Cached: 400_000}, 1.4},
+		{"no cached rate charges them at the input rate",
+			func(n string) pricing.Model { return pricing.Model{Provider: "acme", Name: n, Input: 2, Output: 8} },
+			schemaflux.Usage{Input: 1_000_000, Cached: 400_000}, 2},
+		{"a reasoning rate prices the reasoning tokens apart",
+			func(n string) pricing.Model {
+				return pricing.Model{Provider: "acme", Name: n, Input: 2, Output: 8, Reasoning: 12}
+			},
+			schemaflux.Usage{Output: 1_000_000, Reasoning: 300_000}, 9.2},
+		{"no reasoning rate charges them at the output rate",
+			func(n string) pricing.Model { return pricing.Model{Provider: "acme", Name: n, Input: 2, Output: 8} },
+			schemaflux.Usage{Output: 1_000_000, Reasoning: 300_000}, 8},
+		{"the name is not case sensitive",
+			func(n string) pricing.Model {
+				return pricing.Model{Provider: "acme", Name: strings.ToUpper(n), Input: 1, Output: 1}
+			},
+			schemaflux.Usage{Input: 1_000_000}, 1},
+		{"white space around the name is ignored",
+			func(n string) pricing.Model {
+				return pricing.Model{Provider: "acme", Name: "  " + n + "\t", Input: 1, Output: 1}
+			},
+			schemaflux.Usage{Input: 1_000_000}, 1},
+		{"a rate of a hundredth of a cent per million",
+			func(n string) pricing.Model {
+				return pricing.Model{Provider: "acme", Name: n, Input: 0.0001, Output: 0.0001}
+			},
+			schemaflux.Usage{Input: 1_000_000}, 0.0001},
+		{"the highest rate allowed",
+			func(n string) pricing.Model {
+				return pricing.Model{Provider: "acme", Name: n, Input: 1000, Output: 1000}
+			},
+			schemaflux.Usage{Input: 1_000_000}, 1000},
+		{"a provider with white space is kept",
+			func(n string) pricing.Model { return pricing.Model{Provider: " acme ", Name: n, Input: 1, Output: 1} },
+			schemaflux.Usage{Output: 2_000_000}, 2},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			usage := &types.TokenUsage{
-				PromptTokens:     tt.promptTokens,
-				CompletionTokens: tt.completionTokens,
-				TotalTokens:      tt.promptTokens + tt.completionTokens,
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			name := uniqueModel(t)
+			if _, err := pricing.Register(c.model(name)); err != nil {
+				t.Fatalf("Register returned %v", err)
 			}
-			cost := CalculateCost(usage, tt.model, tt.provider)
-			if cost == nil {
-				t.Fatal("Expected cost to be calculated")
+			got := pricing.Price(c.usage, name, "acme")
+			if !got.Priced || !near(got.Total, c.want) {
+				t.Fatalf("Price = %+v, want a priced %v", got, c.want)
 			}
-			if cost.TotalCost < tt.expectedMin || cost.TotalCost > tt.expectedMax {
-				t.Errorf("CalculateCost() = %v, want between %v and %v",
-					cost.TotalCost, tt.expectedMin, tt.expectedMax)
-			}
-			// A zero ceiling is the unpriced case, which must be unpriced and
-			// not a priced zero.
-			if wantPriced := tt.expectedMax > 0; cost.Priced != wantPriced {
-				t.Errorf("Priced = %v, want %v", cost.Priced, wantPriced)
+			if got.Source != name || got.Currency != "USD" {
+				t.Fatalf("Source = %q, Currency = %q", got.Source, got.Currency)
 			}
 		})
 	}
-}
 
-func TestTrackCost(t *testing.T) {
-	resetPricingTestState(t)
-
-	// Test tracking costs
-	usage1 := &types.TokenUsage{
-		PromptTokens:     1000,
-		CompletionTokens: 500,
-		TotalTokens:      1500,
-	}
-
-	cost1 := CalculateCost(usage1, "gpt-5-2025-08-07", "openai")
-	metadata1 := &types.ResultMetadata{
-		RequestID: "test-001",
-		Operation: "extract",
-	}
-
-	TrackCost(cost1, metadata1)
-
-	// Test getting total cost
-	total := GetTotalCost(time.Now().Add(-1*time.Hour), nil)
-	if total <= 0 {
-		t.Error("Expected positive total cost")
-	}
-
-	// A filter on the operation the call was tracked under keeps it, and a
-	// filter on another operation drops it.
-	extractCost := GetTotalCost(time.Now().Add(-1*time.Hour), map[string]string{
-		"operation": "extract",
-	})
-	if extractCost != total {
-		t.Errorf("total for operation extract = %v, want the whole total %v", extractCost, total)
-	}
-	if other := GetTotalCost(time.Now().Add(-1*time.Hour), map[string]string{"operation": "classify"}); other != 0 {
-		t.Errorf("total for operation classify = %v, want 0", other)
-	}
-}
-
-func TestGetCostBreakdown(t *testing.T) {
-	resetPricingTestState(t)
-
-	// Add some costs first
-	usage := &types.TokenUsage{
-		PromptTokens:     100,
-		CompletionTokens: 50,
-		TotalTokens:      150,
-	}
-
-	cost := CalculateCost(usage, "gpt-5-mini-2025-08-07", "openai")
-	metadata := &types.ResultMetadata{
-		RequestID: "test-002",
-		Operation: "classify",
-	}
-
-	TrackCost(cost, metadata)
-
-	// Get cost breakdown
-	breakdown := GetCostBreakdown(time.Now().Add(-1 * time.Hour))
-	if breakdown == nil {
-		t.Error("Expected cost breakdown to be returned")
-	}
-
-	// Check that it has some entries (may vary based on implementation)
-	if len(breakdown) == 0 {
-		t.Log("Cost breakdown is empty, costs may not be tracked properly")
-	}
-}
-
-func TestExportCostReport(t *testing.T) {
-	resetPricingTestState(t)
-
-	// Add some costs first
-	usage := &types.TokenUsage{
-		PromptTokens:     1000,
-		CompletionTokens: 500,
-		TotalTokens:      1500,
-	}
-
-	cost := CalculateCost(usage, "gpt-5-nano-2025-08-07", "openai")
-	metadata := &types.ResultMetadata{
-		RequestID:     "test-003",
-		CorrelationID: "corr-003",
-		Operation:     "generate",
-	}
-
-	TrackCost(cost, metadata)
-
-	// Test exporting cost report
-	tests := []struct {
-		format  string
-		wantErr bool
-	}{
-		{"json", false},
-		{"csv", false},
-		{"text", true}, // text format not supported
-		{"invalid", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.format, func(t *testing.T) {
-			report, err := ExportCostReport(time.Now().Add(-1*time.Hour), tt.format)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ExportCostReport() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if !tt.wantErr && report == "" {
-				t.Error("Expected non-empty report")
-			}
-			if tt.format == "json" && !tt.wantErr {
-				var records []CostRecord
-				if err := json.Unmarshal([]byte(report), &records); err != nil {
-					t.Fatalf("expected valid JSON report, got error %v", err)
-				}
-				if len(records) == 0 {
-					t.Fatal("expected JSON report to contain tracked records")
-				}
-			}
-			if tt.format == "csv" && !tt.wantErr && !strings.HasPrefix(report, "Timestamp,RequestID,CorrelationID,") {
-				t.Fatalf("expected CSV report to include correlation id column, got %q", report)
-			}
-		})
-	}
-}
-
-func TestGetCostSummaryAndRequestCosts(t *testing.T) {
-	resetPricingTestState(t)
-
-	now := time.Now()
-	records := []struct {
-		requestID string
-		model     string
-		provider  string
-		prompt    int
-		output    int
-	}{
-		{"req-1", "gpt-5-mini-2025-08-07", "openai", 100, 50},
-		{"req-2", "gpt-5-mini-2025-08-07", "openai", 200, 100},
-	}
-
-	for _, record := range records {
-		usage := &types.TokenUsage{
-			PromptTokens:     record.prompt,
-			CompletionTokens: record.output,
-			TotalTokens:      record.prompt + record.output,
+	t.Run("registering again replaces the price", func(t *testing.T) {
+		t.Parallel()
+		name := uniqueModel(t)
+		_, _ = pricing.Register(pricing.Model{Provider: "acme", Name: name, Input: 1, Output: 1})
+		_, _ = pricing.Register(pricing.Model{Provider: "acme", Name: name, Input: 3, Output: 3})
+		if got := pricing.Price(schemaflux.Usage{Input: 1_000_000}, name, "acme"); !near(got.Total, 3) {
+			t.Fatalf("Total = %v, want the second price", got.Total)
 		}
-		cost := CalculateCost(usage, record.model, record.provider)
-		TrackCost(cost, &types.ResultMetadata{
-			RequestID:     record.requestID,
-			CorrelationID: "corr-batch",
-			Model:         record.model,
-			Provider:      record.provider,
-			EndTime:       now,
-			TokenUsage:    usage,
-		})
-	}
-
-	summary := GetCostSummary(now.Add(-time.Minute), map[string]string{"provider": "openai"})
-	if summary.RequestCount != 2 {
-		t.Fatalf("expected 2 requests, got %d", summary.RequestCount)
-	}
-	if summary.TotalTokens != 450 {
-		t.Fatalf("expected 450 total tokens, got %d", summary.TotalTokens)
-	}
-	if summary.AverageTokensPerRequest != 225 {
-		t.Fatalf("expected average tokens per request 225, got %v", summary.AverageTokensPerRequest)
-	}
-	if summary.AverageCostPerRequest <= 0 {
-		t.Fatalf("expected positive average cost per request, got %v", summary.AverageCostPerRequest)
-	}
-
-	requests := GetRequestCosts(now.Add(-time.Minute), map[string]string{"provider": "openai"})
-	if len(requests) != 2 {
-		t.Fatalf("expected 2 request records, got %d", len(requests))
-	}
-
-	request, ok := GetRequestCost("req-2")
-	if !ok {
-		t.Fatal("expected req-2 to be found")
-	}
-	if request.CorrelationID != "corr-batch" {
-		t.Fatalf("expected req-2 correlation id corr-batch, got %q", request.CorrelationID)
-	}
-	if request.TokenUsage.TotalTokens != 300 {
-		t.Fatalf("expected req-2 total tokens 300, got %d", request.TokenUsage.TotalTokens)
-	}
-
-	filtered := GetRequestCosts(now.Add(-time.Minute), map[string]string{"correlation_id": "corr-batch"})
-	if len(filtered) != 2 {
-		t.Fatalf("expected 2 correlation-filtered requests, got %d", len(filtered))
-	}
-}
-
-// EstimateCost prices a call that has not been made yet and marks the result
-// as a projection. Reusing CalculateCost's arithmetic is the point; the only
-// thing worth asserting here is that the quality is downgraded to Estimated
-// rather than left at Exact, and that an unpriced model still reports
-// Unknown rather than being upgraded into looking like a real estimate.
-func TestEstimateCostMarksAProjectionRatherThanAMeasurement(t *testing.T) {
-	resetPricingTestState(t)
-
-	projected := &types.TokenUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500}
-
-	priced := EstimateCost(projected, "gpt-5-mini-2025-08-07", "openai")
-	if priced == nil {
-		t.Fatal("EstimateCost returned nil for a priced model")
-	}
-	if !priced.Priced {
-		t.Error("a priced model's estimate should still be marked Priced")
-	}
-	if priced.Quality != types.PricingEstimated {
-		t.Errorf("Quality = %v, want PricingEstimated for a projected cost", priced.Quality)
-	}
-	if priced.TotalCost <= 0 {
-		t.Error("expected a positive projected cost for a priced model with nonzero usage")
-	}
-
-	unpriced := EstimateCost(projected, "a-model-nobody-has-priced", "openai")
-	if unpriced == nil {
-		t.Fatal("EstimateCost returned nil for an unpriced model")
-	}
-	if unpriced.Priced {
-		t.Error("an unpriced model must not become Priced just because it was estimated")
-	}
-	if unpriced.Quality != types.PricingUnknown {
-		t.Errorf("Quality = %v, want PricingUnknown for an unpriced projection", unpriced.Quality)
-	}
-
-	if got := EstimateCost(nil, "gpt-5", "openai"); got != nil {
-		t.Errorf("EstimateCost(nil, ...) = %+v, want nil", got)
-	}
-}
-
-// pricingQualityFor's PricingFree branch exists for a rate card that is a
-// fact -- a local double or a genuinely free tier -- rather than an absent
-// one. RegisterPricingModel refuses to register a card priced at zero on
-// both prompt and completion (that refusal is tested in register_test.go),
-// so the only way to exercise the branch it guards against misreading is to
-// place a card directly in the table, the way a free tier's provider
-// integration would have to if it ever ships one.
-func TestAllZeroRateCardReportsFreeNotUnknown(t *testing.T) {
-	resetPricingTestState(t)
-
-	const name = "gap-test-free-tier-model"
-	pricingMu.Lock()
-	pricingModels[name] = PricingModel{
-		Provider: "test",
-		Model:    name,
-		Currency: "USD",
-	}
-	pricingMu.Unlock()
-	t.Cleanup(func() {
-		pricingMu.Lock()
-		delete(pricingModels, name)
-		pricingMu.Unlock()
 	})
-
-	usage := &types.TokenUsage{PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000}
-	cost := CalculateCost(usage, name, "test")
-	if cost == nil {
-		t.Fatal("CalculateCost returned nil for a registered (if free) model")
-	}
-	if !cost.Priced {
-		t.Error("a found rate card -- even an all-zero one -- is a known fact, not an absence: Priced should be true")
-	}
-	if cost.Quality != types.PricingFree {
-		t.Errorf("Quality = %v, want PricingFree for an all-zero rate card", cost.Quality)
-	}
-	if cost.TotalCost != 0 {
-		t.Errorf("TotalCost = %v, want 0 for an all-zero rate card", cost.TotalCost)
-	}
+	t.Run("the model is listed afterwards, in lower case", func(t *testing.T) {
+		t.Parallel()
+		name := uniqueModel(t)
+		_, _ = pricing.Register(pricing.Model{Provider: "acme", Name: strings.ToUpper(name), Input: 1, Output: 1})
+		if !slices.Contains(pricing.Models(), name) {
+			t.Fatalf("Models() lacks %q", name)
+		}
+	})
 }
 
-// matchesFilters is checked by GetTotalCost, GetCostBreakdown's callers, and
-// GetRequestCosts/GetCostSummary, but only its "operation" branch was
-// exercised elsewhere. Each key it understands gets a matching and a
-// mismatching case here, plus the fallback to tags for anything else --
-// including a tag that is simply absent from the record.
-func TestMatchesFiltersCoversEveryFilterKey(t *testing.T) {
-	resetPricingTestState(t)
-
-	record := CostRecord{
-		RequestID:     "req-77",
-		CorrelationID: "corr-77",
-		Operation:     "extract",
-		Model:         "gpt-5",
-		Provider:      "openai",
-		Tags:          map[string]string{"team": "billing"},
-	}
-
+func TestRegisterRefusesAModelItCannotPrice(t *testing.T) {
+	t.Parallel()
+	nan, inf := math.NaN(), math.Inf(1)
 	cases := []struct {
 		name    string
-		filters map[string]string
-		want    bool
+		model   pricing.Model
+		message string
 	}{
-		{"request_id match", map[string]string{"request_id": "req-77"}, true},
-		{"request_id mismatch", map[string]string{"request_id": "req-99"}, false},
-		{"correlation_id match", map[string]string{"correlation_id": "corr-77"}, true},
-		{"correlation_id mismatch", map[string]string{"correlation_id": "corr-99"}, false},
-		{"model match", map[string]string{"model": "gpt-5"}, true},
-		{"model mismatch", map[string]string{"model": "gpt-4"}, false},
-		{"provider match", map[string]string{"provider": "openai"}, true},
-		{"provider mismatch", map[string]string{"provider": "anthropic"}, false},
-		{"operation match", map[string]string{"operation": "extract"}, true},
-		{"operation mismatch", map[string]string{"operation": "classify"}, false},
-		{"tag match", map[string]string{"team": "billing"}, true},
-		{"tag mismatch", map[string]string{"team": "support"}, false},
-		{"tag absent from record", map[string]string{"nonexistent-key": "anything"}, false},
-		{"no filters", nil, true},
-		{"empty filters", map[string]string{}, true},
-		{"multiple filters all match", map[string]string{"model": "gpt-5", "provider": "openai"}, true},
-		{"multiple filters one mismatches", map[string]string{"model": "gpt-5", "provider": "anthropic"}, false},
+		{"no name", pricing.Model{Provider: "acme", Input: 1, Output: 1}, "no name"},
+		{"a name of white space", pricing.Model{Provider: "acme", Name: " \t", Input: 1, Output: 1}, "no name"},
+		{"no provider", pricing.Model{Name: "x", Input: 1, Output: 1}, "no provider"},
+		{"a provider of white space", pricing.Model{Provider: "  ", Name: "x", Input: 1, Output: 1}, "no provider"},
+		{"an input rate that is not a number", pricing.Model{Provider: "acme", Name: "x", Input: nan, Output: 1}, "input rate that is not a number"},
+		{"an output rate that is not a number", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: nan}, "output rate that is not a number"},
+		{"a cached rate that is not a number", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: 1, Cached: nan}, "cached rate that is not a number"},
+		{"a reasoning rate that is not a number", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: 1, Reasoning: nan}, "reasoning rate that is not a number"},
+		{"a negative input rate", pricing.Model{Provider: "acme", Name: "x", Input: -1, Output: 1}, "negative input rate"},
+		{"a negative output rate", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: -0.01}, "negative output rate"},
+		{"a negative cached rate", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: 1, Cached: -1}, "negative cached rate"},
+		{"a negative reasoning rate", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: 1, Reasoning: -1}, "negative reasoning rate"},
+		{"a rate above the ceiling", pricing.Model{Provider: "acme", Name: "x", Input: 1000.01, Output: 1}, "above $1,000 per million"},
+		{"an infinite rate", pricing.Model{Provider: "acme", Name: "x", Input: 1, Output: inf}, "above $1,000 per million"},
+		{"a price per token given as a price per million", pricing.Model{Provider: "acme", Name: "x", Input: 1e6, Output: 1e6}, "above $1,000 per million"},
+		{"nothing charged for input and output", pricing.Model{Provider: "acme", Name: "x"}, "charges nothing"},
+		{"nothing charged though cached and reasoning are", pricing.Model{Provider: "acme", Name: "x", Cached: 1, Reasoning: 1}, "charges nothing"},
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := matchesFilters(record, tc.filters); got != tc.want {
-				t.Errorf("matchesFilters(%+v) = %v, want %v", tc.filters, got, tc.want)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if c.model.Name != "" && strings.TrimSpace(c.model.Name) != "" {
+				c.model.Name = uniqueModel(t)
+			}
+			_, err := pricing.Register(c.model)
+			var e *schemaflux.Error
+			if !errors.As(err, &e) || e.Kind != schemaflux.ErrConfiguration {
+				t.Fatalf("err = %#v, want an ErrConfiguration", err)
+			}
+			if !errors.Is(err, schemaflux.ErrConfiguration) {
+				t.Errorf("errors.Is(err, ErrConfiguration) is false")
+			}
+			if e.Op != "pricing.register" {
+				t.Errorf("Op = %q", e.Op)
+			}
+			if !strings.Contains(e.Message, c.message) {
+				t.Errorf("message = %q, want it to say %q", e.Message, c.message)
+			}
+			if c.model.Name != "" && strings.TrimSpace(c.model.Name) != "" {
+				if slices.Contains(pricing.Models(), c.model.Name) {
+					t.Errorf("a refused model was put in the table")
+				}
 			}
 		})
 	}
-}
 
-// A record's tags survive GetRequestCosts as an independent copy, so a
-// caller mutating the returned map cannot corrupt the retained history --
-// the branch cloneCostRecord takes only when there is something to copy.
-func TestClonedCostRecordTagsAreIndependentOfTheOriginal(t *testing.T) {
-	resetPricingTestState(t)
-
-	usage := &types.TokenUsage{PromptTokens: 10, CompletionTokens: 10, TotalTokens: 20}
-	cost := CalculateCost(usage, "gpt-5", "openai")
-	TrackCost(cost, &types.ResultMetadata{
-		RequestID: "req-tagged",
-		Operation: "extract",
-		Custom:    map[string]any{"team": "billing"},
+	t.Run("the message is lower case and names the model but never its rates", func(t *testing.T) {
+		t.Parallel()
+		name := uniqueModel(t)
+		_, err := pricing.Register(pricing.Model{Provider: "acme", Name: name, Input: -123.456})
+		msg := err.Error()
+		if !strings.Contains(msg, name) || strings.Contains(msg, "123.456") || strings.Contains(msg, "pricing: invalid pricing model") {
+			t.Fatalf("message = %q", msg)
+		}
 	})
-
-	got, ok := GetRequestCost("req-tagged")
-	if !ok {
-		t.Fatal("expected the tagged record to be retained")
-	}
-	if got.Tags["team"] != "billing" {
-		t.Fatalf("Tags[team] = %q, want billing", got.Tags["team"])
-	}
-
-	// Mutate the caller's copy and fetch again: the retained history must be
-	// unaffected, which is only true if cloneCostRecord actually copied the
-	// map rather than sharing it.
-	got.Tags["team"] = "mutated"
-
-	again, ok := GetRequestCost("req-tagged")
-	if !ok {
-		t.Fatal("expected the tagged record still to be retained")
-	}
-	if again.Tags["team"] != "billing" {
-		t.Errorf("the retained record's tags were mutated through the caller's copy: got %q", again.Tags["team"])
-	}
+	t.Run("a long name in a message is cut", func(t *testing.T) {
+		t.Parallel()
+		_, err := pricing.Register(pricing.Model{Name: strings.Repeat("n", 500), Input: 1, Output: 1})
+		if n := len(err.Error()); n > 300 {
+			t.Fatalf("message is %d bytes", n)
+		}
+	})
 }
 
-// GetTotalCost is the one place a caller decides, in Go, whether a request
-// stays inside a budget before it commits to acting on it -- exercised here
-// across a since-cutoff that excludes an older record and a filter that
-// excludes a different provider, the two axes GetTotalCost combines.
-func TestGetTotalCostCombinesSinceAndFilters(t *testing.T) {
-	resetPricingTestState(t)
+func TestModelsListsTheModelsWithAPrice(t *testing.T) {
+	t.Parallel()
+	listed := pricing.Models()
 
-	now := time.Now()
-	old := CalculateCost(&types.TokenUsage{PromptTokens: 1000, CompletionTokens: 1000}, "gpt-5", "openai")
-	TrackCost(old, &types.ResultMetadata{RequestID: "old", Operation: "extract", Provider: "openai", EndTime: now.Add(-2 * time.Hour)})
-
-	recent := CalculateCost(&types.TokenUsage{PromptTokens: 1000, CompletionTokens: 1000}, "gpt-5", "anthropic")
-	TrackCost(recent, &types.ResultMetadata{RequestID: "recent", Operation: "extract", Provider: "anthropic", EndTime: now})
-
-	sinceCutoff := GetTotalCost(now.Add(-time.Hour), nil)
-	if sinceCutoff <= 0 {
-		t.Fatal("expected the recent record's cost to be included")
-	}
-	// The old record's cost is larger than zero too, so if it leaked through
-	// the cutoff this total would be roughly double.
-	all := GetTotalCost(time.Time{}, nil)
-	if sinceCutoff >= all {
-		t.Errorf("since-cutoff total (%v) should exclude the older record and be less than the unfiltered total (%v)", sinceCutoff, all)
-	}
-
-	byProvider := GetTotalCost(time.Time{}, map[string]string{"provider": "anthropic"})
-	if byProvider <= 0 || byProvider >= all {
-		t.Errorf("provider-filtered total = %v, want strictly between 0 and the unfiltered total %v", byProvider, all)
-	}
-}
-
-// readCostReportCSV parses a CSV cost report into its header and rows.
-func readCostReportCSV(t *testing.T, report string) (header []string, rows [][]string) {
-	t.Helper()
-	records, err := csv.NewReader(strings.NewReader(report)).ReadAll()
-	if err != nil {
-		t.Fatalf("the report is not valid CSV: %v\n%s", err, report)
-	}
-	if len(records) == 0 {
-		t.Fatal("the report is empty")
-	}
-	return records[0], records[1:]
-}
-
-// The default model costs about a hundred-thousandth of a dollar for a small
-// call, which a four-place format wrote as 0.0000: a column of zeros that sums
-// to nothing and does not say whether the calls were free or unpriced.
-func TestTheCSVReportKeepsTheCostOfASmallCall(t *testing.T) {
-	resetAll(t)
-
-	cost := CalculateCost(&types.TokenUsage{PromptTokens: 100, TotalTokens: 100}, "gpt-6-luna", "openai")
-	if cost == nil || !cost.Priced || cost.TotalCost <= 0 || cost.TotalCost >= 0.0001 {
-		t.Fatalf("the fixture is wrong: %+v", cost)
-	}
-	TrackCost(cost, &types.ResultMetadata{RequestID: "small", Model: "gpt-6-luna", Provider: "openai", EndTime: time.Now(),
-		TokenUsage: &types.TokenUsage{PromptTokens: 100, TotalTokens: 100}})
-
-	report, err := ExportCostReport(time.Time{}, "csv")
-	if err != nil {
-		t.Fatal(err)
-	}
-	header, rows := readCostReportCSV(t, report)
-	if len(rows) != 1 {
-		t.Fatalf("%d rows, want 1", len(rows))
-	}
-	column := func(name string) string {
-		for i, h := range header {
-			if h == name {
-				return rows[0][i]
+	t.Run("it is sorted and has no duplicates", func(t *testing.T) {
+		t.Parallel()
+		if !slices.IsSorted(listed) {
+			t.Fatal("not sorted")
+		}
+		if len(slices.Compact(slices.Clone(listed))) != len(listed) {
+			t.Fatal("duplicates")
+		}
+	})
+	t.Run("every name is lower case", func(t *testing.T) {
+		t.Parallel()
+		for _, name := range listed {
+			if name != strings.ToLower(name) || name != strings.TrimSpace(name) || name == "" {
+				t.Errorf("name %q", name)
 			}
 		}
-		t.Fatalf("no %q column in %v", name, header)
-		return ""
-	}
-	got, err := strconv.ParseFloat(column("Cost"), 64)
-	if err != nil || got != cost.TotalCost {
-		t.Errorf("Cost = %q, want %v exactly", column("Cost"), cost.TotalCost)
-	}
-	if column("Priced") != "true" || column("PricingQuality") != string(types.PricingExact) {
-		t.Errorf("Priced = %q, PricingQuality = %q", column("Priced"), column("PricingQuality"))
-	}
-}
-
-// An unpriced call is marked rather than written as a cost of zero.
-func TestTheCSVReportMarksAnUnpricedCall(t *testing.T) {
-	resetAll(t)
-	trackUnpriced(t, "unpriced-1")
-	track(t, "priced-1", 0.5)
-
-	report, err := ExportCostReport(time.Time{}, "csv")
-	if err != nil {
-		t.Fatal(err)
-	}
-	header, rows := readCostReportCSV(t, report)
-	index := map[string]int{}
-	for i, h := range header {
-		index[h] = i
-	}
-	if len(rows) != 2 {
-		t.Fatalf("%d rows, want 2", len(rows))
-	}
-	unpriced, priced := rows[0], rows[1]
-	if unpriced[index["Cost"]] != "" || unpriced[index["Priced"]] != "false" || unpriced[index["PricingQuality"]] != string(types.PricingUnknown) {
-		t.Errorf("unpriced row = %v: want an empty Cost, Priced false and quality %q", unpriced, types.PricingUnknown)
-	}
-	if priced[index["Cost"]] != "0.5" || priced[index["Priced"]] != "true" {
-		t.Errorf("priced row = %v: want Cost 0.5 and Priced true", priced)
-	}
-}
-
-// Text fields that hold a delimiter, a quote or a line break stay in their
-// column, and one a spreadsheet would read as a formula is written as text.
-func TestTheCSVReportEscapesTextFields(t *testing.T) {
-	resetAll(t)
-
-	cases := []struct {
-		name      string
-		requestID string
-		want      string
-	}{
-		{"plain", "req-1", "req-1"},
-		{"comma", "a,b", "a,b"},
-		{"quote", `say "hi"`, `say "hi"`},
-		{"newline", "line1\nline2", "line1\nline2"},
-		{"carriage return", "line1\rline2", "line1\rline2"},
-		{"equals formula", "=SUM(A1:A9)", "'=SUM(A1:A9)"},
-		{"plus formula", "+1+1", "'+1+1"},
-		{"minus formula", "-2", "'-2"},
-		{"at formula", "@cmd", "'@cmd"},
-		{"tab prefix", "\tx", "'\tx"},
-		{"carriage return prefix", "\rx", "'\rx"},
-		{"leading space is not a formula", " =1", " =1"},
-		{"comma and formula", "=a,b", "'=a,b"},
-		{"empty", "", ""},
-	}
-	for i, tc := range cases {
-		TrackCost(&types.CostInfo{TotalCost: 0.1, Priced: true, Quality: types.PricingExact}, &types.ResultMetadata{
-			RequestID: tc.requestID, CorrelationID: fmt.Sprintf("c%d", i), Operation: "extract", EndTime: time.Now(),
+	})
+	t.Run("the slice is a copy", func(t *testing.T) {
+		t.Parallel()
+		got := pricing.Models()
+		if len(got) == 0 {
+			t.Fatal("no models")
+		}
+		got[0] = "changed"
+		if slices.Contains(pricing.Models(), "changed") {
+			t.Fatal("changing the slice changed the table")
+		}
+	})
+	t.Run("a registered model is in it", func(t *testing.T) {
+		t.Parallel()
+		name := uniqueModel(t)
+		before := len(pricing.Models())
+		_, _ = pricing.Register(pricing.Model{Provider: "acme", Name: name, Input: 1, Output: 1})
+		if !slices.Contains(pricing.Models(), name) || len(pricing.Models()) < before {
+			t.Fatalf("Models() lacks %q", name)
+		}
+	})
+	for _, name := range []string{
+		"gpt-6-luna", "gpt-5.6-luna", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4", "gpt-3.5-turbo",
+		"claude-3-opus", "claude-3-haiku", "o1-mini", "gemma-4-31b",
+	} {
+		t.Run("the built-in table has "+name, func(t *testing.T) {
+			t.Parallel()
+			if !slices.Contains(listed, name) {
+				t.Fatalf("Models() lacks %q", name)
+			}
 		})
 	}
+}
 
-	report, err := ExportCostReport(time.Time{}, "csv")
-	if err != nil {
+func TestJevIsPricedByTheTable(t *testing.T) {
+	t.Parallel()
+	oneMillion := schemaflux.Usage{Input: 1_000_000, Output: 1_000_000}
+	cases := []struct {
+		model, provider string
+	}{
+		{"jev-latest", "jev"},
+		{"jev-1.13.0", "jev"},
+		{"~typesafe/jev-latest", "jev-openrouter"},
+		{"typesafe/jev-latest", "jev-openrouter"},
+		{"typesafe/jev-1.13.0", "jev-openrouter"},
+		{"JEV-LATEST", "jev"},
+		{" jev-latest ", "jev-litellm"},
+	}
+	for _, c := range cases {
+		t.Run(c.model+" on "+c.provider, func(t *testing.T) {
+			t.Parallel()
+			got := pricing.Price(oneMillion, c.model, c.provider)
+			if !got.Priced {
+				t.Fatalf("Cost = %+v, want a priced one", got)
+			}
+			if !near(got.Input, 0.042) || !near(got.Output, 0) || !near(got.Total, 0.042) {
+				t.Fatalf("Input = %v, Output = %v, Total = %v; want $0.042 per million input tokens and nothing for the answer", got.Input, got.Output, got.Total)
+			}
+		})
+	}
+	for _, name := range []string{"jev-latest", "jev-1.13.0", "~typesafe/jev-latest", "typesafe/jev-latest", "typesafe/jev-1.13.0"} {
+		t.Run("Models lists "+name, func(t *testing.T) {
+			t.Parallel()
+			if !slices.Contains(pricing.Models(), name) {
+				t.Fatalf("Models() lacks %q", name)
+			}
+		})
+	}
+	t.Run("a later version of the model is unpriced until it is added", func(t *testing.T) {
+		t.Parallel()
+		if got := pricing.Price(oneMillion, "jev-1.14.0", "jev"); got.Priced {
+			t.Fatalf("Cost = %+v, want an unpriced one", got)
+		}
+	})
+}
+
+func TestPriceCountsEveryTokenOnce(t *testing.T) {
+	t.Parallel()
+	// $2 input, $0.50 cached, $8 output, $12 reasoning, per million tokens.
+	name := uniqueModel(t)
+	if _, err := pricing.Register(pricing.Model{Provider: "acme", Name: name, Input: 2, Output: 8, Cached: 0.5, Reasoning: 12}); err != nil {
 		t.Fatal(err)
 	}
-	header, rows := readCostReportCSV(t, report)
-	if len(rows) != len(cases) {
-		t.Fatalf("%d rows, want %d: a field shifted the row boundaries", len(rows), len(cases))
+	cases := []struct {
+		name                      string
+		usage                     schemaflux.Usage
+		total, input, out, cached float64
+		reasoning                 float64
+	}{
+		{"nothing", schemaflux.Usage{}, 0, 0, 0, 0, 0},
+		{"input only", schemaflux.Usage{Input: 1_000_000}, 2, 2, 0, 0, 0},
+		{"output only", schemaflux.Usage{Output: 1_000_000}, 8, 0, 8, 0, 0},
+		{"cached is part of the input", schemaflux.Usage{Input: 1_000_000, Cached: 400_000}, 1.4, 1.2, 0, 0.2, 0},
+		{"reasoning is part of the output", schemaflux.Usage{Output: 1_000_000, Reasoning: 300_000}, 9.2, 0, 5.6, 0, 3.6},
+		{"all of it", schemaflux.Usage{Input: 1_000_000, Output: 1_000_000, Cached: 1_000_000, Reasoning: 1_000_000}, 12.5, 0, 0, 0.5, 12},
+		{"more cached than input is held at the input", schemaflux.Usage{Input: 1_000_000, Cached: 2_000_000}, 0.5, 0, 0, 0.5, 0},
+		{"more reasoning than output is held at the output", schemaflux.Usage{Output: 1_000_000, Reasoning: 5_000_000}, 12, 0, 0, 0, 12},
+		{"a negative count is read as zero", schemaflux.Usage{Input: -7, Output: 1_000_000, Cached: -3}, 8, 0, 8, 0, 0},
+		{"a total that disagrees is not read", schemaflux.Usage{Input: 1_000_000, Total: 99}, 2, 2, 0, 0, 0},
+		{"a small call", schemaflux.Usage{Input: 1000, Output: 200}, 0.0036, 0.002, 0.0016, 0, 0},
+		{"cache writes are not a separate charge", schemaflux.Usage{Input: 1_000_000, CacheWrite: 500_000}, 2, 2, 0, 0, 0},
 	}
-	for i, tc := range cases {
-		if len(rows[i]) != len(header) {
-			t.Errorf("%s: %d columns, want %d", tc.name, len(rows[i]), len(header))
-			continue
-		}
-		if rows[i][1] != tc.want {
-			t.Errorf("%s: RequestID cell = %q, want %q", tc.name, rows[i][1], tc.want)
-		}
-		if rows[i][2] != fmt.Sprintf("c%d", i) {
-			t.Errorf("%s: the next column moved: %q", tc.name, rows[i][2])
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := pricing.Price(c.usage, name, "acme")
+			if !got.Priced || !near(got.Total, c.total) {
+				t.Fatalf("Total = %v (priced %v), want %v", got.Total, got.Priced, c.total)
+			}
+			if c.input != 0 && !near(got.Input, c.input) || c.out != 0 && !near(got.Output, c.out) ||
+				c.cached != 0 && !near(got.Cached, c.cached) || c.reasoning != 0 && !near(got.Reasoning, c.reasoning) {
+				t.Fatalf("Cost = %+v", got)
+			}
+			if got.Estimated {
+				t.Error("a price of a measured count is not an estimate")
+			}
+		})
 	}
 }
 
-// Every column that carries caller text is guarded, not only the request id:
-// the correlation id, operation, model and provider reach the report from
-// request metadata the caller controls.
-func TestEveryTextColumnOfTheCSVReportIsGuardedAgainstFormulas(t *testing.T) {
-	columns := []struct {
-		name string
-		set  func(m *types.ResultMetadata, text string)
+func TestPriceReportsAnUnpricedModelAsUnknownAndNotFree(t *testing.T) {
+	t.Parallel()
+	usage := schemaflux.Usage{Input: 1_000_000, Output: 1_000_000}
+	cases := []struct {
+		name            string
+		model, provider string
 	}{
-		{"RequestID", func(m *types.ResultMetadata, s string) { m.RequestID = s }},
-		{"CorrelationID", func(m *types.ResultMetadata, s string) { m.CorrelationID = s }},
-		{"Operation", func(m *types.ResultMetadata, s string) { m.Operation = s }},
-		{"Model", func(m *types.ResultMetadata, s string) { m.Model = s }},
-		{"Provider", func(m *types.ResultMetadata, s string) { m.Provider = s }},
+		{"a model nobody priced", "pricing-test-never-registered", "acme"},
+		{"an empty model", "", "openai"},
+		{"a model named like a priced one's sibling", "gpt-5-pro", "openai"},
+		{"a sibling with a size", "gpt-6-luna-mini", "openai"},
+		{"a model of a priced family with a minor version", "gpt-5.4-mini", "openai"},
+		{"a priced model on a transport not billed per token", "gpt-5", "codex"},
+		{"the same transport in other case", "gpt-5", " Codex "},
+		{"a cheap model on that transport", "gpt-5-nano", "codex"},
+		{"a dated snapshot of an unpriced model", "pricing-test-never-registered-2025-08-07", "acme"},
+		{"only a version", "2025-08-07", "openai"},
 	}
-	leads := map[string]string{"equals": "=", "plus": "+", "minus": "-", "at": "@", "tab": "\t", "carriage return": "\r"}
-	for _, column := range columns {
-		for leadName, lead := range leads {
-			t.Run(column.name+" starting with "+leadName, func(t *testing.T) {
-				resetAll(t)
-				metadata := &types.ResultMetadata{RequestID: "r", EndTime: time.Now()}
-				column.set(metadata, lead+"cmd|' /C calc'!A0")
-				TrackCost(&types.CostInfo{TotalCost: 0.1, Currency: "USD", Priced: true}, metadata)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got := pricing.Price(usage, c.model, c.provider)
+			if got.Priced || got.Total != 0 || got.Input != 0 || got.Output != 0 || got.Source != "" {
+				t.Fatalf("Cost = %+v, want an unpriced one with no figures", got)
+			}
+			if got.Currency != "USD" {
+				t.Errorf("Currency = %q", got.Currency)
+			}
+		})
+	}
+}
 
-				report, err := ExportCostReport(time.Time{}, "csv")
-				if err != nil {
-					t.Fatal(err)
-				}
-				header, rows := readCostReportCSV(t, report)
-				if len(rows) != 1 {
-					t.Fatalf("%d rows, want 1\n%s", len(rows), report)
-				}
-				index := -1
-				for i, name := range header {
-					if name == column.name {
-						index = i
-					}
-				}
-				if index < 0 {
-					t.Fatalf("the report has no %s column: %v", column.name, header)
-				}
-				if got := rows[0][index]; !strings.HasPrefix(got, "'"+lead) {
-					t.Fatalf("%s = %q, want an apostrophe before the leading %q", column.name, got, lead)
-				}
-			})
-		}
+func TestPriceFindsADatedSnapshotOfAPricedModel(t *testing.T) {
+	t.Parallel()
+	base := uniqueModel(t)
+	_, _ = pricing.Register(pricing.Model{Provider: "acme", Name: base, Input: 4, Output: 4})
+	usage := schemaflux.Usage{Input: 1_000_000}
+	for _, suffix := range []string{"-2025-08-07", "-20240229", "-2026-01-01"} {
+		t.Run(suffix, func(t *testing.T) {
+			t.Parallel()
+			got := pricing.Price(usage, base+suffix, "acme")
+			if !got.Priced || !near(got.Total, 4) || got.Source != base {
+				t.Fatalf("Cost = %+v, want the base model's price with its name as the source", got)
+			}
+		})
 	}
+	t.Run("the model is looked up without regard to case", func(t *testing.T) {
+		t.Parallel()
+		if got := pricing.Price(usage, strings.ToUpper(base), "acme"); !got.Priced {
+			t.Fatalf("Cost = %+v", got)
+		}
+	})
+	t.Run("a built-in model has its table price", func(t *testing.T) {
+		t.Parallel()
+		got := pricing.Price(schemaflux.Usage{Input: 1_000_000, Output: 1_000_000}, "gpt-5", "openai")
+		if !near(got.Input, 1.25) || !near(got.Output, 10) || got.Source != "gpt-5" {
+			t.Fatalf("Cost = %+v", got)
+		}
+	})
+	t.Run("the provider does not change the price of a model", func(t *testing.T) {
+		t.Parallel()
+		a := pricing.Price(usage, base, "one")
+		b := pricing.Price(usage, base, "two")
+		if a != b {
+			t.Fatalf("%+v != %+v", a, b)
+		}
+	})
 }

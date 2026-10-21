@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ExplainResult contains the explanation results
@@ -85,7 +85,7 @@ func (opts ExplainOptions) WithIntelligence(intelligence types.Speed) ExplainOpt
 func (opts ExplainOptions) Validate() error {
 	validAudiences := []string{"technical", "non-technical", "children", "executive", "beginner", "expert"}
 	if !contains(validAudiences, opts.Audience) {
-		return fmt.Errorf("invalid audience: %s", opts.Audience)
+		return fmt.Errorf("audience must be technical, non-technical, children, executive, beginner, or expert")
 	}
 
 	if opts.Depth < 1 || opts.Depth > 4 {
@@ -94,12 +94,12 @@ func (opts ExplainOptions) Validate() error {
 
 	validFormats := []string{"paragraph", "bullet-points", "step-by-step", "qa", "structured"}
 	if !contains(validFormats, opts.Format) {
-		return fmt.Errorf("invalid format: %s", opts.Format)
+		return fmt.Errorf("explanation format must be paragraph, bullet-points, step-by-step, qa, or structured")
 	}
 
 	validFocus := []string{"overview", "usage", "implementation", "benefits", "limitations", "examples"}
 	if !contains(validFocus, opts.Focus) {
-		return fmt.Errorf("invalid focus: %s", opts.Focus)
+		return fmt.Errorf("explanation focus must be overview, usage, implementation, benefits, limitations, or examples")
 	}
 
 	return nil
@@ -137,21 +137,21 @@ func explainImpl(data any, opts ExplainOptions) (ExplainResult, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Explain operation validation failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Explain operation validation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return ExplainResult{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	// Analyze the data structure
 	dataAnalysis, err := analyzeDataForExplanation(data)
 	if err != nil {
-		log.Error("Explain operation data analysis failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Explain operation data analysis failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return ExplainResult{}, fmt.Errorf("data analysis failed: %w", err)
 	}
 
 	// Generate explanation using LLM
 	explanation, err := generateExplanation(data, dataAnalysis, opts)
 	if err != nil {
-		log.Error("Explain operation explanation generation failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Explain operation explanation generation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return ExplainResult{}, fmt.Errorf("explanation generation failed: %w", err)
 	}
 

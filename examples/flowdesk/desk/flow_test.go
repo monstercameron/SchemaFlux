@@ -13,9 +13,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // The desk's four flows, run against the simulator. Nothing here reaches a
@@ -23,11 +23,6 @@ import (
 // simulator as its provider.
 
 func TestMain(m *testing.M) {
-	// The library logs each operation's start and end at info level, and each
-	// failure at error level, to standard error. A hundred runs of twenty
-	// operations bury a test's own failure in it, and some tests here fail
-	// their calls on purpose.
-	schemaflux.ConfigureLogging(schemaflux.LoggerConfig{Level: schemaflux.LogError, DisableStderr: true})
 	os.Exit(m.Run())
 }
 
@@ -75,8 +70,8 @@ var widestGroup = map[string]int{fused.name: 4, oneAtATime.name: 1, fast.name: 3
 func run(t *testing.T, with flow, labelled sim.Case, delay time.Duration) (desk.Outcome, *sim.Simulator, time.Duration) {
 	t.Helper()
 	provider := sim.New(delay)
-	client := schemaflux.NewClient("").WithProviderInstance(provider)
-	ctx := client.Context(context.Background())
+	client := schemaflux.Client{Provider: provider}
+	ctx := schemaflux.WithClient(context.Background(), client)
 
 	started := time.Now()
 	outcome, err := with.handle(desk.New(sim.OpenTickets()), ctx, labelled.Message)
@@ -471,7 +466,7 @@ func TestADeskWithNoOpenTicketDoesNotAskForAMatch(t *testing.T) {
 		t.Run(with.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				provider := sim.New(25 * time.Millisecond)
-				ctx := schemaflux.NewClient("").WithProviderInstance(provider).Context(context.Background())
+				ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: provider})
 				outcome, err := with.handle(desk.New(nil), ctx, labelled.Message)
 				if err != nil {
 					t.Fatal(err)
@@ -508,8 +503,8 @@ func TestAFlowStopsWhenItsContextEnds(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				const delay = 100 * time.Millisecond
 				provider := sim.New(delay)
-				client := schemaflux.NewClient("").WithProviderInstance(provider)
-				ctx, cancel := context.WithTimeout(client.Context(context.Background()), delay*3/2)
+				client := schemaflux.Client{Provider: provider}
+				ctx, cancel := context.WithTimeout(schemaflux.WithClient(context.Background(), client), delay*3/2)
 				defer cancel()
 				deadline, _ := ctx.Deadline()
 
@@ -542,8 +537,8 @@ func TestAFlowStopsWhenItsContextEnds(t *testing.T) {
 	t.Run("a context that has ended before the flow starts makes no call", func(t *testing.T) {
 		for _, with := range allFlows {
 			provider := sim.New(time.Millisecond)
-			client := schemaflux.NewClient("").WithProviderInstance(provider)
-			ctx, cancel := context.WithCancel(client.Context(context.Background()))
+			client := schemaflux.Client{Provider: provider}
+			ctx, cancel := context.WithCancel(schemaflux.WithClient(context.Background(), client))
 			cancel()
 			outcome, err := with.handle(desk.New(sim.OpenTickets()), ctx, labelled.Message)
 			if !errors.Is(err, context.Canceled) {
@@ -568,14 +563,14 @@ type faulty struct {
 	err       error
 }
 
-func (f faulty) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (f faulty) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	if sim.Operation(req) != f.operation {
 		return f.Provider.Complete(ctx, req)
 	}
 	if f.err != nil {
-		return schemaflux.CompletionResponse{}, f.err
+		return schemaflux.Response{}, f.err
 	}
-	return schemaflux.CompletionResponse{Content: f.content, Provider: "local", FinishReason: "stop"}, nil
+	return schemaflux.Response{Content: f.content, Provider: "local", FinishReason: "stop"}, nil
 }
 
 // A call that goes wrong stops the flow with an error the library has
@@ -597,20 +592,20 @@ func TestAFlowThatIsRefusedAnAnswerReturnsNoOutcomeAndAClassifiedError(t *testin
 	}{
 		{"an assessment that is not JSON", faulty{operation: sim.OpAssess, content: "I think it is spam."}, simple, 0},
 		{"an assessment that answers a question with a word", faulty{operation: sim.OpAssess, content: `{"q1":"yes","q2":"billing"}`}, simple, 0},
-		{"an assessment whose call fails with a server error", faulty{operation: sim.OpAssess, err: &schemaflux.APIError{Provider: "local", StatusCode: 500, Body: "down"}}, simple, 500},
+		{"an assessment whose call fails with a server error", faulty{operation: sim.OpAssess, err: &schemaflux.Error{Kind: schemaflux.ErrUnavailable, Provider: "local", Status: 500}}, simple, 500},
 		{"an assessment that answers nothing", faulty{operation: sim.OpAssess, content: `{}`}, simple, 0},
 		{"a redaction that names what is not in the text", faulty{operation: sim.OpRedact, content: `{"spans":[{"text":"not in the message","category":"phone"}]}`}, personal, 0},
 		{"a redaction that is not JSON", faulty{operation: sim.OpRedact, content: "done"}, personal, 0},
 		{"an audit that answers nothing usable", faulty{operation: sim.OpAudit, content: `{"policies":"fine"}`}, simple, 0},
 		{"an audit that is not JSON", faulty{operation: sim.OpAudit, content: "passes"}, simple, 0},
-		{"an audit whose call fails with a server error", faulty{operation: sim.OpAudit, err: &schemaflux.APIError{Provider: "local", StatusCode: 500, Body: "the audit service is down"}}, simple, 500},
-		{"an audit whose call fails with a refusal", faulty{operation: sim.OpAudit, err: &schemaflux.APIError{Provider: "local", StatusCode: 400, Body: "the request was refused"}}, simple, 400},
+		{"an audit whose call fails with a server error", faulty{operation: sim.OpAudit, err: &schemaflux.Error{Kind: schemaflux.ErrUnavailable, Provider: "local", Status: 500}}, simple, 500},
+		{"an audit whose call fails with a refusal", faulty{operation: sim.OpAudit, err: &schemaflux.Error{Kind: schemaflux.ErrRefused, Provider: "local", Status: 400}}, simple, 400},
 	}
 	for _, fault := range faults {
 		for _, with := range allFlows {
 			t.Run(fault.name+", "+with.name, func(t *testing.T) {
 				fault.fault.Provider = sim.New(time.Millisecond)
-				ctx := schemaflux.NewClient("").WithProviderInstance(fault.fault).Context(context.Background())
+				ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: fault.fault})
 				outcome, err := with.handle(desk.New(sim.OpenTickets()), ctx, fault.with.Message)
 				if err == nil {
 					t.Fatalf("no error; outcome %+v", outcome)
@@ -622,11 +617,11 @@ func TestAFlowThatIsRefusedAnAnswerReturnsNoOutcomeAndAClassifiedError(t *testin
 				// operation that read it. A call that failed comes back as the
 				// provider's own typed error: the library does not wrap it in
 				// a classification.
-				var apiErr *schemaflux.APIError
+				var apiErr *schemaflux.Error
 				switch {
-				case fault.status == 0 && schemaflux.KindOf(err) == 0:
+				case fault.status == 0 && !errors.As(err, &apiErr):
 					t.Errorf("the error is not classified: %v", err)
-				case fault.status != 0 && (!errors.As(err, &apiErr) || apiErr.StatusCode != fault.status):
+				case fault.status != 0 && (!errors.As(err, &apiErr) || apiErr.Status != fault.status):
 					t.Errorf("the error is not the provider's error with status %d: %v", fault.status, err)
 				}
 				if strings.Contains(err.Error(), fault.with.Message.Body) {

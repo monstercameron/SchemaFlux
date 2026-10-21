@@ -10,9 +10,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Review round 12, the route an answer came by.

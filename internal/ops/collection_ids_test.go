@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Direct unit tests for OP-101 (stable invocation-local ids) and OP-106

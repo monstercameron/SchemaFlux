@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
 )
 
 // matchQuestion is the one question the desk asks that is not a field of one of
@@ -96,7 +96,7 @@ func New(delay time.Duration) *Simulator {
 func (s *Simulator) Name() string { return "local" }
 
 // EstimateCost is zero: nothing is spent.
-func (s *Simulator) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
+func (s *Simulator) EstimateCost(schemaflux.Request) float64 { return 0 }
 
 // RetryPolicy asks for no retries. A request the simulator refuses would be
 // refused the same way again.
@@ -123,7 +123,7 @@ func (s *Simulator) Calls() []Call { return s.log.Calls() }
 
 // Complete answers one request after the simulator's delay, or returns the
 // context's error if it ends first.
-func (s *Simulator) Complete(ctx context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (s *Simulator) Complete(ctx context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	operation := Operation(req)
 	end := s.log.Begin(operation)
 	defer end()
@@ -132,17 +132,17 @@ func (s *Simulator) Complete(ctx context.Context, req schemaflux.CompletionReque
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return schemaflux.CompletionResponse{}, ctx.Err()
+		return schemaflux.Response{}, ctx.Err()
 	case <-timer.C:
 	}
 
 	content, err := s.answer(operation, req)
 	if err != nil {
-		return schemaflux.CompletionResponse{}, err
+		return schemaflux.Response{}, err
 	}
 	// No usage is reported: the simulator reads no tokens, and a count made up
 	// here would be added to a ledger as if it had been measured.
-	return schemaflux.CompletionResponse{
+	return schemaflux.Response{
 		Content:      content,
 		Provider:     s.Name(),
 		Model:        req.Model,
@@ -170,9 +170,9 @@ func WithoutReferences(cases []Case) []Case {
 
 // caseOf finds the case a request is about: by the reference in the text, or,
 // for a message that is passed whole, by its ID.
-func (s *Simulator) caseOf(req schemaflux.CompletionRequest) (Case, error) {
+func (s *Simulator) caseOf(req schemaflux.Request) (Case, error) {
 	for _, reference := range []*regexp.Regexp{referenceInText, referenceInID} {
-		if match := reference.FindStringSubmatch(req.UserPrompt); match != nil {
+		if match := reference.FindStringSubmatch(req.User); match != nil {
 			if found, known := s.cases[match[1]]; known {
 				return found, nil
 			}
@@ -182,7 +182,7 @@ func (s *Simulator) caseOf(req schemaflux.CompletionRequest) (Case, error) {
 	return Case{}, fmt.Errorf("sim: the request carries no message reference, so the simulator cannot tell which case it is about")
 }
 
-func (s *Simulator) answer(operation string, req schemaflux.CompletionRequest) (string, error) {
+func (s *Simulator) answer(operation string, req schemaflux.Request) (string, error) {
 	if operation == "" {
 		return "", fmt.Errorf("sim: the request is from no operation the desk makes (schema name %q)", req.SchemaName)
 	}
@@ -192,17 +192,17 @@ func (s *Simulator) answer(operation string, req schemaflux.CompletionRequest) (
 	}
 	switch operation {
 	case OpAssess:
-		return assess(about, req.UserPrompt)
+		return assess(about, req.User)
 	case OpAudit:
-		return audit(about, req.UserPrompt)
+		return audit(about, req.User)
 	case OpRedact:
 		return redact(about)
 	case OpExtract:
 		return asJSON(about.Details)
 	case OpGenerate:
-		return generate(about, req.UserPrompt)
+		return generate(about, req.User)
 	case OpTranslate:
-		return translate(about, req.UserPrompt)
+		return translate(about, req.User)
 	case OpSummarize:
 		return labelled(about, "hand-off note", about.Handoff)
 	default: // OpRewrite

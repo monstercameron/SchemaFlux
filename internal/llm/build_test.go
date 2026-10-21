@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 const buildTestKey = "sk-build-test-key-must-not-appear"

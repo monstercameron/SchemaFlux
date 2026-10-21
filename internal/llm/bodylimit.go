@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Provider responses are read under a ceiling. BaseURL is chosen by the caller

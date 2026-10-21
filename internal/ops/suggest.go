@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // SuggestResult contains the result of a suggestion operation
@@ -91,7 +91,7 @@ func (opts SuggestOptions) Validate() error {
 		SuggestHybrid:     true,
 	}
 	if !validStrategies[opts.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", opts.Strategy)
+		return fmt.Errorf("suggestion strategy must be contextual, pattern, goal, or hybrid")
 	}
 
 	return nil
@@ -167,7 +167,7 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Suggest operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Suggest operation validation failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return nil, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -220,7 +220,7 @@ func Suggest[T any](input any, opts SuggestOptions) ([]T, error) {
 	// Marshal input for LLM
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Suggest operation marshal failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Suggest operation marshal failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return nil, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -240,7 +240,7 @@ Rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOptions)
 	if err != nil {
-		log.Error("Suggest operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", err)
+		log.Error("Suggest operation LLM call failed", "requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}
 
@@ -252,7 +252,7 @@ Rules:
 		// and the request ID are enough to correlate with a diagnostic capture,
 		// which is the mechanism that exists for looking at bodies.
 		log.Error("Suggest operation parse failed",
-			"requestID", opts.CommonOptions.RequestID, "responseBytes", len(response), "error", err)
+			"requestID", opts.CommonOptions.RequestID, "responseBytes", len(response), "error", loggedError(err))
 		return nil, err
 	}
 
@@ -263,7 +263,7 @@ Rules:
 	// they are about to trust was cut down locally.
 	if err := AtMost(suggestions, opts.TopN); err != nil {
 		log.Error("Suggest returned more suggestions than requested",
-			"requestID", opts.CommonOptions.RequestID, "error", err)
+			"requestID", opts.CommonOptions.RequestID, "error", loggedError(err))
 		return nil, types.Newf(types.KindInvariantViolation, "suggest", "%s", err.Error())
 	}
 	log.Debug("Suggest operation succeeded", "requestID", opts.CommonOptions.RequestID, "suggestionsCount", len(suggestions))

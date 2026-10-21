@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // PredictOptions configures the Predict operation
@@ -90,7 +90,7 @@ func (p PredictOptions) Validate() error {
 	}
 	validMethods := map[string]bool{"trend": true, "pattern": true, "regression": true, "auto": true}
 	if p.Method != "" && !validMethods[p.Method] {
-		return fmt.Errorf("invalid method: %s", p.Method)
+		return errors.New("prediction method must be trend, pattern, regression, or auto")
 	}
 	if p.NumScenarios < 1 {
 		return fmt.Errorf("num scenarios must be at least 1, got %d", p.NumScenarios)
@@ -329,7 +329,7 @@ func Predict[T any](historicalData any, opts PredictOptions) (PredictResult[T], 
 	// Marshal historical data
 	dataJSON, err := json.Marshal(historicalData)
 	if err != nil {
-		log.Error("Predict operation failed: marshal error", "error", err)
+		log.Error("Predict operation failed: marshal error", "error", loggedError(err))
 		return PredictResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal historical data: %w", err))
 	}
 
@@ -431,7 +431,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Predict operation LLM call failed", "error", err)
+		log.Error("Predict operation LLM call failed", "error", loggedError(err))
 		return PredictResult[T]{}, fmt.Errorf("prediction failed: %w", err)
 	}
 
@@ -459,7 +459,7 @@ Return a JSON object with:
 		Risks           []string             `json:"risks"`
 	}
 	if err := decodeAnswer("predict", response, &parsed); err != nil {
-		log.Error("Predict operation failed: parse error", "error", err)
+		log.Error("Predict operation failed: parse error", "error", loggedError(err))
 		return PredictResult[T]{}, fmt.Errorf("failed to parse prediction result: %w", err)
 	}
 
@@ -476,7 +476,7 @@ Return a JSON object with:
 	}
 
 	if err := checkPredictionEnvelope(opts, parsed.ModelConfidence, parsed.Interval, parsed.Scenarios, parsed.Factors, parsed.Reasoning); err != nil {
-		log.Error("Predict operation failed: the answer breaks what was asked", "error", err)
+		log.Error("Predict operation failed: the answer breaks what was asked", "error", loggedError(err))
 		return PredictResult[T]{}, err
 	}
 

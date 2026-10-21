@@ -1,225 +1,88 @@
 package mw
 
 import (
-	"context"
-	"math"
-	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+
+	impl "github.com/monstercameron/schemaflux/v2/internal/runtime/mw"
 )
 
-// RateLimit throttles Complete calls to at most n requests per interval,
-// enforced client-side rather than by whatever the provider does with a 429.
+// RateLimitOptions are the settings of RateLimit. The zero value is the
+// default.
+type RateLimitOptions struct {
+	// Burst is how many requests may go at once when the limiter has been
+	// idle: the capacity of the bucket, which starts full. Zero is n, the
+	// number of requests per interval. A larger Burst allows a big first
+	// batch with a slow refill. It must not be negative.
+	Burst int
+
+	// Reject makes a request that would exceed the limit fail at once with an
+	// error of kind schemaflux.ErrRateLimited whose RetryAfter says how long
+	// until a slot is due, instead of waiting for the slot. The default is to
+	// wait, bounded by the request's context.
+	Reject bool
+}
+
+// RateLimit holds requests to at most n per per, on the client's side. It is
+// not the provider's limit, which protects the provider and is learned by
+// being refused: it is a ceiling the program sets on purpose, so that a batch
+// that could fire 500 requests at once stays inside its own quota.
 //
-// The two exist for different reasons. A provider's rate limit protects the
-// provider and is discovered by being hit; this one protects the caller's
-// own budget and quota headroom and is set on purpose, before the first
-// request -- a batch job that fires 500 requests at once still wants to stay
-// under a self-imposed ceiling even on a provider that would have accepted
-// them all.
+// By default a request that would exceed the limit waits for a slot, and the
+// wait ends with its context. With Reject it fails at once with ErrRateLimited
+// and a RetryAfter, which Retry reads as the wait the way it reads a provider's
+// 429. An n below one, and a per below zero, are unusable settings, and fail every
+// request with an error of kind schemaflux.ErrConfiguration, as a negative Burst
+// does; a per of zero is a second.
 //
-// By default a call that would exceed the limit blocks until a slot opens,
-// bounded by ctx: a caller who wants to smooth a burst rather than shed it
-// gets that without writing their own queue. Reject() switches to failing
-// immediately instead, for a caller who would rather drop a request than
-// wait for one.
+// Waiting requests are not served in the order they arrived. The limit holds
+// and none is refused, but under steady load one request's wait is not bounded
+// by its place in a queue; a program that needs first come, first served puts
+// its own queue in front of the chain.
 //
-// Callers that are waiting are not served in the order they arrived. Each
-// computes how long until a token is due, sleeps that long, and takes a token
-// if one is there when it wakes; callers that wake together compete for the
-// lock, and one that arrives later can take the token a longer-waiting caller
-// was woken for. The limit holds, and no waiter is refused, but under sustained
-// load the wait of a single caller is not bounded by its position in a queue.
-// A caller that needs first-come, first-served order puts its own queue in
-// front of the chain.
-//
-// The bucket belongs to the Middleware this returns, not to a Handler: the one
-// Middleware applied to two providers limits them together.
-func RateLimit(n int, interval time.Duration, opts ...RateLimitOption) Middleware {
-	if n <= 0 {
-		n = 1
-	}
-	if interval <= 0 {
-		interval = time.Second
+// The bucket belongs to the Middleware this returns, not to a provider: the
+// same Middleware applied to two providers limits them together. Where it goes
+// in a chain decides what it counts; the package comment says. RateLimit does
+// not forward streaming: a wrapped provider cannot stream.
+func RateLimit(n int, per time.Duration, opts ...RateLimitOptions) Middleware {
+	o := mergeRateLimitOptions(opts)
+
+	var problem string
+	switch {
+	case n < 1:
+		problem = "n must be at least one request"
+	case per < 0:
+		problem = "per must not be negative"
+	case o.Burst < 0:
+		problem = "Burst must not be negative"
 	}
 
-	// WithBurst ignores a non-positive capacity, so burst is never below one.
-	cfg := rateLimiterConfig{burst: n}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
+	var settings []impl.RateLimitOption
+	if o.Burst > 0 {
+		settings = append(settings, impl.WithBurst(o.Burst))
+	}
+	if o.Reject {
+		settings = append(settings, impl.Reject())
+	}
+	build := impl.RateLimit(n, per, settings...)
+
+	return func(next schemaflux.Provider) schemaflux.Provider {
+		return wrap("mw.ratelimit", next, problem, build)
+	}
+}
+
+// mergeRateLimitOptions merges option values left to right, a later field that
+// is not zero winning.
+func mergeRateLimitOptions(opts []RateLimitOptions) RateLimitOptions {
+	var merged RateLimitOptions
+	for _, o := range opts {
+		if o.Burst != 0 {
+			merged.Burst = o.Burst
+		}
+		if o.Reject {
+			merged.Reject = true
 		}
 	}
-
-	bucket := newTokenBucket(n, interval, cfg.burst, time.Now)
-
-	return func(next Handler) Handler {
-		return &rateLimitedProvider{next: next, bucket: bucket, reject: cfg.reject}
-	}
-}
-
-// RateLimitOption configures RateLimit beyond the requests-per-interval pair
-// every caller has to supply.
-type RateLimitOption func(*rateLimiterConfig)
-
-type rateLimiterConfig struct {
-	burst  int
-	reject bool
-}
-
-// WithBurst sets the bucket's capacity separately from its refill rate, so a
-// caller can allow an initial burst of b requests even though the sustained
-// rate is n per interval. Without this, burst always equals n, which is
-// right for most callers and wrong for one that wants a large initial
-// allowance with a slow refill.
-func WithBurst(b int) RateLimitOption {
-	return func(c *rateLimiterConfig) {
-		if b > 0 {
-			c.burst = b
-		}
-	}
-}
-
-// Reject makes RateLimit fail a call that would exceed the limit instead of
-// waiting for a slot. The error is a *types.OperationError with
-// types.KindRateLimited, so it flows into mw.Retry and any other consumer of
-// llm.Classify exactly like a provider's own 429 would -- a client-side
-// throttle and a server-side one are the same kind of failure to a caller
-// deciding whether to retry, and answering that question in two different
-// ways depending on which layer refused the request is the bug A-007
-// already closed for provider errors.
-func Reject() RateLimitOption {
-	return func(c *rateLimiterConfig) { c.reject = true }
-}
-
-// rateLimitedProvider wraps a Handler with client-side pacing. It delegates
-// everything except Complete unchanged: Name, EstimateCost, and RetryPolicy
-// describe the underlying provider, and a middleware that pretended
-// otherwise would answer a caller's "which provider is this" or "what would
-// this cost" incorrectly.
-type rateLimitedProvider struct {
-	next   Handler
-	bucket *tokenBucket
-	reject bool
-}
-
-func (p *rateLimitedProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-	if err := p.bucket.wait(ctx, p.reject); err != nil {
-		return llm.CompletionResponse{}, err
-	}
-	return p.next.Complete(ctx, req)
-}
-
-func (p *rateLimitedProvider) Name() string { return p.next.Name() }
-
-func (p *rateLimitedProvider) EstimateCost(req llm.CompletionRequest) float64 {
-	return p.next.EstimateCost(req)
-}
-
-func (p *rateLimitedProvider) RetryPolicy() (int, time.Duration) {
-	return p.next.RetryPolicy()
-}
-
-// tokenBucket is a standard token bucket: capacity tokens available at
-// start, refilled continuously at rate tokens per second, each Complete call
-// spending one.
-//
-// now and sleep are hooks rather than direct calls to the time package so a
-// test can replace both with a fake clock. A rate limiter test that uses the
-// real clock either waits out real seconds -- slow, and still capable of
-// flaking under a loaded CI runner -- or asserts on wall-clock timestamps
-// with a tolerance window wide enough to be nearly meaningless. Faking the
-// clock keeps the test exact and instant.
-type tokenBucket struct {
-	mu       sync.Mutex
-	rate     float64 // tokens per second
-	capacity float64
-	tokens   float64
-	updated  time.Time
-
-	now   func() time.Time
-	sleep func(ctx context.Context, d time.Duration) error
-}
-
-func newTokenBucket(n int, interval time.Duration, capacity int, now func() time.Time) *tokenBucket {
-	return &tokenBucket{
-		rate:     float64(n) / interval.Seconds(),
-		capacity: float64(capacity),
-		tokens:   float64(capacity), // starts full, so the first burst up to capacity is immediate
-		updated:  now(),
-		now:      now,
-		sleep:    realSleep,
-	}
-}
-
-// tryAcquire refreshes the bucket for elapsed time and, if a token is
-// available, spends it. It never spends a token it does not have -- a reject
-// caller whose request was refused must not have paid for a slot nobody
-// used, or every refusal would silently push back everyone waiting behind
-// it.
-func (b *tokenBucket) tryAcquire() (ok bool, wait time.Duration) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	now := b.now()
-	if elapsed := now.Sub(b.updated).Seconds(); elapsed > 0 {
-		b.tokens += elapsed * b.rate
-		if b.tokens > b.capacity {
-			b.tokens = b.capacity
-		}
-		b.updated = now
-	}
-
-	if b.tokens >= 1 {
-		b.tokens--
-		return true, 0
-	}
-
-	// The wait is bounded by what the library will make a caller wait on a
-	// server's word (llm.MaxRetryAfter). A long interval, or a rate that rounds to
-	// nothing, gives a number of seconds that does not fit a Duration, and
-	// converting it wrapped to a negative wait: a caller that was refused was told
-	// to retry in the past, and one that was waiting did not sleep and spun. The
-	// loop in wait takes the token when it is due, however many bounded sleeps
-	// that takes.
-	//
-	// The wait is rounded up to a whole nanosecond, and is never less than one.
-	// Rounded down, a caller woke a nanosecond before its token was due, found the
-	// bucket a fraction short, computed a wait of zero and went round the loop
-	// without sleeping until the clock caught up.
-	needed := 1 - b.tokens
-	seconds := needed / b.rate
-	if !(seconds < llm.MaxRetryAfter.Seconds()) {
-		return false, llm.MaxRetryAfter
-	}
-	return false, max(time.Duration(math.Ceil(seconds*float64(time.Second))), time.Nanosecond)
-}
-
-// wait blocks (or, in reject mode, fails) until a token is available or ctx
-// ends. The loop re-checks after every sleep rather than trusting the wait it
-// computed, because under concurrent callers another goroutine can spend the
-// token this one was waiting for in between the computation and the wake-up.
-func (b *tokenBucket) wait(ctx context.Context, reject bool) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	for {
-		ok, waitFor := b.tryAcquire()
-		if ok {
-			return nil
-		}
-		if reject {
-			return &types.OperationError{
-				Kind:       types.KindRateLimited,
-				Op:         "mw.RateLimit",
-				RetryAfter: waitFor,
-				Message:    "client-side rate limit exceeded",
-			}
-		}
-		if err := b.sleep(ctx, waitFor); err != nil {
-			return err
-		}
-	}
+	return merged
 }

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // generateMaxPromptLength is the longest prompt, in characters, that Generate
@@ -494,12 +494,12 @@ Transformation rules:
 
 	userPrompt := fmt.Sprintf("Transform this data:\n%s", string(inputJSON))
 
-	// Log transformation details in debug mode
+	// Log only sizes: a schema contains the caller's field names.
 	if config.GetDebugMode() {
 		log.Debug("Transform schemas",
 			"requestID", opt.RequestID,
-			"fromSchema", fromSchema,
-			"toSchema", toSchema,
+			"fromSchemaBytes", len(fromSchema),
+			"toSchemaBytes", len(toSchema),
 		)
 	}
 
@@ -826,12 +826,11 @@ Generation rules:
 - Maintain internal consistency (e.g., related fields should make sense together)
 - Return ONLY valid JSON matching the schema, no explanations`, typeSchema)
 
-	// Log generation details in debug mode. The schema describes the target
-	// type; the prompt is the caller's text and is not written down.
+	// Log only sizes: the schema contains the caller's field names.
 	if config.GetDebugMode() {
 		log.Debug("Generate schema",
 			"requestID", opt.RequestID,
-			"schema", typeSchema,
+			"schemaBytes", len(typeSchema),
 			"promptLength", runeLen(prompt),
 		)
 	}

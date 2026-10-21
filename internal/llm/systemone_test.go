@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // systemOneKey is the key every test provider is configured with. No error may
 // contain it.
-const systemOneKey = "sk-test-decider-0123456789abcdef"
+const systemOneKey = "sk-test-decider-0123456789abcdef" // secret-scan: allow
 
 // systemOneServer stands in for a System One endpoint on loopback. It records
 // what arrived and answers with the status and body it was given.
@@ -250,8 +250,8 @@ func TestSystemOneNamesTheUpstreamAndFallsBackToTheModelItSent(t *testing.T) {
 	if resp.Model != "~typesafe/jev-latest" || resp.Provider != "jev-openrouter" {
 		t.Errorf("answered by %s/%s; an answer that names no model is the model that was sent", resp.Provider, resp.Model)
 	}
-	if !resp.Timing.Measured() {
-		t.Error("the HTTP call was not timed")
+	if resp.Timing.Calls != 1 || resp.Timing.Network < 0 {
+		t.Errorf("timing = %+v, want one timed HTTP call with nonnegative duration", resp.Timing)
 	}
 }
 

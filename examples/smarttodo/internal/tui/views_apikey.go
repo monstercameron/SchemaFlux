@@ -1,12 +1,13 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/monstercameron/schemaflux"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
 )
 
 func (m Model) apiKeyViewRender() string {
@@ -46,22 +47,14 @@ func validateAPIKey(apiKey string) error {
 		return fmt.Errorf("empty API key")
 	}
 
-	previousOpenAI := os.Getenv("OPENAI_API_KEY")
-	previousSchemaFlux := os.Getenv("SCHEMAFLUX_API_KEY")
-
-	_ = os.Setenv("OPENAI_API_KEY", apiKey)
-	_ = os.Setenv("SCHEMAFLUX_API_KEY", apiKey)
-	schemaflux.Init(apiKey)
-
-	_, err := schemaflux.Generating[string]("Reply with ok.").Fast().Run()
-	if err != nil {
-		_ = os.Setenv("OPENAI_API_KEY", previousOpenAI)
-		_ = os.Setenv("SCHEMAFLUX_API_KEY", previousSchemaFlux)
-		if previousSchemaFlux != "" {
-			schemaflux.Init(previousSchemaFlux)
-		}
+	if err := appclient.ProbeKey(context.Background(), apiKey); err != nil {
 		return fmt.Errorf("invalid API key: %w", err)
 	}
+	if err := appclient.UseKey(apiKey); err != nil {
+		return err
+	}
+	_ = os.Setenv("OPENAI_API_KEY", apiKey)
+	_ = os.Setenv("SCHEMAFLUX_API_KEY", apiKey)
 	return nil
 }
 

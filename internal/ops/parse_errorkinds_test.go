@@ -3,7 +3,7 @@ package ops
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // refusalPerson is the target the refusal tables parse into and infer from.

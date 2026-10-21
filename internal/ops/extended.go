@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ValidateOptions configures the Validate operation
@@ -58,7 +58,7 @@ func (v ValidateOptions) Validate() error {
 	}
 	validFailOn := map[string]bool{"error": true, "warning": true, "info": true}
 	if v.FailOn != "" && !validFailOn[v.FailOn] {
-		return fmt.Errorf("invalid failOn: %s", v.FailOn)
+		return fmt.Errorf("FailOn must be error, warning, or info")
 	}
 	return nil
 }
@@ -412,7 +412,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 	userPrompt, err := validateUserPrompt(data, opts.Rules, remainingFieldRules, opts.SchemaHints,
 		opts.IncludeExplanations, opts.AutoCorrect)
 	if err != nil {
-		log.Error("Validate operation failed: the request could not be written", "error", err)
+		log.Error("Validate operation failed: the request could not be written", "error", loggedError(err))
 		return none, err
 	}
 
@@ -441,7 +441,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 
 	response, err := callLLM(ctx, validateSystemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Validate operation LLM call failed", "error", err)
+		log.Error("Validate operation LLM call failed", "error", loggedError(err))
 		return none, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -449,7 +449,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 	if err != nil {
 		// The error is this library's own words. The response is not logged: it
 		// quotes the caller's data.
-		log.Error("Validate operation failed: the answer was refused", "error", err)
+		log.Error("Validate operation failed: the answer was refused", "error", loggedError(err))
 		return none, err
 	}
 
@@ -485,7 +485,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 		// unknown severity from silently defaulting to "valid" -- but noted so
 		// the next person measuring coverage does not spend an afternoon trying
 		// to reach it.
-		return none, types.Classified(types.KindConfiguration, fmt.Errorf("validate: unknown FailOn severity %q, want error, warning, or info", opts.FailOn))
+		return none, types.Classified(types.KindConfiguration, fmt.Errorf("validate: FailOn must be error, warning, or info"))
 	}
 	if answer.saysInvalid && !fails {
 		// The model was not asked for a verdict and gave one: not valid. A
@@ -514,7 +514,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 	if opts.AutoCorrect {
 		result.Corrected, err = validateCorrection(answer.corrected, data)
 		if err != nil {
-			log.Error("Validate: the correction did not match the target type", "error", err)
+			log.Error("Validate: the correction did not match the target type", "error", loggedError(err))
 			return none, err
 		}
 	}
@@ -525,7 +525,7 @@ func validateHybridCore[T any](data T, opts ValidateOptions) (ValidateResult[T],
 
 // ValidateLegacy is the legacy validation function for backward compatibility.
 //
-// Deprecated: use Validate, which returns ValidateResult[T] with typed issues,
+// Deprecated: use ValidateHybrid, which returns a typed judgment with issues,
 // severities, and an optional correction. ValidateLegacy returns
 // ValidationResult -- a bool, a []string, and a model-reported confidence --
 // which cannot express which field failed or how badly.
@@ -540,7 +540,7 @@ func ValidateLegacy[T any](data T, rules string, opts ...types.OpOptions) (Valid
 	// Convert data to JSON for validation
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		log.Error("Validate operation failed: marshal error", "error", err)
+		log.Error("Validate operation failed: marshal error", "error", loggedError(err))
 		return ValidationResult{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal data: %w", err))
 	}
 
@@ -562,7 +562,7 @@ Against these rules:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Validate operation LLM call failed", "error", err)
+		log.Error("Validate operation LLM call failed", "error", loggedError(err))
 		return ValidationResult{}, fmt.Errorf("validation failed: %w", err)
 	}
 
@@ -585,7 +585,7 @@ Against these rules:
 		// parse, so this refuses instead of guessing. The old fallback was
 		// `strings.Contains(lower, "valid")`, which reports Valid on a response
 		// saying the data is INVALID.
-		log.Error("ValidateLegacy operation failed: the answer was refused", "error", err)
+		log.Error("ValidateLegacy operation failed: the answer was refused", "error", loggedError(err))
 		return ValidationResult{}, err
 	}
 	var issues []string
@@ -662,7 +662,7 @@ Into this format:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Format operation LLM call failed", "error", err)
+		log.Error("Format operation LLM call failed", "error", loggedError(err))
 		return "", fmt.Errorf("formatting failed: %w", err)
 	}
 
@@ -672,6 +672,7 @@ Into this format:
 
 // FormatWithMetadata formats data with additional metadata including
 // what format was applied, transformation notes, and confidence score.
+// Deprecated: use Format for the supported formatting result.
 func FormatWithMetadata(data any, template string, opts ...types.OpOptions) (FormatResult, error) {
 	opt := applyDefaults(opts...)
 	log := loggerFor(opt.Context)
@@ -710,7 +711,7 @@ Into this format:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("FormatWithMetadata operation LLM call failed", "error", err)
+		log.Error("FormatWithMetadata operation LLM call failed", "error", loggedError(err))
 		return FormatResult{}, fmt.Errorf("formatting failed: %w", err)
 	}
 
@@ -727,7 +728,7 @@ Into this format:
 		// The fallback returned the raw body as formatted text with an invented
 		// confidence of 0.7, so a refusal or an error page became the caller's
 		// formatted output.
-		log.Error("FormatWithMetadata could not parse the response", "error", err)
+		log.Error("FormatWithMetadata could not parse the response", "error", loggedError(err))
 		return FormatResult{}, fmt.Errorf("formatting failed: %w", err)
 	}
 
@@ -840,7 +841,7 @@ func Merge[T any](sources []T, strategy string, opts ...types.OpOptions) (_ T, r
 	for i, source := range sources {
 		sourceJSON, err := json.Marshal(source)
 		if err != nil {
-			log.Error("Merge operation failed: marshal error", "sourceIndex", i, "error", err)
+			log.Error("Merge operation failed: marshal error", "sourceIndex", i, "error", loggedError(err))
 			return none, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal source %d: %w", i, err))
 		}
 		sourcesJSON = append(sourcesJSON, string(sourceJSON))
@@ -864,7 +865,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Merge operation LLM call failed", "error", err)
+		log.Error("Merge operation LLM call failed", "error", loggedError(err))
 		return none, fmt.Errorf("merge failed: %w", err)
 	}
 
@@ -872,7 +873,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 	// leaves nothing in the value that is returned with it.
 	var merged T
 	if err := decodeCallerAnswer("merge", response, &merged); err != nil {
-		log.Error("Merge operation failed: unmarshal error", "error", err)
+		log.Error("Merge operation failed: unmarshal error", "error", loggedError(err))
 		return none, fmt.Errorf("failed to parse merged result: %w", err)
 	}
 
@@ -892,6 +893,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 // with no "merged" key is read as the merged value itself. For a T that is a
 // map or an interface, any object without a "merged" key is therefore taken to
 // be the merged value.
+// Deprecated: use Merge for the supported merged value.
 func MergeWithMetadata[T any](sources []T, strategy string, opts ...types.OpOptions) (MergeResult[T], error) {
 	opt := applyDefaults(opts...)
 	log := loggerFor(opt.Context)
@@ -923,7 +925,7 @@ func MergeWithMetadata[T any](sources []T, strategy string, opts ...types.OpOpti
 	for i, source := range sources {
 		sourceJSON, err := json.Marshal(source)
 		if err != nil {
-			log.Error("MergeWithMetadata operation failed: marshal error", "sourceIndex", i, "error", err)
+			log.Error("MergeWithMetadata operation failed: marshal error", "sourceIndex", i, "error", loggedError(err))
 			return MergeResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal source %d: %w", i, err))
 		}
 		sourcesJSON = append(sourcesJSON, fmt.Sprintf("Source %d: %s", i, string(sourceJSON)))
@@ -959,7 +961,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("MergeWithMetadata operation LLM call failed", "error", err)
+		log.Error("MergeWithMetadata operation LLM call failed", "error", loggedError(err))
 		return MergeResult[T]{}, fmt.Errorf("merge failed: %w", err)
 	}
 
@@ -984,7 +986,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 		// The model answered with just the merged object.
 		var merged T
 		if err := decodeCallerAnswer("merge", response, &merged); err != nil {
-			log.Error("MergeWithMetadata operation failed: unmarshal error", "error", err)
+			log.Error("MergeWithMetadata operation failed: unmarshal error", "error", loggedError(err))
 			return MergeResult[T]{}, fmt.Errorf("failed to parse merged result: %w", err)
 		}
 		result.Merged = merged
@@ -1010,7 +1012,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 		ModelConfidence *float64        `json:"confidence"`
 	}
 	if err := ParseJSON(response, &parsed); err != nil {
-		log.Error("MergeWithMetadata operation failed: the envelope could not be read", "error", err)
+		log.Error("MergeWithMetadata operation failed: the envelope could not be read", "error", loggedError(err))
 		return MergeResult[T]{}, fmt.Errorf("failed to parse merged result: %w", err)
 	}
 
@@ -1023,7 +1025,7 @@ Using strategy: %s`, strings.Join(sourcesJSON, "\n"), quotedStrategy)
 	}
 	var merged T
 	if err := json.Unmarshal(parsed.Merged, &merged); err != nil {
-		log.Error("MergeWithMetadata operation failed: merged data parse error", "error", err)
+		log.Error("MergeWithMetadata operation failed: merged data parse error", "error", loggedError(err))
 		return MergeResult[T]{}, types.Classified(types.KindMalformedOutput, fmt.Errorf("failed to parse merged data: %w", err))
 	}
 
@@ -1221,7 +1223,7 @@ func Question[T any, A any](data T, opts QuestionOptions) (QuestionResult[A], er
 	// Convert data to string representation
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		log.Error("Question operation failed: marshal error", "error", err)
+		log.Error("Question operation failed: marshal error", "error", loggedError(err))
 		return QuestionResult[A]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal data: %w", err))
 	}
 
@@ -1296,7 +1298,7 @@ Question: %s`, string(dataJSON), quotedQuestion)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Question operation LLM call failed", "error", err)
+		log.Error("Question operation LLM call failed", "error", loggedError(err))
 		return QuestionResult[A]{}, fmt.Errorf("question answering failed: %w", err)
 	}
 
@@ -1318,7 +1320,7 @@ Question: %s`, string(dataJSON), quotedQuestion)
 		// answer, with an invented confidence of 0.5 -- so a refusal became a
 		// confident answer whenever A was a string. The log line also carried
 		// the whole response, which is the caller's data.
-		log.Error("Question operation failed: parse error", "error", err)
+		log.Error("Question operation failed: parse error", "error", loggedError(err))
 		return QuestionResult[A]{}, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -1376,7 +1378,7 @@ Question: %s`, string(dataJSON), quotedQuestion)
 			// value in it that it does not accept.
 			target := reflect.ValueOf(&result.Answer).Elem()
 			if target.Kind() != reflect.String || !isJSONScalar(answerText) || decodesItself(target.Type()) {
-				log.Error("Question operation failed: answer parse error", "error", err)
+				log.Error("Question operation failed: answer parse error", "error", loggedError(err))
 				// A failed decode can leave part of a value behind. Nothing of it
 				// goes back with the error.
 				return QuestionResult[A]{}, &types.OperationError{
@@ -1474,7 +1476,7 @@ Question: %s`, written, quotedQuestion)
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Question operation LLM call failed", "error", err)
+		log.Error("Question operation LLM call failed", "error", loggedError(err))
 		return "", fmt.Errorf("question answering failed: %w", err)
 	}
 
@@ -1699,7 +1701,7 @@ func deduplicate[T any](items []T, threshold float64, opts ...types.OpOptions) (
 	for i, item := range items {
 		itemJSON, err := promptJSON(item)
 		if err != nil {
-			log.Error("Deduplicate operation failed: marshal error", "itemIndex", i, "error", err)
+			log.Error("Deduplicate operation failed: marshal error", "itemIndex", i, "error", loggedError(err))
 			return DeduplicateResult[T]{}, &types.OperationError{
 				Kind: types.KindInvalidRequest, Op: "deduplicate",
 				Message: fmt.Sprintf("item %d cannot be written as JSON", i), Cause: err,
@@ -1739,7 +1741,7 @@ func deduplicate[T any](items []T, threshold float64, opts ...types.OpOptions) (
 		written = append(written, opt.Steering)
 		response, err := callLLM(preferEffort(ctx, judgmentEffort(written...)), deduplicateSystemPrompt, listing.String(), opt)
 		if err != nil {
-			log.Error("Deduplicate operation LLM call failed", "error", err)
+			log.Error("Deduplicate operation LLM call failed", "error", loggedError(err))
 			return DeduplicateResult[T]{}, fmt.Errorf("deduplication failed: %w", err)
 		}
 

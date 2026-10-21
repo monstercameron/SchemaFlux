@@ -18,7 +18,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // realClock.Now() must track the wall clock -- it is the only clock a

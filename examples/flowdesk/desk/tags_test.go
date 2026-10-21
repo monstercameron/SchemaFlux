@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
 // The flows read their questions, their options and the scale of the urgency
@@ -319,15 +319,15 @@ type chooser struct {
 	prompts []string
 }
 
-func (c *chooser) Name() string                                      { return "local" }
-func (c *chooser) EstimateCost(schemaflux.CompletionRequest) float64 { return 0 }
-func (c *chooser) RetryPolicy() (int, time.Duration)                 { return 0, 0 }
+func (c *chooser) Name() string                            { return "local" }
+func (c *chooser) EstimateCost(schemaflux.Request) float64 { return 0 }
+func (c *chooser) RetryPolicy() (int, time.Duration)       { return 0, 0 }
 
-func (c *chooser) Complete(_ context.Context, req schemaflux.CompletionRequest) (schemaflux.CompletionResponse, error) {
+func (c *chooser) Complete(_ context.Context, req schemaflux.Request) (schemaflux.Response, error) {
 	c.mu.Lock()
-	c.prompts = append(c.prompts, req.UserPrompt)
+	c.prompts = append(c.prompts, req.User)
 	c.mu.Unlock()
-	return schemaflux.CompletionResponse{Content: c.pick, Provider: "local", Model: req.Model, FinishReason: "stop"}, nil
+	return schemaflux.Response{Content: c.pick, Provider: "local", Model: req.Model, FinishReason: "stop"}, nil
 }
 
 func (c *chooser) calls() int {
@@ -368,7 +368,7 @@ func TestTheTicketMatchChoosesByIDAndAsksOfTheSenderAndTheText(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := &chooser{pick: tc.pick}
-			ctx := schemaflux.NewClient("").WithProviderInstance(provider).Context(context.Background())
+			ctx := schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: provider})
 			support := New(tc.open)
 
 			matched, err := support.match("someone@example.com", "the text of the message")(ctx)

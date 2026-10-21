@@ -1,61 +1,48 @@
 package schemafluxtest
 
 import (
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/internal/ops"
+	"testing"
+
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
-// TestingT is the part of *testing.T this package uses. It is an interface so
-// schemafluxtest does not import testing into your binary.
-type TestingT interface {
-	Helper()
-	Cleanup(func())
-	Setenv(key, value string)
-	Fatalf(format string, args ...any)
-}
+// installMarker is a variable Install sets for the length of a test, and the
+// library never reads. Setting a variable is what makes Go refuse a test that
+// has called t.Parallel: the default client is the process's, and two tests that
+// install one at once would answer each other's calls.
+const installMarker = "SCHEMAFLUX_TEST_INSTALLED"
 
-// Install points SchemaFlux at the provider for the duration of the test, and
-// returns a function that restores the previous one. The restore also runs via
-// t.Cleanup, so calling it is optional:
+// Install makes p the provider of the default client for the length of the
+// test t, and puts the default back when the test ends. It is for code that
+// calls on the default client, which has no context to carry a fake through
+// (code that takes its context from its caller needs no Install: it is given
+// schemaflux.WithClient(ctx, schemaflux.Client{Provider: p})).
 //
-//	defer schemafluxtest.Install(t, provider)()
+// What it installs is the whole of a default client with that provider and
+// nothing else set: the model, the limits and the policy of whatever was the
+// default are not kept for the test, and are back when it ends. A fake is a
+// provider in code, so no variable of the environment changes what it answers.
 //
-// It calls t.Setenv, which makes Go fail any test that also calls t.Parallel.
-// That is deliberate. SchemaFlux resolves its provider through a package
-// global, so two parallel tests with different providers would silently share
-// one; failing loudly is better than a flake nobody can reproduce. Removing the
-// global is TODOS.md TI-002.
-func Install(t TestingT, provider *Provider) func() {
+// Install changes the process, so it cannot be used in a parallel test: it sets
+// a variable with t.Setenv, which Go refuses once t.Parallel has been called,
+// and the test panics saying so. Two Installs in one test are undone in the
+// reverse order, and the last one wins until it is.
+//
+//	func TestHandlerSummarises(t *testing.T) {
+//		var model schemafluxtest.Provider
+//		model.Reply("Short.")
+//		schemafluxtest.Install(t, &model)
+//
+//		summary := handler.Summarise(t.Context(), longText) // calls schemaflux.Summarize(ctx, ...)
+//		...
+//	}
+func Install(t testing.TB, p schemaflux.Provider) {
 	t.Helper()
-
-	if provider == nil {
-		t.Fatalf("schemafluxtest: Install needs a provider; call New()")
-		return func() {}
+	if p == nil {
+		t.Fatal("schemafluxtest.Install: the provider is nil")
 	}
-
-	// A key is required before a client will build, and this one is never sent
-	// anywhere: the provider below answers every call in-process.
-	t.Setenv("SCHEMAFLUX_API_KEY", "schemafluxtest-not-a-real-key")
-
-	previous := schemaflux.GetDefaultClient()
-
-	// NewClient builds a client; it does not install one. Setting the provider
-	// on it registers the package-level provider the operations read, but
-	// GetDefaultClient would still return whatever was there before -- so the
-	// client has to be installed explicitly.
-	client := schemaflux.NewClient("schemafluxtest-not-a-real-key").WithProviderInstance(provider)
-	schemaflux.SetDefaultClient(client)
-
-	// SetDefaultClient repoints the operations' provider only when the client
-	// it is given holds one. A previous client with none (built without a key,
-	// say) would leave the double as the provider every operation reads, so the
-	// provider is cleared first and the previous client's own is set over it
-	// when it has one.
-	restore := func() {
-		ops.SetDefaultProvider(nil)
-		schemaflux.SetDefaultClient(previous)
-	}
-	t.Cleanup(restore)
-
-	return restore
+	t.Setenv(installMarker, "1")
+	previous := schemaflux.Default()
+	schemaflux.SetDefault(schemaflux.Client{Provider: p})
+	t.Cleanup(func() { schemaflux.SetDefault(previous) })
 }

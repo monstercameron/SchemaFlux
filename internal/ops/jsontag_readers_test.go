@@ -201,6 +201,9 @@ func TestDecideSaysNothingWhenEncodingJSONWritesNoMember(t *testing.T) {
 // Reading the members for each value cost eight allocations of the
 // thirteen a decision's request makes.
 func TestDecideSaysNothingAllocatesNothingOnceTheTypeIsKnown(t *testing.T) {
+	previousPlans := typePlans
+	typePlans = newTypePlanCache(typePlanLimit)
+	t.Cleanup(func() { typePlans = previousPlans })
 	values := []any{
 		tagOnlyDash{A: "x"}, &tagOnlyDash{A: "x"}, tagDash{A: "1", B: "2"}, tagPromoted{TagInner: TagInner{Deep: "d"}},
 		tagPromotedNamed{Own: "x"}, tagOnlyPromotedHidden{}, tagNoExported{}, caseStrictPromoted{}, tagEndsAtQuote{},

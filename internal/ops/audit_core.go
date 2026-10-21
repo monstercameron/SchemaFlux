@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // LX-029. What Audit asks for, what it accepts, and how it reaches a verdict.
@@ -415,7 +415,7 @@ func auditCore[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
 	}
 	userPrompt, err := auditUserPrompt(data, opt, sentPolicies, categories)
 	if err != nil {
-		log.Error("Audit operation failed: the request could not be written", "error", err)
+		log.Error("Audit operation failed: the request could not be written", "error", loggedError(err))
 		return AuditResult[T]{}, err
 	}
 
@@ -434,7 +434,7 @@ func auditCore[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
 		SchemaName:      "audit",
 	})
 	if err != nil {
-		log.Error("Audit operation LLM call failed", "error", err)
+		log.Error("Audit operation LLM call failed", "error", loggedError(err))
 		return AuditResult[T]{}, err
 	}
 
@@ -442,7 +442,7 @@ func auditCore[T any](data T, opts ...AuditOptions) (AuditResult[T], error) {
 	if err != nil {
 		// The error is this library's own words. The response is not logged:
 		// it quotes the caller's data as evidence.
-		log.Error("Audit operation failed: the answer was refused", "error", err)
+		log.Error("Audit operation failed: the answer was refused", "error", loggedError(err))
 		return AuditResult[T]{}, err
 	}
 

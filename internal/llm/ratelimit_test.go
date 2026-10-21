@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A 429 was reported as a plain formatted error, so the `Retry-After: 53` that

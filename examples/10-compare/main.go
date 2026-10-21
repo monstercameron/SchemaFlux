@@ -1,195 +1,104 @@
-// Example: 10-compare
-//
-// Operation: Compare[T] - Compare two items across multiple aspects
-//
-// Input: Two smartphone products
-//   - UltraPhone Pro Max: $1299, 108MP camera, 12GB RAM, Android
-//   - SmartPhone Elite: $1099, 64MP camera, 8GB RAM, iOS
-//
-// Comparison Aspects: camera, battery, display, performance, value
-//
-// Expected Output:
-//   - SimilarityScore: ~60-70% (different ecosystems, similar tier)
-//   - Similarities: 5G, premium displays, flagship tier
-//   - Differences: Camera (108MP vs 64MP), RAM (12GB vs 8GB), OS, Price
-//   - Verdict: Summary recommendation
-//
-// Provider: Cerebras (gpt-oss-120b via Fast intelligence)
-// Expected Duration: ~1-2s
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 
-	schemaflux "github.com/monstercameron/schemaflux"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
 )
 
-// Product represents a product to compare
+// Product represents a product to compare.
 type Product struct {
-	Name     string
-	Price    float64
-	Features []string
-	Specs    map[string]string
-}
-
-// loadEnv loads environment variables from a .env file
-func loadEnv(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			os.Setenv(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
-		}
-	}
-	return scanner.Err()
+	Name     string            `json:"name"`
+	Price    float64           `json:"price"`
+	Features []string          `json:"features"`
+	Specs    map[string]string `json:"specs"`
 }
 
 func main() {
-	// Load .env file from project root
-	if err := loadEnv("../../.env"); err != nil {
-		fmt.Printf("Warning: Could not load .env file: %v\n", err)
+	if err := run(context.Background(), os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+}
 
-	// Initialize SchemaFlux
-	if err := schemaflux.InitWithEnv(); err != nil {
-		schemaflux.GetLogger().Error("Failed to initialize SchemaFlux", "error", err)
-		return
-	}
-
-	// Two products to compare
+func run(ctx context.Context, out io.Writer) error {
 	productA := Product{
-		Name:  "UltraPhone Pro Max",
-		Price: 1299.99,
-		Features: []string{
-			"6.7-inch OLED display",
-			"108MP triple camera",
-			"5000mAh battery",
-			"5G connectivity",
-			"IP68 water resistance",
-		},
-		Specs: map[string]string{
-			"Processor": "Snapdragon 8 Gen 3",
-			"RAM":       "12GB",
-			"Storage":   "256GB",
-			"OS":        "Android 14",
-		},
+		Name: "UltraPhone Pro Max", Price: 1299.99,
+		Features: []string{"6.7-inch OLED display", "108MP triple camera", "5000mAh battery", "5G connectivity", "IP68 water resistance"},
+		Specs:    map[string]string{"Processor": "Snapdragon 8 Gen 3", "RAM": "12GB", "Storage": "256GB", "OS": "Android 14"},
 	}
-
 	productB := Product{
-		Name:  "SmartPhone Elite",
-		Price: 1099.99,
-		Features: []string{
-			"6.5-inch AMOLED display",
-			"64MP dual camera",
-			"4500mAh battery",
-			"5G connectivity",
-			"Premium aluminum build",
-		},
-		Specs: map[string]string{
-			"Processor": "A17 Bionic",
-			"RAM":       "8GB",
-			"Storage":   "128GB",
-			"OS":        "iOS 17",
-		},
+		Name: "SmartPhone Elite", Price: 1099.99,
+		Features: []string{"6.5-inch AMOLED display", "64MP dual camera", "4500mAh battery", "5G connectivity", "Premium aluminum build"},
+		Specs:    map[string]string{"Processor": "A17 Bionic", "RAM": "8GB", "Storage": "128GB", "OS": "iOS 17"},
 	}
 
-	fmt.Println("🔍 Compare Example - Product Comparison")
-	fmt.Println("=" + string(make([]byte, 60)))
+	fmt.Fprintln(out, "🔍 Compare Example - Product Comparison")
+	fmt.Fprintln(out, strings.Repeat("=", 60))
+	fmt.Fprintf(out, "\n📱 Product A:\n   Name:  %s ($%.2f)\n   Features: %v\n", productA.Name, productA.Price, productA.Features)
+	fmt.Fprintf(out, "\n📱 Product B:\n   Name:  %s ($%.2f)\n   Features: %v\n", productB.Name, productB.Price, productB.Features)
 
-	fmt.Println("\n📱 Product A:")
-	fmt.Printf("   Name:  %s ($%.2f)\n", productA.Name, productA.Price)
-	fmt.Println("   Features:", productA.Features)
-
-	fmt.Println("\n📱 Product B:")
-	fmt.Printf("   Name:  %s ($%.2f)\n", productB.Name, productB.Price)
-	fmt.Println("   Features:", productB.Features)
-
-	// Compare the products using the new typed Compare
-	compareOpts := schemaflux.NewCompareOptions().
-		WithComparisonAspects([]string{"camera", "battery", "display", "performance", "value"}).
-		WithFocusOn("both")
-	compareOpts.Depth = 7
-	compareOpts.OpOptions.Intelligence = schemaflux.Fast
-
-	result, err := schemaflux.Compare[Product](productA, productB, compareOpts)
+	// Aspects and depth guide the comparison; Compare checks that every requested aspect is scored.
+	result, err := schemaflux.Compare(ctx, productA, productB, schemaflux.CompareOptions{
+		Aspects: []string{"camera", "battery", "display", "performance", "value"},
+		FocusOn: "both",
+		Depth:   7,
+		Options: schemaflux.Options{Tier: schemaflux.TierFast},
+	})
 	if err != nil {
-		schemaflux.GetLogger().Error("Comparison failed", "error", err)
-		return
+		return fmt.Errorf("comparison failed; check your provider configuration and try again: %w", err)
 	}
 
-	// Display structured comparison results
-	fmt.Println("\n✅ Comparison Results:")
-	fmt.Println("---")
-	fmt.Printf("📊 Overall Similarity: %.0f%%\n", result.SimilarityScore*100)
-	fmt.Printf("📝 Verdict: %s\n", result.Verdict)
-
-	// Show aspect scores if available
+	fmt.Fprintln(out, "\n✅ Comparison Results:")
+	fmt.Fprintln(out, "---")
+	fmt.Fprintf(out, "📊 Overall Similarity: %.0f%%\n📝 Verdict: %s\n", result.SimilarityScore*100, result.Verdict)
 	if len(result.AspectScores) > 0 {
-		fmt.Println("\n📈 Similarity by Aspect:")
-		for aspect, score := range result.AspectScores {
-			bar := ""
+		fmt.Fprintln(out, "\n📈 Similarity by Aspect:")
+		aspects := make([]string, 0, len(result.AspectScores))
+		for aspect := range result.AspectScores {
+			aspects = append(aspects, aspect)
+		}
+		sort.Strings(aspects)
+		for _, aspect := range aspects {
+			score := result.AspectScores[aspect]
 			filled := int(score * 10)
-			for i := 0; i < 10; i++ {
-				if i < filled {
-					bar += "█"
-				} else {
-					bar += "░"
-				}
+			if filled > 10 {
+				filled = 10
 			}
-			fmt.Printf("   %s: %s %.0f%%\n", aspect, bar, score*100)
+			fmt.Fprintf(out, "   %s: %s%s %.0f%%\n", aspect, strings.Repeat("█", filled), strings.Repeat("░", 10-filled), score*100)
 		}
 	}
-
-	// Show similarities
 	if len(result.Similarities) > 0 {
-		fmt.Println("\n✅ Similarities:")
-		for _, sim := range result.Similarities {
-			fmt.Printf("   • [%s] %s\n", sim.Aspect, sim.Description)
+		fmt.Fprintln(out, "\n✅ Similarities:")
+		for _, point := range result.Similarities {
+			fmt.Fprintf(out, "   • [%s] %s\n", point.Aspect, point.Description)
 		}
 	}
-
-	// Show differences
 	if len(result.Differences) > 0 {
-		fmt.Println("\n❌ Differences:")
-		for _, diff := range result.Differences {
-			severity := ""
-			switch diff.Severity {
-			case "major":
-				severity = "🔴"
-			case "moderate":
-				severity = "🟡"
-			case "minor":
-				severity = "🟢"
-			default:
-				severity = "⚪"
-			}
-			fmt.Printf("   %s [%s] %s\n", severity, diff.Aspect, diff.Description)
+		fmt.Fprintln(out, "\n❌ Differences:")
+		for _, point := range result.Differences {
+			fmt.Fprintf(out, "   %s [%s] %s\n", severityIcon(point.Severity), point.Aspect, point.Description)
 		}
 	}
+	fmt.Fprintf(out, "\n🎯 Recommendation based on comparison:\n   Choose %s for:\n   • Photography enthusiasts\n   • Heavy multitasking\n   • Android ecosystem preference\n\n   Choose %s for:\n   • Apple ecosystem users\n   • Better value for money\n   • Premium build quality\n", productA.Name, productB.Name)
+	fmt.Fprintln(out, "\n✨ Success! Typed product comparison with detailed analysis")
+	return nil
+}
 
-	fmt.Println("\n🎯 Recommendation based on comparison:")
-	fmt.Printf("   Choose %s for:\n", productA.Name)
-	fmt.Println("   • Photography enthusiasts")
-	fmt.Println("   • Heavy multitasking")
-	fmt.Println("   • Android ecosystem preference")
-	fmt.Println()
-	fmt.Printf("   Choose %s for:\n", productB.Name)
-	fmt.Println("   • Apple ecosystem users")
-	fmt.Println("   • Better value for money")
-	fmt.Println("   • Premium build quality")
-
-	fmt.Println("\n✨ Success! Typed product comparison with detailed analysis")
+func severityIcon(severity string) string {
+	switch severity {
+	case "major":
+		return "🔴"
+	case "moderate":
+		return "🟡"
+	case "minor":
+		return "🟢"
+	default:
+		return "⚪"
+	}
 }

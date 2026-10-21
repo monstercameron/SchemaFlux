@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The System One protocol: TypeSafe AI's decision endpoint, which its Jev model
@@ -164,7 +164,7 @@ func NewSystemOneProvider(preset SystemOnePreset, config ProviderConfig) (*Syste
 	preset.Name = name
 
 	if strings.TrimSpace(config.APIKey) == "" {
-		config.APIKey = firstSetVariable(append(append([]string{}, preset.KeyVariables...), sharedKeyVariable))
+		config.APIKey = firstSetVariable(append(append([]string{}, preset.KeyVariables...), sharedKeyVariable)) // secret-scan: allow
 	}
 	if strings.TrimSpace(config.APIKey) == "" {
 		return nil, types.Newf(types.KindConfiguration, "llm.configure", "%s API key is required: set it on the provider's configuration, or in %s",

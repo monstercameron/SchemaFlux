@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Annotate refuses options it cannot use before it asks a model. Each refusal
@@ -60,7 +60,7 @@ func TestAnnotateRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "a format that is not one of the three",
 			run:  annotate(func(o *AnnotateOptions) { o.Format = "xml" }),
-			text: "invalid options: invalid format: xml",
+			text: "invalid options: annotation format must be inline, standoff, or structured",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
-	"github.com/monstercameron/schemaflux/pricing"
-	"github.com/monstercameron/schemaflux/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/pricing"
+	"github.com/monstercameron/schemaflux/v2/internal/runtime/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Plan is separate from Execute. Preflight returns a types.Plan --
@@ -185,7 +185,7 @@ func planOperation[In, Out any](ctx context.Context, op Op[In, Out], items []In,
 			return plan
 		}
 		plan.MaxCalls = len(items)
-		plan.EstimatedCost = costFromTokens(plan.Capability.Model, prompt, len(items)*plan.Capability.MaxOutputTokens)
+		plan.EstimatedCost = costFromTokens(ctx, plan.Capability.Model, prompt, len(items)*plan.Capability.MaxOutputTokens)
 
 	case types.ShapeMDSP, types.ShapeGlobal:
 		sizes, refusal := measureItems(items)
@@ -201,7 +201,7 @@ func planOperation[In, Out any](ctx context.Context, op Op[In, Out], items []In,
 		plan.Chunks = chunks
 		plan.OversizedItems = oversized
 		plan.MaxCalls = len(chunks) + len(oversized)
-		plan.EstimatedCost = estimateChunkedCost(prompt, chunks, oversized, plan.Capability)
+		plan.EstimatedCost = estimateChunkedCost(ctx, prompt, chunks, oversized, plan.Capability)
 
 	default:
 		refuse(&plan, &planRefusal{types.KindConfiguration, fmt.Sprintf("shape %s has no execution plan in this delivery", shape)})
@@ -554,7 +554,7 @@ func packChunks(sizes []itemSize, budget chunkBudget) ([]types.ChunkPlan, []type
 // has to hold beside the items and the answer; the packing does not know it
 // until the batch has been asked to render one (planBatch), so it is a
 // parameter and zero means not yet known.
-func planChunks(sizes []itemSize, req types.PlanRequest, capability types.CapabilitySnapshot, systemTokens int) ([]types.ChunkPlan, []types.OversizedItem) {
+func planChunks(ctx context.Context, sizes []itemSize, req types.PlanRequest, capability types.CapabilitySnapshot, systemTokens int) ([]types.ChunkPlan, []types.OversizedItem) {
 	maxItems := req.MaxItemsPerCall
 	if maxItems <= 0 {
 		maxItems = defaultMaxItemsPerCall
@@ -569,7 +569,7 @@ func planChunks(sizes []itemSize, req types.PlanRequest, capability types.Capabi
 	// req.Budget bounds the whole request and is checked against the plan's
 	// total estimate (holdToBudget). Here it also bounds each call, since no
 	// single call can cost more than the whole request may.
-	costIn, costOut, priced := lookupTokenPrices(capability.Model)
+	costIn, costOut, priced := lookupTokenPrices(ctx, capability.Model)
 	maxCost := 0.0
 	if priced {
 		maxCost = req.Budget
@@ -595,9 +595,9 @@ func planChunks(sizes []itemSize, req types.PlanRequest, capability types.Capabi
 // a pure lookup against the rate card, the same one CalculateCost consults
 // for a real call, so the estimate and the eventual bill never disagree
 // about which rate applies.
-func lookupTokenPrices(model string) (perPromptToken, perCompletionToken float64, priced bool) {
+func lookupTokenPrices(ctx context.Context, model string) (perPromptToken, perCompletionToken float64, priced bool) {
 	usage := &types.TokenUsage{PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000}
-	cost := pricing.CalculateCost(usage, model, "")
+	cost := pricing.CalculateCostLogged(loggerFor(ctx), usage, model, "")
 	if cost == nil || !cost.Priced {
 		return 0, 0, false
 	}
@@ -772,7 +772,7 @@ func chunkedItems[In any](items []In, oversized []types.OversizedItem) []In {
 // that chunk.
 func planBatch[In, Out any](ctx context.Context, op Op[In, Out], items []In, sizes []itemSize, req types.PlanRequest, capability types.CapabilitySnapshot) ([]types.ChunkPlan, []types.OversizedItem, int, *planRefusal) {
 	opt := req.Options
-	chunks, oversized := planChunks(sizes, req, capability, 0)
+	chunks, oversized := planChunks(ctx, sizes, req, capability, 0)
 
 	var sequence []In
 	var first renderedChunk
@@ -787,7 +787,7 @@ func planBatch[In, Out any](ctx context.Context, op Op[In, Out], items []In, siz
 		haveFirst = true
 
 		if first.system > 0 {
-			recut, recutOversized := planChunks(sizes, req, capability, first.system)
+			recut, recutOversized := planChunks(ctx, sizes, req, capability, first.system)
 			// The system prompt only takes room, so a second cutting has the
 			// oversized items of the first and perhaps more. With as many, the
 			// items in chunks are the same, and the first chunk is the same one
@@ -835,27 +835,27 @@ func planBatch[In, Out any](ctx context.Context, op Op[In, Out], items []In, siz
 // answer is the planning assumption for what one item of a batch costs to answer,
 // and an oversized item, sent alone, is estimated at the model's ceiling as every
 // item of an atomic plan is.
-func estimateChunkedCost(promptTokens int, chunks []types.ChunkPlan, oversized []types.OversizedItem, capability types.CapabilitySnapshot) types.CostEstimate {
+func estimateChunkedCost(ctx context.Context, promptTokens int, chunks []types.ChunkPlan, oversized []types.OversizedItem, capability types.CapabilitySnapshot) types.CostEstimate {
 	completionTokens := 0
 	for _, c := range chunks {
 		completionTokens += c.ItemCount * outputTokensPerItemDefault
 	}
 	completionTokens += len(oversized) * capability.MaxOutputTokens
 
-	return costFromTokens(capability.Model, promptTokens, completionTokens)
+	return costFromTokens(ctx, capability.Model, promptTokens, completionTokens)
 }
 
 // costFromTokens turns a token estimate into a CostEstimate, reporting
 // unpriced -- never a fabricated $0.00 -- when the model has no rate card
 // entry. PR-002's rule, carried into planning: a plan for an unpriced model
 // must say so honestly rather than estimate zero.
-func costFromTokens(model string, promptTokens, completionTokens int) types.CostEstimate {
+func costFromTokens(ctx context.Context, model string, promptTokens, completionTokens int) types.CostEstimate {
 	usage := &types.TokenUsage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		TotalTokens:      promptTokens + completionTokens,
 	}
-	cost := pricing.CalculateCost(usage, model, "")
+	cost := pricing.CalculateCostLogged(loggerFor(ctx), usage, model, "")
 	if cost == nil || !cost.Priced {
 		return types.CostEstimate{
 			EstimatedPromptTokens:     promptTokens,

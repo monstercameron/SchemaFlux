@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/ops"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/ops"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The corpus: the cases RC-002 names, each written as a *property* of an

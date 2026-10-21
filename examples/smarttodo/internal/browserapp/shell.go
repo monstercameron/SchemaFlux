@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/intelligence"
-	"github.com/monstercameron/schemaflux/examples/smarttodo/internal/models"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/appclient"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/intelligence"
+	"github.com/monstercameron/schemaflux/v2/examples/smarttodo/internal/models"
 )
 
 type Shell struct {
@@ -52,7 +52,9 @@ func (s *Shell) Connect(apiKey, context string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("api key is required")
 	}
-	schemaflux.Init(trimmed)
+	if err := appclient.UseKey(trimmed); err != nil {
+		return "", err
+	}
 	s.state.Context = strings.TrimSpace(context)
 
 	var out []string

@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // ResolveOptions configures the Resolve operation
@@ -225,7 +225,7 @@ func Resolve[T any](sources []T, opts ...ResolveOptions) (ResolveResult[T], erro
 	for i, source := range sources {
 		sourceJSON, err := json.Marshal(source)
 		if err != nil {
-			log.Error("Resolve operation failed: marshal error", "sourceIndex", i, "error", err)
+			log.Error("Resolve operation failed: marshal error", "sourceIndex", i, "error", loggedError(err))
 			return ResolveResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal source %d: %w", i, err))
 		}
 		sourcesJSON = append(sourcesJSON, fmt.Sprintf("Source %d: %s", i, string(sourceJSON)))
@@ -310,7 +310,7 @@ Strategy explanations:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Resolve operation LLM call failed", "error", err)
+		log.Error("Resolve operation LLM call failed", "error", loggedError(err))
 		return ResolveResult[T]{}, fmt.Errorf("resolution failed: %w", err)
 	}
 
@@ -328,7 +328,7 @@ Strategy explanations:
 
 	if err := decodeAnswer("resolve", response, &parsed); err != nil {
 		// The response holds the caller's records, so only its size is logged.
-		log.Error("Resolve operation failed: parse error", "error", err, "responseBytes", len(response))
+		log.Error("Resolve operation failed: parse error", "error", loggedError(err), "responseBytes", len(response))
 		return ResolveResult[T]{}, fmt.Errorf("failed to parse resolution result: %w", err)
 	}
 
@@ -343,7 +343,7 @@ Strategy explanations:
 		return ResolveResult[T]{}, types.Newf(types.KindSchemaViolation, "resolve", "resolved is null")
 	}
 	if err := decodeCallerAnswer("resolve", string(parsed.Resolved), &result.Resolved); err != nil {
-		log.Error("Resolve operation failed: resolved data parse error", "error", err)
+		log.Error("Resolve operation failed: resolved data parse error", "error", loggedError(err))
 		return ResolveResult[T]{}, fmt.Errorf("the resolved record does not decode as the source type: %w", err)
 	}
 	// A list or a map the reader lets be null is an answer to the question only

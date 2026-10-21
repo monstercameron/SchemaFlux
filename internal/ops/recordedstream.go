@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/requesttracking"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/requesttracking"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // RecordedStream opens a stream under a call log and reports the record of the

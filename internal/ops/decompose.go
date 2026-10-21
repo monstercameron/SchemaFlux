@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // DecomposeOptions configures the Decompose operation
@@ -62,7 +62,7 @@ func (d DecomposeOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"hierarchical": true, "sequential": true, "parallel": true, "functional": true}
 	if d.Strategy != "" && !validStrategies[d.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", d.Strategy)
+		return fmt.Errorf("decomposition strategy must be hierarchical, sequential, parallel, or functional")
 	}
 	if d.MaxDepth < 1 {
 		return fmt.Errorf("max depth must be at least 1, got %d", d.MaxDepth)
@@ -285,7 +285,7 @@ func Decompose[T any](input T, opts DecomposeOptions) (DecomposeResult[T], error
 	// Marshal input
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Decompose operation failed: marshal error", "error", err)
+		log.Error("Decompose operation failed: marshal error", "error", loggedError(err))
 		return DecomposeResult[T]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -384,7 +384,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Decompose operation LLM call failed", "error", err)
+		log.Error("Decompose operation LLM call failed", "error", loggedError(err))
 		return DecomposeResult[T]{}, fmt.Errorf("decomposition failed: %w", err)
 	}
 
@@ -393,7 +393,7 @@ Return a JSON object with:
 	// id, name, content, depth or order. An empty list of roots is the model
 	// saying there are none.
 	if err := decodeAnswer("decompose", response, &parsed); err != nil {
-		log.Error("Decompose operation failed: parse error", "error", err)
+		log.Error("Decompose operation failed: parse error", "error", loggedError(err))
 		return DecomposeResult[T]{}, fmt.Errorf("failed to parse decomposition result: %w", err)
 	}
 
@@ -429,7 +429,7 @@ Return a JSON object with:
 		}
 		var content T
 		if err := decodeCallerAnswer("decompose", string(part.Content), &content); err != nil {
-			log.Error("Decompose operation failed: the content of a part", "part", i, "error", err)
+			log.Error("Decompose operation failed: the content of a part", "part", i, "error", loggedError(err))
 			return DecomposeResult[T]{}, fmt.Errorf("failed to parse the content of part %d: %w", i+1, err)
 		}
 		parts[i] = DecomposedPart[T]{
@@ -450,7 +450,7 @@ Return a JSON object with:
 	// What Go can check about the structure the model reported: the ids are
 	// unique and every reference names a part that exists.
 	if err := checkDecomposition(parts, parsed.RootParts); err != nil {
-		log.Error("Decompose operation failed: the parts do not form a consistent structure", "error", err)
+		log.Error("Decompose operation failed: the parts do not form a consistent structure", "error", loggedError(err))
 		return DecomposeResult[T]{}, err
 	}
 
@@ -624,7 +624,7 @@ func DecomposeToSlice[T any, U any](input T, opts DecomposeOptions) ([]U, error)
 	// Marshal input
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("DecomposeToSlice failed: marshal error", "error", err)
+		log.Error("DecomposeToSlice failed: marshal error", "error", loggedError(err))
 		return nil, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -650,7 +650,7 @@ Return a JSON array of parts matching the output schema.`, inputSchema, outputSc
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("DecomposeToSlice LLM call failed", "error", err)
+		log.Error("DecomposeToSlice LLM call failed", "error", loggedError(err))
 		return nil, fmt.Errorf("decomposition failed: %w", err)
 	}
 
@@ -666,7 +666,7 @@ Return a JSON array of parts matching the output schema.`, inputSchema, outputSc
 			if err2 := decodeCallerAnswer("decompose", response, &single); err2 == nil {
 				result = []U{single}
 			} else {
-				log.Error("DecomposeToSlice failed: parse error", "error", err)
+				log.Error("DecomposeToSlice failed: parse error", "error", loggedError(err))
 				return nil, fmt.Errorf("failed to parse parts: %w", err)
 			}
 		}

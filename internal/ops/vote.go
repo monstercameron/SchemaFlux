@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CF-002. Three samples agreeing on an invented figure is three samples wrong

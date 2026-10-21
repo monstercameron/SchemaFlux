@@ -3,7 +3,7 @@ package ops
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The envelope reported exactly double the tokens and double the money for

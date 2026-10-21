@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
 )
 
 var (

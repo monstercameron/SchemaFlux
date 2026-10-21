@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/llm"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/llm"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // The Op descriptor. A-001, Revised (ARC-04, ARC-16, API-09).

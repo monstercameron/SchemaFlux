@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/config"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // InferOptions configures the Infer operation
@@ -84,7 +84,7 @@ func inferImpl[T any](partialData T, opts InferOptions) (T, error) {
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		log.Error("Infer operation validation failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Infer operation validation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -100,7 +100,7 @@ func inferImpl[T any](partialData T, opts InferOptions) (T, error) {
 	// Marshal partial data to JSON
 	partialJSON, err := promptJSON(partialData)
 	if err != nil {
-		log.Error("Infer operation marshal failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Infer operation marshal failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return zero, types.Newf(types.KindInvalidRequest, "infer", "the partial data could not be written as JSON")
 	}
 
@@ -127,13 +127,13 @@ Rules:
 	// Call LLM for inference
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Infer operation LLM call failed", "requestID", opts.RequestID, "error", err)
+		log.Error("Infer operation LLM call failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return zero, fmt.Errorf("inference failed: %w", err)
 	}
 
 	result, err := readInferAnswer(partialData, response)
 	if err != nil {
-		log.Error("Infer operation refused the answer", "requestID", opts.RequestID, "error", err)
+		log.Error("Infer operation refused the answer", "requestID", opts.RequestID, "error", loggedError(err))
 		return zero, err
 	}
 

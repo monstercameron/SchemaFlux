@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 const verifyMockResponse = `{
@@ -355,7 +355,7 @@ func TestVerifyRefusalsBeforeACallHaveAKind(t *testing.T) {
 	}
 	checkRefusalsBeforeACall(t, []refusalBeforeACall{
 		{"a strictness nobody knows", refuse(func(o *VerifyOptions) { o.Strictness = "severe" }),
-			"verify: configuration: invalid options: invalid strictness: severe", types.KindConfiguration},
+			"verify: configuration: invalid options: verification strictness must be strict, moderate, or lenient", types.KindConfiguration},
 		{"a minimum confidence above one", refuse(func(o *VerifyOptions) { o.MinConfidence = 1.5 }),
 			"verify: configuration: invalid options: min confidence must be between 0 and 1, got 1.5", types.KindConfiguration},
 		{"a negative minimum confidence", refuse(func(o *VerifyOptions) { o.MinConfidence = -0.1 }),
@@ -391,6 +391,6 @@ func TestVerifyRefusalsBeforeACallHaveAKind(t *testing.T) {
 			options.Strictness = "severe"
 			_, err := VerifyClaim("a claim", options)
 			return err
-		}, "verify: configuration: invalid options: invalid strictness: severe", types.KindConfiguration},
+		}, "verify: configuration: invalid options: verification strictness must be strict, moderate, or lenient", types.KindConfiguration},
 	})
 }

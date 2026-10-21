@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // reachesUnsupportedType reports whether err still wraps encoding/json's
@@ -39,7 +39,7 @@ func TestExtendedOperationsRefuseBeforeTheCallWithAKind(t *testing.T) {
 				_, err := ValidateDeterministically("a@b.c", validateOptions(func(o *ValidateOptions) { o.FailOn = "fatal" }))
 				return err
 			},
-			text: "invalid options: invalid failOn: fatal",
+			text: "invalid options: FailOn must be error, warning, or info",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
@@ -86,7 +86,7 @@ func TestExtendedOperationsRefuseBeforeTheCallWithAKind(t *testing.T) {
 				_, err := ValidateHybrid("a@b.c", validateOptions(func(o *ValidateOptions) { o.FailOn = "fatal" }))
 				return err
 			},
-			text: "invalid options: invalid failOn: fatal",
+			text: "invalid options: FailOn must be error, warning, or info",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

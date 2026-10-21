@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CompressOptions configures the Compress operation
@@ -76,15 +76,15 @@ func (c CompressOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"lossy": true, "lossless": true, "semantic": true}
 	if c.Strategy != "" && !validStrategies[c.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", c.Strategy)
+		return fmt.Errorf("compression strategy must be lossy, lossless, or semantic")
 	}
 	validPriorities := map[string]bool{"facts": true, "actions": true, "decisions": true, "all": true}
 	if c.Priority != "" && !validPriorities[c.Priority] {
-		return fmt.Errorf("invalid priority: %s", c.Priority)
+		return fmt.Errorf("compression priority must be facts, actions, decisions, or all")
 	}
 	validFormats := map[string]bool{"same": true, "summary": true, "key_points": true, "structured": true}
 	if c.OutputFormat != "" && !validFormats[c.OutputFormat] {
-		return fmt.Errorf("invalid output format: %s", c.OutputFormat)
+		return fmt.Errorf("compression output format must be same, summary, key_points, or structured")
 	}
 	return nil
 }
@@ -220,7 +220,7 @@ func Compress[T any](input T, opts CompressOptions) (CompressResult[T], error) {
 	// Convert input to string for size calculation
 	inputStr, err := NormalizeInput(input)
 	if err != nil {
-		log.Error("Compress operation failed: input normalization error", "error", err)
+		log.Error("Compress operation failed: input normalization error", "error", loggedError(err))
 		return CompressResult[T]{}, fmt.Errorf("failed to normalize input: %w", err)
 	}
 	// Sizes are counted in characters, as MaxOutputSize is documented and as the
@@ -331,7 +331,7 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Compress operation LLM call failed", "error", err)
+		log.Error("Compress operation LLM call failed", "error", loggedError(err))
 		return CompressResult[T]{}, fmt.Errorf("compression failed: %w", err)
 	}
 
@@ -345,7 +345,7 @@ Return a JSON object with:
 	}
 
 	if err := decodeAnswer("compress", response, &envelope); err != nil {
-		log.Error("Compress operation failed: parse error", "error", err)
+		log.Error("Compress operation failed: parse error", "error", loggedError(err))
 		return CompressResult[T]{}, fmt.Errorf("failed to parse compressed result: %w", err)
 	}
 
@@ -365,13 +365,13 @@ Return a JSON object with:
 	if err := decodeCallerAnswer("compress", string(envelope.Compressed), &compressed); err != nil {
 		var compressedString string
 		if err2 := json.Unmarshal(envelope.Compressed, &compressedString); err2 != nil {
-			log.Error("Compress operation failed: compressed payload parse error", "error", err)
+			log.Error("Compress operation failed: compressed payload parse error", "error", loggedError(err))
 			return CompressResult[T]{}, fmt.Errorf("failed to parse compressed payload: %w", err)
 		}
 		var reset T
 		compressed = reset
 		if err2 := decodeCallerAnswer("compress", compressedString, &compressed); err2 != nil {
-			log.Error("Compress operation failed: compressed string parse error", "error", err2)
+			log.Error("Compress operation failed: compressed string parse error", "error", loggedError(err2))
 			return CompressResult[T]{}, fmt.Errorf("failed to parse compressed payload string: %w", err2)
 		}
 	}
@@ -381,7 +381,7 @@ Return a JSON object with:
 	// zero cannot exceed MaxOutputSize.
 	compressedStr, err := NormalizeInput(compressed)
 	if err != nil {
-		log.Error("Compress operation failed: the compressed value cannot be measured", "error", err)
+		log.Error("Compress operation failed: the compressed value cannot be measured", "error", loggedError(err))
 		return CompressResult[T]{}, types.Newf(types.KindSchemaViolation, "compress",
 			"the compressed value has no text to measure, so its size cannot be checked")
 	}

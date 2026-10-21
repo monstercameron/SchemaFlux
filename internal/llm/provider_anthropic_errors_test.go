@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Every Anthropic failure used to be a plain fmt.Errorf carrying the response

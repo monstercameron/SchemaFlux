@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Direct tests of the helpers the LX-020, LX-022 and LX-061 changes rest on.

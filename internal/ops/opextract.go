@@ -3,7 +3,7 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Extract runs on the Op descriptor. core.go's Extract does every step upstream

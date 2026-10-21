@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/telemetry"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/telemetry"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // analysisSeen is what a scripted model was sent, for the tests of Classify,
@@ -729,11 +729,11 @@ func TestAnalysisRefusalsBeforeACallHaveAKind(t *testing.T) {
 		{"Compare with an unknown output format", func() error {
 			_, err := Compare("a", "b", NewCompareOptions().WithOutputFormat("poem"))
 			return err
-		}, "invalid options: invalid output format: poem", types.KindConfiguration},
+		}, "invalid options: comparison output format must be table, narrative, or bullet", types.KindConfiguration},
 		{"Compare with an unknown focus", func() error {
 			_, err := Compare("a", "b", NewCompareOptions().WithFocusOn("neither"))
 			return err
-		}, "invalid options: invalid focus: neither", types.KindConfiguration},
+		}, "invalid options: comparison focus must be differences, similarities, or both", types.KindConfiguration},
 		{"Compare with no depth", func() error {
 			options := NewCompareOptions()
 			options.Depth = 0

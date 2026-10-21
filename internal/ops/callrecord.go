@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Carrying the execution record back to the caller.

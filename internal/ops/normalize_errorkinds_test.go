@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // Normalize refuses options it cannot use, and an input JSON cannot write,
@@ -35,13 +35,13 @@ func TestNormalizeRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "a case that is not one of the four",
 			run:  normalize(func(o *NormalizeOptions) { o.NormalizeCase = "weird" }),
-			text: "invalid options: invalid normalize case: weird",
+			text: "invalid options: normalize case must be lower, upper, title, or sentence",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
 			name: "a case in the wrong letters",
 			run:  normalize(func(o *NormalizeOptions) { o.NormalizeCase = "Lower" }),
-			text: "invalid options: invalid normalize case: Lower",
+			text: "invalid options: normalize case must be lower, upper, title, or sentence",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
@@ -79,7 +79,7 @@ func TestNormalizeRefusesBeforeTheCallWithAKind(t *testing.T) {
 				_, err := NormalizeText("text", opts)
 				return err
 			},
-			text: "invalid options: invalid normalize case: weird",
+			text: "invalid options: normalize case must be lower, upper, title, or sentence",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{
@@ -103,7 +103,7 @@ func TestNormalizeRefusesBeforeTheCallWithAKind(t *testing.T) {
 		{
 			name: "a batch with a case that is not one of the four",
 			run:  batch([]string{"a"}, func(o *NormalizeOptions) { o.NormalizeCase = "weird" }),
-			text: "failed to normalize item 0: invalid options: invalid normalize case: weird",
+			text: "failed to normalize item 0: invalid options: normalize case must be lower, upper, title, or sentence",
 			kind: types.KindConfiguration, matches: []error{config},
 		},
 		{

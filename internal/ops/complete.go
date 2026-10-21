@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // CompleteResult contains the completion result and metadata
@@ -167,7 +167,7 @@ func completeImpl(ctx context.Context, partialText string, opts CompleteOptions)
 
 	// Validate options
 	if err := opts.Validate(); err != nil {
-		logger.Error("Complete operation validation failed", "requestID", opts.RequestID, "error", err)
+		logger.Error("Complete operation validation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return CompleteResult{}, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
@@ -191,7 +191,7 @@ func completeImpl(ctx context.Context, partialText string, opts CompleteOptions)
 	opOpts := opts.toOpOptions()
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		logger.Error("Complete operation LLM call failed", "requestID", opts.RequestID, "error", err)
+		logger.Error("Complete operation LLM call failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return CompleteResult{}, fmt.Errorf("completion failed: %w", err)
 	}
 
@@ -487,14 +487,14 @@ func CompleteField[T any](ctx context.Context, data T, opts CompleteFieldOptions
 	// Complete the field value
 	completeResult, err := completeImpl(ctx, originalValue, opts.CompleteOptions)
 	if err != nil {
-		logger.Error("Complete field operation failed", "requestID", opts.RequestID, "error", err)
+		logger.Error("Complete field operation failed", "requestID", opts.RequestID, "error", loggedError(err))
 		return CompleteFieldResult[T]{}, fmt.Errorf("failed to complete field: %w", err)
 	}
 
 	// Create a new copy of the struct with the completed field
 	newData, err := copyWithUpdatedField(data, opts.FieldName, completeResult.Text)
 	if err != nil {
-		logger.Error("Failed to update struct field", "requestID", opts.RequestID, "error", err)
+		logger.Error("Failed to update struct field", "requestID", opts.RequestID, "error", loggedError(err))
 		return CompleteFieldResult[T]{}, fmt.Errorf("failed to update field: %w", err)
 	}
 

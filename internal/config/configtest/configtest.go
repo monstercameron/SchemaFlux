@@ -9,7 +9,7 @@ package configtest
 import (
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/config"
+	"github.com/monstercameron/schemaflux/v2/internal/config"
 )
 
 // Setenv sets an environment variable for the length of the test, as t.Setenv

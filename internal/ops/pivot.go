@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // PivotOptions configures the Pivot operation
@@ -222,7 +222,7 @@ func Pivot[T any, U any](input T, opts ...PivotOptions) (PivotResult[U], error) 
 	// Convert input to JSON
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
-		log.Error("Pivot operation failed: marshal error", "error", err)
+		log.Error("Pivot operation failed: marshal error", "error", loggedError(err))
 		return PivotResult[U]{}, types.Classified(types.KindInvalidRequest, fmt.Errorf("failed to marshal input: %w", err))
 	}
 
@@ -329,7 +329,7 @@ Preserve data semantics. Document any data loss.`,
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opOpts)
 	if err != nil {
-		log.Error("Pivot operation LLM call failed", "error", err)
+		log.Error("Pivot operation LLM call failed", "error", loggedError(err))
 		return PivotResult[U]{}, fmt.Errorf("pivot failed: %w", err)
 	}
 
@@ -346,7 +346,7 @@ Preserve data semantics. Document any data loss.`,
 	if err := decodeAnswer("pivot", response, &parsed); err != nil {
 		// The response is the caller's data pivoted; it does not belong in a
 		// log line.
-		log.Error("Pivot operation failed: parse error", "error", err)
+		log.Error("Pivot operation failed: parse error", "error", loggedError(err))
 		return PivotResult[U]{}, fmt.Errorf("failed to parse pivot result: %w", err)
 	}
 
@@ -363,7 +363,7 @@ Preserve data semantics. Document any data loss.`,
 	// passed: json.Unmarshal fills what it can before it reports an error.
 	var pivoted U
 	if err := decodeCallerAnswer("pivot", string(parsed.Pivoted), &pivoted); err != nil {
-		log.Error("Pivot operation failed: pivoted data parse error", "error", err)
+		log.Error("Pivot operation failed: pivoted data parse error", "error", loggedError(err))
 		return PivotResult[U]{}, fmt.Errorf("failed to parse pivoted data: %w", err)
 	}
 
@@ -412,7 +412,7 @@ func (opt PivotOptions) validate() error {
 		}
 	}
 	if !known {
-		return types.Newf(types.KindConfiguration, "pivot", "Aggregate %q is not one of %s", opt.Aggregate, strings.Join(pivotAggregates, ", "))
+		return types.Newf(types.KindConfiguration, "pivot", "Aggregate must be one of %s", strings.Join(pivotAggregates, ", "))
 	}
 	for i, name := range opt.PivotOn {
 		if strings.TrimSpace(name) == "" {

@@ -3,7 +3,7 @@ package ops
 import (
 	"context"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
 )
 
 // ExecLogger is the logger of the client the call that ctx belongs to was made

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 func TestMatchOptions(t *testing.T) {
@@ -315,7 +315,7 @@ func TestMatchRefusalsBeforeACallHaveAKind(t *testing.T) {
 	}
 	checkRefusalsBeforeACall(t, []refusalBeforeACall{
 		{"a strategy nobody knows", refuse(func(o *MatchOptions) { o.Strategy = "semantic" }),
-			"invalid options: invalid strategy: semantic", types.KindConfiguration},
+			"invalid options: matching strategy must be best-fit, all-matches, one-to-one, or one-to-many", types.KindConfiguration},
 		{"a threshold above one", refuse(func(o *MatchOptions) { o.Threshold = 1.5 }),
 			"invalid options: threshold must be between 0 and 1, got 1.500000", types.KindConfiguration},
 		{"a negative threshold", refuse(func(o *MatchOptions) { o.Threshold = -0.2 }),
@@ -329,7 +329,7 @@ func TestMatchRefusalsBeforeACallHaveAKind(t *testing.T) {
 			options.Strategy = "many-to-many"
 			_, err := SemanticMatch([]Person{{Name: "a"}}, []Person{{Name: "b"}, {Name: "c"}}, options)
 			return err
-		}, "invalid options: invalid strategy: many-to-many", types.KindConfiguration},
+		}, "invalid options: matching strategy must be best-fit, all-matches, one-to-one, or one-to-many", types.KindConfiguration},
 		{"a bad option beside one source and one target", func() error {
 			options := NewMatchOptions()
 			options.MaxMatches = -1
@@ -341,7 +341,7 @@ func TestMatchRefusalsBeforeACallHaveAKind(t *testing.T) {
 			options.Strategy = "x"
 			_, err := MatchOne("s", targets, options)
 			return err
-		}, "invalid options: invalid strategy: x", types.KindConfiguration},
+		}, "invalid options: matching strategy must be best-fit, all-matches, one-to-one, or one-to-many", types.KindConfiguration},
 	})
 }
 

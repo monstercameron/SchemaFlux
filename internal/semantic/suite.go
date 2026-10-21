@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // RC-002's spend rule, and the reason this file has a gate before it has a

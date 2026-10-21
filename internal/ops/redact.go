@@ -14,8 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/monstercameron/schemaflux/internal/logger"
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/logger"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // maxRedactDepth bounds how deep the traversal follows pointers, slices, maps
@@ -231,7 +231,7 @@ func (opts RedactOptions) prepared() (RedactOptions, error) {
 		}
 	}
 	if !strategyValid {
-		return RedactOptions{}, types.Newf(types.KindConfiguration, "redact", "invalid strategy: %s", opts.Strategy)
+		return RedactOptions{}, types.Newf(types.KindConfiguration, "redact", "strategy must be nil, mask, remove, jumble, or scramble")
 	}
 
 	if opts.MaskLength < -1 || opts.MaskLength > maxRedactMaskLength {
@@ -314,14 +314,14 @@ func Redact[T any](input T, opts ...RedactOptions) (T, error) {
 
 	options, err := resolveRedactOptions(opts...).prepared()
 	if err != nil {
-		log.Error("Redact operation validation failed", "requestID", "unknown", "error", err)
+		log.Error("Redact operation validation failed", "requestID", "unknown", "error", loggedError(err))
 		var zero T
 		return zero, types.Classified(types.KindConfiguration, fmt.Errorf("invalid options: %w", err))
 	}
 
 	result, err := redactValue(input, options)
 	if err != nil {
-		log.Error("Redact operation failed", "requestID", "unknown", "error", err)
+		log.Error("Redact operation failed", "requestID", "unknown", "error", loggedError(err))
 		return result, err
 	}
 

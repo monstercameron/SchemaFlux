@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // BM-001. Decisions a caller can branch on.
@@ -347,7 +347,7 @@ func assessDecide(ctx context.Context, subject any, ask dec12Ask, confidence boo
 		*answered = call.answered()
 	}
 	if err != nil {
-		log.Error("Assess operation LLM call failed", "error", err)
+		log.Error("Assess operation LLM call failed", "error", loggedError(err))
 		return nil, 0, err
 	}
 
@@ -357,7 +357,7 @@ func assessDecide(ctx context.Context, subject any, ask dec12Ask, confidence boo
 	answers, modelConfidence, err := readAssessAnswer(response, questions, confidence)
 	if err != nil {
 		// In this library's words. The response is not logged.
-		log.Error("Assess operation failed: the answer was refused", "error", err)
+		log.Error("Assess operation failed: the answer was refused", "error", loggedError(err))
 		return nil, 0, err
 	}
 	return answers, modelConfidence, nil

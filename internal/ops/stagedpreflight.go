@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // A staged plan can be planned before it is paid for. PreflightStagedPlan says,

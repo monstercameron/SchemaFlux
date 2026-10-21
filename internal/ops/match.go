@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // MatchOptions configures the Match operation
@@ -71,7 +71,7 @@ func (m MatchOptions) Validate() error {
 	}
 	validStrategies := map[string]bool{"best-fit": true, "all-matches": true, "one-to-one": true, "one-to-many": true}
 	if m.Strategy != "" && !validStrategies[m.Strategy] {
-		return fmt.Errorf("invalid strategy: %s", m.Strategy)
+		return fmt.Errorf("matching strategy must be best-fit, all-matches, one-to-one, or one-to-many")
 	}
 	if m.Threshold < 0 || m.Threshold > 1 {
 		return fmt.Errorf("threshold must be between 0 and 1, got %f", m.Threshold)
@@ -263,7 +263,7 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 	for i, item := range sources {
 		itemJSON, err := promptJSON(item)
 		if err != nil {
-			log.Error("Match operation failed: marshal source error", "index", i, "error", err)
+			log.Error("Match operation failed: marshal source error", "index", i, "error", loggedError(err))
 			return MatchResult[S, T]{}, types.Newf(types.KindInvalidRequest, "match", "source %d could not be written as JSON", i)
 		}
 		sourcesJSON[i] = fmt.Sprintf("[S%d] %s", i, string(itemJSON))
@@ -273,7 +273,7 @@ func SemanticMatch[S any, T any](sources []S, targets []T, opts MatchOptions) (M
 	for i, item := range targets {
 		itemJSON, err := promptJSON(item)
 		if err != nil {
-			log.Error("Match operation failed: marshal target error", "index", i, "error", err)
+			log.Error("Match operation failed: marshal target error", "index", i, "error", loggedError(err))
 			return MatchResult[S, T]{}, types.Newf(types.KindInvalidRequest, "match", "target %d could not be written as JSON", i)
 		}
 		targetsJSON[i] = fmt.Sprintf("[T%d] %s", i, string(itemJSON))
@@ -358,13 +358,13 @@ Return a JSON object with:
 
 	response, err := callLLM(ctx, systemPrompt, userPrompt, opt)
 	if err != nil {
-		log.Error("Match operation LLM call failed", "error", err)
+		log.Error("Match operation LLM call failed", "error", loggedError(err))
 		return MatchResult[S, T]{}, fmt.Errorf("matching failed: %w", err)
 	}
 
 	result, err := readMatchAnswer(sources, targets, opts, response)
 	if err != nil {
-		log.Error("Match operation refused the answer", "error", err)
+		log.Error("Match operation refused the answer", "error", loggedError(err))
 		return MatchResult[S, T]{}, err
 	}
 

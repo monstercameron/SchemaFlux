@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/monstercameron/schemaflux/internal/types"
+	"github.com/monstercameron/schemaflux/v2/internal/types"
 )
 
 // OB-006. Carrying the operation's name down to the one place that emits

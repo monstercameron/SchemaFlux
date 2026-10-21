@@ -8,9 +8,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	schemaflux "github.com/monstercameron/schemaflux"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/desk"
-	"github.com/monstercameron/schemaflux/examples/flowdesk/sim"
+	schemaflux "github.com/monstercameron/schemaflux/v2"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/desk"
+	"github.com/monstercameron/schemaflux/v2/examples/flowdesk/sim"
 )
 
 // HandleFast reaches the outcome Handle reaches for every labelled case, and
@@ -85,7 +85,7 @@ func TestTheFastFlowFailsOnACallWhoseResultItDiscards(t *testing.T) {
 	t.Run("a failing extraction beside the look at spam", func(t *testing.T) {
 		withBrokenExtraction := func() context.Context {
 			provider := faulty{Provider: sim.New(time.Millisecond), operation: sim.OpExtract, err: broken}
-			return schemaflux.NewClient("").WithProviderInstance(provider).Context(context.Background())
+			return schemaflux.WithClient(context.Background(), schemaflux.Client{Provider: provider})
 		}
 
 		// The fused flow stops at the first question and never asks.
