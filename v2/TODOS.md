@@ -9370,7 +9370,7 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   `39603582502` passed every job, including race and shuffled tests on
   Ubuntu amd64, Ubuntu ARM64, and macOS, plus shuffled tests on Windows.
 
-- [ ] **QP-017** — Isolate the Windows ARM64 Go 1.27.3 runtime crashes seen
+- [x] **QP-017** — Isolate the Windows ARM64 Go 1.27.3 runtime crashes seen
   during the relocated module's local full-suite runs. The first run ended
   in a GC bad-pointer fatal error in `internal/ops`; another ended in an
   unknown-caller-PC traceback, and a serialized run crashed while scanning
@@ -9380,6 +9380,46 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   weakening assertions. A diagnostic run with `GOMAXPROCS=1` avoided the
   runtime crash but made `TestSchedulerGoroutineCountStaysFlatUnderLoad`
   unable to exercise its bounded queue, so that setting is not a valid gate.
+  **Further diagnostic, 2026-10-21:** on this windows/arm64 host, the Go
+  1.27.3 ARM64 `internal/runtime/telemetry` package fails reproducibly under
+  `go test -p 1 -vet=off -count=10` with fatal `unknown caller pc` while the
+  GC scans a stack during `TestTheRegistryIsBoundedAndCountsWhatItTurnsAwayInOneSeries`.
+  A separate ten-repeat run faulted while `TestRecordingWhileSinksComeAndGo`
+  was active. The latter test alone passed 1,000 repetitions; the registry
+  test alone passed ten. The package interaction or runtime remains under
+  investigation. `GOMAXPROCS=2` and `4` also fail the ten-repeat package run
+  with fatal incomplete tracebacks or unknown caller PCs. A verbose run
+  crashes just after `TestDeliverToSinkContainsEveryKindOfPanic` and as the
+  bounded-registry test starts. Those two tests together fail under 100
+  repetitions, while the panic test alone passes 100 and the registry test
+  alone passes 100. This is a smaller reproducer for the next isolation step.
+  Splitting the panic subcases shows only the recovered nil-pointer field
+  dereference reproduces the pair failure: that subcase followed by the
+  bounded-registry test fails, while each of the other four runtime panic
+  kinds and the six explicit panic values passes with the registry test over
+  100 repetitions. `GODEBUG=gcshrinkstackoff=1` and `asyncpreemptoff=1` do
+  not prevent the two-test crash. The upstream Go runtime has a related
+  [ARM64 panic/unwind report](https://github.com/golang/go/issues/81959),
+  but its documented trigger requires `-race`; equivalence is unverified.
+  A standalone two-test module with no SchemaFlux imports, external
+  dependencies, cgo, or unsafe code reproduces an access violation/unknown
+  PC after a recovered nil-pointer field access and ordinary map allocations.
+  The nil-pointer test alone also crashes within 1,000 repetitions on this
+  Windows 11 ARM64 host. It fails under both Go 1.27.3 and local Go 1.26.3;
+  the same standalone tests pass 100 repetitions under windows/amd64 with
+  both compilers, and the nil-pointer test passes 1,000 under Go 1.27.3
+  windows/amd64. The smaller standard-library-only program in
+  `.audit/windows_arm64_runtime_repro.go` crashes with both ARM64 toolchains
+  and prints `completed` under both amd64 toolchains. This excludes SchemaFlux
+  and its dependencies from the reproducer. The remaining distinction is
+  between the Go ARM64 runtime and this Windows build (10.0.28000), so no
+  library code change or weakened assertion is justified. The local amd64
+  suite and published CI gate remain the supported verification paths. The
+  compiled windows/amd64 telemetry test binary passed the isolated pair ten
+  times; the full CI matrix passed on run `39606091539`.
+  The comparable windows/amd64 `internal/ops` test passed three repeats and
+  telemetry passed five repeats; `go test` then returned an unrelated Windows
+  temporary executable cleanup error (`unlinkat ... Access is denied`).
 
 - [x] **QP-018** — Keep the observer allocation comparison in the normal
   test suite, but exclude it from race and shuffled runs. The race detector
