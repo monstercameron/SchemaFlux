@@ -7760,9 +7760,22 @@ session's working files and their findings are entered here as they are acted on
   12 CI jobs, including the full `scripts/check.sh` gate, staticcheck and
   govulncheck, normal and shuffled tests on Windows, Ubuntu, Ubuntu ARM and
   macOS, and race detection on Ubuntu, Ubuntu ARM and macOS. The SmartTodo
-  demo build passed separately. The live tool-wire and Flowdesk checks remain
-  pending because no API key is available to this task; the owner authorized
-  up to US$2 in provider spend for those checks.
+  demo build passed separately. The owner authorized up to US$2 in provider
+  spend for live checks. Both guarded OpenAI tool-wire assertions passed on
+  `gpt-6-luna`. The first full Flowdesk live comparison had no provider errors:
+  fused matched 15/17 labels in a mean 9.6 seconds for $0.014479, and the
+  one-at-a-time flow matched 13/17 in a mean 26.1 seconds for $0.017756.
+  The misses were in labeled intent or urgency, so this is measured semantic
+  quality rather than a clean 34/34 result. Go reported a Windows temporary
+  executable deletion error after the tool-wire assertions passed.
+  A later CI run exposed a false leak assertion in `flow/noLeak`: it compared
+  the process-wide goroutine count inside a `synctest.Test` bubble, and its
+  failure stack contained only the test harness. `synctest.Test` already waits
+  for every goroutine in its bubble to exit and fails on a deadlock; the helper
+  now waits for the bubble to settle and relies on that scoped check. The
+  affected `BranchAhead` case passed 100 local repetitions, and the complete
+  flow package passed ten repetitions of its assertions; Go then reported a
+  Windows temporary test-executable deletion error after the package passed.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a

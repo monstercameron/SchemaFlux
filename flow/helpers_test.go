@@ -102,31 +102,16 @@ func wantKind(t *testing.T, err error, want schemaflux.Kind) *schemaflux.Error {
 	return got
 }
 
-// noLeak notes the goroutines there are now, inside a synctest bubble, and
-// returns the function that fails the test when a call left more behind. It is
-// the check that no goroutine outlives a call.
+// noLeak lets all work in the bubble settle after the call. synctest.Test
+// itself checks that every goroutine in this bubble exits before the test
+// returns; a process-wide count can include unrelated runtime goroutines and
+// made this check fail even when the bubble had no goroutine left behind.
 func noLeak(t *testing.T) func() {
 	t.Helper()
 	synctest.Wait()
-	before := runtime.NumGoroutine()
 	return func() {
 		t.Helper()
 		synctest.Wait()
-		// The runtime's finalizer and cleanup goroutine counts while it runs a
-		// callback, so a count above the first one is looked at again before it is
-		// believed. A goroutine the call left behind is blocked or running for
-		// good, and the count stays up however many times the others are let run.
-		after := runtime.NumGoroutine()
-		for tries := 0; after > before && tries < 2000; tries++ {
-			runtime.Gosched()
-			synctest.Wait()
-			after = runtime.NumGoroutine()
-		}
-		if after > before {
-			stacks := make([]byte, 1<<16)
-			stacks = stacks[:runtime.Stack(stacks, true)]
-			t.Errorf("%d goroutines before the call and %d after it:\n%s", before, after, stacks)
-		}
 	}
 }
 
