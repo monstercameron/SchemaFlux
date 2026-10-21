@@ -9449,6 +9449,38 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   both telemetry packages with three shuffled runs, and focused `go vet`
   pass. This is helper-level improvement; no full-call latency claim is made.
 
+- [ ] **QP-020** — Bind provider `ExtraHeaders` to the configured origin so
+  cross-origin redirects cannot receive custom credentials. Preserve ordinary
+  same-origin requests and caller redirect behavior. Cover direct transport
+  cases and the exported provider request path with two local test servers.
+
+- [ ] **QP-021** — Redact entire private-key PEM blocks from opt-in diagnostic
+  captures, including a truncated block without an END marker. Cover direct
+  scrub cases and the configured diagnostic sink through the public API.
+
+- [ ] **QP-022** — Admit a smaller request behind a queued request whose token
+  or cost demand does not fit remaining global capacity. Preserve priority and
+  tenant constraints. Cover deterministic scheduler cases and the exported
+  operation path, and measure queue scan cost before and after if it changes.
+
+- [ ] **QP-023** — Reject negative or contradictory `ClusterOptions` size
+  bounds before any provider call; reject negative totals in
+  `CoversExactlyOnce` without panic. Cover direct validation and public
+  `Cluster` behavior.
+
+- [ ] **QP-024** — Make enabling strict Extract schema from the default options
+  produce a valid configuration while retaining a clear rule for an explicitly
+  requested partial result. Cover option transitions and exported Extract.
+
+- [ ] **QP-025** — Reconcile SmartTodo's declared SchemaFlux version with the
+  released module, and make its launcher accept an ancestor `.env` as the app
+  itself does. Correct Flowdesk's documented flow count. Verify nested module
+  and offline example paths.
+
+- [ ] **QP-026** — Reconcile the local and CI vulnerability scan gates so
+  `check.sh` and the workflow report and enforce the same result. Verify the
+  policy with a controlled nonzero scanner result and the normal gate.
+
 ## Standing rules for this list
 
 Close each item in the same commit as the work it describes, with the evidence beneath it —
