@@ -6,18 +6,18 @@
 
 **Structured AI that ships.** SchemaFlux turns language-model work into typed Go calls. It builds a request, checks the answer against the requested type and the operation's rules, and returns the value or a classified error. A `Recorder` keeps execution details separate from the answer.
 
-This README describes SchemaFlux v2.0.1. The module lives in the repository's `v2/` directory, and its import path remains `github.com/monstercameron/schemaflux/v2`. V1 releases remain at the unsuffixed module path. The migration notes below describe the new API.
+This README describes SchemaFlux v2.0.2. The module lives in the repository's `v2/` directory, and its import path remains `github.com/monstercameron/schemaflux/v2`. V1 releases remain at the unsuffixed module path. The migration notes below describe the new API.
 
-For more detail, see the [v2.0.0 release notes](https://github.com/monstercameron/SchemaFlux/releases/tag/v2.0.0), [v2 API reference](docs/reference/API.md), [build and test guide](docs/guides/BUILD.md), and [example status](docs/examples/STATUS_FINAL.md). The [SmartTodo browser demo](https://monstercameron.github.io/SchemaFlux/) is deployed from `main` after its browser smoke test passes.
+For more detail, see the [v2.0.2 release notes](https://github.com/monstercameron/SchemaFlux/releases/tag/v2.0.2), [v2 API reference](docs/reference/API.md), [build and test guide](docs/guides/BUILD.md), and [example status](docs/examples/STATUS_FINAL.md). The [SmartTodo browser demo](https://monstercameron.github.io/SchemaFlux/) is deployed from `main` after its browser smoke test passes.
 
 → [Read the case study](https://www.earlcameron.com/projects/schemaflux)
 
 ## Requirements and installation
 
-SchemaFlux v2 requires Go 1.27 or later. Install the v2.0.1 release with:
+SchemaFlux v2 requires Go 1.27 or later. Install the v2.0.2 release with:
 
 ```bash
-go get github.com/monstercameron/schemaflux/v2@v2.0.1
+go get github.com/monstercameron/schemaflux/v2@v2.0.2
 ```
 
 For the default OpenAI provider, set `SCHEMAFLUX_OPENAI_API_KEY` or `OPENAI_API_KEY`. `SCHEMAFLUX_API_KEY` is a fallback. If no usable key is set, the first call returns `ErrConfiguration`; it does not send a request or invent an answer. Set `SCHEMAFLUX_PROVIDER` to select another built-in provider. See [`provider`](provider) for names and provider-specific variables.

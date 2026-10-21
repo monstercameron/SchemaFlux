@@ -9524,6 +9524,12 @@ and, where the boundary mattered, integration coverage; they do not all have exa
   windows/amd64; race was unavailable without cgo. The fast gate omits the
   shuffled and examples checks, and this branch has not run remote CI.
 
+- [ ] **QP-027** — Publish the verified quality sweep as SchemaFlux v2.0.2.
+  Update the reported version, installation docs, and SmartTodo's declared
+  dependency; verify local tests and packaging, fast-forward the clean main
+  checkout, push the commit and annotated tag, publish GitHub release notes,
+  and verify CI, module resolution, and the demo deployment.
+
 ## Standing rules for this list
 
 Close each item in the same commit as the work it describes, with the evidence beneath it —

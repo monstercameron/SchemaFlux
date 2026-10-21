@@ -1,9 +1,9 @@
 # SchemaFlux v2 API reference
 
-SchemaFlux v2.0.1 requires Go 1.27 or later. The module lives in the repository's `v2/` directory and keeps the `/v2` import path:
+SchemaFlux v2.0.2 requires Go 1.27 or later. The module lives in the repository's `v2/` directory and keeps the `/v2` import path:
 
 ```bash
-go get github.com/monstercameron/schemaflux/v2@v2.0.1
+go get github.com/monstercameron/schemaflux/v2@v2.0.2
 ```
 
 ```go

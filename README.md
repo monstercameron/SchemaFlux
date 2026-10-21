@@ -7,7 +7,7 @@ The repository root contains project and release files; it has no Go source.
 Install the library with:
 
 ```bash
-go get github.com/monstercameron/schemaflux/v2@v2.0.1
+go get github.com/monstercameron/schemaflux/v2@v2.0.2
 ```
 
 Import `github.com/monstercameron/schemaflux/v2` in your Go code. Moving the

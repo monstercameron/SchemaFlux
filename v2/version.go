@@ -4,4 +4,4 @@ package schemaflux
 // v. It is what the library names itself as in the instrumentation scope of its
 // spans, so that a trace says which release produced it. Change it only with
 // a release tag.
-const Version = "2.0.1"
+const Version = "2.0.2"
