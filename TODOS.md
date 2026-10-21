@@ -7765,6 +7765,9 @@ session's working files and their findings are entered here as they are acted on
   `gpt-6-luna`. The first full Flowdesk live comparison had no provider errors:
   fused matched 15/17 labels in a mean 9.6 seconds for $0.014479, and the
   one-at-a-time flow matched 13/17 in a mean 26.1 seconds for $0.017756.
+  A second full run, shown through a local browser dashboard, matched 16/17
+  fused and 14/17 one-at-a-time, again with no provider errors. Its reported
+  model cost was $0.033865 across all 34 message runs.
   The misses were in labeled intent or urgency, so this is measured semantic
   quality rather than a clean 34/34 result. Go reported a Windows temporary
   executable deletion error after the tool-wire assertions passed.
@@ -7776,6 +7779,10 @@ session's working files and their findings are entered here as they are acted on
   affected `BranchAhead` case passed 100 local repetitions, and the complete
   flow package passed ten repetitions of its assertions; Go then reported a
   Windows temporary test-executable deletion error after the package passed.
+  A shuffled macOS run found the same process-wide count in the root package's
+  `flowNoLeak` helper. It now uses the same bubble-scoped check. The affected
+  root test passed 100 local repetitions of its assertions; Go again reported
+  only the Windows temporary executable deletion error afterwards.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a
