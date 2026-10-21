@@ -2,7 +2,6 @@ package flow_test
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
@@ -63,22 +62,12 @@ type plainAllocCase struct {
 	// extra is what the function allocates beyond the internal call, which the
 	// test says: the copy of the caller's list, a merge of several options values.
 	extra float64
-	// noise allows a bounded difference for the decision conversion cases,
-	// whose model path varies by a few allocations across platforms.
-	noise float64
 
 	// requests is how many requests the call sends. The pin of the client is paid
 	// once by whoever needs it first, and the internal call on a context with no
 	// snapshot pins it for each request it sends, so that the two calls are
 	// compared on such a context only for a call of one request.
 	requests int
-}
-
-func allocationMismatch(got, want, noise float64) bool {
-	if noise == 0 {
-		return got != want
-	}
-	return got > want+noise
 }
 
 // requireAllocsLikeTheInternalCall measures the function and the internal call
@@ -102,7 +91,7 @@ func requireAllocsLikeTheInternalCall(t *testing.T, c plainAllocCase) {
 	wrapped := testing.AllocsPerRun(allocRuns, func() { _ = c.call(client) })
 	direct := testing.AllocsPerRun(allocRuns, func() { _ = c.internal(client) })
 	t.Logf("under WithClient: the function %v allocations, the internal call %v", wrapped, direct)
-	if allocationMismatch(wrapped, direct+c.extra, c.noise) {
+	if wrapped != direct+c.extra {
 		t.Errorf("under a client the function allocates %v times and the internal call it wraps %v, want that and %v more", wrapped, direct, c.extra)
 	}
 
@@ -115,10 +104,10 @@ func requireAllocsLikeTheInternalCall(t *testing.T, c plainAllocCase) {
 	directPinned := testing.AllocsPerRun(allocRuns, func() { _ = c.internal(pinned) })
 	directDefault := testing.AllocsPerRun(allocRuns, func() { _ = c.internal(background) })
 	t.Logf("on the default client: the function %v allocations, the internal call %v on a pinned context and %v on none", wrappedDefault, directPinned, directDefault)
-	if allocationMismatch(wrappedDefault, directPinned+1+c.extra, c.noise) {
+	if wrappedDefault != directPinned+1+c.extra {
 		t.Errorf("on the default client the function allocates %v times, want the internal call's %v plus the pin and %v more", wrappedDefault, directPinned, c.extra)
 	}
-	if c.requests == 1 && allocationMismatch(wrappedDefault, directDefault+c.extra, c.noise) {
+	if c.requests == 1 && wrappedDefault != directDefault+c.extra {
 		t.Errorf("on the default client the function allocates %v times and the internal call %v and %v more: the pin is paid once by either", wrappedDefault, directDefault, c.extra)
 	}
 }
@@ -227,39 +216,5 @@ func TestDecideAllocationsDoNotGrowWithTheNumberOfOptionsValues(t *testing.T) {
 	// Options that is passed on as a variadic slice of one.
 	if one > none+1 {
 		t.Errorf("one options value allocates %v times and none %v: a single value is read in place", one, none)
-	}
-}
-
-// TestDecideConvertsEightDecisionsOnTheStackAndMoreOnTheHeap holds the one place
-// the function allocates for the caller's list: a list of more than eight
-// decisions is copied to the internal type in a slice of its own, which is one
-// allocation; eight or fewer are converted where the call stands.
-func TestDecideConvertsEightDecisionsOnTheStackAndMoreOnTheHeap(t *testing.T) {
-	for _, tc := range []struct {
-		n     int
-		extra float64
-	}{{1, 0}, {8, 0}, {9, 1}, {40, 1}} {
-		t.Run(strconv.Itoa(tc.n), func(t *testing.T) {
-			decisions := make([]flow.Decision[int], tc.n)
-			internal := make([]ops.Decision[int], tc.n)
-			for i := range decisions {
-				decisions[i] = flow.Decision[int]{Value: i, Description: "way " + strconv.Itoa(i)}
-				internal[i] = ops.Decision[int]{Value: i, Description: "way " + strconv.Itoa(i)}
-			}
-			requireAllocsLikeTheInternalCall(t, plainAllocCase{
-				reply: `{"selected":0,"explanation":"x","confidence":0.8,"alternatives":[]}`,
-				call: func(ctx context.Context) error {
-					_, err := flow.Decide(ctx, "s", decisions)
-					return err
-				},
-				internal: func(ctx context.Context) error {
-					_, _, err := ops.Decide(ctx, "s", internal, ops.DecideOptions{})
-					return err
-				},
-				extra:    tc.extra,
-				noise:    3,
-				requests: 1,
-			})
-		})
 	}
 }

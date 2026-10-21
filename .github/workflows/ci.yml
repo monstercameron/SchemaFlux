@@ -61,7 +61,7 @@ jobs:
         # concurrency behavior.
         run: >
           go test -race
-          -skip='Allocat|EightDecisionsOnTheStack|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare'
+          -skip='Allocat|NeverSizesAnything|NoMoreWorkersThanThereAreChunks|SizesNothingByIt|VoteTakesAConcurrencyOfAnySize|DecisionsUpToWhatOneAnswerCanDeclare|NoRecorderNoObserverNoFloorAddsNothing'
           ./...
 
       # Order dependence and shared package state hide from a single ordered

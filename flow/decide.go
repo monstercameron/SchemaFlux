@@ -188,6 +188,13 @@ type decideAnswer[T any] struct {
 // settings laid on. It is given no fallback index: whether a failure is one the
 // marked decision stands in for is decided here, by the kind a caller sees.
 func decideAsk[T any](ctx context.Context, situation any, decisions []Decision[T], common bind.Common, stack *[decideStack]ops.Decision[T]) (T, ops.DecisionResult, error) {
+	internal := convertDecisions(decisions, stack)
+	var in ops.DecideOptions
+	common.Apply(&in.OpOptions)
+	return ops.Decide(ctx, situation, internal, in)
+}
+
+func convertDecisions[T any](decisions []Decision[T], stack *[decideStack]ops.Decision[T]) []ops.Decision[T] {
 	var internal []ops.Decision[T]
 	if stack != nil && len(decisions) <= decideStack {
 		internal = stack[:len(decisions)]
@@ -198,9 +205,7 @@ func decideAsk[T any](ctx context.Context, situation any, decisions []Decision[T
 		d := &decisions[i]
 		internal[i] = ops.Decision[T]{Value: d.Value, Condition: d.Condition, Description: d.Description}
 	}
-	var in ops.DecideOptions
-	common.Apply(&in.OpOptions)
-	return ops.Decide(ctx, situation, internal, in)
+	return internal
 }
 
 // decideResultOf is the result a caller is given for an answer of the internal
