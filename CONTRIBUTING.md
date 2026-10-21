@@ -15,8 +15,8 @@ matches the work.
 
 ## What this library is about
 
-It turns LLM operations into typed Go calls. The rebuild it is going through is
-about one failure: **the library reporting success while being wrong.** Most of
+It turns LLM operations into typed Go calls. The v2 rebuild addressed one
+failure: **the library reporting success while being wrong.** Most of
 the rules below follow from that, and a change that makes a wrong answer easier
 to return will be refused however clean it is.
 

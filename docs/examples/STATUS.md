@@ -1,5 +1,8 @@
 # SchemaFlux Examples - Implementation Status
 
+> Historical v1 planning snapshot. For the released v2 example set and its
+> verification commands, see [current status](STATUS_FINAL.md).
+
 ## ✅ Completed Examples (6/15)
 
 ### Phase 1: Core Operations ✅ COMPLETE

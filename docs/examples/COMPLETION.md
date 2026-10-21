@@ -1,5 +1,8 @@
 # 🎉 ALL EXAMPLES COMPLETE!
 
+> Historical v1 completion snapshot. For the released v2 example set and its
+> verification commands, see [current status](STATUS_FINAL.md).
+
 ## Final Status: 14/15 Operations Implemented ✅
 
 ### ✅ Successfully Created Examples:

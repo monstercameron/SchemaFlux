@@ -4,7 +4,8 @@ This document covers building and testing SchemaFlux and its examples.
 
 ## Prerequisites
 
-- Go 1.25 or later (see `go.mod`)
+- Go 1.27 or later (see `go.mod`)
+- Python 3 for the repository gates; Node.js 22 and Playwright for the SmartTodo browser smoke test
 
 There is no protobuf, no workflow engine, and no code generation step in this
 repository. If a future change adds one, this file needs a new section, not a
@@ -52,13 +53,17 @@ It also has a WebAssembly build, packaged by a script rather than a plain
 This compiles `examples/smarttodo/cmd/smarttodo-wasm` with `GOOS=js
 GOARCH=wasm`, copies the web assets from `examples/smarttodo/web`, and copies
 `wasm_exec.js` out of the Go toolchain into the output directory (default
-`dist/smarttodo-demo`).
+`dist/smarttodo-demo`). A push to `main` runs the SmartTodo browser smoke test
+and deploys the bundle to [GitHub Pages](https://monstercameron.github.io/SchemaFlux/).
 
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run root-module tests
 go test ./...
+
+# Run the separate SmartTodo module tests
+(cd examples/smarttodo && go test ./...)
 
 # Run tests with coverage
 go test ./... -coverprofile=coverage.out
@@ -72,6 +77,13 @@ Provider-backed tests compile unconditionally and only run against a live
 provider when `SCHEMAFLUX_LIVE_TESTS=1` is set. Leaving it unset (the default)
 makes zero network calls.
 
+Run `./scripts/check.sh` for the complete local release gate. It includes the
+root-module tests, a shuffled pass, static analysis, the example gate, API and
+coverage checks, and repository policy checks. The script clears
+`SCHEMAFLUX_LIVE_TESTS` so this gate never incurs provider charges. The
+SmartTodo module has its own tests, and CI also runs its Playwright browser
+smoke test.
+
 ## Clean Build Artifacts
 
 ```bash
@@ -81,13 +93,12 @@ rm -rf dist/
 
 ## Continuous Integration
 
-`.github/workflows/ci.yml` is the source of truth for what CI actually runs.
-As of this writing that is: `go build ./...`, `go test ./...`, `go test -race
-./...` (non-Windows runners), `go test -shuffle=on -count=10 ./...`, `go vet
-./...`, `gofmt -l .`, `staticcheck ./...`, `govulncheck ./...`, `go build
-./examples/...`, and `python3 scripts/examples_gate.py`. Check the workflow
-file directly before relying on this list — it is easier for this paragraph to
-drift out of date than for the workflow to change silently.
+`.github/workflows/ci.yml` is the required gate. It runs the root suite on
+Windows, Ubuntu, Ubuntu ARM, and macOS, including ten shuffled passes per
+platform and race detection where supported. The separate
+`.github/workflows/smarttodo-demo.yml` builds, browser-tests, and deploys the
+SmartTodo bundle. See those workflows and `./scripts/check.sh --list` for the
+current commands.
 
 ## Troubleshooting
 

@@ -1,5 +1,8 @@
 # SchemaFlux Examples Plan
 
+> Historical v1 plan. For the released v2 example set and its verification
+> commands, see [current status](STATUS_FINAL.md).
+
 ## Goal
 Create simple, focused examples that demonstrate **ALL** SchemaFlux LLM operations.
 Each example should be:

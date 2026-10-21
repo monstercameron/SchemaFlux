@@ -7794,6 +7794,14 @@ session's working files and their findings are entered here as they are acted on
   invoice marker and still checks the email, text, and long-input canaries;
   its six cases passed 100 shuffled local repetitions. No caller payload was
   present in the failed log.
+  **V2 release documentation, 2026-10-21.** The user-facing API reference
+  now describes the `/v2` module, context-first calls, typed options,
+  classified errors, records, and current subpackages instead of the retired
+  fluent builder API. The build guide requires Go 1.27 and describes the
+  separate SmartTodo module and Pages workflow. The example status records
+  all 45 numbered examples, with older 15-example plans labeled historical.
+  The README links to those guides and the deployed demo. The README
+  disclosure test and `git diff --check` passed after these edits.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a

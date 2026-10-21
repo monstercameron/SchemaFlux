@@ -1,143 +1,20 @@
-# SchemaFlux API Reference
+# SchemaFlux v2 API reference
 
-## Canonical Import
+SchemaFlux v2.0.0 requires Go 1.27 or later. The v2 module lives at the repository root:
 
 ```bash
-go get github.com/monstercameron/schemaflux
+go get github.com/monstercameron/schemaflux/v2@v2.0.0
 ```
 
 ```go
-import schemaflux "github.com/monstercameron/schemaflux"
+import schemaflux "github.com/monstercameron/schemaflux/v2"
 ```
 
-## API Shape
+V1 releases keep the unsuffixed import path. The v1 fluent builders are not part of v2. See the [migration table](../../README.md#migrating-from-v1) for the most common replacements.
 
-SchemaFlux's primary public API is the fluent request-builder stack.
+## Calling an operation
 
-Every builder follows the same pattern:
-
-```go
-result, err := schemaflux.<Builder>(...).
-    Steer("...").
-    Strict().
-    Smart().
-    Configure(func(opts ...) ... { return opts }).
-    Run()
-```
-
-Common builder methods available on most typed LLM builders:
-- `WithOptions(...)`
-- `Configure(func(opts) opts)`
-- `Steer(...)`
-- `Mode(...)`
-- `Strict()`
-- `TransformMode()`
-- `Creative()`
-- `Intelligence(...)`
-- `Smart()`
-- `Fast()`
-- `Quick()`
-- `Model(...)`
-- `Context(...)`
-- `RequestID(...)` when the underlying option type supports request IDs
-- `CorrelationID(...)` when the underlying option type supports it
-
-Use `Configure(...)` when you need a specialized option that does not have a dedicated fluent shortcut.
-
-### Strict mode
-
-On extract/transform/generate builders, `Strict()` turns on both of the
-following at once. They can also be set independently:
-
-- `ExactFields()` rejects a response containing a property the target
-  struct's schema does not name.
-- `CompleteFields()` rejects a response that leaves a required field empty.
-
-`Strict()` is not a third, separate check — it is shorthand for `ExactFields()
-+ CompleteFields()` together.
-
-### Model selection
-
-`Intelligence(...)` (and its `Smart()`, `Fast()`, `Quick()` shortcuts) picks a
-speed/quality tier, which the library resolves to a concrete model per
-provider. As of this writing, on the default OpenAI-shaped configuration both
-`Smart` and `Fast` resolve to `gpt-5.6-luna`, and `Quick` resolves to
-`gpt-5.6-terra`; check `internal/config/config.go` before relying on the exact
-mapping, since it is a resolution table, not a guarantee tied to the tier
-names.
-
-`Model(...)` pins the exact model string for a single call, bypassing the tier
-mapping entirely. An empty string clears the pin and restores whatever tier
-was set. This is the way to reach a model the tier system does not name.
-
-## Builder Catalog
-
-### Structured data
-- `Extracting[T](input)`
-- `Transforming[T, U](input)`
-- `Generating[T](prompt)`
-- `Inferring[T](input)`
-- `Parsing[T](input)`
-- `Enriching[T, U](input)`
-- `EnrichingInPlace[T](input)`
-- `Normalizing[T](input)`
-- `NormalizingText(input)`
-- `NormalizingBatch[T](items)`
-- `Projecting[T, U](input)`
-- `Pivoting[T, U](input)`
-
-### Text generation and editing
-- `Summarizing(input)`
-- `Rewriting(input)`
-- `Translating(input)`
-- `Expanding(input)`
-- `Completing(input)`
-- `CompletingField[T](input, fieldName)`
-- `Redacting[T](input)`
-- `LLMRedacting(input)`
-
-### Evaluation and interpretation
-- `Classifying[T, C](input)`
-- `Scoring[T](input)`
-- `Comparing[T](left, right)`
-- `CheckingSimilarity[T](left, right)`
-- `Validating[T](input)`
-- `Asking[T, A](input, question)`
-- `Explaining(input)`
-- `Verifying(input)`
-- `VerifyingClaim(claim)`
-
-### Collections and ranking
-- `Choosing[T](items)`
-- `Filtering[T](items)`
-- `Sorting[T](items)`
-- `Ranking[T](items)`
-- `Clustering[T](items)`
-- `Matching[S, T](sources, targets)`
-- `MatchingOne[S, T](source, targets)`
-
-### Synthesis and decision support
-- `Annotating[T](input)`
-- `Compressing[T](input)`
-- `CompressingText(input)`
-- `Decomposing[T](input)`
-- `DecomposingInto[T, U](input)`
-- `Critiquing[T](input)`
-- `Synthesizing[T](sources)`
-- `Predicting[T](input)`
-- `Negotiating[T](constraints)`
-- `NegotiatingAdversarially[T](context)`
-- `Resolving[T](sources)`
-- `Deriving[T, U](input)`
-- `Conforming[T](input, standard)`
-- `Interpolating[T](items)`
-- `Arbitrating[T](options)`
-- `Auditing[T](input)`
-- `Assembling[T](parts)`
-
-## Examples
-
-### Extraction
+Every operation accepts a `context.Context` when it runs. Pass a typed options value for operation-specific settings; its embedded `schemaflux.Options` carries shared settings. Omitting options uses the operation's defaults.
 
 ```go
 type Person struct {
@@ -145,86 +22,73 @@ type Person struct {
     Age  int    `json:"age"`
 }
 
-person, err := schemaflux.Extracting[Person](raw).
-    Strict().
-    Smart().
-    Steer("Prefer explicit evidence over guesses").
-    Run()
+person, err := schemaflux.Extract[Person](
+    ctx,
+    "Ada is 36 years old",
+    schemaflux.ExtractOptions{Options: schemaflux.Options{Mode: schemaflux.ModeStrict}},
+)
 ```
 
-### Validation
+The root package includes these call shapes:
+
+| Task | Function and result |
+| --- | --- |
+| Structured extraction | `Extract[T](ctx, input, opts...) (T, error)` |
+| Structured transformation | `Transform[U](ctx, input, opts...) (U, error)` |
+| Text summary | `Summarize(ctx, text, opts...) (string, error)` |
+| Choose from offered values | `Choose[T](ctx, values, opts...) (T, error)` |
+| Rank offered values | `Rank[T](ctx, values, query, opts...) (RankResult[T], error)` |
+| Validate a value | `Validate[T](ctx, value, opts...) (ValidateResult[T], error)` |
+| Classify into categories | `Classify[C](ctx, input, categories, opts...) (ClassifyResult[C], error)` |
+
+Other root operations include `Generate`, `Infer`, `Parse`, `Rewrite`, `Translate`, `Filter`, `Sort`, `Cluster`, `Is`, `Rate`, and `Which`. Consult [the root source](../../) and [runnable examples](../../examples) for exact signatures and options. Experimental operations live in [`exp`](../../exp).
+
+`Options.Tier` chooses a quality and speed class when no exact model is pinned; `Options.Model` pins a model. `Options.Steering` guides the model but is not a checked guarantee. Strict mode and operation invariants can reject an answer that has the wrong shape or violates a checked rule.
+
+## Client and provider
+
+The zero `Client` resolves its provider and model from the environment at call time. For explicit configuration, create a provider and put it on a client:
 
 ```go
-result, err := schemaflux.Validating(person).
-    Rules("email must be valid; age must be between 18 and 100").
-    Strict().
-    Run()
+p, err := provider.New("openai", provider.Config{APIKey: key})
+if err != nil {
+    return err
+}
+client := schemaflux.Client{Provider: p, Model: "gpt-6-luna"}
+ctx = schemaflux.WithClient(ctx, client)
 ```
 
-### Ranking
+This snippet also imports `github.com/monstercameron/schemaflux/v2/provider`. `WithClient` attaches a client snapshot to one context; `SetDefault` changes the process default. A client can carry a timeout, budget, scheduler, data policy, recorder, and logger. If no usable credential is configured for the default provider, a call fails with `ErrConfiguration` before sending a request.
+
+`provider.New` supports OpenAI, Anthropic, OpenRouter, Cerebras, DeepSeek, Qwen, Z.ai, and typed-decision providers. A custom adapter implements `schemaflux.Provider`. See [provider source](../../provider) for configuration and supported names.
+
+## Results, errors, and records
+
+An operation returns its answer or a classified `*schemaflux.Error`. Use `errors.Is` with sentinels such as `ErrInvalidAnswer`, `ErrPolicy`, `ErrBudgetExceeded`, `ErrRateLimited`, and `ErrTimeout`; do not parse error text.
 
 ```go
-ranked, err := schemaflux.Ranking(products).
-    By("best battery life for frequent travelers").
-    Fast().
-    Run()
+var recorder schemaflux.Recorder
+ctx = schemaflux.WithRecorder(ctx, &recorder)
+answer, err := schemaflux.Summarize(ctx, article)
+records := recorder.Records()
 ```
 
-### Matching
+`Record` captures available request counts, timing, token usage, cost, contract level, checks, and provenance separately from the answer. A schema-conforming value does not prove that its claims are true. Inspect the delivered contract level and apply domain checks where the distinction matters. The [README](../../README.md#results-errors-and-records) describes the error and record boundaries in more detail.
 
-```go
-matches, err := schemaflux.Matching(leads, accounts).
-    By("same company despite name variations").
-    Smart().
-    Run()
-```
+## Streaming and packages
 
-### Projection
+`StreamSummarize`, `StreamRewrite`, `StreamTranslate`, and `StreamExpand` return a `TextStream`. Read it with `All` or `Text`, and call `Cancel` when abandoning it. Current middleware wrappers do not forward streams; use an unwrapped streaming provider for these calls.
 
-```go
-projected, err := schemaflux.Projecting[InternalUser, PublicProfile](user).
-    Exclude("password_hash", "ssn").
-    Steer("combine first and last name into display_name").
-    Run()
-```
+| Package | Purpose |
+| --- | --- |
+| [`chat`](../../chat) | Conversation sessions and caller-run tools |
+| [`flow`](../../flow) | Decisions, branches, checkpoints, and parallel work |
+| [`op`](../../op) | Typed descriptors, plans, stages, and batch runners |
+| [`exp`](../../exp) | Experimental operations |
+| [`redact`](../../redact) | Local value and model-assisted text redaction |
+| [`mw`](../../mw) | Provider middleware |
+| [`pricing`](../../pricing) | Prices and spend limits |
+| [`telemetry`](../../telemetry) | Observer events, metrics, and OpenTelemetry adapter |
+| [`schemafluxtest`](../../schemafluxtest) | Scripted providers and offline test helpers |
 
-## Text Builders With Detailed Results
-
-These builders provide both a simple `Run()` and a richer result method:
-- `Summarizing(...).RunDetailed()`
-- `Rewriting(...).RunDetailed()`
-- `Translating(...).RunDetailed()`
-- `Expanding(...).RunDetailed()`
-
-## Compact Helpers
-
-For common collection tasks, compact helpers remain available:
-- `ChooseBy(items, criteria...)`
-- `FilterBy(items, criteria)`
-- `SortBy(items, criteria)`
-
-## Provider Layer
-
-The fluent API works with the same provider stack:
-- `openai`
-- `anthropic`
-- `openrouter`
-- `cerebras`
-- `deepseek`
-- `qwen`
-- `zai`
-- `local`
-
-Example:
-
-```go
-client := schemaflux.NewClient(apiKey).
-    WithProvider("deepseek").
-    WithRetries(3)
-```
-
-## Compatibility Surface
-
-The older direct-call API and `New*Options()` constructors remain exported for backward compatibility.
-
-They are not the recommended starting point for new integrations.
+For an end-to-end setup and the v1-to-v2 migration steps, start with the [README](../../README.md).
