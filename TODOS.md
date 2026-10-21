@@ -7789,6 +7789,11 @@ session's working files and their findings are entered here as they are acted on
   documented completion callback. The scripted producer now waits until that
   assertion has checked an unfinished call. All scenarios passed 100 local
   repetitions after the change; the CI race gate still needs to verify it.
+  The same CI run's Ubuntu shuffle pass found a privacy-test canary of only
+  four digits inside a random request ID. The test now uses a distinctive
+  invoice marker and still checks the email, text, and long-input canaries;
+  its six cases passed 100 shuffled local repetitions. No caller payload was
+  present in the failed log.
   **Not done in this file.** The entries for the seams, the v2 lanes, the two later tracing audits, the
   planner change and the middleware and batch reviews were not written up one by one; this entry and
   RS-001 are the record. Rulings made on the day that are not written elsewhere in the repository: a

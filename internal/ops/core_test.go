@@ -228,7 +228,7 @@ func TestExtractDoesNotLogTheCallersInput(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"short", "jane.doe@example.com unpaid invoice 4417"},
+		{"short", "jane.doe@example.com unpaid invoice INV-4417-CANARY"},
 		{"long, past a hundred bytes", strings.Repeat("padding ", 20) + "TAIL-SECRET-MARKER"},
 		{"the start of a long one", "HEAD-SECRET-MARKER " + strings.Repeat("padding ", 40)},
 		{"with line breaks", "name: Ada\nSSN: 078-05-1120\nnotes: HEAD-SECRET-MARKER"},
@@ -247,7 +247,7 @@ func TestExtractDoesNotLogTheCallersInput(t *testing.T) {
 			if !strings.Contains(text, "Extract input normalized") {
 				t.Fatalf("the operation logged no input line, so this witnesses nothing:\n%s", text)
 			}
-			for _, secret := range []string{"jane.doe", "4417", "SECRET-MARKER", "078-05-1120", "padding", "Zażółć"} {
+			for _, secret := range []string{"jane.doe", "INV-4417-CANARY", "SECRET-MARKER", "078-05-1120", "padding", "Zażółć"} {
 				if strings.Contains(text, secret) {
 					t.Errorf("the log carries the caller's input (%q):\n%s", secret, text)
 				}
